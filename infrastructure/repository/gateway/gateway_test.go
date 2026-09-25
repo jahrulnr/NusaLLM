@@ -16,6 +16,8 @@ import (
 	reposecret "github.com/jahrulnr/llm-base/infrastructure/repository/secret"
 )
 
+func ptr[T any](v T) *T { return &v }
+
 func newRepo(t *testing.T) drepo.Gateway {
 	t.Helper()
 	secrets, err := reposecret.New(":memory:")
@@ -35,8 +37,8 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 	g.SetApiKey("sk-or-literal")
 
 	m, _ := entity.NewModel("claude-opus-4", "openrouter")
-	m.SetTemperature(0.7)
-	m.SetMaxOutputTokens(4096)
+	m.SetTemperature(ptr(0.7))
+	m.SetMaxOutputTokens(ptr(4096))
 	m.SetEffort(enum.EffortHigh)
 	m.SetModelType(enum.ModelTypeText)
 	m.SetContextWindow(200_000)
@@ -196,6 +198,43 @@ func TestNotFound(t *testing.T) {
 	}
 	if err := repo.Delete(t.Context(), "nope"); apperror.As(err).StatusCode() != apperror.StatusNotFound {
 		t.Fatalf("Delete missing: %v", err)
+	}
+}
+
+// Inspect reads without resolving: an unresolvable ref still loads, and a
+// file that can't decode at all surfaces as a nil-Gateway snapshot rather
+// than hiding — the management plane's view, unlike Load's picker view.
+func TestInspect(t *testing.T) {
+	repo := newRepo(t)
+	g, _ := aggregate.NewGateway("g", "n", "https://x", enum.StyleMessages)
+	g.SetApiKey("env:DEFINITELY_UNSET_INSPECT")
+	if err := repo.Save(t.Context(), &g); err != nil {
+		t.Fatal(err)
+	}
+
+	snap, err := repo.Inspect(t.Context(), "g")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Gateway == nil || snap.ApiKeyRef != "env:DEFINITELY_UNSET_INSPECT" {
+		t.Fatalf("Inspect = %+v", snap)
+	}
+
+	if err := os.WriteFile(repo.(*GatewayRepository).file("bad"), []byte("{corrupt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snap, err = repo.Inspect(t.Context(), "bad")
+	if err != nil || snap.Gateway != nil || snap.ID != "bad" {
+		t.Fatalf("corrupt Inspect = %+v, %v", snap, err)
+	}
+
+	list, err := repo.InspectList(t.Context())
+	if err != nil || len(list) != 2 || list[1].Gateway == nil {
+		t.Fatalf("InspectList = %+v, %v", list, err)
+	}
+
+	if _, err := repo.Inspect(t.Context(), "nope"); apperror.As(err).StatusCode() != apperror.StatusNotFound {
+		t.Fatalf("Inspect missing: %v", err)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	appconversation "github.com/jahrulnr/llm-base/application/conversation"
+	appgateway "github.com/jahrulnr/llm-base/application/gateway"
 	"github.com/jahrulnr/llm-base/infrastructure/config"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
 	dservice "github.com/jahrulnr/llm-base/infrastructure/domain/service"
@@ -82,6 +83,7 @@ func run() error {
 	tools[readFile.Schema().Name()] = readFile
 
 	_ = appconversation.New(convs, gateways, services, tools, cfg)
+	_ = appgateway.New(gateways, secrets)
 	// Transport wiring (HTTP/console) lands here — the application is
 	// fully constructed and ready to serve.
 	return nil

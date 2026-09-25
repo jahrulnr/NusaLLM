@@ -25,7 +25,8 @@ func TestModelParamsPointerSemantics(t *testing.T) {
 	if m.Temperature() != nil || m.MaxOutputTokens() != nil {
 		t.Fatal("unset params must be nil")
 	}
-	m.SetTemperature(0)
+	zero := 0.0
+	m.SetTemperature(&zero)
 	if m.Temperature() == nil || *m.Temperature() != 0 {
 		t.Fatal("explicit zero must be distinguishable from unset")
 	}

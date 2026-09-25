@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 
+	drepo "github.com/jahrulnr/llm-base/infrastructure/domain/repository"
 	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
 )
 
@@ -27,7 +28,7 @@ func (r *GatewayRepository) Delete(ctx context.Context, id string) error {
 		return err
 	}
 	if r.secrets != nil {
-		if err := r.secrets.Delete(ctx, secretKey(id)); err != nil &&
+		if err := r.secrets.Delete(ctx, drepo.GatewaySecretKey(id)); err != nil &&
 			apperror.As(err).StatusCode() != apperror.StatusNotFound {
 			return err
 		}

@@ -7,17 +7,16 @@
 // via os.Getenv, "secret:<key>" resolves through the injected SecretStore.
 // A literal key passed to Save is auto-stored in the SecretStore when one
 // is configured, so the file only ever carries "secret:gateway/<id>/api_key";
-// without a store, literals persist as-is for backward compatibility.
+// without a store, a literal is refused — persisting a key into JSON is a
+// deployment defect, not a fallback.
 package repogateway
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 
 	drepo "github.com/jahrulnr/llm-base/infrastructure/domain/repository"
@@ -52,21 +51,6 @@ func validID(id string) error {
 	return nil
 }
 
-func (r *GatewayRepository) writeGateway(id string, rec gatewayRecord) error {
-	if err := os.MkdirAll(r.path, 0o700); err != nil { // files may carry keys
-		return err
-	}
-	raw, err := json.MarshalIndent(rec, "", "  ")
-	if err != nil {
-		return err
-	}
-	tmp := r.file(id) + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil { // may carry a key
-		return err
-	}
-	return os.Rename(tmp, r.file(id))
-}
-
 func (r *GatewayRepository) readGateway(id string) (gatewayRecord, error) {
 	raw, err := os.ReadFile(r.file(id))
 	if errors.Is(err, os.ErrNotExist) {
@@ -80,46 +64,4 @@ func (r *GatewayRepository) readGateway(id string) (gatewayRecord, error) {
 		return gatewayRecord{}, fmt.Errorf("gateway %q corrupt: %w", id, err)
 	}
 	return rec, nil
-}
-
-// secretKey is the SecretStore key a gateway's apiKey is filed under when
-// a literal is auto-stored at Save.
-func secretKey(gatewayID string) string { return "gateway/" + gatewayID + "/api_key" }
-
-// resolveKey dereferences an apiKey record: "env:NAME" reads the
-// environment, "secret:<key>" hits the SecretStore, anything else passes
-// through as literal key material.
-func (r *GatewayRepository) resolveKey(ctx context.Context, v string) (string, error) {
-	if name, ok := strings.CutPrefix(v, "env:"); ok {
-		if key := os.Getenv(name); key != "" {
-			return key, nil
-		}
-		return "", fmt.Errorf("gateway apiKey references env %q which is unset", name)
-	}
-	if key, ok := strings.CutPrefix(v, "secret:"); ok {
-		if r.secrets == nil {
-			return "", fmt.Errorf("gateway apiKey references %q but no secret store is configured", key)
-		}
-		return r.secrets.Get(ctx, key)
-	}
-	return v, nil
-}
-
-// encodeKey decides what lands in the file: refs stay as-is, literals are
-// auto-stored under secretKey(id) when a SecretStore is configured so
-// plaintext never reaches disk. A literal with no store wired is refused —
-// silently persisting a key in JSON is a deployment defect, not a fallback.
-func (r *GatewayRepository) encodeKey(ctx context.Context, gatewayID, v string) (string, error) {
-	if v == "" ||
-		strings.HasPrefix(v, "env:") || strings.HasPrefix(v, "secret:") {
-		return v, nil
-	}
-	if r.secrets == nil {
-		return "", apperror.NewInternalError("gateway key storage unconfigured",
-			fmt.Errorf("literal apiKey for %q requires a secret store", gatewayID))
-	}
-	if err := r.secrets.Set(ctx, secretKey(gatewayID), v); err != nil {
-		return "", err
-	}
-	return "secret:" + secretKey(gatewayID), nil
 }

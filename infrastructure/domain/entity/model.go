@@ -69,14 +69,16 @@ func (m Model) Seed() *int64               { return m.seed }
 func (m Model) StopSequences() []string    { return m.stopSequences }
 func (m Model) Effort() enum.Effort        { return m.effort }
 
-func (m *Model) SetTemperature(v float64)      { m.temperature = &v }
-func (m *Model) SetTopP(v float64)             { m.topP = &v }
-func (m *Model) SetTopK(v int)                 { m.topK = &v }
-func (m *Model) SetMaxOutputTokens(v int)      { m.maxOutputTokens = &v }
-func (m *Model) SetPresencePenalty(v float64)  { m.presencePenalty = &v }
-func (m *Model) SetFrequencyPenalty(v float64) { m.frequencyPenalty = &v }
-func (m *Model) SetSeed(v int64)               { m.seed = &v }
-func (m *Model) SetStopSequences(v []string)   { m.stopSequences = v }
+// Generation-param setters take the pointer verbatim — nil leaves the
+// param unset, and the pointed-to value is the caller's to own.
+func (m *Model) SetTemperature(v *float64)      { m.temperature = v }
+func (m *Model) SetTopP(v *float64)             { m.topP = v }
+func (m *Model) SetTopK(v *int)                 { m.topK = v }
+func (m *Model) SetMaxOutputTokens(v *int)      { m.maxOutputTokens = v }
+func (m *Model) SetPresencePenalty(v *float64)  { m.presencePenalty = v }
+func (m *Model) SetFrequencyPenalty(v *float64) { m.frequencyPenalty = v }
+func (m *Model) SetSeed(v *int64)               { m.seed = v }
+func (m *Model) SetStopSequences(v []string)    { m.stopSequences = v }
 
 // SetEffort sets the reasoning effort for this request. EffortDefault and
 // unset mean the field is omitted from the wire.

@@ -78,7 +78,8 @@ func TestUnaryRoundtrip(t *testing.T) {
 	conv.SetTools([]valueobject.ToolSchema{tool, hidden})
 
 	model, _ := entity.NewModel("m", "test")
-	model.SetTemperature(0.5)
+	half := 0.5
+	model.SetTemperature(&half)
 
 	ev, h := events()
 	if err := svc.Send(t.Context(), conv, gw, model, h); err != nil {
