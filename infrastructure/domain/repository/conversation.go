@@ -1,0 +1,84 @@
+package repository
+
+import (
+	"context"
+	"time"
+
+	"github.com/jahrulnr/llm-base/infrastructure/domain/aggregate"
+	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
+	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
+)
+
+// ConversationInfo is a lightweight read projection for inspecting a
+// conversation without parsing its message history — conversation lists,
+// pagination headers, and inspection UIs consume it.
+type ConversationInfo struct {
+	ID        string
+	Title     string
+	Route     string
+	ModelID   string
+	Usage     valueobject.Usage
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	// MessageCount is the total logical message count across sealed segments
+	// plus the live tail; ActiveCount covers the live tail only — the slice
+	// Load returns and the range most UI turns live in.
+	MessageCount   int
+	ActiveCount    int
+	SealedSegments int
+}
+
+// Conversation is the conversation store port. Ordering contract: Save
+// creates/upserts the record and must precede AppendMessage. Errors carry
+// the apperror contract — a missing convID surfaces as 404, distinct from
+// corruption or I/O failures.
+type Conversation interface {
+	// Save upserts the conversation-level record: id, route/modelID binding,
+	// title, system prompt, tools catalog, accumulated usage. Messages are
+	// persisted per turn via AppendMessage. The bound gateway is a separate
+	// aggregate — resolved via the Gateway repository by Route().
+	Save(ctx context.Context, conv *aggregate.Conversation) error
+
+	// AppendMessage appends one message (a turn) to the stored history.
+	AppendMessage(ctx context.Context, convID string, msg entity.Message) error
+
+	// UpdateToolCallOutput patches the stored output of a previously
+	// appended tool call — a call is persisted pending execution, and its
+	// enveloped output (ToolCall.Output()) arrives later. Each call is an
+	// independent patch: concurrent completions of parallel tool calls are
+	// safe by construction (implementations append patch records rather
+	// than rewriting stored lines), and a crash mid-batch leaves the
+	// remaining calls honestly pending instead of losing every result.
+	// callID resolves globally across segments: a call compacted before its
+	// output arrived is still patched correctly.
+	UpdateToolCallOutput(ctx context.Context, convID, callID, output string) error
+
+	// Compact seals messages[:dropBefore] into the next numbered archive
+	// segment and restarts the live history as [summary] + tail — mirroring
+	// Conversation.Compact, which the caller must apply to the aggregate as
+	// well. Callers must not split a tool-call/result pair at the boundary.
+	Compact(ctx context.Context, convID string, summary entity.Message, dropBefore int) error
+
+	// Info returns the lightweight projection for one conversation.
+	Info(ctx context.Context, convID string) (ConversationInfo, error)
+
+	// List returns infos for all stored conversations, newest activity
+	// first — backs the conversation list UI.
+	List(ctx context.Context) ([]ConversationInfo, error)
+
+	// Load rebuilds the conversation's LIVE context: route/modelID bindings
+	// plus the active segment — the messages the model actually sees. Sealed
+	// archive segments stay on disk; LoadAt reaches them. The Gateway and
+	// Model objects are resolved separately — repositories may span
+	// multiple aggregates.
+	Load(ctx context.Context, convID string) (*aggregate.Conversation, error)
+
+	// LoadAt returns messages[start:end] over the global logical history —
+	// sealed segments first, then the live tail — in append order. Indexes
+	// clamp to bounds; a negative start counts from the end
+	// (LoadAt(id, -10, 0) reads the latest 10), and end <= 0 reads through
+	// the most recent message.
+	LoadAt(ctx context.Context, convID string, start, end int) ([]entity.Message, error)
+
+	Delete(ctx context.Context, convID string) error
+}
