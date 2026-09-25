@@ -56,12 +56,18 @@ type AppError struct {
 
 // New builds an AppError — code must be a valid HTTP status (100-599).
 func New(code int, message string, causedBy error) IAppError {
+	return newAt(code, message, causedBy, 2)
+}
+
+// newAt captures Caller at the given stack depth so helpers that forward
+// through it still blame their own caller — one stack walk per error.
+func newAt(code int, message string, causedBy error, skip int) IAppError {
 	if code < 100 || code > 599 {
 		message = fmt.Sprintf("invalid status code provided: %d", code)
 		causedBy = fmt.Errorf("invalid status code: %d", code)
 		code = StatusInternalServerError
 	}
-	_, file, line, _ := runtime.Caller(1)
+	_, file, line, _ := runtime.Caller(skip)
 	return &AppError{
 		Code:    code,
 		Message: message,
@@ -91,10 +97,7 @@ func (e *AppError) ErrCause() error { return errors.New(e.Caused()) }
 
 // CausedBy returns a copy with a new cause, re-pointing Caller here.
 func (e *AppError) CausedBy(err error) IAppError {
-	ne := New(e.Code, e.Message, err).(*AppError)
-	_, file, line, _ := runtime.Caller(1)
-	ne.SetCaller(fmt.Sprintf("%s:%d", filepath.Base(file), line))
-	return ne
+	return newAt(e.Code, e.Message, err, 2)
 }
 
 // FromStatus adapts an upstream HTTP status into an AppError — the shared
@@ -107,35 +110,26 @@ func FromStatus(status int, message string, causedBy error) IAppError {
 	return New(status, message, causedBy)
 }
 
-// withCaller re-points Caller to the helper's own callsite — New inside a
-// helper would otherwise blame this file.
-func withCaller(e IAppError) IAppError {
-	_, file, line, _ := runtime.Caller(2)
-	e.SetCaller(fmt.Sprintf("%s:%d", filepath.Base(file), line))
-	return e
-}
-
 func NewNotFoundError(resource string, causedBy error) IAppError {
-	return withCaller(New(StatusNotFound, resource+" not found", causedBy))
+	return newAt(StatusNotFound, resource+" not found", causedBy, 2)
 }
 
 func NewUnauthorizedError(message string, causedBy error) IAppError {
-	return withCaller(New(StatusUnauthorized, message, causedBy))
+	return newAt(StatusUnauthorized, message, causedBy, 2)
 }
 
 func NewForbiddenError(message string, causedBy error) IAppError {
-	return withCaller(New(StatusForbidden, message, causedBy))
+	return newAt(StatusForbidden, message, causedBy, 2)
 }
 
 func NewInternalError(message string, causedBy error) IAppError {
-	return withCaller(New(StatusInternalServerError, message, causedBy))
+	return newAt(StatusInternalServerError, message, causedBy, 2)
 }
 
 // As unwraps err into an IAppError via errors.As. Non-AppError causes fall
 // back to a 500 "internal error" — no information leaks to Message.
 func As(err error) IAppError {
-	var appErr IAppError
-	if errors.As(err, &appErr) {
+	if appErr, ok := errors.AsType[IAppError](err); ok {
 		return appErr
 	}
 	return New(StatusInternalServerError, "internal error", err)

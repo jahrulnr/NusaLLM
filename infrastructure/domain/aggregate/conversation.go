@@ -78,7 +78,11 @@ func (c *Conversation) RewriteFrom(msgID, content string) error {
 			return ErrNotUserMessage
 		}
 		c.messages[i].SetContent(content)
+		dropped := c.messages[i+1:]
 		c.messages = c.messages[:i+1]
+		// Dead region still aliases the backing array — zero it or every
+		// edited-away message stays reachable for the room's lifetime.
+		clear(dropped)
 		return nil
 	}
 	return ErrMessageNotFound

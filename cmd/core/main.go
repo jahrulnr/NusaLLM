@@ -5,10 +5,12 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	appconversation "github.com/jahrulnr/llm-base/application/conversation"
 	appgateway "github.com/jahrulnr/llm-base/application/gateway"
@@ -56,6 +58,8 @@ func run() error {
 			case map[string]any:
 				delete(v, "body")
 				return v
+			case []json.RawMessage:
+				return map[string]any{"chunks": len(v)}
 			case []any:
 				return map[string]any{"chunks": len(v)}
 			default:
@@ -69,7 +73,11 @@ func run() error {
 	}
 
 	services := map[enum.Style]dservice.TextModelService{
-		enum.StyleCompletion: textcompletion.New(textcompletion.Options{Logger: logger}),
+		enum.StyleCompletion: textcompletion.New(textcompletion.Options{
+			Logger:        logger,
+			HeaderTimeout: time.Duration(cfg.Service.HeaderTimeout),
+			IdleTimeout:   time.Duration(cfg.Service.IdleTimeout),
+		}),
 	}
 	tools := map[string]dservice.Tool{}
 	wd, err := os.Getwd()

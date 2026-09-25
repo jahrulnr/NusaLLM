@@ -14,7 +14,7 @@ func (app *GatewayApp) List(ctx context.Context) ([]GatewayInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	var out []GatewayInfo
+	out := make([]GatewayInfo, 0, len(snaps))
 	for _, snap := range snaps {
 		out = append(out, app.toInfo(ctx, snap))
 	}

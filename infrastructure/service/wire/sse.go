@@ -21,11 +21,16 @@ func ScanSSE(r io.Reader) *bufio.Scanner {
 // Every SSE-speaking wire (OpenAI-compat, Anthropic, Gemini) frames the
 // same way; only the payload grammar differs per family.
 func SplitSSE(data []byte, atEOF bool) (advance int, token []byte, err error) {
-	if i := bytes.Index(data, []byte("\r\n\r\n")); i >= 0 {
-		return i + 4, data[:i], nil
-	}
-	if i := bytes.Index(data, []byte("\n\n")); i >= 0 {
-		return i + 2, data[:i], nil
+	// Cut at the EARLIEST boundary — checking \r\n\r\n first lets a later
+	// one swallow an \n\n-terminated event sitting before it, so a mixed-
+	// delimiter stream would merge (and corrupt) both events.
+	i4 := bytes.Index(data, []byte("\r\n\r\n"))
+	i2 := bytes.Index(data, []byte("\n\n"))
+	switch {
+	case i4 >= 0 && (i2 < 0 || i4 < i2):
+		return i4 + 4, data[:i4], nil
+	case i2 >= 0:
+		return i2 + 2, data[:i2], nil
 	}
 	if atEOF && len(data) > 0 {
 		return len(data), data, nil

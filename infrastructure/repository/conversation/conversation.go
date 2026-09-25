@@ -61,13 +61,36 @@ func validID(id string) error {
 }
 
 // writeFileAtomic writes via tmp+rename — a crash mid-write leaves the
-// old file or nothing, never a torn target.
+// old file or nothing, never a torn target. fsync before and after the
+// rename matters as much as the rename: without it a crash can resurrect
+// the name with no contents (a sealed segment that reads empty is silent
+// history loss, not an error). The dir sync is best-effort — the bytes
+// are already durable once the file syncs.
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, perm); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	if d, err := os.Open(filepath.Dir(path)); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
+	return nil
 }
 
 // --- meta -----------------------------------------------------------------
@@ -93,11 +116,7 @@ func (r *ConversationRepository) writeMeta(id string, m metaRecord) error {
 	if err != nil {
 		return err
 	}
-	tmp := filepath.Join(r.convDir(id), metaFile+".tmp")
-	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, filepath.Join(r.convDir(id), metaFile))
+	return writeFileAtomic(filepath.Join(r.convDir(id), metaFile), raw, 0o644)
 }
 
 // --- line stream ------------------------------------------------------------

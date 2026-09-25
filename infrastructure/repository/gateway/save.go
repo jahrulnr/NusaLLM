@@ -48,8 +48,29 @@ func (r *GatewayRepository) Save(ctx context.Context, gw *aggregate.Gateway) err
 		return err
 	}
 	tmp := r.file(gw.ID()) + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil { // may carry a key
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) // may carry a key ref
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, r.file(gw.ID()))
+	if _, err := f.Write(raw); err != nil {
+		f.Close()
+		return err
+	}
+	// fsync before the rename — otherwise a crash can resurrect the
+	// record's name with no contents, which reads as a broken gateway.
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, r.file(gw.ID())); err != nil {
+		return err
+	}
+	if d, err := os.Open(r.path); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
+	return nil
 }
