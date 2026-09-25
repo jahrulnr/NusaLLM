@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
@@ -43,11 +44,10 @@ func (r *ConversationRepository) Compact(ctx context.Context, convID string, sum
 			patchLines = append(patchLines, l)
 		}
 	}
-	if dropBefore < 0 {
-		dropBefore = 0
-	}
-	if dropBefore > len(msgLines) {
-		dropBefore = len(msgLines)
+	if dropBefore <= 0 || dropBefore > len(msgLines) {
+		// Nothing to fold, or a boundary beyond the stream — an empty or
+		// oversized segment would corrupt the archive layout.
+		return fmt.Errorf("compact %s: invalid dropBefore %d over %d message lines", convID, dropBefore, len(msgLines))
 	}
 
 	// Seal the dropped prefix verbatim into the next numbered segment.
@@ -58,6 +58,12 @@ func (r *ConversationRepository) Compact(ctx context.Context, convID string, sum
 		buf.WriteByte('\n')
 	}
 	if err := writeFileAtomic(sealed, buf.Bytes(), 0o644); err != nil {
+		return err
+	}
+	// The sealed file is committed only once meta counts it — a failure
+	// below leaves it an orphan the loader ignores; remove it anyway.
+	commitFail := func(err error) error {
+		_ = os.Remove(sealed)
 		return err
 	}
 
@@ -74,11 +80,14 @@ func (r *ConversationRepository) Compact(ctx context.Context, convID string, sum
 		buf.WriteByte('\n')
 	}
 	if err := writeFileAtomic(active, buf.Bytes(), 0o644); err != nil {
-		return err
+		return commitFail(err)
 	}
 
 	meta.SealedSegments++
 	meta.MessageCount++
 	meta.ActiveCount = meta.ActiveCount - dropBefore + 1
-	return r.writeMeta(convID, meta)
+	if err := r.writeMeta(convID, meta); err != nil {
+		return commitFail(err)
+	}
+	return nil
 }

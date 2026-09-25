@@ -206,17 +206,29 @@ func sealedSegments(dir string) ([]string, error) {
 	return segs, nil
 }
 
-// loadMessages reads the live tail, optionally prefixed by every sealed
-// segment in numeric order — the global logical history.
+// loadMessages reads the live tail, optionally prefixed by the sealed
+// segments in numeric order — the global logical history. Only segments
+// meta counts as sealed qualify: Compact writes the file before bumping
+// the count, so a crash mid-write leaves an orphan glob would count —
+// replaying a prefix the intact active copy still holds.
 func (r *ConversationRepository) loadMessages(convID string, includeSealed bool) ([]entity.Message, error) {
 	dir := r.convDir(convID)
 	var files []string
 	if includeSealed {
+		meta, err := r.readMeta(convID)
+		if err != nil {
+			return nil, err
+		}
 		segs, err := sealedSegments(dir)
 		if err != nil {
 			return nil, err
 		}
-		files = append(files, segs...)
+		for _, f := range segs {
+			n, _ := strconv.Atoi(strings.TrimSuffix(filepath.Base(f), ".jsonl"))
+			if n < meta.SealedSegments { // committed segments only
+				files = append(files, f)
+			}
+		}
 	}
 	files = append(files, filepath.Join(dir, activeFile))
 

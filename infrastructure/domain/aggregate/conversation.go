@@ -71,7 +71,10 @@ func (c *Conversation) RewriteFrom(msgID, content string) error {
 		if c.messages[i].ID() != msgID {
 			continue
 		}
-		if c.messages[i].Role() != enum.RoleUser {
+		if c.messages[i].Role() != enum.RoleUser || c.messages[i].UserType() == enum.LLMUserTypeSystem {
+			// Synthetic user-role messages (compaction checkpoints) are
+			// not the user's words — editing one would rewrite a system
+			// artifact as if the user had said it.
 			return ErrNotUserMessage
 		}
 		c.messages[i].SetContent(content)

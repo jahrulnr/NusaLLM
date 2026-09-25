@@ -7,6 +7,7 @@ import (
 	"github.com/jahrulnr/llm-base/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/event"
 	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
+	"github.com/jahrulnr/llm-base/infrastructure/prompt"
 )
 
 // Edit rewrites one user message and regenerates the turn from it —
@@ -63,6 +64,11 @@ func (j *Edit) Execute(execCtx context.Context) (err error) {
 			}
 		}
 
+		// Same embedded-prompt contract as send: applied per execution,
+		// never persisted — an edit turn runs under the same rules.
+		if conv.SystemPrompt() == "" {
+			conv.SetSystemPrompt(prompt.SystemPrompt("conversation"))
+		}
 		gw, model, svc, err := d.resolveRoute(ctx, convID, conv, "", "")
 		if err != nil {
 			return err

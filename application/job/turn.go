@@ -20,12 +20,33 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 	// clamps and tag defaults fill it.
 	ccfg := d.Config
 	ccfg.Normalize()
+	didCompact := false
 	for step := 0; step < ccfg.MaxTurnStep; step++ {
 		if err := ctx.Err(); err != nil {
 			return apperror.New(408, "turn canceled", err)
 		}
+		if !didCompact {
+			// One compaction per turn: a fat tail that still overflows
+			// after folding is the provider's call — refiring every step
+			// would summarize the previous checkpoint at full cost.
+			shrank, err := d.maybeCompact(ctx, convID, conv, gw, model, svc, ccfg.CompactBudgetPct, ccfg.CompactKeepTail)
+			if err != nil {
+				return err
+			}
+			didCompact = shrank
+		}
 		before := len(conv.Messages())
-		if err := svc.Send(ctx, conv, gw, model, onEvent); err != nil {
+		err := svc.Send(ctx, conv, gw, model, onEvent)
+		if err != nil && apperror.As(err).StatusCode() == 413 && !didCompact && len(conv.Messages()) > ccfg.CompactKeepTail {
+			// The provider says overflow even though our estimate
+			// disagreed — believe the provider once: compact and retry.
+			if err := d.compact(ctx, convID, conv, gw, model, svc, ccfg.CompactKeepTail); err != nil {
+				return err
+			}
+			didCompact = true
+			continue
+		}
+		if err != nil {
 			// A cancel landing mid-body-read can surface as an upstream
 			// error from the adapter — normalize before it misroutes.
 			if ctx.Err() != nil {

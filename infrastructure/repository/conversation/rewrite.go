@@ -125,9 +125,9 @@ func rewriteCut(lines [][]byte, msgID, content string) (cut [][]byte, found bool
 		if lr.Type != lineMessage || lr.Data.ID != msgID {
 			continue
 		}
-		if enum.Role(lr.Data.Role) != enum.RoleUser {
+		if enum.Role(lr.Data.Role) != enum.RoleUser || enum.LLMUserType(lr.Data.UserType) == enum.LLMUserTypeSystem {
 			return nil, false, apperror.New(400, "only user messages are editable",
-				fmt.Errorf("message %s has role %s", msgID, lr.Data.Role))
+				fmt.Errorf("message %s has role %s userType %s", msgID, lr.Data.Role, lr.Data.UserType))
 		}
 		lr.Data.Content = content
 		patched, err := json.Marshal(lr)
