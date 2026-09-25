@@ -8,7 +8,7 @@ import (
 	"github.com/jahrulnr/llm-base/infrastructure/domain/event"
 )
 
-type LLMService interface {
+type TextModelService interface {
 	// Send performs one completion attempt against the gateway the
 	// implementation is bound to, appending the resulting assistant message
 	// and usage onto conv. Model and gateway selection — including fallback
