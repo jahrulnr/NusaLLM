@@ -1,0 +1,30 @@
+package repogateway
+
+import (
+	"context"
+	"errors"
+	"os"
+
+	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
+)
+
+// Delete removes <id>.json plus its auto-stored secret — a dangling
+// "secret:gateway/<id>/api_key" key would be orphaned garbage.
+// Conversations referencing the route keep a dangling id — resolution
+// failure is the application's fallback.
+func (r *GatewayRepository) Delete(ctx context.Context, id string) error {
+	err := os.Remove(r.file(id))
+	if errors.Is(err, os.ErrNotExist) {
+		return apperror.NewNotFoundError("gateway "+id, err)
+	}
+	if err != nil {
+		return err
+	}
+	if r.secrets != nil {
+		if err := r.secrets.Delete(ctx, secretKey(id)); err != nil &&
+			apperror.As(err).StatusCode() != apperror.StatusNotFound {
+			return err
+		}
+	}
+	return nil
+}
