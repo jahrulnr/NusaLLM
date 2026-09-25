@@ -18,17 +18,21 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	drepo "github.com/jahrulnr/llm-base/infrastructure/domain/repository"
+	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
 	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
 )
 
 // GatewayRepository is a JSON-file-backed Gateway store. secrets is the
 // injected credential store — nil disables "secret:" resolution and
-// literal-key auto-storage.
+// literal-key auto-storage. The mutex serializes writes — concurrent Save
+// on one id would otherwise collide on the shared .tmp path.
 type GatewayRepository struct {
 	path    string
 	secrets drepo.SecretStore
+	mu      sync.Mutex
 }
 
 func NewGatewayRepository(path string, secrets drepo.SecretStore) drepo.Gateway {
@@ -37,6 +41,15 @@ func NewGatewayRepository(path string, secrets drepo.SecretStore) drepo.Gateway 
 
 func (r *GatewayRepository) file(id string) string {
 	return filepath.Join(r.path, id+".json")
+}
+
+// validID is the boundary guard: the id becomes a filename, so the
+// domain's own rule (valueobject.ValidID) is re-asserted against this root.
+func validID(id string) error {
+	if err := valueobject.ValidID(id); err != nil {
+		return apperror.New(400, "invalid gateway id", fmt.Errorf("id %q: %w", id, err))
+	}
+	return nil
 }
 
 func (r *GatewayRepository) writeGateway(id string, rec gatewayRecord) error {
@@ -78,7 +91,10 @@ func secretKey(gatewayID string) string { return "gateway/" + gatewayID + "/api_
 // through as literal key material.
 func (r *GatewayRepository) resolveKey(ctx context.Context, v string) (string, error) {
 	if name, ok := strings.CutPrefix(v, "env:"); ok {
-		return os.Getenv(name), nil
+		if key := os.Getenv(name); key != "" {
+			return key, nil
+		}
+		return "", fmt.Errorf("gateway apiKey references env %q which is unset", name)
 	}
 	if key, ok := strings.CutPrefix(v, "secret:"); ok {
 		if r.secrets == nil {

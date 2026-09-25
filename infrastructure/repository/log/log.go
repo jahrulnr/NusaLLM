@@ -95,7 +95,8 @@ func (l *Logger) nextSeg() int {
 }
 
 // rotate seals active.jsonl as the next numbered segment, reopens a fresh
-// active file, and prunes segments past maxFiles.
+// active file, and prunes segments past maxFiles. On any failure it tries
+// to reopen the active file so the logger never goes permanently dead.
 func (l *Logger) rotate() error {
 	if err := l.f.Close(); err != nil {
 		return err
@@ -103,18 +104,26 @@ func (l *Logger) rotate() error {
 	seg := l.nextSeg()
 	if err := os.Rename(filepath.Join(l.dir, activeFile),
 		filepath.Join(l.dir, strconv.Itoa(seg)+".jsonl")); err != nil {
+		l.reopen() // keep the logger writable even if rotation failed
 		return err
 	}
 	l.segs = append(l.segs, seg)
 	if l.maxFiles > 0 {
 		for len(l.segs) > l.maxFiles {
 			old := l.segs[0]
-			l.segs = l.segs[1:]
 			if err := os.Remove(filepath.Join(l.dir, strconv.Itoa(old)+".jsonl")); err != nil {
+				l.reopen()
 				return apperror.NewInternalError("log rotate: prune segment", err)
 			}
+			l.segs = l.segs[1:]
 		}
 	}
+	return l.reopen()
+}
+
+// reopen attaches a fresh active file — also the recovery path after a
+// failed rotate, where the renamed file may no longer exist.
+func (l *Logger) reopen() error {
 	f, err := os.OpenFile(filepath.Join(l.dir, activeFile), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
@@ -124,7 +133,8 @@ func (l *Logger) rotate() error {
 	return nil
 }
 
-// countLines scans a file for newlines — 0 for a missing file.
+// countLines scans a file for newlines — 0 for a missing file. ReadString
+// keeps huge single-line records (raw payloads) from hitting scanner caps.
 func countLines(path string) (int, error) {
 	f, err := os.Open(path)
 	if os.IsNotExist(err) {
@@ -135,10 +145,13 @@ func countLines(path string) (int, error) {
 	}
 	defer f.Close()
 	n := 0
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 64*1024), 8*1024*1024) // raw payloads can be large
-	for sc.Scan() {
+	br := bufio.NewReader(f)
+	for {
+		_, err := br.ReadString('\n')
+		if err != nil {
+			break // io.EOF ends the count; read errors count what we got
+		}
 		n++
 	}
-	return n, sc.Err()
+	return n, nil
 }

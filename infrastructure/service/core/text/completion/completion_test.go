@@ -1,6 +1,7 @@
 package textcompletion
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/jahrulnr/llm-base/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
@@ -17,8 +19,8 @@ import (
 	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
 )
 
-// newService spins an httptest server bound to a fake gateway.
-func newService(t *testing.T, stream bool, handler http.HandlerFunc) (*Service, *httptest.Server) {
+// newService spins an httptest server and a fake gateway pointing at it.
+func newService(t *testing.T, stream bool, handler http.HandlerFunc) (*Service, *aggregate.Gateway, *httptest.Server) {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
@@ -32,7 +34,7 @@ func newService(t *testing.T, stream bool, handler http.HandlerFunc) (*Service, 
 	} else {
 		gw.DisableStream()
 	}
-	return New(&gw, Options{}), srv
+	return New(Options{}), &gw, srv
 }
 
 func newConv(t *testing.T) *aggregate.Conversation {
@@ -44,14 +46,14 @@ func newConv(t *testing.T) *aggregate.Conversation {
 	return c
 }
 
-func events() (*[]event.StreamEvent, event.LLMEventHandler) {
-	var got []event.StreamEvent
-	return &got, func(e event.StreamEvent) { got = append(got, e) }
+func events() (*[]event.TurnEvent, event.TurnEventHandler) {
+	var got []event.TurnEvent
+	return &got, func(e event.TurnEvent) { got = append(got, e) }
 }
 
 func TestUnaryRoundtrip(t *testing.T) {
 	var captured RequestBody
-	svc, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer sk-test" {
 			t.Error("missing auth header")
 		}
@@ -79,7 +81,7 @@ func TestUnaryRoundtrip(t *testing.T) {
 	model.SetTemperature(0.5)
 
 	ev, h := events()
-	if err := svc.Send(t.Context(), conv, model, h); err != nil {
+	if err := svc.Send(t.Context(), conv, gw, model, h); err != nil {
 		t.Fatal(err)
 	}
 
@@ -103,7 +105,7 @@ func TestUnaryRoundtrip(t *testing.T) {
 		t.Fatalf("usage not normalized: %+v", conv.Usage())
 	}
 	// Uniform event contract: delta + finished.
-	if len(*ev) != 2 || (*ev)[0].Kind() != enum.StreamEventDelta || (*ev)[1].Kind() != enum.StreamEventFinished {
+	if len(*ev) != 2 || (*ev)[0].Kind() != enum.TurnEventDelta || (*ev)[1].Kind() != enum.TurnEventFinished {
 		t.Fatalf("events: %+v", *ev)
 	}
 }
@@ -114,7 +116,7 @@ func TestImageFileAttachmentBecomesDataURI(t *testing.T) {
 	os.WriteFile(path, img, 0o644)
 
 	var captured RequestBody
-	svc, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
 		json.NewDecoder(r.Body).Decode(&captured)
 		json.NewEncoder(w).Encode(map[string]any{
 			"choices": []any{map[string]any{"index": 0,
@@ -129,7 +131,7 @@ func TestImageFileAttachmentBecomesDataURI(t *testing.T) {
 	conv.Append(m)
 
 	model, _ := entity.NewModel("m", "test")
-	if err := svc.Send(t.Context(), conv, model, nil); err != nil {
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
 		t.Fatal(err)
 	}
 	parts, ok := captured.Messages[0].Content.([]any)
@@ -146,7 +148,7 @@ func TestImageFileAttachmentBecomesDataURI(t *testing.T) {
 
 func TestToolCallsRoundtrip(t *testing.T) {
 	var captured RequestBody
-	svc, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
 		json.NewDecoder(r.Body).Decode(&captured)
 		json.NewEncoder(w).Encode(map[string]any{
 			"choices": []any{map[string]any{"index": 0, "finish_reason": "tool_calls",
@@ -160,7 +162,7 @@ func TestToolCallsRoundtrip(t *testing.T) {
 	u, _ := entity.NewMessage(enum.RoleUser, "time?")
 	conv.Append(u)
 	model, _ := entity.NewModel("m", "test")
-	if err := svc.Send(t.Context(), conv, model, nil); err != nil {
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
 		t.Fatal(err)
 	}
 	last := conv.Last()
@@ -172,7 +174,7 @@ func TestToolCallsRoundtrip(t *testing.T) {
 
 	// Execute + re-send: wire must carry assistant tool_calls + tool message.
 	last.SetToolOutput("call_1", "12:00")
-	if err := svc.Send(t.Context(), conv, model, nil); err != nil {
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
 		t.Fatal(err)
 	}
 	var sawAssistant, sawTool bool
@@ -190,7 +192,7 @@ func TestToolCallsRoundtrip(t *testing.T) {
 }
 
 func TestStreamAssemblesMessage(t *testing.T) {
-	svc, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hel\"}}]}\n\n"))
 		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"lo\"}}]}\n\n"))
@@ -205,7 +207,7 @@ func TestStreamAssemblesMessage(t *testing.T) {
 	model, _ := entity.NewModel("m", "test")
 
 	ev, h := events()
-	if err := svc.Send(t.Context(), conv, model, h); err != nil {
+	if err := svc.Send(t.Context(), conv, gw, model, h); err != nil {
 		t.Fatal(err)
 	}
 	last := conv.Last()
@@ -221,9 +223,9 @@ func TestStreamAssemblesMessage(t *testing.T) {
 	var deltas, finished int
 	for _, e := range *ev {
 		switch e.Kind() {
-		case enum.StreamEventDelta:
+		case enum.TurnEventDelta:
 			deltas++
-		case enum.StreamEventFinished:
+		case enum.TurnEventFinished:
 			finished++
 		}
 	}
@@ -243,15 +245,108 @@ func TestErrorMapping(t *testing.T) {
 		{400, `{"error":{"message":"bad","code":"context_length_exceeded"}}`, 413}, // remap: compact, not retry
 		{500, `{"error":{"message":"oops"}}`, 500},
 	} {
-		svc, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+		svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(tc.status)
 			w.Write([]byte(tc.body))
 		})
 		conv := newConv(t)
 		model, _ := entity.NewModel("m", "test")
-		err := svc.Send(t.Context(), conv, model, nil)
+		err := svc.Send(t.Context(), conv, gw, model, nil)
 		if got := apperror.As(err).StatusCode(); got != tc.want {
 			t.Fatalf("status %d → %d, want %d", tc.status, got, tc.want)
 		}
+	}
+}
+
+func TestStreamSendsIncludeUsage(t *testing.T) {
+	var captured RequestBody
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&captured)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"x\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
+	})
+	conv := newConv(t)
+	model, _ := entity.NewModel("m", "test")
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
+		t.Fatal(err)
+	}
+	if captured.StreamOptions == nil || !captured.StreamOptions.IncludeUsage {
+		t.Fatal("stream_options.include_usage missing — usage would silently zero")
+	}
+}
+
+func TestStreamMidStreamError(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hel\"}}]}\n\n"))
+		w.Write([]byte("data: {\"error\":{\"message\":\"slow down\",\"type\":\"rate_limit_error\"}}\n\n"))
+	})
+	conv := newConv(t)
+	model, _ := entity.NewModel("m", "test")
+	err := svc.Send(t.Context(), conv, gw, model, nil)
+	if got := apperror.As(err).StatusCode(); got != 429 {
+		t.Fatalf("mid-stream rate_limit_error → %d, want 429", got)
+	}
+	if last := conv.Last(); last != nil && last.Role() == enum.RoleAssistant {
+		t.Fatal("failed stream must not commit the partial message")
+	}
+}
+
+func TestStreamHostileIndex(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":-1,\"function\":{\"arguments\":\"x\"}}]}}]}\n\n"))
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":9999999,\"function\":{\"arguments\":\"x\"}}]}}]}\n\n"))
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n"))
+		w.Write([]byte("data: [DONE]\n\n"))
+	})
+	conv := newConv(t)
+	model, _ := entity.NewModel("m", "test")
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil { // must not panic/OOM
+		t.Fatal(err)
+	}
+	if len(conv.Last().ToolCalls()) != 0 { // Last() non-nil — turn committed
+		t.Fatal("hostile indexes must be dropped, not committed")
+	}
+}
+
+func TestStreamTruncatedEOF(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"}}]}\n\n"))
+		// EOF without finish_reason or [DONE] — a cut connection, not a turn
+	})
+	conv := newConv(t)
+	model, _ := entity.NewModel("m", "test")
+	err := svc.Send(t.Context(), conv, gw, model, nil)
+	if got := apperror.As(err).StatusCode(); err == nil || got != 502 {
+		t.Fatalf("truncated stream → %v, want 502", err)
+	}
+	if last := conv.Last(); last != nil && last.Role() == enum.RoleAssistant {
+		t.Fatal("truncated stream must not commit")
+	}
+}
+
+func TestStreamCancelIsNotUpstreamError(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"x\"}}]}\n\n"))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done() // hold open — cancel must unblock the client
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	conv := newConv(t)
+	model, _ := entity.NewModel("m", "test")
+	done := make(chan error, 1)
+	go func() { done <- svc.Send(ctx, conv, gw, model, nil) }()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if got := apperror.As(err).StatusCode(); got != 408 {
+			t.Fatalf("cancel → %d, want 408", got)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("cancel did not unblock Send")
 	}
 }

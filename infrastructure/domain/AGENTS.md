@@ -11,9 +11,9 @@ field names.
 | `aggregate/` | `Conversation` (dialogue state + route/modelID refs), `Gateway` (endpoint surface) |
 | `entity/` | `Message`, `ToolCall`, `Model` |
 | `enum/` | Closed string sets, each with `String()` + `Parse*()` |
-| `event/` | `StreamEvent` + `LLMEventHandler` — streaming sink for `LLMService.Send` |
+| `event/` | `TurnEvent` + `TurnEventHandler` — per-turn streaming sink for `TextModelService.Send` |
 | `repository/` | Ports only — `Conversation`, `Gateway`, `SecretStore`, `Logger` |
-| `service/` | `LLMService` port — one `Send` attempt; fallback/routing is app-layer work |
+| `service/` | `TextModelService` port — one `Send` attempt; fallback/routing is app-layer work |
 | `valueobject/` | `Usage`, `Pricing`, `ToolSchema`, `Attachment` |
 
 ## Hard rules
@@ -54,6 +54,10 @@ field names.
   `Info`/`List`/`LoadAt` = projections and ranged history for UIs.
 - Compaction seals history into numbered segments; never split a
   tool-call/result pair at the boundary.
+- Editing is `RewriteFrom`: user messages only, content patched and every
+  message after it dropped (the caller regenerates the turn). A target in
+  a sealed segment repromotes that era — earlier segments merge back into
+  the live tail, later segments and stale summaries are discarded.
 - Stored attachments are references (`file://`, `https://`) — `data:` URIs
   are wire-time, adapters materialize at send. Existence is checked at
   resolve time, never in domain.

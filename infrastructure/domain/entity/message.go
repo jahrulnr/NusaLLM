@@ -9,8 +9,11 @@ import (
 )
 
 // Message is a single provider-agnostic conversation entry. Tool calls and
-// their results are kept on the message that produced them.
+// their results are kept on the message that produced them. The id is
+// permanent — edit/regenerate features address messages by it, never by
+// position (compaction shifts indexes).
 type Message struct {
+	id              string
 	role            enum.Role
 	content         string
 	userType        enum.LLMUserType
@@ -22,7 +25,8 @@ type Message struct {
 }
 
 func NewMessage(role enum.Role, content string) (Message, error) {
-	msg := Message{role: role, content: content, createdAt: time.Now()}
+	id, _ := valueobject.NewID("m", "") // minted ids are valid by construction
+	msg := Message{id: id.String(), role: role, content: content, createdAt: time.Now()}
 	return msg, msg.validate()
 }
 
@@ -33,8 +37,13 @@ func (m Message) validate() error {
 	return nil
 }
 
-func (m Message) Role() enum.Role                    { return m.role }
-func (m Message) Content() string                    { return m.content }
+func (m Message) ID() string      { return m.id }
+func (m Message) Role() enum.Role { return m.role }
+func (m Message) Content() string { return m.content }
+
+// SetContent replaces the message text — the edit primitive. Only the
+// aggregate decides which messages may be rewritten (user-role only).
+func (m *Message) SetContent(v string)               { m.content = v }
 func (m Message) UserType() enum.LLMUserType         { return m.userType }
 func (m Message) FinishReason() enum.FinishReason    { return m.finishReason }
 func (m Message) ToolCalls() []ToolCall              { return m.toolCalls }
@@ -67,6 +76,10 @@ func (m Message) CreatedAt() time.Time { return m.createdAt }
 
 // SetCreatedAt restores the persisted timestamp. Repository hydration only.
 func (m *Message) SetCreatedAt(t time.Time) { m.createdAt = t }
+
+// SetID restores the persisted id. Repository hydration only — ids are
+// generated at construction, never reassigned.
+func (m *Message) SetID(id string) { m.id = id }
 
 func (m *Message) AddToolCall(t ToolCall) {
 	m.toolCalls = append(m.toolCalls, t)

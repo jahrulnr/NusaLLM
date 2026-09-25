@@ -39,9 +39,9 @@ func TestParseRoundtrips(t *testing.T) {
 			t.Fatalf("FinishReason %q roundtrip failed", v)
 		}
 	}
-	for _, v := range []StreamEventKind{StreamEventDelta, StreamEventToolCall, StreamEventFinished, StreamEventError} {
-		if got, f := ParseStreamEventKind(v.String()); !f || got != v {
-			t.Fatalf("StreamEventKind %q roundtrip failed", v)
+	for _, v := range []TurnEventKind{TurnEventDelta, TurnEventToolCall, TurnEventFinished, TurnEventError} {
+		if got, f := ParseTurnEventKind(v.String()); !f || got != v {
+			t.Fatalf("TurnEventKind %q roundtrip failed", v)
 		}
 	}
 	for _, v := range []Effort{EffortDefault, EffortNone, EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax} {

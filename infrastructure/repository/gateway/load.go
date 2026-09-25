@@ -10,6 +10,9 @@ import (
 // Load reads <id>.json and hydrates the aggregate — "env:"/"secret:"
 // apiKey refs resolve here, so the file itself stays credential-free.
 func (r *GatewayRepository) Load(ctx context.Context, id string) (*aggregate.Gateway, error) {
+	if err := validID(id); err != nil {
+		return nil, err
+	}
 	rec, err := r.readGateway(id)
 	if err != nil {
 		return nil, err

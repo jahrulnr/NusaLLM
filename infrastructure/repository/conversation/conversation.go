@@ -2,7 +2,10 @@
 // the local filesystem: one directory per conversation holding meta.json,
 // numbered sealed archive segments (0.jsonl, 1.jsonl, …) written by Compact,
 // and active.jsonl — the live tail. Messages and tool-output patches share
-// the same append-only line stream so writes never rewrite history.
+// the same append-only line stream so writes never rewrite history. The
+// exceptions are the surgery operations — Compact seals a prefix,
+// RewriteFrom truncates/promotes for an edit — which rewrite segment
+// files atomically rather than appending.
 package repoconversation
 
 import (
@@ -23,6 +26,7 @@ import (
 
 	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
 	drepo "github.com/jahrulnr/llm-base/infrastructure/domain/repository"
+	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
 )
 
 const (
@@ -45,6 +49,25 @@ func NewConversationRepository(path string) drepo.Conversation {
 
 func (r *ConversationRepository) convDir(id string) string {
 	return filepath.Join(r.path, id)
+}
+
+// validID is the boundary guard: the id becomes a path segment, so the
+// domain's own rule (valueobject.ValidID) is re-asserted against this root.
+func validID(id string) error {
+	if err := valueobject.ValidID(id); err != nil {
+		return apperror.New(400, "invalid id", fmt.Errorf("id %q: %w", id, err))
+	}
+	return nil
+}
+
+// writeFileAtomic writes via tmp+rename — a crash mid-write leaves the
+// old file or nothing, never a torn target.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, perm); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // --- meta -----------------------------------------------------------------
@@ -161,27 +184,39 @@ func messagesFromLines(lines [][]byte) ([]entity.Message, error) {
 	return msgs, nil
 }
 
+// sealedSegments lists the conversation's numbered archive files in
+// order — the eras Compact wrote, oldest first.
+func sealedSegments(dir string) ([]string, error) {
+	files, err := filepath.Glob(filepath.Join(dir, "*.jsonl"))
+	if err != nil {
+		return nil, err
+	}
+	var segs []string
+	for _, f := range files {
+		name := strings.TrimSuffix(filepath.Base(f), ".jsonl")
+		if _, err := strconv.Atoi(name); err == nil { // numbered segment only
+			segs = append(segs, f)
+		}
+	}
+	sort.Slice(segs, func(i, j int) bool {
+		ai, _ := strconv.Atoi(strings.TrimSuffix(filepath.Base(segs[i]), ".jsonl"))
+		aj, _ := strconv.Atoi(strings.TrimSuffix(filepath.Base(segs[j]), ".jsonl"))
+		return ai < aj
+	})
+	return segs, nil
+}
+
 // loadMessages reads the live tail, optionally prefixed by every sealed
 // segment in numeric order — the global logical history.
 func (r *ConversationRepository) loadMessages(convID string, includeSealed bool) ([]entity.Message, error) {
 	dir := r.convDir(convID)
 	var files []string
 	if includeSealed {
-		segs, err := filepath.Glob(filepath.Join(dir, "*.jsonl"))
+		segs, err := sealedSegments(dir)
 		if err != nil {
 			return nil, err
 		}
-		for _, f := range segs {
-			name := strings.TrimSuffix(filepath.Base(f), ".jsonl")
-			if _, err := strconv.Atoi(name); err == nil { // numbered segment only
-				files = append(files, f)
-			}
-		}
-		sort.Slice(files, func(i, j int) bool {
-			ai, _ := strconv.Atoi(strings.TrimSuffix(filepath.Base(files[i]), ".jsonl"))
-			aj, _ := strconv.Atoi(strings.TrimSuffix(filepath.Base(files[j]), ".jsonl"))
-			return ai < aj
-		})
+		files = append(files, segs...)
 	}
 	files = append(files, filepath.Join(dir, activeFile))
 

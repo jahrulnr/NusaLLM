@@ -166,3 +166,47 @@ func TestReopenResumes(t *testing.T) {
 		t.Fatalf("active = %d", got)
 	}
 }
+
+// RawMessage/struct entries must round-trip through JSON before scrubbing —
+// otherwise upstream bodies quoting auth headers hit disk verbatim.
+func TestRawMessageScrubbed(t *testing.T) {
+	dir := t.TempDir()
+	l, err := New(dir, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { l.Close() })
+
+	payload := json.RawMessage(`{"error":{"message":"bad key","key":"sk-live-abc123def456"}}`)
+	if err := l.Append(t.Context(), "provider.error", payload); err != nil {
+		t.Fatal(err)
+	}
+	l.Close()
+
+	raw, _ := os.ReadFile(filepath.Join(dir, "active.jsonl"))
+	if strings.Contains(string(raw), "sk-live-abc123def456") {
+		t.Fatalf("credential leaked through RawMessage: %s", raw)
+	}
+	if !strings.Contains(string(raw), "bad key") {
+		t.Fatal("benign content lost by scrub")
+	}
+}
+
+// A record bigger than the old 8MB scanner cap must not brick reopen.
+func TestHugeRecordReopens(t *testing.T) {
+	dir := t.TempDir()
+	l, err := New(dir, Options{MaxLines: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	big := strings.Repeat("x", 10<<20) // 10MB single line
+	if err := l.Append(t.Context(), "big", big); err != nil {
+		t.Fatal(err)
+	}
+	l.Close()
+	l2, err := New(dir, Options{MaxLines: 2})
+	if err != nil {
+		t.Fatalf("reopen after huge record: %v", err)
+	}
+	l2.Close()
+}

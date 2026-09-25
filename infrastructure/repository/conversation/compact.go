@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
@@ -16,6 +15,9 @@ import (
 // messages + every patch line — patches stay global so late outputs still
 // reach sealed calls.
 func (r *ConversationRepository) Compact(ctx context.Context, convID string, summary entity.Message, dropBefore int) error {
+	if err := validID(convID); err != nil {
+		return err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -55,7 +57,7 @@ func (r *ConversationRepository) Compact(ctx context.Context, convID string, sum
 		buf.Write(l)
 		buf.WriteByte('\n')
 	}
-	if err := os.WriteFile(sealed, buf.Bytes(), 0o644); err != nil {
+	if err := writeFileAtomic(sealed, buf.Bytes(), 0o644); err != nil {
 		return err
 	}
 
@@ -71,7 +73,7 @@ func (r *ConversationRepository) Compact(ctx context.Context, convID string, sum
 		buf.Write(l)
 		buf.WriteByte('\n')
 	}
-	if err := os.WriteFile(active, buf.Bytes(), 0o644); err != nil {
+	if err := writeFileAtomic(active, buf.Bytes(), 0o644); err != nil {
 		return err
 	}
 

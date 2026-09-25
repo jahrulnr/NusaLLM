@@ -25,7 +25,11 @@ func decodeMessage(w MessageBody, finishReason string) (entity.Message, error) {
 		msg.SetFinishReason(enum.FinishReason(finishReason)) // preserve unknown values verbatim
 	}
 	for _, c := range w.ToolCalls {
-		tc, err := entity.NewToolCall(c.ID, c.Function.Name, c.Function.Arguments, enum.TooltypeOrigin)
+		args := c.Function.Arguments
+		if args == "" {
+			args = "{}" // upstreams legitimately emit empty arguments
+		}
+		tc, err := entity.NewToolCall(c.ID, c.Function.Name, args, enum.TooltypeOrigin)
 		if err != nil {
 			return entity.Message{}, err
 		}

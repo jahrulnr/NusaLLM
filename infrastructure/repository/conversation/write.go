@@ -11,6 +11,9 @@ import (
 // Save upserts meta.json — creates the conversation directory on first
 // write and preserves record-level fields (counters, CreatedAt) on update.
 func (r *ConversationRepository) Save(ctx context.Context, conv *aggregate.Conversation) error {
+	if err := validID(conv.ID()); err != nil {
+		return err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -20,12 +23,13 @@ func (r *ConversationRepository) Save(ctx context.Context, conv *aggregate.Conve
 	}
 
 	m := metaRecord{
-		ID:           conv.ID(),
-		Title:        conv.Title(),
-		Route:        conv.Route(),
-		ModelID:      conv.ModelID(),
-		SystemPrompt: conv.SystemPrompt(),
-		Usage:        encodeUsage(conv.Usage()),
+		ID:      conv.ID(),
+		Title:   conv.Title(),
+		Route:   conv.Route(),
+		ModelID: conv.ModelID(),
+		Usage:   encodeUsage(conv.Usage()),
+		// SystemPrompt is deliberately absent: the prompt ships embedded
+		// in the binary, so it is applied in memory, never persisted.
 	}
 	for _, t := range conv.Tools() {
 		m.Tools = append(m.Tools, encodeToolSchema(t))

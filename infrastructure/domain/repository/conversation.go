@@ -59,6 +59,16 @@ type Conversation interface {
 	// well. Callers must not split a tool-call/result pair at the boundary.
 	Compact(ctx context.Context, convID string, summary entity.Message, dropBefore int) error
 
+	// RewriteFrom is the edit primitive — the persistence counterpart of
+	// Conversation.RewriteFrom. It locates a user message anywhere in
+	// history, rewrites its content, and discards every message recorded
+	// after it. A target in the live tail truncates active.jsonl. A target
+	// in a sealed segment promotes that segment — plus every earlier one —
+	// back into active.jsonl so the model regains the full context of that
+	// era; later segments and the old active tail are deleted. 404 when the
+	// id is nowhere in history, 400 when it belongs to a non-user message.
+	RewriteFrom(ctx context.Context, convID, msgID, content string) error
+
 	// Info returns the lightweight projection for one conversation.
 	Info(ctx context.Context, convID string) (ConversationInfo, error)
 

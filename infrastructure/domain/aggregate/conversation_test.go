@@ -19,8 +19,12 @@ func mustConv(t *testing.T) *Conversation {
 }
 
 func TestNewConversation(t *testing.T) {
-	if _, err := NewConversation(""); err == nil {
-		t.Fatal("expected error for empty id")
+	if _, err := NewConversation("../bad"); err == nil {
+		t.Fatal("expected error for path-element id")
+	}
+	minted, err := NewConversation("") // empty mints a fresh id
+	if err != nil || minted.ID() == "" {
+		t.Fatalf("minted id: %q err=%v", minted.ID(), err)
 	}
 	c := mustConv(t)
 	if c.ID() != "conv-1" || c.Last() != nil {

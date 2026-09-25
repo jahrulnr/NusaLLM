@@ -1,4 +1,4 @@
-// Package encoder holds wire-neutral helpers shared by adapter families —
+// Package wire holds wire-neutral helpers shared by adapter families —
 // URI resolution, base64 materialization. Wire-shaped part assembly stays
 // inside each adapter; only the mechanics that never change per wire live
 // here.

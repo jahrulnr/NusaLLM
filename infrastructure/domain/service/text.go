@@ -9,9 +9,11 @@ import (
 )
 
 type TextModelService interface {
-	// Send performs one completion attempt against the gateway the
-	// implementation is bound to, appending the resulting assistant message
-	// and usage onto conv. Model and gateway selection — including fallback
+	// Send performs one completion attempt against gw, appending the
+	// resulting assistant message and usage onto conv. Implementations are
+	// stateless translators — endpoint and credentials are read from gw per
+	// call, so a re-Loaded gateway (rotated key, moved endpoint) takes
+	// effect immediately. Model and gateway selection — including fallback
 	// — belong to the application layer.
 	//
 	// In stream mode onEvent receives domain events as they arrive (deltas,
@@ -24,5 +26,5 @@ type TextModelService interface {
 	// StatusCode(): 429 tries another route, 401/403 marks a gateway dead,
 	// 413 compacts rather than falls back. Message is frontend-safe;
 	// upstream detail stays in Cause.
-	Send(ctx context.Context, conv *aggregate.Conversation, model entity.Model, onEvent event.LLMEventHandler) error
+	Send(ctx context.Context, conv *aggregate.Conversation, gw *aggregate.Gateway, model entity.Model, onEvent event.TurnEventHandler) error
 }

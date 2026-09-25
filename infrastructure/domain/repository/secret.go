@@ -12,4 +12,6 @@ type SecretStore interface {
 	Set(ctx context.Context, key, value string) error
 	// Delete removes key — 404 apperror when absent.
 	Delete(ctx context.Context, key string) error
+	// Close releases the backing store (sqlite handle, connection pool).
+	Close() error
 }

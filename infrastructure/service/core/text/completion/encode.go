@@ -7,6 +7,7 @@ import (
 	"github.com/jahrulnr/llm-base/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
+	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
 	"github.com/jahrulnr/llm-base/infrastructure/service/wire"
 )
 
@@ -15,6 +16,9 @@ import (
 // base64) — the domain stores references only.
 func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool) (*RequestBody, error) {
 	body := &RequestBody{Model: model.ID(), Stream: stream}
+	if stream {
+		body.StreamOptions = &StreamOptions{IncludeUsage: true} // else usage never arrives
+	}
 
 	if sp := conv.SystemPrompt(); sp != "" {
 		body.Messages = append(body.Messages, MessageBody{Role: enum.RoleSystem.String(), Content: sp})
@@ -138,12 +142,7 @@ func encodeMessage(m entity.Message) ([]MessageBody, error) {
 
 // encodeAttachment maps a stored URI to the wire content part for its
 // modality. Audio must arrive as base64 — URL audio is rejected upstream.
-func encodeAttachment(a interface {
-	URI() string
-	MediaType() string
-	Name() string
-	Modality() enum.Modality
-}) (any, error) {
+func encodeAttachment(a valueobject.Attachment) (any, error) {
 	uri, mt := a.URI(), a.MediaType()
 	switch a.Modality() {
 	case enum.ModalityImage:

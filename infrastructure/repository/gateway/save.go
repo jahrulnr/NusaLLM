@@ -10,6 +10,12 @@ import (
 // auto-stored in the SecretStore first, so the file only carries its
 // "secret:" reference.
 func (r *GatewayRepository) Save(ctx context.Context, gw *aggregate.Gateway) error {
+	if err := validID(gw.ID()); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	rec := encodeGateway(gw)
 	key, err := r.encodeKey(ctx, gw.ID(), gw.ApiKey())
 	if err != nil {

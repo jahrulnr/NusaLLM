@@ -45,7 +45,7 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 	c.SetTitle("chat")
 	c.SetRoute("openrouter")
 	c.SetModelID("claude-opus-4")
-	c.SetSystemPrompt("be terse")
+	c.SetSystemPrompt("be terse") // code, not data — never lands on disk
 	if err := repo.Save(t.Context(), c); err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got.Route() != "openrouter" || got.ModelID() != "claude-opus-4" ||
-		got.Title() != "chat" || got.SystemPrompt() != "be terse" {
+		got.Title() != "chat" || got.SystemPrompt() != "" {
 		t.Fatalf("meta mismatch: %+v", got)
 	}
 	if len(got.Messages()) != 2 || got.Messages()[1].Content() != "world" {
@@ -252,5 +252,34 @@ func TestTruncatedTailTolerated(t *testing.T) {
 	}
 	if len(got.Messages()) != 1 {
 		t.Fatalf("truncated tail should be dropped, got %d messages", len(got.Messages()))
+	}
+}
+
+// convID becomes a directory segment — traversal ids must be rejected.
+func TestInvalidIDRejected(t *testing.T) {
+	repo := NewConversationRepository(t.TempDir())
+	if _, err := repo.Load(t.Context(), "../escape"); err == nil ||
+		apperror.As(err).StatusCode() != 400 {
+		t.Fatalf("traversal id → %v, want 400", err)
+	}
+}
+
+// Message ids survive a roundtrip — edit features address by id, not index.
+func TestMessageIDRoundtrip(t *testing.T) {
+	repo := NewConversationRepository(t.TempDir())
+	conv, _ := aggregate.NewConversation("ids")
+	if err := repo.Save(t.Context(), conv); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := entity.NewMessage(enum.RoleUser, "remember me")
+	if err := repo.AppendMessage(t.Context(), "ids", m); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.Load(t.Context(), "ids")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Last().ID() != m.ID() || m.ID() == "" {
+		t.Fatalf("id lost: %q vs %q", got.Last().ID(), m.ID())
 	}
 }

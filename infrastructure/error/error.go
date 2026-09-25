@@ -57,9 +57,9 @@ type AppError struct {
 // New builds an AppError — code must be a valid HTTP status (100-599).
 func New(code int, message string, causedBy error) IAppError {
 	if code < 100 || code > 599 {
-		code = StatusInternalServerError
 		message = fmt.Sprintf("invalid status code provided: %d", code)
 		causedBy = fmt.Errorf("invalid status code: %d", code)
+		code = StatusInternalServerError
 	}
 	_, file, line, _ := runtime.Caller(1)
 	return &AppError{
@@ -107,20 +107,28 @@ func FromStatus(status int, message string, causedBy error) IAppError {
 	return New(status, message, causedBy)
 }
 
+// withCaller re-points Caller to the helper's own callsite — New inside a
+// helper would otherwise blame this file.
+func withCaller(e IAppError) IAppError {
+	_, file, line, _ := runtime.Caller(2)
+	e.SetCaller(fmt.Sprintf("%s:%d", filepath.Base(file), line))
+	return e
+}
+
 func NewNotFoundError(resource string, causedBy error) IAppError {
-	return New(StatusNotFound, resource+" not found", causedBy)
+	return withCaller(New(StatusNotFound, resource+" not found", causedBy))
 }
 
 func NewUnauthorizedError(message string, causedBy error) IAppError {
-	return New(StatusUnauthorized, message, causedBy)
+	return withCaller(New(StatusUnauthorized, message, causedBy))
 }
 
 func NewForbiddenError(message string, causedBy error) IAppError {
-	return New(StatusForbidden, message, causedBy)
+	return withCaller(New(StatusForbidden, message, causedBy))
 }
 
 func NewInternalError(message string, causedBy error) IAppError {
-	return New(StatusInternalServerError, message, causedBy)
+	return withCaller(New(StatusInternalServerError, message, causedBy))
 }
 
 // As unwraps err into an IAppError via errors.As. Non-AppError causes fall

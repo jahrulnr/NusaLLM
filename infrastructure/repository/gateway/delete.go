@@ -13,6 +13,12 @@ import (
 // Conversations referencing the route keep a dangling id — resolution
 // failure is the application's fallback.
 func (r *GatewayRepository) Delete(ctx context.Context, id string) error {
+	if err := validID(id); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	err := os.Remove(r.file(id))
 	if errors.Is(err, os.ErrNotExist) {
 		return apperror.NewNotFoundError("gateway "+id, err)

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/jahrulnr/llm-base/infrastructure/domain/aggregate"
@@ -179,5 +180,50 @@ func TestNotFound(t *testing.T) {
 	}
 	if err := repo.Delete(t.Context(), "nope"); apperror.As(err).StatusCode() != apperror.StatusNotFound {
 		t.Fatalf("Delete missing: %v", err)
+	}
+}
+
+// An "env:NAME" ref to an unset variable must fail fast at Load — silently
+// resolving to "" turns a config error into an upstream 401.
+func TestApiKeyEnvUnset(t *testing.T) {
+	repo := newRepo(t)
+	g, _ := aggregate.NewGateway("g", "n", "https://x", enum.StyleMessages)
+	g.SetApiKey("env:DEFINITELY_UNSET_VAR_XYZ")
+	if err := repo.Save(t.Context(), &g); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.Load(t.Context(), "g"); err == nil {
+		t.Fatal("unset env ref must fail, not resolve to empty key")
+	}
+}
+
+// Ids become filenames — separators and parent refs must be rejected.
+func TestInvalidIDRejected(t *testing.T) {
+	repo := newRepo(t)
+	if _, err := repo.Load(t.Context(), "../escape"); err == nil ||
+		apperror.As(err).StatusCode() != 400 {
+		t.Fatalf("traversal id → %v, want 400", err)
+	}
+	g, _ := aggregate.NewGateway("../x", "n", "https://x", enum.StyleMessages)
+	if err := repo.Save(t.Context(), &g); err == nil {
+		t.Fatal("traversal id must not Save")
+	}
+}
+
+// Concurrent Save on one id shares a .tmp path — the mutex must serialize.
+func TestConcurrentSave(t *testing.T) {
+	repo := newRepo(t)
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			g, _ := aggregate.NewGateway("g", "n", "https://x", enum.StyleMessages)
+			_ = repo.Save(t.Context(), &g)
+		}()
+	}
+	wg.Wait()
+	if _, err := repo.Load(t.Context(), "g"); err != nil {
+		t.Fatalf("concurrent saves left unreadable file: %v", err)
 	}
 }

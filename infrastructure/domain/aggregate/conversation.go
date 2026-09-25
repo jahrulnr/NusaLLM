@@ -4,7 +4,14 @@ import (
 	"errors"
 
 	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
+	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
+)
+
+// Edit targets — the application layer maps them to status codes.
+var (
+	ErrMessageNotFound = errors.New("message not found")
+	ErrNotUserMessage  = errors.New("only user messages are editable")
 )
 
 // Conversation is the aggregate root for a provider-agnostic LLM
@@ -24,16 +31,14 @@ type Conversation struct {
 	usage        valueobject.Usage
 }
 
+// NewConversation creates the aggregate. An empty id mints a fresh c_<hex>
+// — the caller reads it back via ID().
 func NewConversation(id string) (*Conversation, error) {
-	c := &Conversation{id: id}
-	return c, c.validate()
-}
-
-func (c Conversation) validate() error {
-	if c.id == "" {
-		return errors.New("id is required")
+	vo, err := valueobject.NewID("c", id)
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	return &Conversation{id: vo.String()}, nil
 }
 
 // Append adds a message to the conversation history.
@@ -53,6 +58,27 @@ func (c *Conversation) Compact(summary entity.Message, dropBefore int) {
 		dropBefore = len(c.messages)
 	}
 	c.messages = append([]entity.Message{summary}, c.messages[dropBefore:]...)
+}
+
+// RewriteFrom replaces a user message's content and drops every message
+// after it — the edit-and-regenerate primitive: the live history ends at
+// the edited message, so the caller resends the turn from that point.
+// Only messages the aggregate currently holds are candidates; ids outside
+// it report ErrMessageNotFound (sealed archives are the repository's
+// concern — see RewriteFrom on the Conversation port).
+func (c *Conversation) RewriteFrom(msgID, content string) error {
+	for i := range c.messages {
+		if c.messages[i].ID() != msgID {
+			continue
+		}
+		if c.messages[i].Role() != enum.RoleUser {
+			return ErrNotUserMessage
+		}
+		c.messages[i].SetContent(content)
+		c.messages = c.messages[:i+1]
+		return nil
+	}
+	return ErrMessageNotFound
 }
 
 // Last returns the most recent message, or nil when the history is empty.

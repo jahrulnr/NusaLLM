@@ -22,6 +22,7 @@ type RequestBody struct {
 	Seed             *int64                     `json:"seed,omitempty"`
 	Stop             []string                   `json:"stop,omitempty"`
 	ReasoningEffort  string                     `json:"reasoning_effort,omitempty"`
+	StreamOptions    *StreamOptions             `json:"stream_options,omitempty"`
 	Extra            map[string]json.RawMessage `json:"-"` // flattened at marshal
 }
 
@@ -44,6 +45,12 @@ func (b RequestBody) MarshalJSON() ([]byte, error) {
 		m[k] = v
 	}
 	return json.Marshal(m)
+}
+
+// StreamOptions carries stream flags — providers only emit a final usage
+// chunk when include_usage is set, so it always rides with stream:true.
+type StreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 // MessageBody is one wire message. Content is any: a bare string, or a

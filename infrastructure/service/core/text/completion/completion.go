@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/jahrulnr/llm-base/infrastructure/config"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/event"
@@ -29,51 +30,53 @@ type Options struct {
 	Referer     string        // → HTTP-Referer
 	Title       string        // → X-Title
 	IdleTimeout time.Duration // per-chunk deadline; default 90s
+	// HeaderTimeout bounds the wait for a response's first byte on the
+	// built-in transport; ignored when Client is supplied. Default 30s.
+	HeaderTimeout time.Duration
 }
 
-// Service implements TextModelService against a bound gateway.
+// Service is the stateless translator for this wire — endpoint,
+// credentials, and stream preference are read from the gateway argument
+// of every Send, so one instance serves every completion-style gateway.
 type Service struct {
-	endpoint string
-	apiKey   string
-	stream   bool
-	client   *http.Client
-	log      drepo.Logger
-	referer  string
-	title    string
-	idle     time.Duration
+	client  *http.Client
+	log     drepo.Logger
+	referer string
+	title   string
+	idle    time.Duration
 }
 
-// New binds the service to one gateway — endpoint, credentials, and the
-// stream preference live there.
-func New(gw *aggregate.Gateway, opts Options) *Service {
+// New builds the service — Options only; gateways arrive per Send.
+func New(opts Options) *Service {
+	// Options map onto the service config section — zero fields take the
+	// struct-tag defaults, so this adapter owns no literal of its own.
+	svcCfg := config.ServiceConfig{
+		HeaderTimeout: config.Duration(opts.HeaderTimeout),
+		IdleTimeout:   config.Duration(opts.IdleTimeout),
+	}
+	svcCfg.Normalize()
 	client := opts.Client
 	if client == nil {
 		client = &http.Client{Transport: &http.Transport{
-			ResponseHeaderTimeout: 30 * time.Second,
+			ResponseHeaderTimeout: time.Duration(svcCfg.HeaderTimeout),
 		}}
 	}
-	idle := opts.IdleTimeout
-	if idle <= 0 {
-		idle = 90 * time.Second
-	}
+	idle := time.Duration(svcCfg.IdleTimeout)
 	return &Service{
-		endpoint: gw.Endpoint(),
-		apiKey:   gw.ApiKey(),
-		stream:   gw.StreamMode(),
-		client:   client,
-		log:      opts.Logger,
-		referer:  opts.Referer,
-		title:    opts.Title,
-		idle:     idle,
+		client:  client,
+		log:     opts.Logger,
+		referer: opts.Referer,
+		title:   opts.Title,
+		idle:    idle,
 	}
 }
 
 // Send performs one completion attempt — request marshal, POST, decode,
 // then append the assistant message and usage onto conv. Stream mode is
-// selected by the bound gateway; events reach onEvent uniformly either
-// way.
-func (s *Service) Send(ctx context.Context, conv *aggregate.Conversation, model entity.Model, onEvent event.LLMEventHandler) error {
-	body, err := encodeRequest(conv, model, s.stream)
+// selected by gw; events reach onEvent uniformly either way.
+func (s *Service) Send(ctx context.Context, conv *aggregate.Conversation, gw *aggregate.Gateway, model entity.Model, onEvent event.TurnEventHandler) error {
+	stream := gw.StreamMode()
+	body, err := encodeRequest(conv, model, stream)
 	if err != nil {
 		return err
 	}
@@ -83,11 +86,11 @@ func (s *Service) Send(ctx context.Context, conv *aggregate.Conversation, model 
 	}
 	s.logAppend(ctx, "provider.request", json.RawMessage(raw))
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.endpoint, bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, gw.Endpoint(), bytes.NewReader(raw))
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+s.apiKey)
+	req.Header.Set("Authorization", "Bearer "+gw.ApiKey())
 	req.Header.Set("Content-Type", "application/json")
 	if s.referer != "" {
 		req.Header.Set("HTTP-Referer", s.referer)
@@ -98,6 +101,9 @@ func (s *Service) Send(ctx context.Context, conv *aggregate.Conversation, model 
 
 	resp, err := s.client.Do(req)
 	if err != nil {
+		if ctx.Err() != nil { // caller gave up — not an upstream failure
+			return apperror.New(408, "request canceled or timed out", ctx.Err())
+		}
 		return apperror.New(502, "upstream unreachable", err)
 	}
 	defer resp.Body.Close()
@@ -110,7 +116,7 @@ func (s *Service) Send(ctx context.Context, conv *aggregate.Conversation, model 
 		return statusError(resp.StatusCode, raw)
 	}
 
-	if s.stream {
+	if stream {
 		return s.streamResponse(ctx, resp, conv, onEvent)
 	}
 	return s.unaryResponse(ctx, resp, conv, onEvent)
@@ -118,7 +124,7 @@ func (s *Service) Send(ctx context.Context, conv *aggregate.Conversation, model 
 
 // unaryResponse decodes the full body, appends the message, and emits the
 // synthetic delta+finished pair the port promises non-stream callers.
-func (s *Service) unaryResponse(ctx context.Context, resp *http.Response, conv *aggregate.Conversation, onEvent event.LLMEventHandler) error {
+func (s *Service) unaryResponse(ctx context.Context, resp *http.Response, conv *aggregate.Conversation, onEvent event.TurnEventHandler) error {
 	raw, err := readAll(resp.Body)
 	if err != nil {
 		return apperror.New(502, "unreadable upstream body", err)
@@ -154,7 +160,7 @@ func (s *Service) unaryResponse(ctx context.Context, resp *http.Response, conv *
 	return nil
 }
 
-func emit(h event.LLMEventHandler, e event.StreamEvent) {
+func emit(h event.TurnEventHandler, e event.TurnEvent) {
 	if h != nil {
 		h(e)
 	}

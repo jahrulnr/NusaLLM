@@ -11,6 +11,9 @@ import (
 // Load rebuilds meta + the active segment only — the live context the
 // model sees. Sealed archives are reached via LoadAt.
 func (r *ConversationRepository) Load(ctx context.Context, convID string) (*aggregate.Conversation, error) {
+	if err := validID(convID); err != nil {
+		return nil, err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -25,7 +28,9 @@ func (r *ConversationRepository) Load(ctx context.Context, convID string) (*aggr
 	c.SetTitle(meta.Title)
 	c.SetRoute(meta.Route)
 	c.SetModelID(meta.ModelID)
-	c.SetSystemPrompt(meta.SystemPrompt)
+	// systemPrompt is not restored: it is code (embedded templates), and
+	// older metas carrying a stamped copy are ignored so every room gets
+	// the current template.
 	u, err := decodeUsage(meta.Usage)
 	if err != nil {
 		return nil, err
@@ -54,6 +59,9 @@ func (r *ConversationRepository) Load(ctx context.Context, convID string) (*aggr
 // LoadAt slices the global logical history — sealed segments first, then
 // active — with clamped indexes and negative-from-end semantics.
 func (r *ConversationRepository) LoadAt(ctx context.Context, convID string, start, end int) ([]entity.Message, error) {
+	if err := validID(convID); err != nil {
+		return nil, err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 

@@ -17,7 +17,6 @@ type metaRecord struct {
 	Title          string             `json:"title,omitempty"`
 	Route          string             `json:"route,omitempty"`
 	ModelID        string             `json:"modelId,omitempty"`
-	SystemPrompt   string             `json:"systemPrompt,omitempty"`
 	Tools          []toolSchemaRecord `json:"tools,omitempty"`
 	Usage          usageRecord        `json:"usage"`
 	MessageCount   int                `json:"messageCount"`
@@ -52,6 +51,7 @@ type lineRecord struct {
 }
 
 type messageRecord struct {
+	ID              string             `json:"id"`
 	Role            string             `json:"role"`
 	Content         string             `json:"content"`
 	UserType        string             `json:"userType,omitempty"`
@@ -81,6 +81,7 @@ type attachmentRecord struct {
 
 func encodeMessage(m entity.Message) messageRecord {
 	r := messageRecord{
+		ID:              m.ID(),
 		Role:            m.Role().String(),
 		Content:         m.Content(),
 		UserType:        m.UserType().String(),
@@ -118,10 +119,14 @@ func decodeMessage(r messageRecord) (entity.Message, error) {
 	if !ok {
 		return entity.Message{}, fmt.Errorf("unknown role %q", r.Role)
 	}
+	if r.ID == "" {
+		return entity.Message{}, fmt.Errorf("message record missing id")
+	}
 	m, err := entity.NewMessage(role, r.Content)
 	if err != nil {
 		return entity.Message{}, err
 	}
+	m.SetID(r.ID)
 	if r.UserType != "" {
 		ut, ok := enum.ParseLLMUserType(r.UserType)
 		if !ok {

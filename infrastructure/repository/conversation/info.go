@@ -8,6 +8,9 @@ import (
 
 // Info projects meta.json — O(1), no message parsing.
 func (r *ConversationRepository) Info(ctx context.Context, convID string) (drepo.ConversationInfo, error) {
+	if err := validID(convID); err != nil {
+		return drepo.ConversationInfo{}, err
+	}
 	meta, err := r.readMeta(convID)
 	if err != nil {
 		return drepo.ConversationInfo{}, err

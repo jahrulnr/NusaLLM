@@ -5,6 +5,7 @@ import (
 
 	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
+	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
 )
 
 // Gateway is the aggregate root for a configured endpoint surface: identity,
@@ -29,8 +30,11 @@ func NewGateway(id, name, endpoint string, style enum.Style) (Gateway, error) {
 }
 
 func (g Gateway) validate() error {
-	if g.id == "" {
+	if g.id == "" { // gateways are configured, named things — never minted
 		return errors.New("id is required")
+	}
+	if _, err := valueobject.NewID("gw", g.id); err != nil {
+		return err
 	}
 	if g.endpoint == "" {
 		return errors.New("endpoint is required")
