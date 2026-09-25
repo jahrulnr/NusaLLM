@@ -135,7 +135,19 @@ func rewriteCut(lines [][]byte, msgID, content string) (cut [][]byte, found bool
 			return nil, false, err
 		}
 		cut = append(cut, lines[:i]...)
-		return append(cut, patched), true, nil
+		cut = append(cut, patched)
+		// Patch records resolve globally by call id — one sitting past
+		// the cut may still answer a call in the retained prefix (e.g.
+		// after Compact relocated every patch to the tail). Dropping it
+		// would resurrect the call as unanswered on reload; dead ones
+		// are harmless, so every patch survives the truncation.
+		for _, l := range lines[i+1:] {
+			var tail lineRecord
+			if json.Unmarshal(l, &tail) == nil && tail.Type != lineMessage {
+				cut = append(cut, l)
+			}
+		}
+		return cut, true, nil
 	}
 	return nil, false, nil
 }

@@ -60,12 +60,8 @@ func (r *ConversationRepository) Compact(ctx context.Context, convID string, sum
 	if err := writeFileAtomic(sealed, buf.Bytes(), 0o644); err != nil {
 		return err
 	}
-	// The sealed file is committed only once meta counts it — a failure
-	// below leaves it an orphan the loader ignores; remove it anyway.
-	commitFail := func(err error) error {
-		_ = os.Remove(sealed)
-		return err
-	}
+	// The sealed file is committed only once meta counts it — failures
+	// below leave it an orphan the meta-bounded loader ignores.
 
 	// Rewrite active: summary + surviving messages + every patch line.
 	buf.Reset()
@@ -80,14 +76,21 @@ func (r *ConversationRepository) Compact(ctx context.Context, convID string, sum
 		buf.WriteByte('\n')
 	}
 	if err := writeFileAtomic(active, buf.Bytes(), 0o644); err != nil {
-		return commitFail(err)
+		// Active never changed — it still holds the prefix, so the
+		// sealed copy is a pure duplicate: safe to remove.
+		_ = os.Remove(sealed)
+		return err
 	}
 
 	meta.SealedSegments++
 	meta.MessageCount++
 	meta.ActiveCount = meta.ActiveCount - dropBefore + 1
 	if err := r.writeMeta(convID, meta); err != nil {
-		return commitFail(err)
+		// Do NOT remove the sealed file here — the active rewrite
+		// already dropped the prefix, so the uncounted segment is now
+		// its only copy. Loaders ignore it (meta is the commit point)
+		// while the bytes survive on disk for recovery.
+		return err
 	}
 	return nil
 }

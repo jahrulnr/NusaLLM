@@ -61,6 +61,13 @@ func TestLoadRejectsMalformedJSON(t *testing.T) {
 	if err := c.Load(writeConfig(t, `{"conversation":{"mailbox_cap":8}} {"extra":true}`)); err == nil {
 		t.Fatal("trailing garbage must fail")
 	}
+	// More() only reports inside an open array/object — a stray closer
+	// reads as "nothing more" to it, so the EOF check must catch it.
+	for _, raw := range []string{`{"conversation":{}}}`, `{"conversation":{}}]`, `{"conversation":{}} extra`, `{"conversation":{}}42`} {
+		if err := c.Load(writeConfig(t, raw)); err == nil {
+			t.Fatalf("trailing %q must fail", raw)
+		}
+	}
 }
 
 func TestNormalizeClampsNegatives(t *testing.T) {

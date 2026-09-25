@@ -71,6 +71,11 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 		if err := d.Convs.Save(ctx, conv); err != nil {
 			return err
 		}
+		if err := ctx.Err(); err != nil {
+			// The reply is already persisted — paid for, keep it — but a
+			// canceled caller must not read success.
+			return apperror.New(408, "turn canceled", err)
+		}
 
 		msgs := conv.Messages()
 		last := &msgs[len(msgs)-1]

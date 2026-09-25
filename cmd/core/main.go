@@ -14,6 +14,7 @@ import (
 	"github.com/jahrulnr/llm-base/infrastructure/config"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
 	dservice "github.com/jahrulnr/llm-base/infrastructure/domain/service"
+	"github.com/jahrulnr/llm-base/infrastructure/redact"
 	repoconversation "github.com/jahrulnr/llm-base/infrastructure/repository/conversation"
 	repogateway "github.com/jahrulnr/llm-base/infrastructure/repository/gateway"
 	repolog "github.com/jahrulnr/llm-base/infrastructure/repository/log"
@@ -44,7 +45,24 @@ func run() error {
 	defer secrets.Close()
 	gateways := repogateway.NewGatewayRepository(filepath.Join(dir, "gateways"), secrets)
 	convs := repoconversation.NewConversationRepository(filepath.Join(dir, "conversations"))
-	logger, err := repolog.New(filepath.Join(dir, "logs"), repolog.Options{})
+	logOpts := repolog.Options{MaxLines: cfg.Log.MaxLines, MaxFiles: cfg.Log.MaxFiles}
+	if !cfg.Log.Bodies {
+		// Payload logging is opt-in: entries keep the kind tag and any
+		// non-body fields, but request/response content never lands.
+		logOpts.Redact = func(_ string, e any) any {
+			e = redact.Value(e) // credential masking stays regardless
+			switch v := e.(type) {
+			case map[string]any:
+				delete(v, "body")
+				return v
+			case []any:
+				return map[string]any{"chunks": len(v)}
+			default:
+				return map[string]any{"omitted": true}
+			}
+		}
+	}
+	logger, err := repolog.New(filepath.Join(dir, "logs"), logOpts)
 	if err != nil {
 		return err
 	}

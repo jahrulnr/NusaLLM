@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"reflect"
 	"strconv"
@@ -16,6 +17,7 @@ type Config struct {
 	Conversation ConversationConfig `json:"conversation"`
 	Service      ServiceConfig      `json:"service"`
 	Storage      StorageConfig      `json:"storage"`
+	Log          LogConfig          `json:"log"`
 }
 
 // Normalize runs each section's normalization — invalid values clamp to
@@ -24,6 +26,7 @@ func (c *Config) Normalize() {
 	c.Conversation.Normalize()
 	c.Service.Normalize()
 	c.Storage.Normalize()
+	c.Log.Normalize()
 }
 
 // NewConfig returns the defaults — every tunable reads its `default`
@@ -57,7 +60,10 @@ func (c *Config) Load(path string) error {
 	if err := dec.Decode(&fresh); err != nil {
 		return apperror.NewInternalError("config load failed", err)
 	}
-	if dec.More() {
+	// More() only reports inside an open array/object — a trailing `}` or
+	// `]` slips through it. A second decode must hit io.EOF or the file
+	// carries garbage past the document.
+	if _, err := dec.Token(); err != io.EOF {
 		return apperror.NewInternalError("config load failed",
 			fmt.Errorf("trailing data after the JSON document"))
 	}

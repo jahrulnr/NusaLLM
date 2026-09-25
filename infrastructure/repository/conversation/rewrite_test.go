@@ -169,3 +169,43 @@ func TestRewriteFromDropsPendingCall(t *testing.T) {
 		t.Fatalf("dropped call must stay dropped: %+v", all)
 	}
 }
+
+// A patch written after the edit target still belongs to a retained
+// call — patches resolve globally, so the cut must carry them along.
+func TestRewriteFromKeepsPatchesForRetainedCalls(t *testing.T) {
+	repo := newRepo(t)
+	if err := repo.Save(t.Context(), newConv(t, "c1")); err != nil {
+		t.Fatal(err)
+	}
+	asst, _ := entity.NewMessage(enum.RoleAssistant, "")
+	tc, _ := entity.NewToolCall("call_keep", "tool", "{}", enum.TooltypeOrigin)
+	asst.AddToolCall(tc)
+	if err := repo.AppendMessage(t.Context(), "c1", asst); err != nil {
+		t.Fatal(err)
+	}
+	appendMsgs(t, repo, "c1", "u2")
+	tail, _ := entity.NewMessage(enum.RoleAssistant, "tail")
+	if err := repo.AppendMessage(t.Context(), "c1", tail); err != nil {
+		t.Fatal(err)
+	}
+	// The output lands at the file tail — after the edit target.
+	if err := repo.UpdateToolCallOutput(t.Context(), "c1", "call_keep", "kept result"); err != nil {
+		t.Fatal(err)
+	}
+	ids := msgIDs(t, repo, "c1")
+
+	if err := repo.RewriteFrom(t.Context(), "c1", ids[1], "u2*"); err != nil {
+		t.Fatal(err)
+	}
+	all, err := repo.LoadAt(t.Context(), "c1", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 || all[1].Content() != "u2*" {
+		t.Fatalf("history after rewrite: %+v", all)
+	}
+	got := all[0].ToolCalls()
+	if len(got) != 1 || got[0].Output() != "kept result" {
+		t.Fatalf("patch past the cut must still resolve: %+v", got)
+	}
+}

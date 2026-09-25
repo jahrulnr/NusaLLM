@@ -53,7 +53,7 @@ func validID(id string) error {
 }
 
 func (r *GatewayRepository) writeGateway(id string, rec gatewayRecord) error {
-	if err := os.MkdirAll(r.path, 0o755); err != nil {
+	if err := os.MkdirAll(r.path, 0o700); err != nil { // files may carry keys
 		return err
 	}
 	raw, err := json.MarshalIndent(rec, "", "  ")
@@ -107,11 +107,16 @@ func (r *GatewayRepository) resolveKey(ctx context.Context, v string) (string, e
 
 // encodeKey decides what lands in the file: refs stay as-is, literals are
 // auto-stored under secretKey(id) when a SecretStore is configured so
-// plaintext never reaches disk. Without a store, literals persist as-is.
+// plaintext never reaches disk. A literal with no store wired is refused —
+// silently persisting a key in JSON is a deployment defect, not a fallback.
 func (r *GatewayRepository) encodeKey(ctx context.Context, gatewayID, v string) (string, error) {
-	if v == "" || r.secrets == nil ||
+	if v == "" ||
 		strings.HasPrefix(v, "env:") || strings.HasPrefix(v, "secret:") {
 		return v, nil
+	}
+	if r.secrets == nil {
+		return "", apperror.NewInternalError("gateway key storage unconfigured",
+			fmt.Errorf("literal apiKey for %q requires a secret store", gatewayID))
 	}
 	if err := r.secrets.Set(ctx, secretKey(gatewayID), v); err != nil {
 		return "", err

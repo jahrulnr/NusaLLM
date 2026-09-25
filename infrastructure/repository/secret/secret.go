@@ -20,7 +20,7 @@ type Store struct {
 // New opens (and migrates) the store at path — a file or ":memory:".
 func New(path string) (*Store, error) {
 	if path != ":memory:" {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			return nil, err
 		}
 	}
@@ -37,6 +37,14 @@ func New(path string) (*Store, error) {
 	)`); err != nil {
 		db.Close()
 		return nil, err
+	}
+	if path != ":memory:" {
+		// Values sit plaintext in the file — clamp the db itself, not
+		// just the dir, so a pre-existing 0644 file is fixed too.
+		if err := os.Chmod(path, 0o600); err != nil {
+			db.Close()
+			return nil, err
+		}
 	}
 	return &Store{db: db}, nil
 }

@@ -16,6 +16,7 @@ import (
 	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
 	repoconversation "github.com/jahrulnr/llm-base/infrastructure/repository/conversation"
 	repogateway "github.com/jahrulnr/llm-base/infrastructure/repository/gateway"
+	reposecret "github.com/jahrulnr/llm-base/infrastructure/repository/secret"
 	toolsummary "github.com/jahrulnr/llm-base/infrastructure/service/tool/summary"
 )
 
@@ -76,7 +77,12 @@ func compactApp(t *testing.T, svc dservice.TextModelService, contextWindow int) 
 	m, _ := entity.NewModel("m1", "gw1")
 	m.SetContextWindow(contextWindow)
 	gw.SetModels([]entity.Model{m})
-	gateways := repogateway.NewGatewayRepository(t.TempDir(), nil)
+	secrets, err := reposecret.New(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { secrets.Close() })
+	gateways := repogateway.NewGatewayRepository(t.TempDir(), secrets)
 	if err := gateways.Save(t.Context(), &gw); err != nil {
 		t.Fatal(err)
 	}

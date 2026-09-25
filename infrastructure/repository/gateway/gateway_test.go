@@ -18,7 +18,12 @@ import (
 
 func newRepo(t *testing.T) drepo.Gateway {
 	t.Helper()
-	return NewGatewayRepository(t.TempDir(), nil)
+	secrets, err := reposecret.New(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { secrets.Close() })
+	return NewGatewayRepository(t.TempDir(), secrets)
 }
 
 func TestSaveLoadRoundtrip(t *testing.T) {
@@ -95,6 +100,17 @@ func TestApiKeyEnvRef(t *testing.T) {
 	}
 	if got.ApiKey() != "secret-from-env" {
 		t.Fatal("env ref not resolved")
+	}
+}
+
+// A literal key with no SecretStore is a deployment defect — refuse to
+// persist instead of silently writing plaintext into the JSON file.
+func TestApiKeyLiteralNeedsStore(t *testing.T) {
+	repo := NewGatewayRepository(t.TempDir(), nil)
+	g, _ := aggregate.NewGateway("g", "n", "https://x", enum.StyleMessages)
+	g.SetApiKey("sk-literal")
+	if err := repo.Save(t.Context(), &g); apperror.As(err).StatusCode() != 500 {
+		t.Fatalf("literal key without secret store must fail: %v", err)
 	}
 }
 
