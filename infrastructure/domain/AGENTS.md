@@ -4,6 +4,22 @@ Provider-agnostic LLM domain layer. **Thin and pure**: business rules and
 normalized state only — no I/O, no wire formats, no provider vocabulary in
 field names.
 
+## Rule ownership
+
+Put a provider-independent invariant on the aggregate, entity, value object,
+or domain service that owns the state. Callers must use that decision rather
+than reimplementing it in application jobs, repositories, or adapters. For
+example, `Conversation.RewriteFrom` decides whether a message may be edited;
+`ToolSchema.CallableByAgent` decides permission; `Usage.Add` defines
+accounting. Keep ordering, retries, persistence, and event delivery in the
+application layer; keep transport and storage constraints in their adapters.
+Do not move a rule into domain merely because several lines mention it: it
+must describe the model regardless of use case or provider.
+
+Keep a coherent invariant in its owning method. Do not split it into
+single-call helpers just to shorten a method; extract only for reuse, a
+distinct invariant, or a meaningful interface boundary.
+
 ## Layout
 
 | Package | Contents |

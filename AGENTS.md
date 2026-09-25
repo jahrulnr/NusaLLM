@@ -1,5 +1,44 @@
 # AGENTS.md - llm-base
 
+## Architecture and ownership
+
+Before changing behavior, identify the rule's owner and inspect that layer's
+`AGENTS.md`. The package's location does not make a new rule appropriate there.
+
+- `infrastructure/domain`: provider-independent state, invariants, and
+  decisions about what a Conversation, Gateway, Message, Model, or ToolCall
+  means. A rule that should hold for every caller belongs here.
+- `application`: use cases and their sequencing: select a route, run a turn,
+  compact, execute a permitted tool, coordinate persistence and events.
+  It may enforce domain decisions, but must not invent a second definition
+  of them.
+- `infrastructure/repository`: storage format, hydration, atomic writes,
+  projections, and other persistence mechanics.
+- `infrastructure/service`: provider protocol translation, I/O, and tool
+  execution. Provider-specific behavior stays with its adapter.
+- `infrastructure/config`, `infrastructure/worker`, `infrastructure/prompt`,
+  `infrastructure/error`, `infrastructure/redact`, `cmd`: supporting mechanisms
+  and composition, not homes for conversation or gateway policy.
+
+When a change spans layers, put each decision at its owner and update its
+callers. If ownership is unclear, trace the behavior from use case through
+domain port to adapter before editing. Do not place a rule in an outer layer
+merely because that is where the current call site happens to be.
+
+## Method boundaries
+
+Keep a coherent single-use flow in its calling method, even when the method
+is long. Length alone is not a reason to extract a helper. A helper called
+once that is not an injected dependency should normally stay inline,
+especially if it passes much of the caller's state through parameters or
+forces the reader to jump files to follow one flow.
+
+Extract only when the new boundary has an independent reason: a reused
+operation, an interface/DI seam, a separately testable algorithm or
+invariant, or a named phase whose isolation materially clarifies the flow.
+Do not create a helper solely to make a method shorter. Before extracting,
+state the reason in the change description; if there is none, keep it inline.
+
 ## Breaking Changes Policy
 
 This project does not maintain backward compatibility with previous implementations.
