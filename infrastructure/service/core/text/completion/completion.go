@@ -29,6 +29,7 @@ type Options struct {
 	Logger      drepo.Logger
 	Referer     string        // → HTTP-Referer
 	Title       string        // → X-Title
+	FileRoot    string        // root for local file:// attachments; empty disables local refs
 	IdleTimeout time.Duration // per-chunk deadline; default 90s
 	// HeaderTimeout bounds the wait for a response's first byte on the
 	// built-in transport; ignored when Client is supplied. Default 30s.
@@ -39,11 +40,12 @@ type Options struct {
 // credentials, and stream preference are read from the gateway argument
 // of every Send, so one instance serves every completion-style gateway.
 type Service struct {
-	client  *http.Client
-	log     drepo.Logger
-	referer string
-	title   string
-	idle    time.Duration
+	client   *http.Client
+	log      drepo.Logger
+	referer  string
+	title    string
+	fileRoot string
+	idle     time.Duration
 }
 
 // New builds the service — Options only; gateways arrive per Send.
@@ -63,11 +65,12 @@ func New(opts Options) *Service {
 	}
 	idle := time.Duration(svcCfg.IdleTimeout)
 	return &Service{
-		client:  client,
-		log:     opts.Logger,
-		referer: opts.Referer,
-		title:   opts.Title,
-		idle:    idle,
+		client:   client,
+		log:      opts.Logger,
+		referer:  opts.Referer,
+		title:    opts.Title,
+		fileRoot: opts.FileRoot,
+		idle:     idle,
 	}
 }
 
@@ -76,7 +79,7 @@ func New(opts Options) *Service {
 // selected by gw; events reach onEvent uniformly either way.
 func (s *Service) Send(ctx context.Context, conv *aggregate.Conversation, gw *aggregate.Gateway, model entity.Model, onEvent event.TurnEventHandler) error {
 	stream := gw.StreamMode()
-	body, err := encodeRequest(conv, model, stream)
+	body, err := encodeRequest(conv, model, stream, s.fileRoot)
 	if err != nil {
 		return err
 	}

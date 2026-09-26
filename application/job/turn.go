@@ -63,7 +63,7 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 			return apperror.New(500, "adapter produced no message", fmt.Errorf("service appended 0 messages"))
 		}
 		for _, m := range added {
-			if err := d.Convs.AppendMessage(ctx, convID, m); err != nil {
+			if _, err := d.Convs.AppendMessage(ctx, convID, m); err != nil {
 				return err
 			}
 		}

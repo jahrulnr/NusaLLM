@@ -39,8 +39,10 @@ type Conversation interface {
 	// aggregate — resolved via the Gateway repository by Route().
 	Save(ctx context.Context, conv *aggregate.Conversation) error
 
-	// AppendMessage appends one message (a turn) to the stored history.
-	AppendMessage(ctx context.Context, convID string, msg entity.Message) error
+	// AppendMessage appends one message (a turn) to the stored history. The
+	// bool reports whether the message line committed even if a later metadata
+	// projection update fails.
+	AppendMessage(ctx context.Context, convID string, msg entity.Message) (persisted bool, err error)
 
 	// UpdateToolCallOutput patches the stored output of a previously
 	// appended tool call — a call is persisted pending execution, and its

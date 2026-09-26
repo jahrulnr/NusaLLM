@@ -41,7 +41,7 @@ func TestRunTurnStepCap(t *testing.T) {
 	if err := d.Convs.Save(t.Context(), conv); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.Convs.AppendMessage(t.Context(), "room", user); err != nil {
+	if _, err := d.Convs.AppendMessage(t.Context(), "room", user); err != nil {
 		t.Fatal(err)
 	}
 	err := d.runTurn(t.Context(), "room", conv, nil, entity.Model{}, &loopSvc{}, nil)

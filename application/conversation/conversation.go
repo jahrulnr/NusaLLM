@@ -12,6 +12,8 @@
 // onto the fresh worker the next post spawns — a job that arrives after
 // the room died belongs to the next room, not the corpse. Workers are
 // reaped when their queue drains, so FE-minted ids can't grow the map.
+// Shutdown rejects further posts, terminates every worker, and waits for
+// their loops to exit without closing the repository.
 package appconversation
 
 import (
@@ -46,6 +48,10 @@ type ConversationApp struct {
 	deps    appjob.Deps
 	mu      sync.Mutex
 	workers map[string]*worker.Worker
+
+	shuttingDown bool
+	shutdownDone chan struct{}
+	workerWG     sync.WaitGroup
 }
 
 func New(
@@ -75,13 +81,18 @@ func New(
 
 // post enqueues a job on the room's worker, spawning one on demand.
 // Preempt jobs (edit, delete) cut the line and interrupt whatever runs;
-// ordinary jobs append FIFO. A submit racing the worker's teardown gets
-// ErrClosed — respawn and retry, which is also how jobs stranded by a
-// delete find the next room.
+// ordinary jobs append FIFO. Posting stays under app.mu through Submit so
+// Shutdown has a clear boundary between accepted and rejected work. A
+// submit racing a worker's teardown gets ErrClosed — respawn and retry.
 func (app *ConversationApp) post(convID string, j queuedJob) {
 	j.Bind(convID)
 	for {
 		app.mu.Lock()
+		if app.shuttingDown {
+			app.mu.Unlock()
+			j.Reply(apperror.New(503, "conversation application is shutting down", nil))
+			return
+		}
 		w := app.workers[convID]
 		if w == nil || w.Dead() {
 			w = worker.New(worker.Options{
@@ -91,9 +102,13 @@ func (app *ConversationApp) post(convID string, j queuedJob) {
 					app.onTerminated(convID, term, drained)
 				},
 			})
+			app.workerWG.Add(1)
+			go func(w *worker.Worker) {
+				<-w.Done()
+				app.workerWG.Done()
+			}(w)
 			app.workers[convID] = w
 		}
-		app.mu.Unlock()
 
 		var err error
 		if j.IsPreempt() {
@@ -101,6 +116,8 @@ func (app *ConversationApp) post(convID string, j queuedJob) {
 		} else {
 			err = w.Submit(j)
 		}
+		app.mu.Unlock()
+
 		switch {
 		case errors.Is(err, worker.ErrClosed):
 			continue

@@ -1,20 +1,22 @@
-// Command core is the application entrypoint: it discovers the JSON
-// config via .env (the config file cannot locate itself), loads it, and
-// wires every repository, service adapter, and tool into the
-// conversation application.
+// Command core loads configuration, wires repositories, service adapters,
+// tools, and applications, then serves an interactive terminal REPL.
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	appconversation "github.com/jahrulnr/llm-base/application/conversation"
 	appgateway "github.com/jahrulnr/llm-base/application/gateway"
 	"github.com/jahrulnr/llm-base/infrastructure/config"
+	appcli "github.com/jahrulnr/llm-base/infrastructure/delivery/cli"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
 	dservice "github.com/jahrulnr/llm-base/infrastructure/domain/service"
 	"github.com/jahrulnr/llm-base/infrastructure/redact"
@@ -28,13 +30,15 @@ import (
 )
 
 func main() {
-	if err := run(); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
+	defer stop()
+	if err := run(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "core:", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
+func run(ctx context.Context) (runErr error) {
 	loadEnvFile(".env")
 	cfg := config.NewConfig()
 	if err := cfg.Load(os.Getenv("CONFIG_PATH")); err != nil {
@@ -46,7 +50,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	defer secrets.Close()
+	defer func() {
+		if closeErr := secrets.Close(); runErr == nil {
+			runErr = closeErr
+		}
+	}()
 	gateways := repogateway.NewGatewayRepository(filepath.Join(dir, "gateways"), secrets)
 	convs := repoconversation.NewConversationRepository(filepath.Join(dir, "conversations"))
 	logOpts := repolog.Options{MaxLines: cfg.Log.MaxLines, MaxFiles: cfg.Log.MaxFiles}
@@ -72,19 +80,20 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
 
 	services := map[enum.Style]dservice.TextModelService{
 		enum.StyleCompletion: textcompletion.New(textcompletion.Options{
 			Logger:        logger,
 			HeaderTimeout: time.Duration(cfg.Service.HeaderTimeout),
 			IdleTimeout:   time.Duration(cfg.Service.IdleTimeout),
+			FileRoot:      wd,
 		}),
 	}
 	tools := map[string]dservice.Tool{}
-	wd, err := os.Getwd()
-	if err != nil {
-		return err
-	}
 	readFile, err := toolfile.NewFileReadTool(wd) // workspace root = cwd
 	if err != nil {
 		return err
@@ -109,11 +118,26 @@ func run() error {
 		tools[tool.Schema().Name()] = tool
 	}
 
-	_ = appconversation.New(convs, gateways, services, tools, cfg)
-	_ = appgateway.New(gateways, secrets)
-	// Transport wiring (HTTP/console) lands here — the application is
-	// fully constructed and ready to serve.
-	return nil
+	conversationApp := appconversation.New(convs, gateways, services, tools, cfg)
+	gatewayApp := appgateway.New(gateways, secrets)
+	repl, err := appcli.NewREPL(appcli.Options{
+		Conversations: conversationApp,
+		Gateways:      gatewayApp,
+		Workspace:     wd,
+		HistoryDir:    filepath.Join(dir, "cli"),
+	})
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if shutdownErr := conversationApp.Shutdown(context.Background()); runErr == nil {
+			runErr = shutdownErr
+		}
+		if closeErr := repl.Close(); runErr == nil {
+			runErr = closeErr
+		}
+	}()
+	return repl.Run(ctx)
 }
 
 // loadEnvFile reads KEY=VALUE pairs into the process env. This step is a

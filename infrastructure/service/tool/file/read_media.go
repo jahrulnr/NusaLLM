@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,6 +16,7 @@ import (
 	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/service"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
+	"github.com/jahrulnr/llm-base/infrastructure/service/wire"
 )
 
 // ReadMediaTool attaches a non-text file under a fixed root to the call
@@ -27,9 +27,9 @@ import (
 // time, so size caps are enforced here from the stat, not the read. The
 // reference outlives the check, so the content itself is pinned: the
 // sha256 recorded here is hashed through this same confined handle, and
-// send-time resolution verifies it — a file swapped or rewritten after
-// Execute degrades to a placeholder instead of resolving outside what
-// was inspected.
+// send-time resolution verifies it. The completion adapter reopens files
+// under its configured FileRoot; swapped or escaped paths degrade to a
+// placeholder instead of sending unchecked bytes.
 type ReadMediaTool struct {
 	root     *os.Root
 	rootPath string // absolute root — os.Root does not expose it
@@ -67,7 +67,7 @@ func (tool *ReadMediaTool) Schema() valueobject.ToolSchema {
 	return tool.schema
 }
 
-func (tool *ReadMediaTool) Execute(ctx context.Context, call entity.ToolCall, _ service.ToolEmitter) (service.ToolResult, error) {
+func (tool *ReadMediaTool) Execute(ctx context.Context, call entity.ToolCall, _ service.ToolEmitter) (result service.ToolResult, retErr error) {
 	if err := ctx.Err(); err != nil {
 		return service.ToolResult{}, err
 	}
@@ -80,30 +80,24 @@ func (tool *ReadMediaTool) Execute(ctx context.Context, call entity.ToolCall, _ 
 	if strings.TrimSpace(input.Path) == "" {
 		return service.ToolResult{}, fmt.Errorf("path is required")
 	}
-	info, err := tool.root.Stat(input.Path)
+	f, info, err := wire.OpenRegularFile(tool.root, input.Path)
 	if err != nil {
-		return service.ToolResult{}, err
+		return service.ToolResult{}, fmt.Errorf("%q is not a readable regular file: %w", input.Path, err)
 	}
-	if info.IsDir() {
-		return service.ToolResult{}, fmt.Errorf("%q is a directory", input.Path)
-	}
-	f, err := tool.root.Open(input.Path)
-	if err != nil {
-		return service.ToolResult{}, err
-	}
+	defer func() {
+		if closeErr := f.Close(); retErr == nil {
+			retErr = closeErr
+		}
+	}()
 	// Sniff the first 512 bytes — DetectContentType's window. The extension
 	// is caller-supplied and says nothing about the actual payload.
 	prefix := make([]byte, 512)
-	n, _ := io.ReadFull(f, prefix) // short files end early — n is what matters
+	n, err := io.ReadFull(f, prefix)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return service.ToolResult{}, err
+	}
 	prefix = prefix[:n]
 	mediaType := http.DetectContentType(prefix)
-	if mediaType == "application/octet-stream" {
-		// Unrecognized binary: the extension is the last hint before
-		// settling for a generic file.
-		if byExt := mime.TypeByExtension(filepath.Ext(input.Path)); byExt != "" {
-			mediaType = byExt
-		}
-	}
 	att, err := valueobject.NewAttachment("file://"+filepath.Join(tool.rootPath, input.Path), mediaType)
 	if err != nil {
 		return service.ToolResult{}, err
@@ -117,19 +111,8 @@ func (tool *ReadMediaTool) Execute(ctx context.Context, call entity.ToolCall, _ 
 	// Cap by modality from the stat, before the reference is handed out —
 	// adapters resolve file:// by reading the file at send time, so an
 	// oversized payload would otherwise fail late and less legibly.
-	var limit int64
-	switch modality {
-	case enum.ModalityImage:
-		limit = 10 << 20
-	case enum.ModalityAudio:
-		limit = 50 << 20
-	case enum.ModalityVideo:
-		limit = 100 << 20
-	default:
-		limit = 20 << 20
-	}
+	limit := wire.MaxAttachmentBytes(modality)
 	if info.Size() > limit {
-		_ = f.Close()
 		return service.ToolResult{}, fmt.Errorf("%q exceeds the %d MiB limit for %s media", input.Path, limit>>20, modality)
 	}
 	// Pin the content the reference will resolve to: hash through this
@@ -138,11 +121,13 @@ func (tool *ReadMediaTool) Execute(ctx context.Context, call entity.ToolCall, _ 
 	// the sniff offset, keeping this to a single pass.
 	h := sha256.New()
 	_, _ = h.Write(prefix)
-	if _, err := io.Copy(h, f); err != nil {
-		_ = f.Close()
+	rest, err := io.Copy(h, io.LimitReader(f, limit+1-int64(n)))
+	if err != nil {
 		return service.ToolResult{}, err
 	}
-	_ = f.Close()
+	if int64(n)+rest > limit {
+		return service.ToolResult{}, fmt.Errorf("%q exceeds the %d MiB limit for %s media", input.Path, limit>>20, modality)
+	}
 	att.SetSHA256(hex.EncodeToString(h.Sum(nil)))
 	att.SetName(filepath.Base(input.Path))
 	return service.ToolResult{

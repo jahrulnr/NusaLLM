@@ -35,6 +35,7 @@ func TestReadMediaToolLoads(t *testing.T) {
 	}
 	writeFixture(t, root, "pic.png", pngFixture)
 	writeFixture(t, root, "photo.jpg", jpegFixture)
+	writeFixture(t, root, "unrecognized.png", []byte{0xff, 0x00, 0x81, 0x02, 0xfd, 0x01, 0x00, 0x80})
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		t.Fatal(err)
@@ -82,6 +83,14 @@ func TestReadMediaToolLoads(t *testing.T) {
 			t.Errorf("%s: sha256 pin = %q, want digest of fixture", name, att.SHA256())
 		}
 	}
+	res, err := runReadMedia(t, tool, `{"path":"unrecognized.png"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Attachments) != 1 || res.Attachments[0].MediaType() != "application/octet-stream" ||
+		res.Attachments[0].Modality() != enum.ModalityFile {
+		t.Fatalf("extension must not override unrecognized bytes: %+v", res.Attachments)
+	}
 }
 
 func TestReadMediaToolRejects(t *testing.T) {
@@ -91,8 +100,7 @@ func TestReadMediaToolRejects(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeFixture(t, root, "note.txt", []byte("plain text, not media\n"))
-	// Sparse 11 MiB with a real PNG header: sniffed as image/png, over the
-	// 10 MiB image cap — no reliance on the extension fallback.
+	// Sparse 11 MiB with a PNG signature exercises the sniffed image cap.
 	f, err := os.Create(filepath.Join(root, "big.png"))
 	if err != nil {
 		t.Fatal(err)

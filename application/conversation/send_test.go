@@ -17,6 +17,7 @@ import (
 	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/event"
+	drepo "github.com/jahrulnr/llm-base/infrastructure/domain/repository"
 	dservice "github.com/jahrulnr/llm-base/infrastructure/domain/service"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
 	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
@@ -25,6 +26,37 @@ import (
 	reposecret "github.com/jahrulnr/llm-base/infrastructure/repository/secret"
 	textcompletion "github.com/jahrulnr/llm-base/infrastructure/service/core/text/completion"
 )
+
+type sendOutcome struct {
+	result SendResult
+	err    error
+}
+
+type signaledContext struct {
+	context.Context
+	observed chan struct{}
+	once     sync.Once
+}
+
+func (ctx *signaledContext) Done() <-chan struct{} {
+	ctx.once.Do(func() { close(ctx.observed) })
+	return ctx.Context.Done()
+}
+
+type appendGateRepo struct {
+	drepo.Conversation
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (r *appendGateRepo) AppendMessage(ctx context.Context, convID string, msg entity.Message) (bool, error) {
+	if msg.Role() == enum.RoleUser {
+		r.once.Do(func() { close(r.entered) })
+		<-r.release
+	}
+	return r.Conversation.AppendMessage(ctx, convID, msg)
+}
 
 // fixture wires real JSONL repos + a stub completion upstream.
 func fixture(t *testing.T, handler http.HandlerFunc) (*ConversationApp, *aggregate.Gateway) {
@@ -61,25 +93,30 @@ func fixture(t *testing.T, handler http.HandlerFunc) (*ConversationApp, *aggrega
 }
 
 func okHandler(w http.ResponseWriter, r *http.Request) {
-	json.NewEncoder(w).Encode(map[string]any{
+	if err := json.NewEncoder(w).Encode(map[string]any{
 		"choices": []any{map[string]any{
 			"message":       map[string]any{"role": "assistant", "content": "pong"},
 			"finish_reason": "stop",
 		}},
 		"usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
-	})
+	}); err != nil {
+		http.Error(w, "failed to encode fixture response", http.StatusInternalServerError)
+	}
 }
 
 func TestSendRoundtrip(t *testing.T) {
 	app, _ := fixture(t, okHandler)
 
 	// FE-minted convID: send upserts the room and echoes the id back.
-	convID, err := app.Send(t.Context(), "my-room", "gw1", "m1", "ping", nil, nil)
+	result, err := app.Send(t.Context(), "my-room", "gw1", "m1", "ping", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if convID != "my-room" {
-		t.Fatalf("convID not echoed: %q", convID)
+	if result.ConversationID != "my-room" {
+		t.Fatalf("convID not echoed: %q", result.ConversationID)
+	}
+	if !result.UserMessagePersisted {
+		t.Fatal("successful send must report its user message as persisted")
 	}
 	conv, err := app.deps.Convs.Load(t.Context(), "my-room")
 	if err != nil {
@@ -142,14 +179,17 @@ func TestSendAppliesPromptWithoutPersisting(t *testing.T) {
 // the caller always learns which room received the message.
 func TestSendMintsConvID(t *testing.T) {
 	app, _ := fixture(t, okHandler)
-	convID, err := app.Send(t.Context(), "", "gw1", "m1", "ping", nil, nil)
+	result, err := app.Send(t.Context(), "", "gw1", "m1", "ping", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if convID == "" {
+	if result.ConversationID == "" {
 		t.Fatal("no convID returned for a minted room")
 	}
-	if _, err := app.deps.Convs.Load(t.Context(), convID); err != nil {
+	if !result.UserMessagePersisted {
+		t.Fatal("successful send must report its user message as persisted")
+	}
+	if _, err := app.deps.Convs.Load(t.Context(), result.ConversationID); err != nil {
 		t.Fatalf("minted room not persisted: %v", err)
 	}
 }
@@ -157,14 +197,19 @@ func TestSendMintsConvID(t *testing.T) {
 func TestSendFailedKeepsUserTurn(t *testing.T) {
 	app, _ := fixture(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(429)
-		w.Write([]byte(`{"error":{"message":"slow down"}}`))
+		if _, err := w.Write([]byte(`{"error":{"message":"slow down"}}`)); err != nil {
+			t.Errorf("write provider error: %v", err)
+		}
 	})
-	convID, err := app.Send(t.Context(), "c2", "gw1", "m1", "ping", nil, nil)
+	result, err := app.Send(t.Context(), "c2", "gw1", "m1", "ping", nil, nil)
 	if apperror.As(err).StatusCode() != 429 {
 		t.Fatalf("want 429, got %v", err)
 	}
-	if convID != "c2" {
+	if result.ConversationID != "c2" {
 		t.Fatal("even a failed send must name its room")
+	}
+	if !result.UserMessagePersisted {
+		t.Fatal("failed provider send must report its committed user line")
 	}
 	conv, _ := app.deps.Convs.Load(t.Context(), "c2")
 	if len(conv.Messages()) != 1 || conv.Last().Role() != enum.RoleUser {
@@ -215,51 +260,97 @@ func TestSendSerializesPerConv(t *testing.T) {
 	}
 }
 
-// A queued send abandoned by its caller must return 408, not hang.
+// A queued send abandoned by its caller must return 408 without claiming
+// that its own user line was persisted.
 func TestQueuedSendCancelable(t *testing.T) {
 	release := make(chan struct{})
-	defer close(release)
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	entered := make(chan struct{})
+	var enteredOnce sync.Once
 	app, _ := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		enteredOnce.Do(func() { close(entered) })
 		<-release
 		okHandler(w, r)
 	})
-	go app.Send(t.Context(), "qc", "gw1", "m1", "first", nil, nil)
-	time.Sleep(50 * time.Millisecond) // first holds the slot
+	firstDone := make(chan sendOutcome, 1)
+	go func() {
+		result, err := app.Send(t.Context(), "qc", "gw1", "m1", "first", nil, nil)
+		firstDone <- sendOutcome{result: result, err: err}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first send did not reach the upstream")
+	}
 
 	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() { _, err := app.Send(ctx, "qc", "", "", "second", nil, nil); done <- err }()
-	time.Sleep(50 * time.Millisecond) // second is queued
+	defer cancel()
+	queuedCtx := &signaledContext{Context: ctx, observed: make(chan struct{})}
+	queuedDone := make(chan sendOutcome, 1)
+	go func() {
+		result, err := app.Send(queuedCtx, "qc", "", "", "second", nil, nil)
+		queuedDone <- sendOutcome{result: result, err: err}
+	}()
+	<-queuedCtx.observed // Send calls Done only after the worker accepted the queued job.
 	cancel()
 	select {
-	case err := <-done:
-		if apperror.As(err).StatusCode() != 408 {
-			t.Fatalf("queued cancel → %v, want 408", err)
+	case outcome := <-queuedDone:
+		if apperror.As(outcome.err).StatusCode() != 408 {
+			t.Fatalf("queued cancel → %v, want 408", outcome.err)
+		}
+		if outcome.result.UserMessagePersisted {
+			t.Fatal("queued cancellation must report no user line for this submission")
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("queued send not cancelable")
 	}
+	unblock()
+	select {
+	case outcome := <-firstDone:
+		if outcome.err != nil {
+			t.Fatalf("first send: %v", outcome.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first send did not finish after release")
+	}
 }
 
-// Cancel kills the running send — 408, not an upstream error.
+// Cancel kills the running send — 408, not an upstream error — after its
+// user message has committed.
 func TestCancelRunningSend(t *testing.T) {
 	release := make(chan struct{})
-	defer close(release)
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	entered := make(chan struct{})
 	app, _ := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
 		<-release
 		okHandler(w, r)
 	})
-	done := make(chan error, 1)
-	go func() { _, err := app.Send(t.Context(), "run", "gw1", "m1", "ping", nil, nil); done <- err }()
-	time.Sleep(50 * time.Millisecond) // send is holding the slot
+	done := make(chan sendOutcome, 1)
+	go func() {
+		result, err := app.Send(t.Context(), "run", "gw1", "m1", "ping", nil, nil)
+		done <- sendOutcome{result: result, err: err}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("send did not reach the upstream")
+	}
 
 	if err := app.Cancel(t.Context(), "run"); err != nil {
 		t.Fatalf("Cancel on a running send: %v", err)
 	}
 	select {
-	case err := <-done:
-		if apperror.As(err).StatusCode() != 408 {
-			t.Fatalf("canceled send → %v, want 408", err)
+	case outcome := <-done:
+		if apperror.As(outcome.err).StatusCode() != 408 {
+			t.Fatalf("canceled send → %v, want 408", outcome.err)
+		}
+		if !outcome.result.UserMessagePersisted {
+			t.Fatal("running cancellation after AppendMessage must report the committed user line")
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Cancel did not reach the running send")
@@ -268,6 +359,59 @@ func TestCancelRunningSend(t *testing.T) {
 	conv, _ := app.deps.Convs.Load(t.Context(), "run")
 	if len(conv.Messages()) != 1 || conv.Last().Role() != enum.RoleUser {
 		t.Fatal("canceled send must keep the user turn only")
+	}
+}
+
+// When cancellation races the repository append, Send waits for the
+// append receipt so its result reflects the line that actually committed.
+func TestSendCancelRacingAppendReportsPersisted(t *testing.T) {
+	app, _ := fixture(t, okHandler)
+	gate := &appendGateRepo{
+		Conversation: app.deps.Convs,
+		entered:      make(chan struct{}),
+		release:      make(chan struct{}),
+	}
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(gate.release) }) }
+	defer unblock()
+	app.deps.Convs = gate
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan sendOutcome, 1)
+	go func() {
+		result, err := app.Send(ctx, "append-race", "gw1", "m1", "ping", nil, nil)
+		done <- sendOutcome{result: result, err: err}
+	}()
+	select {
+	case <-gate.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("user AppendMessage did not start")
+	}
+
+	cancel()
+	select {
+	case outcome := <-done:
+		t.Fatalf("Send returned before the in-flight append settled: %+v, %v", outcome.result, outcome.err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	unblock()
+	select {
+	case outcome := <-done:
+		if apperror.As(outcome.err).StatusCode() != 408 {
+			t.Fatalf("append-racing cancel → %v, want 408", outcome.err)
+		}
+		if !outcome.result.UserMessagePersisted {
+			t.Fatal("successful in-flight append must be reported as persisted")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Send did not return after the append settled")
+	}
+	conv, err := app.deps.Convs.Load(t.Context(), "append-race")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(conv.Messages()) != 1 || conv.Messages()[0].Role() != enum.RoleUser {
+		t.Fatalf("committed append missing from history: %+v", conv.Messages())
 	}
 }
 
@@ -306,7 +450,11 @@ func TestCancelLeavesQueuedSend(t *testing.T) {
 		<-release
 		okHandler(w, r)
 	})
-	go app.Send(t.Context(), "q", "gw1", "m1", "first", nil, nil)
+	running := make(chan error, 1)
+	go func() {
+		_, err := app.Send(t.Context(), "q", "gw1", "m1", "first", nil, nil)
+		running <- err
+	}()
 	time.Sleep(50 * time.Millisecond)
 	queued := make(chan error, 1)
 	go func() { _, err := app.Send(t.Context(), "q", "", "", "second", nil, nil); queued <- err }()
@@ -316,6 +464,9 @@ func TestCancelLeavesQueuedSend(t *testing.T) {
 		t.Fatalf("Cancel running: %v", err)
 	}
 	close(release)
+	if err := <-running; apperror.As(err).StatusCode() != 408 {
+		t.Fatalf("running send after Cancel = %v, want 408", err)
+	}
 	if err := <-queued; err != nil {
 		t.Fatalf("queued send must proceed after the running one dies: %v", err)
 	}
@@ -330,11 +481,13 @@ func TestDeadCtxNoMutation(t *testing.T) {
 	app, _ := fixture(t, okHandler)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	convID, err := app.Send(ctx, "dead", "gw1", "m1", "ping", nil, nil)
+	result, err := app.Send(ctx, "dead", "gw1", "m1", "ping", nil, nil)
 	if apperror.As(err).StatusCode() != 408 {
 		t.Fatalf("dead ctx → %v, want 408", err)
 	}
-	_ = convID
+	if result.UserMessagePersisted {
+		t.Fatal("pre-canceled send must not report a persisted user line")
+	}
 	if _, err := app.deps.Convs.Load(t.Context(), "dead"); apperror.As(err).StatusCode() != 404 {
 		t.Fatal("dead ctx send must not create a room or persist a turn")
 	}
@@ -395,11 +548,14 @@ func TestAdapterNoAppendIsInternalError(t *testing.T) {
 		nil,
 		config.NewConfig(),
 	)
-	convID, err := app.Send(t.Context(), "badsvc", "gw1", "m1", "ping", nil, nil)
+	result, err := app.Send(t.Context(), "badsvc", "gw1", "m1", "ping", nil, nil)
 	if apperror.As(err).StatusCode() != 500 {
 		t.Fatalf("zero-append adapter → %v, want 500", err)
 	}
-	conv, _ := app.deps.Convs.Load(t.Context(), convID)
+	if !result.UserMessagePersisted {
+		t.Fatal("adapter failure must still report the persisted user line")
+	}
+	conv, _ := app.deps.Convs.Load(t.Context(), result.ConversationID)
 	if len(conv.Messages()) != 1 {
 		t.Fatal("only the user turn may persist when the adapter adds nothing")
 	}
@@ -441,12 +597,15 @@ func TestSendToolLoop(t *testing.T) {
 	if err := convs.Save(t.Context(), seed); err != nil {
 		t.Fatal(err)
 	}
-	convID, err := app.Send(t.Context(), "loop", "gw1", "m1", "go", nil, onEvent)
+	result, err := app.Send(t.Context(), "loop", "gw1", "m1", "go", nil, onEvent)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if convID != "loop" {
-		t.Fatalf("convID: %q", convID)
+	if result.ConversationID != "loop" {
+		t.Fatalf("convID: %q", result.ConversationID)
+	}
+	if !result.UserMessagePersisted {
+		t.Fatal("successful send must report its user message as persisted")
 	}
 	// The executor's chunk must reach the handler scoped to the call id.
 	var chunk bool

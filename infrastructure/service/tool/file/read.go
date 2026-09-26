@@ -11,6 +11,7 @@ import (
 	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/service"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
+	"github.com/jahrulnr/llm-base/infrastructure/service/wire"
 )
 
 // FileReadTool reads a text file under a fixed root — the constructor
@@ -46,7 +47,7 @@ func (tool *FileReadTool) Schema() valueobject.ToolSchema {
 	return tool.schema
 }
 
-func (tool *FileReadTool) Execute(ctx context.Context, call entity.ToolCall, _ service.ToolEmitter) (service.ToolResult, error) {
+func (tool *FileReadTool) Execute(ctx context.Context, call entity.ToolCall, _ service.ToolEmitter) (result service.ToolResult, retErr error) {
 	if err := ctx.Err(); err != nil {
 		return service.ToolResult{}, err
 	}
@@ -58,21 +59,18 @@ func (tool *FileReadTool) Execute(ctx context.Context, call entity.ToolCall, _ s
 	}
 	// Reject oversized files before reading — the call's output budget is
 	// the honest cap, enforced again by SetToolOutput on the way out.
-	info, err := tool.root.Stat(input.Path)
+	f, info, err := wire.OpenRegularFile(tool.root, input.Path)
 	if err != nil {
 		return service.ToolResult{}, err
 	}
-	if info.IsDir() {
-		return service.ToolResult{}, fmt.Errorf("%q is a directory", input.Path)
-	}
+	defer func() {
+		if closeErr := f.Close(); retErr == nil {
+			retErr = closeErr
+		}
+	}()
 	if budget := int64(call.OutputBudget()); info.Size() > budget {
 		return service.ToolResult{}, fmt.Errorf("%q exceeds output budget (%d > %d bytes)", input.Path, info.Size(), budget)
 	}
-	f, err := tool.root.Open(input.Path)
-	if err != nil {
-		return service.ToolResult{}, err
-	}
-	defer f.Close()
 	data, err := io.ReadAll(io.LimitReader(f, int64(call.OutputBudget())+1))
 	if err != nil {
 		return service.ToolResult{}, err

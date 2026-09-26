@@ -22,24 +22,31 @@ func mustAttachment(t *testing.T, uri, mt string) valueobject.Attachment {
 
 func TestResolveURI(t *testing.T) {
 	raw := []byte("abc")
-	if u, err := ResolveURI(mustAttachment(t, "https://x/img.png", "image/png")); err != nil || u != "https://x/img.png" {
+	if u, err := ResolveURI(mustAttachment(t, "https://x/img.png", "image/png"), ""); err != nil || u != "https://x/img.png" {
 		t.Fatal("https passthrough broken")
 	}
 	dataURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString(raw)
-	if u, err := ResolveURI(mustAttachment(t, dataURI, "image/png")); err != nil || u != dataURI {
+	if u, err := ResolveURI(mustAttachment(t, dataURI, "image/png"), ""); err != nil || u != dataURI {
 		t.Fatal("data: passthrough broken")
 	}
 
-	path := filepath.Join(t.TempDir(), "x.bin")
-	os.WriteFile(path, raw, 0o644)
-	u, err := ResolveURI(mustAttachment(t, "file://"+path, "application/octet-stream"))
+	root := t.TempDir()
+	rootPath, err := filepath.Abs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "x.bin")
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	u, err := ResolveURI(mustAttachment(t, "file://"+path, "application/octet-stream"), rootPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if u != "data:application/octet-stream;base64,"+base64.StdEncoding.EncodeToString(raw) {
 		t.Fatalf("file:// resolve = %q", u)
 	}
-	if _, err := ResolveURI(mustAttachment(t, "file:///nope/missing.bin", "application/octet-stream")); err == nil {
+	if _, err := ResolveURI(mustAttachment(t, "file://"+filepath.Join(root, "missing.bin"), "application/octet-stream"), rootPath); err == nil {
 		t.Fatal("missing file should error")
 	}
 }
@@ -52,17 +59,26 @@ func TestResolveURIPin(t *testing.T) {
 	sum := sha256.Sum256(raw)
 	pin := hex.EncodeToString(sum[:])
 
-	path := filepath.Join(t.TempDir(), "x.bin")
-	os.WriteFile(path, raw, 0o644)
+	root := t.TempDir()
+	rootPath, err := filepath.Abs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "x.bin")
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	a := mustAttachment(t, "file://"+path, "application/octet-stream")
 	a.SetSHA256(pin)
-	if _, err := ResolveURI(a); err != nil {
+	if _, err := ResolveURI(a, rootPath); err != nil {
 		t.Fatalf("matching pin should resolve: %v", err)
 	}
 
-	os.WriteFile(path, []byte("tampered"), 0o644)
-	if _, err := ResolveURI(a); err == nil {
+	if err := os.WriteFile(path, []byte("tampered"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveURI(a, rootPath); err == nil {
 		t.Fatal("swapped content must fail the pin")
 	}
 
@@ -70,30 +86,80 @@ func TestResolveURIPin(t *testing.T) {
 	// closed rather than silently trusting it.
 	a = mustAttachment(t, "https://x/img.png", "image/png")
 	a.SetSHA256(pin)
-	if _, err := ResolveURI(a); err == nil {
+	if _, err := ResolveURI(a, ""); err == nil {
 		t.Fatal("pinned remote ref must be rejected")
 	}
 
 	// data: URIs carry their bytes inline — pins verify those too.
 	a = mustAttachment(t, "data:image/png;base64,"+base64.StdEncoding.EncodeToString(raw), "image/png")
 	a.SetSHA256(pin)
-	if _, err := ResolveURI(a); err != nil {
+	if _, err := ResolveURI(a, ""); err != nil {
 		t.Fatalf("pinned data URI should resolve: %v", err)
 	}
 	other := sha256.Sum256([]byte("other"))
 	a.SetSHA256(hex.EncodeToString(other[:]))
-	if _, err := ResolveURI(a); err == nil {
+	if _, err := ResolveURI(a, ""); err == nil {
 		t.Fatal("pinned data URI with wrong digest must fail")
+	}
+}
+
+func TestResolveURIConfinesAndBoundsLocalFiles(t *testing.T) {
+	root := t.TempDir()
+	rootPath, err := filepath.Abs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inside := filepath.Join(rootPath, "inside.bin")
+	outside := filepath.Join(t.TempDir(), "outside.bin")
+	content := []byte("small binary payload")
+	if err := os.WriteFile(inside, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outside, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	symlink := filepath.Join(rootPath, "escape.bin")
+	if err := os.Symlink(outside, symlink); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	att := mustAttachment(t, "file://"+inside, "application/octet-stream")
+	if _, err := ResolveURI(att, rootPath); err != nil {
+		t.Fatalf("workspace file should resolve: %v", err)
+	}
+	att = mustAttachment(t, "file://"+outside, "application/octet-stream")
+	if _, err := ResolveURI(att, rootPath); err == nil {
+		t.Fatal("file outside workspace must not resolve")
+	}
+	att = mustAttachment(t, "file://"+symlink, "application/octet-stream")
+	if _, err := ResolveURI(att, rootPath); err == nil {
+		t.Fatal("symlink escape must not resolve")
+	}
+
+	large := filepath.Join(rootPath, "large.png")
+	f, err := os.Create(large)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(11 << 20); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	att = mustAttachment(t, "file://"+large, "image/png")
+	if _, err := ResolveURI(att, rootPath); err == nil {
+		t.Fatal("file over the media cap must not resolve")
 	}
 }
 
 func TestResolveBase64(t *testing.T) {
 	b64 := base64.StdEncoding.EncodeToString([]byte("sound"))
-	data, format, err := ResolveBase64(mustAttachment(t, "data:audio/mpeg;base64,"+b64, "audio/mpeg"))
+	data, format, err := ResolveBase64(mustAttachment(t, "data:audio/mpeg;base64,"+b64, "audio/mpeg"), "")
 	if err != nil || data != b64 || format != "mp3" {
 		t.Fatalf("data uri: %q %q %v", data, format, err)
 	}
-	if _, _, err := ResolveBase64(mustAttachment(t, "https://x/a.mp3", "audio/mpeg")); err == nil {
+	if _, _, err := ResolveBase64(mustAttachment(t, "https://x/a.mp3", "audio/mpeg"), ""); err == nil {
 		t.Fatal("https audio should be rejected — nothing to embed")
 	}
 }

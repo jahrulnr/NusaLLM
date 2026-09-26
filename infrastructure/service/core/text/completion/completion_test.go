@@ -125,6 +125,7 @@ func TestImageFileAttachmentBecomesDataURI(t *testing.T) {
 				"message": map[string]any{"role": "assistant", "content": "ok"}, "finish_reason": "stop"}},
 		})
 	})
+	svc.fileRoot = filepath.Dir(path)
 
 	conv := newConv(t)
 	m, _ := entity.NewMessage(enum.RoleUser, "see this")
@@ -208,6 +209,7 @@ func TestToolOutputAttachmentsBecomeUserParts(t *testing.T) {
 				"message": map[string]any{"role": "assistant", "content": "ok"}, "finish_reason": "stop"}},
 		})
 	})
+	svc.fileRoot = filepath.Dir(path)
 
 	conv := newConv(t)
 	m, _ := entity.NewMessage(enum.RoleAssistant, "")
@@ -249,6 +251,7 @@ func TestToolOutputAttachmentsBecomeUserParts(t *testing.T) {
 // A model that never declared image input gets an honest placeholder
 // instead of a dead payload — the gate lives at send time, not record time.
 func TestToolOutputAttachmentGatedByModality(t *testing.T) {
+	root := t.TempDir()
 	var captured RequestBody
 	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
 		json.NewDecoder(r.Body).Decode(&captured)
@@ -257,13 +260,14 @@ func TestToolOutputAttachmentGatedByModality(t *testing.T) {
 				"message": map[string]any{"role": "assistant", "content": "ok"}, "finish_reason": "stop"}},
 		})
 	})
+	svc.fileRoot = root
 
 	conv := newConv(t)
 	m, _ := entity.NewMessage(enum.RoleAssistant, "")
 	tc, _ := entity.NewToolCall("call_1", "read_media", `{}`, enum.TooltypeOrigin)
 	m.AddToolCall(tc)
 	m.SetToolOutput("call_1", "loaded")
-	missing, _ := valueobject.NewAttachment("file:///nonexistent.png", "image/png")
+	missing, _ := valueobject.NewAttachment("file://"+filepath.Join(root, "nonexistent.png"), "image/png")
 	m.SetToolOutputAttachments("call_1", []valueobject.Attachment{missing})
 	conv.Append(m)
 
@@ -312,6 +316,7 @@ func TestToolOutputAttachmentsKeepToolBlockContiguous(t *testing.T) {
 				"message": map[string]any{"role": "assistant", "content": "ok"}, "finish_reason": "stop"}},
 		})
 	})
+	svc.fileRoot = filepath.Dir(path)
 
 	conv := newConv(t)
 	m, _ := entity.NewMessage(enum.RoleAssistant, "")
@@ -360,6 +365,7 @@ func TestToolOutputAttachmentPinMismatchDegrades(t *testing.T) {
 				"message": map[string]any{"role": "assistant", "content": "ok"}, "finish_reason": "stop"}},
 		})
 	})
+	svc.fileRoot = filepath.Dir(path)
 
 	conv := newConv(t)
 	m, _ := entity.NewMessage(enum.RoleAssistant, "")
@@ -382,6 +388,120 @@ func TestToolOutputAttachmentPinMismatchDegrades(t *testing.T) {
 	}
 	if strings.Contains(text, path) {
 		t.Fatal("placeholder must not leak the workspace path")
+	}
+}
+
+func TestUserAttachmentUnavailableDegradesToPlaceholder(t *testing.T) {
+	root := t.TempDir()
+	var captured RequestBody
+	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"choices": []any{map[string]any{"index": 0,
+				"message": map[string]any{"role": "assistant", "content": "ok"}, "finish_reason": "stop"}},
+		}); err != nil {
+			t.Errorf("encode response: %v", err)
+		}
+	})
+	svc.fileRoot = root
+
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleUser, "inspect this image")
+	missing, _ := valueobject.NewAttachment("file://"+filepath.Join(root, "gone", "shot.png"), "image/png")
+	missing.SetName("/secret/project/shot.png")
+	m.AddAttachment(missing)
+	conv.Append(m)
+	model, _ := entity.NewModel("m", "test")
+
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
+		t.Fatalf("missing attachment must not fail the provider request: %v", err)
+	}
+	parts, ok := captured.Messages[0].Content.([]any)
+	if !ok || len(parts) != 2 {
+		t.Fatalf("want text plus unavailable placeholder, got %#v", captured.Messages[0].Content)
+	}
+	text, _ := parts[1].(map[string]any)["text"].(string)
+	if !strings.Contains(text, "unavailable") || !strings.Contains(text, "shot.png") ||
+		strings.Contains(text, "/gone/") || strings.Contains(text, "/secret/") {
+		t.Fatalf("unsafe or missing placeholder: %q", text)
+	}
+}
+
+func TestUserAttachmentGatedByModality(t *testing.T) {
+	var captured RequestBody
+	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"choices": []any{map[string]any{"index": 0,
+				"message": map[string]any{"role": "assistant", "content": "ok"}, "finish_reason": "stop"}},
+		}); err != nil {
+			t.Errorf("encode response: %v", err)
+		}
+	})
+
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleUser, "inspect this image")
+	missing, _ := valueobject.NewAttachment("file:///not-resolved.png", "image/png")
+	m.AddAttachment(missing)
+	conv.Append(m)
+	model, _ := entity.NewModel("m", "test")
+	model.SetInputModalities([]enum.Modality{enum.ModalityText})
+
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
+		t.Fatalf("unsupported attachment must degrade instead of failing: %v", err)
+	}
+	parts, ok := captured.Messages[0].Content.([]any)
+	if !ok || len(parts) != 2 {
+		t.Fatalf("want text plus omitted placeholder, got %#v", captured.Messages[0].Content)
+	}
+	text, _ := parts[1].(map[string]any)["text"].(string)
+	if !strings.Contains(text, "omitted") {
+		t.Fatalf("want modality placeholder, got %q", text)
+	}
+}
+
+func TestUserAttachmentOutsideConfiguredRootDegrades(t *testing.T) {
+	img := []byte{0x89, 0x50, 0x4e, 0x47}
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "shot.png")
+	if err := os.WriteFile(outside, img, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var captured RequestBody
+	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"choices": []any{map[string]any{"index": 0,
+				"message": map[string]any{"role": "assistant", "content": "ok"}, "finish_reason": "stop"}},
+		}); err != nil {
+			t.Errorf("encode response: %v", err)
+		}
+	})
+	svc.fileRoot = root
+
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleUser, "inspect this image")
+	att, _ := valueobject.NewAttachment("file://"+outside, "image/png")
+	att.SetName("shot.png")
+	m.AddAttachment(att)
+	conv.Append(m)
+	model, _ := entity.NewModel("m", "test")
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
+		t.Fatalf("out-of-root attachment must degrade rather than abort: %v", err)
+	}
+	parts, ok := captured.Messages[0].Content.([]any)
+	if !ok || len(parts) != 2 {
+		t.Fatalf("want text plus unavailable placeholder, got %#v", captured.Messages[0].Content)
+	}
+	placeholder, _ := parts[1].(map[string]any)["text"].(string)
+	if !strings.Contains(placeholder, "unavailable") || strings.Contains(placeholder, outside) {
+		t.Fatalf("out-of-root placeholder leaked data: %q", placeholder)
 	}
 }
 

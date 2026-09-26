@@ -34,7 +34,7 @@ func appendMsgs(t *testing.T, repo drepo.Conversation, id string, texts ...strin
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := repo.AppendMessage(t.Context(), id, m); err != nil {
+		if _, err := repo.AppendMessage(t.Context(), id, m); err != nil {
 			t.Fatalf("AppendMessage(%q): %v", txt, err)
 		}
 	}
@@ -72,7 +72,7 @@ func TestNotFound(t *testing.T) {
 		t.Fatalf("Load missing: %v", err)
 	}
 	m, _ := entity.NewMessage(enum.RoleUser, "x")
-	if err := repo.AppendMessage(ctx, "nope", m); apperror.As(err).StatusCode() != apperror.StatusNotFound {
+	if _, err := repo.AppendMessage(ctx, "nope", m); apperror.As(err).StatusCode() != apperror.StatusNotFound {
 		t.Fatalf("AppendMessage missing: %v", err)
 	}
 	if err := repo.Delete(ctx, "nope"); apperror.As(err).StatusCode() != apperror.StatusNotFound {
@@ -89,7 +89,7 @@ func TestToolCallRoundtripAndPatch(t *testing.T) {
 	tc, _ := entity.NewToolCall("call-1", "search", `{"q":"x"}`, enum.TooltypeOrigin)
 	tc.SetOptionalContent("gemini.thought_signature", "sig123")
 	m.AddToolCall(tc)
-	if err := repo.AppendMessage(t.Context(), "c1", m); err != nil {
+	if _, err := repo.AppendMessage(t.Context(), "c1", m); err != nil {
 		t.Fatal(err)
 	}
 
@@ -121,6 +121,30 @@ func TestToolCallRoundtripAndPatch(t *testing.T) {
 	}
 	if stored.Name() != "search" || stored.Type() != enum.TooltypeOrigin {
 		t.Fatalf("call fields lost: %+v", stored)
+	}
+}
+
+func TestAppendMessageReportsCommittedLineWhenMetaWriteFails(t *testing.T) {
+	dir := t.TempDir()
+	repo := NewConversationRepository(dir)
+	if err := repo.Save(t.Context(), newConv(t, "c1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "c1", "meta.json.tmp"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	message, _ := entity.NewMessage(enum.RoleUser, "committed before metadata failure")
+
+	persisted, err := repo.AppendMessage(t.Context(), "c1", message)
+	if err == nil || !persisted {
+		t.Fatalf("AppendMessage = (%t, %v), want committed line plus metadata error", persisted, err)
+	}
+	loaded, err := repo.Load(t.Context(), "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Messages()) != 1 || loaded.Messages()[0].Content() != message.Content() {
+		t.Fatalf("committed line missing from history: %+v", loaded.Messages())
 	}
 }
 
@@ -189,7 +213,7 @@ func TestPatchReachesSealedCall(t *testing.T) {
 	m, _ := entity.NewMessage(enum.RoleAssistant, "")
 	tc, _ := entity.NewToolCall("sealed-call", "tool", "{}", enum.TooltypeOrigin)
 	m.AddToolCall(tc)
-	if err := repo.AppendMessage(t.Context(), "c1", m); err != nil {
+	if _, err := repo.AppendMessage(t.Context(), "c1", m); err != nil {
 		t.Fatal(err)
 	}
 	sum, _ := entity.NewMessage(enum.RoleUser, "S")
@@ -284,7 +308,7 @@ func TestMessageIDRoundtrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	m, _ := entity.NewMessage(enum.RoleUser, "remember me")
-	if err := repo.AppendMessage(t.Context(), "ids", m); err != nil {
+	if _, err := repo.AppendMessage(t.Context(), "ids", m); err != nil {
 		t.Fatal(err)
 	}
 	got, err := repo.Load(t.Context(), "ids")

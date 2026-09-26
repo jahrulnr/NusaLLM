@@ -129,7 +129,7 @@ func TestRewriteFromRejectsNonUser(t *testing.T) {
 	}
 	appendMsgs(t, repo, "c1", "u1")
 	asst, _ := entity.NewMessage(enum.RoleAssistant, "reply")
-	if err := repo.AppendMessage(t.Context(), "c1", asst); err != nil {
+	if _, err := repo.AppendMessage(t.Context(), "c1", asst); err != nil {
 		t.Fatal(err)
 	}
 	ids := msgIDs(t, repo, "c1")
@@ -149,7 +149,7 @@ func TestRewriteFromDropsPendingCall(t *testing.T) {
 	asst, _ := entity.NewMessage(enum.RoleAssistant, "")
 	tc, _ := entity.NewToolCall("call_x", "tool", "{}", enum.TooltypeOrigin)
 	asst.AddToolCall(tc)
-	if err := repo.AppendMessage(t.Context(), "c1", asst); err != nil {
+	if _, err := repo.AppendMessage(t.Context(), "c1", asst); err != nil {
 		t.Fatal(err)
 	}
 	ids := msgIDs(t, repo, "c1")
@@ -180,12 +180,12 @@ func TestRewriteFromKeepsPatchesForRetainedCalls(t *testing.T) {
 	asst, _ := entity.NewMessage(enum.RoleAssistant, "")
 	tc, _ := entity.NewToolCall("call_keep", "tool", "{}", enum.TooltypeOrigin)
 	asst.AddToolCall(tc)
-	if err := repo.AppendMessage(t.Context(), "c1", asst); err != nil {
+	if _, err := repo.AppendMessage(t.Context(), "c1", asst); err != nil {
 		t.Fatal(err)
 	}
 	appendMsgs(t, repo, "c1", "u2")
 	tail, _ := entity.NewMessage(enum.RoleAssistant, "tail")
-	if err := repo.AppendMessage(t.Context(), "c1", tail); err != nil {
+	if _, err := repo.AppendMessage(t.Context(), "c1", tail); err != nil {
 		t.Fatal(err)
 	}
 	// The output lands at the file tail — after the edit target.

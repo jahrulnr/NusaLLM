@@ -2,12 +2,12 @@ package service
 
 import "context"
 
-// ToolEmitter streams incremental output while a call runs — chunks are a
-// live preview for the frontend, NOT the persisted result. It is
-// synchronous: slow consumers apply backpressure on the tool. nil means
-// the caller isn't streaming; the tool may ignore it.
+// CommandEmitter streams text from a command to its caller. It is
+// synchronous, so a slow consumer applies backpressure; nil means the
+// caller is not streaming.
 type CommandEmitter func(chunk string)
 
+// CommandService executes a named application command.
 type CommandService interface {
 	Execute(ctx context.Context, command string, emitter CommandEmitter, args ...string) error
 }

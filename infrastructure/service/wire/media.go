@@ -9,39 +9,79 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"strings"
+	"syscall"
 
+	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
 	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
 )
 
-// ResolveURI materializes an attachment reference into a sendable URL:
-// data: and http(s) pass through; file:// reads bytes and builds a data
-// URI. Existence is checked here — at send time, never in the domain.
-// An attachment carrying a sha256 pin resolves only to the recorded
-// bytes: a swapped or rewritten local file fails closed instead of
-// silently sending different content than the producer checked. Pins
-// cannot bind remote URIs — there is nothing to hash without fetching.
-func ResolveURI(a valueobject.Attachment) (string, error) {
+// MaxAttachmentBytes returns the largest local media payload materialized by
+// a tool or provider adapter for the given modality.
+func MaxAttachmentBytes(modality enum.Modality) int64 {
+	switch modality {
+	case enum.ModalityImage:
+		return 10 << 20
+	case enum.ModalityAudio:
+		return 50 << 20
+	case enum.ModalityVideo:
+		return 100 << 20
+	default:
+		return 20 << 20
+	}
+}
+
+// OpenRegularFile opens a path beneath root without blocking on special
+// files such as FIFOs and rejects every non-regular file descriptor.
+func OpenRegularFile(root *os.Root, name string) (*os.File, os.FileInfo, error) {
+	f, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, nil, err
+	}
+	if !info.Mode().IsRegular() {
+		_ = f.Close()
+		return nil, nil, fmt.Errorf("path is not a regular file")
+	}
+	return f, info, nil
+}
+
+// ResolveURI materializes an attachment reference into a sendable URL. Local
+// file references require fileRoot and are reopened beneath it at send time;
+// reads are bounded before allocation and a sha256 pin must still match.
+func ResolveURI(a valueobject.Attachment, fileRoot string) (string, error) {
 	uri, mt := a.URI(), a.MediaType()
 	if strings.HasPrefix(uri, "file://") {
-		raw, err := os.ReadFile(strings.TrimPrefix(uri, "file://"))
+		raw, err := readLocal(a, fileRoot)
 		if err != nil {
-			return "", apperror.New(400, "attachment unreadable", err)
-		}
-		if err := verifyPin(a, raw); err != nil {
 			return "", err
 		}
 		return DataURI(mt, raw), nil
 	}
-	if strings.HasPrefix(uri, "data:") && a.SHA256() != "" {
-		raw, err := decodeDataURI(uri)
-		if err != nil {
-			return "", err
+	if strings.HasPrefix(uri, "data:") {
+		marker := strings.Index(uri, ";base64,")
+		if marker >= 0 && len(uri)-marker-len(";base64,") > base64.StdEncoding.EncodedLen(int(MaxAttachmentBytes(a.Modality()))) {
+			return "", apperror.New(400, "attachment exceeds media limit", nil)
 		}
-		if err := verifyPin(a, raw); err != nil {
-			return "", err
+		if a.SHA256() != "" {
+			raw, err := decodeDataURI(uri)
+			if err != nil {
+				return "", err
+			}
+			if int64(len(raw)) > MaxAttachmentBytes(a.Modality()) {
+				return "", apperror.New(400, "attachment exceeds media limit", nil)
+			}
+			if err := verifyPin(a, raw); err != nil {
+				return "", err
+			}
 		}
 		return uri, nil
 	}
@@ -50,6 +90,61 @@ func ResolveURI(a valueobject.Attachment) (string, error) {
 			fmt.Errorf("cannot verify sha256 of remote uri"))
 	}
 	return uri, nil
+}
+
+func readLocal(a valueobject.Attachment, fileRoot string) (raw []byte, err error) {
+	if fileRoot == "" {
+		return nil, apperror.New(400, "local attachment root is not configured", nil)
+	}
+	absRoot, err := filepath.Abs(fileRoot)
+	if err != nil {
+		return nil, err
+	}
+	absPath, err := filepath.Abs(strings.TrimPrefix(a.URI(), "file://"))
+	if err != nil {
+		return nil, err
+	}
+	relative, err := filepath.Rel(absRoot, absPath)
+	if err != nil || relative == ".." || filepath.IsAbs(relative) || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return nil, apperror.New(400, "attachment outside workspace", err)
+	}
+	workspace, err := valueobject.NewWorkspace(relative)
+	if err != nil {
+		return nil, apperror.New(400, "attachment outside workspace", err)
+	}
+	root, err := os.OpenRoot(absRoot)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if closeErr := root.Close(); err == nil {
+			err = closeErr
+		}
+	}()
+	f, info, err := OpenRegularFile(root, workspace.Path())
+	if err != nil {
+		return nil, apperror.New(400, "attachment unreadable", err)
+	}
+	defer func() {
+		if closeErr := f.Close(); err == nil {
+			err = closeErr
+		}
+	}()
+	limit := MaxAttachmentBytes(a.Modality())
+	if info.Size() > limit {
+		return nil, apperror.New(400, "attachment exceeds media limit", nil)
+	}
+	raw, err = io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, apperror.New(400, "attachment unreadable", err)
+	}
+	if int64(len(raw)) > limit {
+		return nil, apperror.New(400, "attachment exceeds media limit", nil)
+	}
+	if err := verifyPin(a, raw); err != nil {
+		return nil, err
+	}
+	return raw, nil
 }
 
 // verifyPin enforces the optional content pin: resolved bytes must hash
@@ -90,13 +185,13 @@ func DataURI(mediaType string, raw []byte) string {
 // base64 payload + format name — what wires like input_audio expect
 // instead of a URL. Audio over plain http(s) is rejected: nothing to
 // embed without fetching, and adapters do not fetch arbitrary URLs.
-func ResolveBase64(a valueobject.Attachment) (data, format string, err error) {
+func ResolveBase64(a valueobject.Attachment, fileRoot string) (data, format string, err error) {
 	uri, mt := a.URI(), a.MediaType()
 	if !strings.HasPrefix(uri, "data:") && !strings.HasPrefix(uri, "file://") {
 		return "", "", apperror.New(400, "attachment must be a data: or file:// URI",
 			fmt.Errorf("unsupported uri scheme: %s", uri))
 	}
-	u, err := ResolveURI(a)
+	u, err := ResolveURI(a, fileRoot)
 	if err != nil {
 		return "", "", err
 	}

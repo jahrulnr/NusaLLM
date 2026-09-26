@@ -2,6 +2,7 @@ package textcompletion
 
 import (
 	"encoding/json"
+	"path"
 	"strings"
 
 	"github.com/jahrulnr/llm-base/infrastructure/domain/aggregate"
@@ -14,7 +15,7 @@ import (
 // encodeRequest maps domain state onto the wire body. Attachments are
 // resolved to sendable form here (data:/https passthrough, file:// read +
 // base64) — the domain stores references only.
-func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool) (*RequestBody, error) {
+func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool, fileRoot string) (*RequestBody, error) {
 	body := &RequestBody{Model: model.ID(), Stream: stream}
 	if stream {
 		body.StreamOptions = &StreamOptions{IncludeUsage: true} // else usage never arrives
@@ -24,7 +25,7 @@ func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool
 		body.Messages = append(body.Messages, MessageBody{Role: enum.RoleSystem.String(), Content: sp})
 	}
 	for _, m := range conv.Messages() {
-		msgs, err := encodeMessage(m, model)
+		msgs, err := encodeMessage(m, model, fileRoot)
 		if err != nil {
 			return nil, err
 		}
@@ -82,7 +83,7 @@ func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool
 // the whole tool block: strict providers require an uninterrupted run of
 // tool messages behind tool_calls, so a media-bearing earlier call must
 // not push its user message between two tool results.
-func encodeMessage(m entity.Message, model entity.Model) ([]MessageBody, error) {
+func encodeMessage(m entity.Message, model entity.Model, fileRoot string) ([]MessageBody, error) {
 	out := MessageBody{Role: m.Role().String()}
 
 	var origin, injected []entity.ToolCall
@@ -108,9 +109,19 @@ func encodeMessage(m entity.Message, model entity.Model) ([]MessageBody, error) 
 			parts = append(parts, map[string]any{"type": "text", "text": text})
 		}
 		for _, a := range m.Attachments() {
-			p, err := encodeAttachment(a)
+			if !model.AcceptsInput(a.Modality()) {
+				parts = append(parts, map[string]any{"type": "text",
+					"text": "(" + a.Modality().String() + " attachment omitted: model does not accept it)"})
+				continue
+			}
+			p, err := encodeAttachment(a, fileRoot)
 			if err != nil {
-				return nil, err
+				label := "(media attachment unavailable)"
+				if name := safeAttachmentName(a.Name()); name != "" {
+					label = "(media attachment unavailable: " + name + ")"
+				}
+				parts = append(parts, map[string]any{"type": "text", "text": label})
+				continue
 			}
 			parts = append(parts, p)
 		}
@@ -159,11 +170,11 @@ func encodeMessage(m entity.Message, model entity.Model) ([]MessageBody, error) 
 						"text": "(" + a.Modality().String() + " output omitted: model does not accept it)"})
 					continue
 				}
-				p, err := encodeAttachment(a)
+				p, err := encodeAttachment(a, fileRoot)
 				if err != nil {
 					label := "(media output unavailable)"
-					if a.Name() != "" {
-						label = "(media output unavailable: " + a.Name() + ")" // basename only — the URI would leak the workspace path
+					if name := safeAttachmentName(a.Name()); name != "" {
+						label = "(media output unavailable: " + name + ")"
 					}
 					parts = append(parts, map[string]any{"type": "text", "text": label})
 					continue
@@ -176,37 +187,45 @@ func encodeMessage(m entity.Message, model entity.Model) ([]MessageBody, error) 
 	return append(msgs, media...), nil
 }
 
+func safeAttachmentName(name string) string {
+	name = path.Base(strings.ReplaceAll(name, `\`, "/"))
+	if name == "." || name == "/" {
+		return ""
+	}
+	return name
+}
+
 // encodeAttachment maps a stored URI to the wire content part for its
 // modality. Audio must arrive as base64 — URL audio is rejected upstream.
 // Pinned attachments verify here: a digest mismatch surfaces as a resolve
 // error, which callers degrade or propagate as their contract dictates.
-func encodeAttachment(a valueobject.Attachment) (any, error) {
+func encodeAttachment(a valueobject.Attachment, fileRoot string) (any, error) {
 	switch a.Modality() {
 	case enum.ModalityImage:
-		u, err := wire.ResolveURI(a)
+		u, err := wire.ResolveURI(a, fileRoot)
 		if err != nil {
 			return nil, err
 		}
 		return map[string]any{"type": "image_url", "image_url": map[string]any{"url": u}}, nil
 	case enum.ModalityAudio:
-		data, format, err := wire.ResolveBase64(a)
+		data, format, err := wire.ResolveBase64(a, fileRoot)
 		if err != nil {
 			return nil, err
 		}
 		return map[string]any{"type": "input_audio", "input_audio": map[string]any{"data": data, "format": format}}, nil
 	case enum.ModalityVideo:
-		u, err := wire.ResolveURI(a)
+		u, err := wire.ResolveURI(a, fileRoot)
 		if err != nil {
 			return nil, err
 		}
 		return map[string]any{"type": "video_url", "video_url": map[string]any{"url": u}}, nil // OpenRouter extension
 	default: // file, text, anything else
-		u, err := wire.ResolveURI(a)
+		u, err := wire.ResolveURI(a, fileRoot)
 		if err != nil {
 			return nil, err
 		}
 		return map[string]any{"type": "file", "file": map[string]any{
-			"filename": a.Name(), "file_data": u,
+			"filename": safeAttachmentName(a.Name()), "file_data": u,
 		}}, nil
 	}
 }
