@@ -162,14 +162,15 @@ func (r *Registry) completeConversations(cmd string) func(context.Context, strin
 		arg = strings.ToLower(arg)
 		var rows []Info
 		for _, conv := range conversations {
-			if arg != "" &&
-				!strings.Contains(strings.ToLower(conv.ID), arg) &&
-				!strings.Contains(strings.ToLower(conv.Title), arg) {
+			storedTitle := strings.TrimSpace(conv.Title)
+			titleIsMissing := storedTitle == "" || strings.EqualFold(storedTitle, "untitled")
+			idMatches := strings.Contains(strings.ToLower(conv.ID), arg)
+			if arg != "" && !idMatches && !titleIsMissing && !strings.Contains(strings.ToLower(storedTitle), arg) {
 				continue
 			}
-			title := term.Sanitize(conv.Title)
-			if title == "" {
-				title = "untitled"
+			title := r.conversationDisplayTitle(ctx, conv.ID, storedTitle)
+			if arg != "" && !idMatches && !strings.Contains(strings.ToLower(title), arg) {
+				continue
 			}
 			if runes := []rune(title); len(runes) > 48 {
 				title = string(runes[:48]) + "…"
@@ -179,9 +180,31 @@ func (r *Registry) completeConversations(cmd string) func(context.Context, strin
 				desc += " · " + conv.UpdatedAt.Local().Format("Jan 02 15:04")
 			}
 			rows = append(rows, Info{Usage: "/" + cmd + " " + conv.ID, Desc: desc})
+			if len(rows) == completeMaxRows {
+				break
+			}
 		}
 		return rows
 	}
+}
+
+func (r *Registry) conversationDisplayTitle(ctx context.Context, id, title string) string {
+	title = strings.TrimSpace(title)
+	if title == "" || strings.EqualFold(title, "untitled") {
+		messages, err := r.s.Conversations.History(ctx, id, 0, 0)
+		if err == nil {
+			for _, message := range messages {
+				if message.Editable() {
+					title = strings.TrimSpace(message.Content())
+					break
+				}
+			}
+		}
+	}
+	if title == "" || strings.EqualFold(title, "untitled") {
+		return "untitled"
+	}
+	return strings.Join(strings.Fields(term.Sanitize(title)), " ")
 }
 
 // completeGateways builds the /route completer: configured gateways,
@@ -429,8 +452,8 @@ func (r *Registry) commandList(ctx context.Context, emitter service.CommandEmitt
 			marker = "*"
 		}
 		r.s.Write(emitter, "%s %s route=%s model=%s messages=%d", marker, conv.ID, conv.Route, conv.ModelID, conv.MessageCount)
-		if conv.Title != "" {
-			r.s.Write(emitter, " title=%q", conv.Title)
+		if title := r.conversationDisplayTitle(ctx, conv.ID, conv.Title); title != "untitled" {
+			r.s.Write(emitter, " title=%q", title)
 		}
 		if !conv.UpdatedAt.IsZero() {
 			r.s.Write(emitter, " updated=%s", conv.UpdatedAt.Local().Format(time.RFC3339))

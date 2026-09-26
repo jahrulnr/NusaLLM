@@ -293,6 +293,40 @@ func TestResumeArgumentCompletion(t *testing.T) {
 	}
 }
 
+func TestConversationPickerUsesFirstUserMessageForUntitled(t *testing.T) {
+	f := newCommandFixture(t)
+	f.send(t, "Find the order status\nand explain its transitions")
+	convID := f.sess.ConversationID
+
+	for _, storedTitle := range []string{"", "untitled"} {
+		conv, err := f.convs.Load(t.Context(), convID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		conv.SetTitle(storedTitle)
+		if err := f.convs.Save(t.Context(), conv); err != nil {
+			t.Fatal(err)
+		}
+
+		rows := f.reg.Complete(t.Context(), "/resume ")
+		if len(rows) != 1 || !strings.Contains(rows[0].Desc, "Find the order status and explain its transition…") {
+			t.Fatalf("resume label for title %q = %+v", storedTitle, rows)
+		}
+		if strings.Contains(rows[0].Desc, "untitled") {
+			t.Fatalf("resume label still says untitled: %+v", rows[0])
+		}
+		if rows := f.reg.Complete(t.Context(), "/resume transitions"); len(rows) != 1 || rows[0].Usage != "/resume "+convID {
+			t.Fatalf("first-message title did not filter resume rows: %+v", rows)
+		}
+		if rows := f.reg.Complete(t.Context(), "/delete transitions"); len(rows) != 1 || rows[0].Usage != "/delete "+convID {
+			t.Fatalf("first-message title did not filter delete rows: %+v", rows)
+		}
+	}
+	if out := f.run(t, "/list"); !strings.Contains(out, `title="Find the order status and explain its transitions"`) {
+		t.Fatalf("list did not show the first user message as title: %s", out)
+	}
+}
+
 func TestRouteModelEditAttachCompletion(t *testing.T) {
 	f := newCommandFixture(t)
 	f.send(t, "hello world")

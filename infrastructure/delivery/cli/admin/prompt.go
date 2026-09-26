@@ -98,7 +98,7 @@ func sanitizeSecret(s string) string {
 	return strings.TrimSpace(s)
 }
 
-func promptAborted(out *bufio.Writer, err error) int {
+func promptAborted(out *bufio.Writer, _ error) int {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "cancelled.")
 	out.Flush()

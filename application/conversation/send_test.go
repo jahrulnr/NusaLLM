@@ -128,6 +128,9 @@ func TestSendRoundtrip(t *testing.T) {
 	if conv.Route() != "gw1" || conv.ModelID() != "m1" || conv.Usage().Total() != 15 {
 		t.Fatalf("binding/usage not persisted: %s/%s %+v", conv.Route(), conv.ModelID(), conv.Usage())
 	}
+	if conv.Title() != "ping" {
+		t.Fatalf("first user message title = %q, want ping", conv.Title())
+	}
 	if conv.SystemPrompt() != "" {
 		t.Fatal("the embedded prompt must never persist — it is applied in memory only")
 	}
@@ -135,9 +138,17 @@ func TestSendRoundtrip(t *testing.T) {
 		t.Fatal("message ids missing")
 	}
 
-	// Second send on stored bindings — empty route/modelID reuse them.
+	// Second send on stored bindings — empty route/modelID reuse them and
+	// must not replace the original title.
 	if _, err := app.Send(t.Context(), "my-room", "", "", "again", nil, nil); err != nil {
 		t.Fatal(err)
+	}
+	conv, err = app.deps.Convs.Load(t.Context(), "my-room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conv.Title() != "ping" {
+		t.Fatalf("later user message replaced first-turn title: %q", conv.Title())
 	}
 }
 
@@ -214,6 +225,9 @@ func TestSendFailedKeepsUserTurn(t *testing.T) {
 	conv, _ := app.deps.Convs.Load(t.Context(), "c2")
 	if len(conv.Messages()) != 1 || conv.Last().Role() != enum.RoleUser {
 		t.Fatal("failed send must persist user turn without an assistant reply")
+	}
+	if conv.Title() != "ping" {
+		t.Fatalf("failed first send title = %q, want the persisted user message", conv.Title())
 	}
 }
 

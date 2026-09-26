@@ -2,6 +2,7 @@ package job
 
 import (
 	"context"
+	"strings"
 	"sync"
 
 	"github.com/jahrulnr/llm-base/infrastructure/domain/aggregate"
@@ -102,6 +103,9 @@ func (j *Send) Execute(execCtx context.Context) (err error) {
 			// room that can retry with route/modelID "".
 			conv.SetRoute(route)
 			conv.SetModelID(modelID)
+			if title := strings.TrimSpace(user.Content()); title != "" {
+				conv.SetTitle(title)
+			}
 			if err := d.Convs.Save(ctx, conv); err != nil {
 				return err
 			}
