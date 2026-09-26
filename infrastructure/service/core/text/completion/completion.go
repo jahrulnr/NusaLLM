@@ -10,11 +10,13 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jahrulnr/llm-base/infrastructure/config"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
+	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/event"
 	drepo "github.com/jahrulnr/llm-base/infrastructure/domain/repository"
 	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
@@ -89,12 +91,18 @@ func (s *Service) Send(ctx context.Context, conv *aggregate.Conversation, gw *ag
 	}
 	s.logAppend(ctx, "provider.request", json.RawMessage(raw))
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, gw.Endpoint(), bytes.NewReader(raw))
+	// gw.Endpoint() is the provider's base URL (e.g. https://api.openai.com/v1);
+	// this wire lives at /chat/completions under it.
+	url := strings.TrimRight(gw.Endpoint(), "/") + "/chat/completions"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+gw.ApiKey())
 	req.Header.Set("Content-Type", "application/json")
+	if strings.Contains(gw.Endpoint(), enum.OpenCode.String()) {
+		req.Header.Set("x-opencode-session", conv.ID())
+	}
 	if s.referer != "" {
 		req.Header.Set("HTTP-Referer", s.referer)
 	}
@@ -155,6 +163,9 @@ func (s *Service) unaryResponse(ctx context.Context, resp *http.Response, conv *
 	}
 	conv.Append(msg)
 	conv.AddUsage(usage)
+	if r := msg.OptionalContent()["completion.reasoning_content"]; r != "" {
+		emit(onEvent, event.NewReasoningEvent(r))
+	}
 	emit(onEvent, event.NewDeltaEvent(msg.Content()))
 	for _, tc := range msg.ToolCalls() {
 		emit(onEvent, event.NewToolCallEvent(tc))

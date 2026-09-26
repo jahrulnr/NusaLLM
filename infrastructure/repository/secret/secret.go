@@ -29,6 +29,13 @@ func New(path string) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1) // single writer keeps the file coherent
+	// Busy timeout so a short-lived writer (gateway add --key-stdin)
+	// retries while the REPL's store holds the write lock, instead of
+	// failing instantly with SQLITE_BUSY.
+	if _, err := db.Exec(`PRAGMA busy_timeout = 5000`); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS secrets (
 		key        TEXT PRIMARY KEY,
 		value      TEXT NOT NULL,

@@ -47,11 +47,16 @@ func (r *GatewayRepository) Save(ctx context.Context, gw *aggregate.Gateway) err
 	if err != nil {
 		return err
 	}
-	tmp := r.file(gw.ID()) + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) // may carry a key ref
+	// Unique tmp name — two processes writing the same id concurrently
+	// would otherwise truncate each other's staged record into a torn
+	// file that reads back as a broken gateway.
+	f, err := os.CreateTemp(r.path, gw.ID()+".json.tmp-*")
 	if err != nil {
 		return err
 	}
+	tmp := f.Name()
+	defer os.Remove(tmp) // no-op after a successful rename
+	_ = f.Chmod(0o600)   // may carry a key ref
 	if _, err := f.Write(raw); err != nil {
 		f.Close()
 		return err

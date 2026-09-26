@@ -41,6 +41,20 @@ func (m Message) ID() string      { return m.id }
 func (m Message) Role() enum.Role { return m.role }
 func (m Message) Content() string { return m.content }
 
+// Editable reports whether the message may be rewritten — real user
+// input only. Synthetic user-role artifacts (compaction checkpoints
+// carry userType=system) are not the user's words; rewriting one would
+// forge user intent.
+func (m Message) Editable() bool {
+	return EditableMessage(m.role, m.userType)
+}
+
+// EditableMessage is the same rule on the storage tuple — wire records
+// (repository rewrite) hold role/userType before hydration.
+func EditableMessage(role enum.Role, userType enum.LLMUserType) bool {
+	return role == enum.RoleUser && userType != enum.LLMUserTypeSystem
+}
+
 // SetContent replaces the message text — the edit primitive. Only the
 // aggregate decides which messages may be rewritten (user-role only).
 func (m *Message) SetContent(v string)               { m.content = v }

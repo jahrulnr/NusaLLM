@@ -40,7 +40,7 @@ type ExecTool struct {
 
 func NewExecTool() (service.Tool, error) {
 	schema, err := valueobject.NewToolSchema(
-		"run_terminal",
+		"exec",
 		"Run a shell command and return its combined stdout and stderr.",
 		json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute"},"timeout_ms":{"type":"integer","description":"Timeout in milliseconds — default 120000, capped at 600000"}},"required":["command"]}`),
 		true,
@@ -65,7 +65,7 @@ func (tool *ExecTool) Execute(ctx context.Context, call entity.ToolCall, emit se
 		TimeoutMS int    `json:"timeout_ms"`
 	}
 	if err := json.Unmarshal([]byte(call.Input()), &input); err != nil {
-		return service.ToolResult{}, fmt.Errorf("invalid run_terminal input: %w", err)
+		return service.ToolResult{}, fmt.Errorf("invalid exec input: %w", err)
 	}
 	if strings.TrimSpace(input.Command) == "" {
 		return service.ToolResult{}, errors.New("command is required")
@@ -99,7 +99,7 @@ func (tool *ExecTool) Execute(ctx context.Context, call entity.ToolCall, emit se
 	cmd.Stdout = sink
 	cmd.Stderr = sink
 	if err := cmd.Start(); err != nil {
-		return service.ToolResult{}, fmt.Errorf("run_terminal: %w", err)
+		return service.ToolResult{}, fmt.Errorf("exec: %w", err)
 	}
 	runErr := cmd.Wait()
 

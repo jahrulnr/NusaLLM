@@ -16,7 +16,7 @@ import (
 // resolved to sendable form here (data:/https passthrough, file:// read +
 // base64) — the domain stores references only.
 func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool, fileRoot string) (*RequestBody, error) {
-	body := &RequestBody{Model: model.ID(), Stream: stream}
+	body := &RequestBody{Model: model.ID(), PromptCacheKey: conv.ID(), Stream: stream}
 	if stream {
 		body.StreamOptions = &StreamOptions{IncludeUsage: true} // else usage never arrives
 	}

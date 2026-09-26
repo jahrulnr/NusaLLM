@@ -3,6 +3,8 @@ package job
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/jahrulnr/llm-base/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
@@ -21,6 +23,11 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 	// clamps and tag defaults fill it.
 	ccfg := d.Config
 	ccfg.Normalize()
+	// The call surface is live config: a stored conversation can predate
+	// the catalog, so apply the current set every turn — never trust what
+	// the record hydrated. Without this the wire carries no tools and the
+	// model invents names it was never offered.
+	conv.SetTools(d.ToolSchemas())
 	didCompact := false
 	for step := 0; step < ccfg.MaxTurnStep; step++ {
 		if err := ctx.Err(); err != nil {
@@ -134,6 +141,19 @@ func (d Deps) resolveRoute(ctx context.Context, convID string, conv *aggregate.C
 		return nil, model, nil, apperror.New(500, "no adapter for gateway style", fmt.Errorf("style %s unregistered", gw.Style()))
 	}
 	return gw, m, svc, nil
+}
+
+// ToolSchemas returns the registered catalog sorted by name — the
+// deterministic order the provider sees every turn.
+func (d Deps) ToolSchemas() []valueobject.ToolSchema {
+	schemas := make([]valueobject.ToolSchema, 0, len(d.Tools))
+	for _, tool := range d.Tools {
+		schemas = append(schemas, tool.Schema())
+	}
+	slices.SortFunc(schemas, func(a, b valueobject.ToolSchema) int {
+		return strings.Compare(a.Name(), b.Name())
+	})
+	return schemas
 }
 
 // pendingCalls returns the model-originated calls still awaiting output on

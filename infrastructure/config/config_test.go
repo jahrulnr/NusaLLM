@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -80,6 +81,16 @@ func TestNormalizeClampsNegatives(t *testing.T) {
 	s.Normalize()
 	if s.IdleTimeout != Duration(90_000_000_000) {
 		t.Fatalf("negative duration must clamp to tag default, got %v", s.IdleTimeout)
+	}
+}
+
+func TestDurationMarshalEmitsHumanString(t *testing.T) {
+	raw, err := json.Marshal(ServiceConfig{HeaderTimeout: Duration(30 * time.Second)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != `{"header_timeout":"30s","idle_timeout":"0s"}` {
+		t.Fatalf("marshal must emit the human string, got %s", raw)
 	}
 }
 

@@ -1,4 +1,4 @@
-package cli
+package attach
 
 import (
 	"crypto/sha256"
@@ -33,7 +33,7 @@ func TestResolveAttachmentPinsConfinedMedia(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := resolveAttachment(root, abs, "shot.png")
+	got, err := Resolve(root, abs, "shot.png")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestResolveAttachmentDoesNotTrustImageExtension(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	att, err := resolveAttachment(root, abs, "not-really.png")
+	att, err := Resolve(root, abs, "not-really.png")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,8 +95,8 @@ func TestResolveAttachmentRejectsUnsafeOrUnsupportedPaths(t *testing.T) {
 
 	for _, path := range []string{"../outside.png", filepath.Join(abs, "note.txt"), "missing.png", "folder", "escape.png"} {
 		t.Run(path, func(t *testing.T) {
-			if _, err := resolveAttachment(root, abs, path); err == nil {
-				t.Fatalf("resolveAttachment(%q) succeeded, want rejection", path)
+			if _, err := Resolve(root, abs, path); err == nil {
+				t.Fatalf("Resolve(%q) succeeded, want rejection", path)
 			}
 		})
 	}
@@ -126,7 +126,7 @@ func TestResolveAttachmentEnforcesMediaSizeLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := resolveAttachment(root, abs, "large.png"); err == nil || !strings.Contains(err.Error(), "10 MiB") {
+	if _, err := Resolve(root, abs, "large.png"); err == nil || !strings.Contains(err.Error(), "10 MiB") {
 		t.Fatalf("large attachment error = %v, want 10 MiB limit", err)
 	}
 }

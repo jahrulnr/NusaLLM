@@ -1,4 +1,4 @@
-package cli
+package tui
 
 import (
 	"strings"
@@ -24,6 +24,11 @@ func parseInput(line string) parsedInput {
 	}
 
 	remainder := line[1:]
+	if strings.HasPrefix(remainder, "/") {
+		// "//..." is literal text — a leading double-slash is the escape,
+		// not a command with a slash in its name.
+		return parsedInput{text: line}
+	}
 	commandEnd := strings.IndexFunc(remainder, unicode.IsSpace)
 	command := remainder
 	args := ""

@@ -104,6 +104,7 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 				}
 				if ch.Delta.ReasoningContent != "" {
 					reasoning.WriteString(ch.Delta.ReasoningContent)
+					emit(onEvent, event.NewReasoningEvent(ch.Delta.ReasoningContent))
 				}
 				for _, tc := range ch.Delta.ToolCalls {
 					calls = mergeCallDelta(calls, tc)

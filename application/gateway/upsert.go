@@ -3,6 +3,7 @@ package appgateway
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/jahrulnr/llm-base/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
@@ -88,6 +89,12 @@ func (app *GatewayApp) Upsert(ctx context.Context, in GatewayInput) error {
 		if app.secrets == nil {
 			return apperror.NewInternalError("gateway key storage unconfigured",
 				fmt.Errorf("literal apiKey for %q requires a secret store", in.ID))
+		}
+		if strings.IndexFunc(*in.ApiKey, func(r rune) bool {
+			return r < 0x20 || r == 0x7f
+		}) >= 0 {
+			return apperror.New(400, "invalid gateway",
+				fmt.Errorf("apiKey contains control bytes — it cannot form a valid Authorization header"))
 		}
 		key := drepo.GatewaySecretKey(in.ID)
 		if err := app.secrets.Set(ctx, key, *in.ApiKey); err != nil {

@@ -27,7 +27,7 @@ func newTool(t *testing.T) service.Tool {
 
 func mustCall(t *testing.T, id, input string, budget int) entity.ToolCall {
 	t.Helper()
-	call, err := entity.NewToolCall(id, "run_terminal", input, enum.TooltypeOrigin)
+	call, err := entity.NewToolCall(id, "exec", input, enum.TooltypeOrigin)
 	if err != nil {
 		t.Fatalf("NewToolCall: %v", err)
 	}
@@ -39,7 +39,7 @@ func mustCall(t *testing.T, id, input string, budget int) entity.ToolCall {
 
 func TestExecToolSchema(t *testing.T) {
 	s := newTool(t).Schema()
-	if s.Name() != "run_terminal" || !s.Enabled() ||
+	if s.Name() != "exec" || !s.Enabled() ||
 		s.Permission() != enum.ToolPermissionAgent || !s.CallableByAgent() {
 		t.Fatalf("unexpected schema: %+v", s)
 	}

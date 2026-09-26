@@ -1,4 +1,7 @@
-package cli
+// Package attach resolves workspace-relative attachment paths into
+// pinned, size-checked domain attachments — reads stay confined to the
+// workspace root the session opened.
+package attach
 
 import (
 	"crypto/sha256"
@@ -14,7 +17,10 @@ import (
 	"github.com/jahrulnr/llm-base/infrastructure/service/wire"
 )
 
-func resolveAttachment(root *os.Root, rootPath, requested string) (attachment valueobject.Attachment, err error) {
+// Resolve reads the requested file inside root, detects its media type,
+// enforces the modality size limit, and pins the bytes by hash so the
+// later wire-time read resolves only what the user selected.
+func Resolve(root *os.Root, rootPath, requested string) (attachment valueobject.Attachment, err error) {
 	workspace, err := valueobject.NewWorkspace(requested)
 	if err != nil {
 		return valueobject.Attachment{}, err

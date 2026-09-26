@@ -1,4 +1,4 @@
-package cli
+package term
 
 import (
 	"bytes"
@@ -8,7 +8,7 @@ import (
 func TestWriteTerminalEscapesControlCharacters(t *testing.T) {
 	var out bytes.Buffer
 	input := "red\x1b[31m\rtext\n\tend"
-	if _, err := writeTerminal(&out, input); err != nil {
+	if _, err := Write(&out, input); err != nil {
 		t.Fatal(err)
 	}
 	want := `red\u001b[31m\u000dtext

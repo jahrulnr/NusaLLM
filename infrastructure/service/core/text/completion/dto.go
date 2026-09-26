@@ -6,24 +6,31 @@ import "encoding/json"
 // by OpenRouter, DeepSeek, Groq, and the compatible long tail. Field names
 // here are wire names; domain mapping lives in encode/decode.
 
+// Prompt Cache Option
+type RequestPromptCacheOption struct {
+	TTL string `json:"ttl" default:"30m"`
+}
+
 // RequestBody is POST /chat/completions. Params are omitempty throughout —
 // unset means "provider default", never send a zero.
 type RequestBody struct {
-	Model            string                     `json:"model"`
-	Messages         []MessageBody              `json:"messages"`
-	Tools            []ToolBody                 `json:"tools,omitempty"`
-	Stream           bool                       `json:"stream,omitempty"`
-	Temperature      *float64                   `json:"temperature,omitempty"`
-	TopP             *float64                   `json:"top_p,omitempty"`
-	TopK             *int                       `json:"top_k,omitempty"` // OpenRouter extension
-	MaxTokens        *int                       `json:"max_completion_tokens,omitempty"`
-	PresencePenalty  *float64                   `json:"presence_penalty,omitempty"`
-	FrequencyPenalty *float64                   `json:"frequency_penalty,omitempty"`
-	Seed             *int64                     `json:"seed,omitempty"`
-	Stop             []string                   `json:"stop,omitempty"`
-	ReasoningEffort  string                     `json:"reasoning_effort,omitempty"`
-	StreamOptions    *StreamOptions             `json:"stream_options,omitempty"`
-	Extra            map[string]json.RawMessage `json:"-"` // flattened at marshal
+	Model             string                     `json:"model"`
+	PromptCacheKey    string                     `json:"prompt_cache_key"`
+	PromptCacheOption RequestPromptCacheOption   `json:"prompt_cache_options"`
+	Messages          []MessageBody              `json:"messages"`
+	Tools             []ToolBody                 `json:"tools,omitempty"`
+	Stream            bool                       `json:"stream,omitempty"`
+	Temperature       *float64                   `json:"temperature,omitempty"`
+	TopP              *float64                   `json:"top_p,omitempty"`
+	TopK              *int                       `json:"top_k,omitempty"` // OpenRouter extension
+	MaxTokens         *int                       `json:"max_completion_tokens,omitempty"`
+	PresencePenalty   *float64                   `json:"presence_penalty,omitempty"`
+	FrequencyPenalty  *float64                   `json:"frequency_penalty,omitempty"`
+	Seed              *int64                     `json:"seed,omitempty"`
+	Stop              []string                   `json:"stop,omitempty"`
+	ReasoningEffort   string                     `json:"reasoning_effort,omitempty"`
+	StreamOptions     *StreamOptions             `json:"stream_options,omitempty"`
+	Extra             map[string]json.RawMessage `json:"-"` // flattened at marshal
 }
 
 // MarshalJSON merges Extra into the top level — provider-specific params

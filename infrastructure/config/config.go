@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"time"
@@ -14,6 +15,7 @@ import (
 )
 
 type Config struct {
+	App          App                `json:"-"`
 	Conversation ConversationConfig `json:"conversation"`
 	Service      ServiceConfig      `json:"service"`
 	Storage      StorageConfig      `json:"storage"`
@@ -54,21 +56,83 @@ func (c *Config) Load(path string) error {
 	if err != nil {
 		return apperror.NewInternalError("config load failed", err)
 	}
+	fresh, err := Validate(raw)
+	if err != nil {
+		return err
+	}
+	*c = fresh
+	return nil
+}
+
+// Validate decodes one config document strictly — unknown keys or
+// trailing garbage are rejected so a typo fails loudly instead of
+// silently tuning nothing — then normalizes. Callers mutating the file
+// validate the candidate before it replaces the old one.
+func Validate(raw []byte) (Config, error) {
 	var fresh Config
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&fresh); err != nil {
-		return apperror.NewInternalError("config load failed", err)
+		return Config{}, apperror.NewInternalError("config load failed", err)
 	}
 	// More() only reports inside an open array/object — a trailing `}` or
 	// `]` slips through it. A second decode must hit io.EOF or the file
 	// carries garbage past the document.
 	if _, err := dec.Token(); err != io.EOF {
-		return apperror.NewInternalError("config load failed",
+		return Config{}, apperror.NewInternalError("config load failed",
 			fmt.Errorf("trailing data after the JSON document"))
 	}
 	fresh.Normalize()
-	*c = fresh
+	return fresh, nil
+}
+
+// WriteFileAtomic persists a config document via tmp + fsync + rename —
+// the repo write convention: a crash mid-write leaves either the old
+// file or nothing, never a torn config. The tmp name is unique per call
+// (CreateTemp) so two processes writing concurrently cannot truncate
+// each other's staged bytes. A symlinked path is resolved first — the
+// rename replaces the real file, not the link. An existing file's mode
+// is preserved; new files default to 0o644.
+func WriteFileAtomic(path string, raw []byte) error {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	mode := os.FileMode(0o644)
+	if fi, err := os.Stat(path); err == nil {
+		mode = fi.Mode().Perm()
+	}
+	f, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp) // no-op after a successful rename
+	if err := f.Chmod(mode); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if _, err := f.Write(raw); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
 	return nil
 }
 

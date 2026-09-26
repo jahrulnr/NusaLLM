@@ -4,7 +4,6 @@ import (
 	"errors"
 
 	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
 )
 
@@ -71,7 +70,7 @@ func (c *Conversation) RewriteFrom(msgID, content string) error {
 		if c.messages[i].ID() != msgID {
 			continue
 		}
-		if c.messages[i].Role() != enum.RoleUser || c.messages[i].UserType() == enum.LLMUserTypeSystem {
+		if !c.messages[i].Editable() {
 			// Synthetic user-role messages (compaction checkpoints) are
 			// not the user's words — editing one would rewrite a system
 			// artifact as if the user had said it.

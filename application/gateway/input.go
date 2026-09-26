@@ -81,6 +81,44 @@ type GatewayInfo struct {
 	Models   []entity.Model
 }
 
+// InputFromInfo rebuilds the write document from a sanitized read
+// projection — the read-modify-write codec for edits like "rename" or
+// "rotate the key" where the caller sees GatewayInfo, not the record.
+// ApiKey comes back nil (keep) so a projection-based rewrite can never
+// echo key material into the store.
+func InputFromInfo(info GatewayInfo) GatewayInput {
+	in := GatewayInput{
+		ID:       info.ID,
+		Name:     info.Name,
+		Style:    info.Style,
+		Endpoint: info.Endpoint,
+		Stream:   &info.Stream,
+	}
+	for _, m := range info.Models {
+		pricing := m.Pricing()
+		in.Models = append(in.Models, ModelInput{
+			ID:               m.ID(),
+			Route:            m.Route(),
+			Temperature:      m.Temperature(),
+			TopP:             m.TopP(),
+			TopK:             m.TopK(),
+			MaxOutputTokens:  m.MaxOutputTokens(),
+			PresencePenalty:  m.PresencePenalty(),
+			FrequencyPenalty: m.FrequencyPenalty(),
+			Seed:             m.Seed(),
+			StopSequences:    m.StopSequences(),
+			Effort:           m.Effort(),
+			ModelType:        m.ModelType(),
+			ContextWindow:    m.ContextWindow(),
+			Pricing:          &pricing,
+			InputModalities:  m.InputModalities(),
+			OutputModalities: m.OutputModalities(),
+			OptionalContent:  m.OptionalContent(),
+		})
+	}
+	return in
+}
+
 // buildModel hydrates one catalog entry — the input→entity codec,
 // mirroring repogateway's decode side.
 func (app *GatewayApp) buildModel(in ModelInput) (entity.Model, error) {
