@@ -9,6 +9,7 @@ import (
 	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
 	drepo "github.com/jahrulnr/llm-base/infrastructure/domain/repository"
+	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
 	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
 )
 
@@ -92,8 +93,12 @@ func TestToolCallRoundtripAndPatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Patch arrives later — stored pending call picks it up verbatim.
-	if err := repo.UpdateToolCallOutput(t.Context(), "c1", "call-1", "<env>wrapped</env>"); err != nil {
+	// Patch arrives later — stored pending call picks it up verbatim,
+	// media references included.
+	att, _ := valueobject.NewAttachment("file:///tmp/shot.png", "image/png")
+	att.SetName("shot.png")
+	if err := repo.UpdateToolCallOutput(t.Context(), "c1", "call-1", "<env>wrapped</env>",
+		[]valueobject.Attachment{att}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := repo.Load(t.Context(), "c1")
@@ -103,6 +108,11 @@ func TestToolCallRoundtripAndPatch(t *testing.T) {
 	stored := got.Messages()[0].ToolCalls()[0]
 	if stored.Output() != "<env>wrapped</env>" {
 		t.Fatalf("patched output = %q", stored.Output())
+	}
+	atts := stored.OutputAttachments()
+	if len(atts) != 1 || atts[0].URI() != "file:///tmp/shot.png" ||
+		atts[0].MediaType() != "image/png" || atts[0].Name() != "shot.png" {
+		t.Fatalf("attachment lost across patch: %+v", atts)
 	}
 	if stored.OptionalContent()["gemini.thought_signature"] != "sig123" {
 		t.Fatal("optionalContent lost")
@@ -184,7 +194,7 @@ func TestPatchReachesSealedCall(t *testing.T) {
 	if err := repo.Compact(t.Context(), "c1", sum, 1); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.UpdateToolCallOutput(t.Context(), "c1", "sealed-call", "OUT"); err != nil {
+	if err := repo.UpdateToolCallOutput(t.Context(), "c1", "sealed-call", "OUT", nil); err != nil {
 		t.Fatal(err)
 	}
 	all, err := repo.LoadAt(t.Context(), "c1", 0, 1)

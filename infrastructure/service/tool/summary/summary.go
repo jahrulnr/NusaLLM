@@ -42,12 +42,12 @@ func (tool *SummaryTool) Schema() valueobject.ToolSchema {
 	return tool.schema
 }
 
-func (tool *SummaryTool) Execute(_ context.Context, call entity.ToolCall, _ service.ToolEmitter) (string, error) {
+func (tool *SummaryTool) Execute(_ context.Context, call entity.ToolCall, _ service.ToolEmitter) (service.ToolResult, error) {
 	var input struct {
 		Text string `json:"text"`
 	}
 	if err := json.Unmarshal([]byte(call.Input()), &input); err != nil || strings.TrimSpace(input.Text) == "" {
-		return "", fmt.Errorf("the text field must hold the checkpoint")
+		return service.ToolResult{}, fmt.Errorf("the text field must hold the checkpoint")
 	}
-	return input.Text, nil
+	return service.ToolResult{Text: input.Text}, nil
 }

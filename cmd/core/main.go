@@ -24,6 +24,7 @@ import (
 	reposecret "github.com/jahrulnr/llm-base/infrastructure/repository/secret"
 	textcompletion "github.com/jahrulnr/llm-base/infrastructure/service/core/text/completion"
 	toolfile "github.com/jahrulnr/llm-base/infrastructure/service/tool/file"
+	toolexec "github.com/jahrulnr/llm-base/infrastructure/service/tool/terminal"
 )
 
 func main() {
@@ -88,7 +89,25 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	tools[readFile.Schema().Name()] = readFile
+	writeFile, err := toolfile.NewFileWriteTool(wd)
+	if err != nil {
+		return err
+	}
+	patchFile, err := toolfile.NewFilePatchTool(wd)
+	if err != nil {
+		return err
+	}
+	readMedia, err := toolfile.NewReadMediaTool(wd)
+	if err != nil {
+		return err
+	}
+	execTool, err := toolexec.NewExecTool()
+	if err != nil {
+		return err
+	}
+	for _, tool := range []dservice.Tool{readFile, writeFile, patchFile, readMedia, execTool} {
+		tools[tool.Schema().Name()] = tool
+	}
 
 	_ = appconversation.New(convs, gateways, services, tools, cfg)
 	_ = appgateway.New(gateways, secrets)

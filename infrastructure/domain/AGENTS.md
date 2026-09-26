@@ -47,7 +47,9 @@ distinct invariant, or a meaningful interface boundary.
    inclusive total into `inputTokens` — it double-counts.
 5. **Tool outputs are untrusted evidence.** Runtime output always via
    `SetOutput` (envelope + sanitize); hydration via `SetStoredOutput`
-   verbatim.
+   verbatim. Tool-produced media ride as `outputAttachments` — stored
+   references resolved at send time, gated per-request by the bound
+   model's `AcceptsInput` (non-support degrades to a text placeholder).
 6. **Unset ≠ zero.** Generation params are `*T`; `enum.Effort` uses
    `IsUnset()` — absent means "don't send", not 0.
 7. **Fail-closed vs fail-open is deliberate.** `ToolSchema.CallableBy*`

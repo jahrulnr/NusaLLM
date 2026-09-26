@@ -175,7 +175,10 @@ func appendLine(path string, v any) error {
 // segment.
 func messagesFromLines(lines [][]byte) ([]entity.Message, error) {
 	var msgs []entity.Message
-	type patch struct{ callID, output string }
+	type patch struct {
+		callID, output string
+		atts           []valueobject.Attachment
+	}
 	var patches []patch
 	for _, l := range lines {
 		var lr lineRecord
@@ -190,12 +193,24 @@ func messagesFromLines(lines [][]byte) ([]entity.Message, error) {
 			}
 			msgs = append(msgs, m)
 		case lineToolOutput:
-			patches = append(patches, patch{lr.CallID, lr.Output})
+			var atts []valueobject.Attachment
+			for _, a := range lr.Attachments {
+				att, err := valueobject.NewAttachment(a.URI, a.MediaType)
+				if err != nil {
+					return nil, fmt.Errorf("tool_output attachment: %w", err)
+				}
+				att.SetName(a.Name)
+				atts = append(atts, att)
+			}
+			patches = append(patches, patch{lr.CallID, lr.Output, atts})
 		}
 	}
 	for _, p := range patches {
 		for i := range msgs {
 			if msgs[i].SetStoredToolOutput(p.callID, p.output) == nil {
+				if p.atts != nil {
+					_ = msgs[i].SetToolOutputAttachments(p.callID, p.atts)
+				}
 				break
 			}
 		}

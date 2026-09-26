@@ -158,7 +158,7 @@ func TestRewriteFromDropsPendingCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A patch for the dropped call applies to nothing — no error, no ghost.
-	if err := repo.UpdateToolCallOutput(t.Context(), "c1", "call_x", "late"); err != nil {
+	if err := repo.UpdateToolCallOutput(t.Context(), "c1", "call_x", "late", nil); err != nil {
 		t.Fatal(err)
 	}
 	all, err := repo.LoadAt(t.Context(), "c1", 0, 0)
@@ -189,7 +189,7 @@ func TestRewriteFromKeepsPatchesForRetainedCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The output lands at the file tail — after the edit target.
-	if err := repo.UpdateToolCallOutput(t.Context(), "c1", "call_keep", "kept result"); err != nil {
+	if err := repo.UpdateToolCallOutput(t.Context(), "c1", "call_keep", "kept result", nil); err != nil {
 		t.Fatal(err)
 	}
 	ids := msgIDs(t, repo, "c1")

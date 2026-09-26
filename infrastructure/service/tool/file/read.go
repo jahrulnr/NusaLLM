@@ -46,36 +46,36 @@ func (tool *FileReadTool) Schema() valueobject.ToolSchema {
 	return tool.schema
 }
 
-func (tool *FileReadTool) Execute(ctx context.Context, call entity.ToolCall, _ service.ToolEmitter) (string, error) {
+func (tool *FileReadTool) Execute(ctx context.Context, call entity.ToolCall, _ service.ToolEmitter) (service.ToolResult, error) {
 	if err := ctx.Err(); err != nil {
-		return "", err
+		return service.ToolResult{}, err
 	}
 	var input struct {
 		Path string `json:"path"`
 	}
 	if err := json.Unmarshal([]byte(call.Input()), &input); err != nil {
-		return "", fmt.Errorf("invalid read_file input: %w", err)
+		return service.ToolResult{}, fmt.Errorf("invalid read_file input: %w", err)
 	}
 	// Reject oversized files before reading — the call's output budget is
 	// the honest cap, enforced again by SetToolOutput on the way out.
 	info, err := tool.root.Stat(input.Path)
 	if err != nil {
-		return "", err
+		return service.ToolResult{}, err
 	}
 	if info.IsDir() {
-		return "", fmt.Errorf("%q is a directory", input.Path)
+		return service.ToolResult{}, fmt.Errorf("%q is a directory", input.Path)
 	}
 	if budget := int64(call.OutputBudget()); info.Size() > budget {
-		return "", fmt.Errorf("%q exceeds output budget (%d > %d bytes)", input.Path, info.Size(), budget)
+		return service.ToolResult{}, fmt.Errorf("%q exceeds output budget (%d > %d bytes)", input.Path, info.Size(), budget)
 	}
 	f, err := tool.root.Open(input.Path)
 	if err != nil {
-		return "", err
+		return service.ToolResult{}, err
 	}
 	defer f.Close()
 	data, err := io.ReadAll(io.LimitReader(f, int64(call.OutputBudget())+1))
 	if err != nil {
-		return "", err
+		return service.ToolResult{}, err
 	}
-	return string(data), nil
+	return service.ToolResult{Text: string(data)}, nil
 }

@@ -3,11 +3,14 @@ package repoconversation
 import (
 	"context"
 	"path/filepath"
+
+	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
 )
 
 // UpdateToolCallOutput appends a patch record to the line stream — the
-// enveloped output lands verbatim and resolves by callID at read time.
-func (r *ConversationRepository) UpdateToolCallOutput(ctx context.Context, convID, callID, output string) error {
+// enveloped output and any media references land verbatim and resolve by
+// callID at read time.
+func (r *ConversationRepository) UpdateToolCallOutput(ctx context.Context, convID, callID, output string, atts []valueobject.Attachment) error {
 	if err := validID(convID); err != nil {
 		return err
 	}
@@ -19,6 +22,13 @@ func (r *ConversationRepository) UpdateToolCallOutput(ctx context.Context, convI
 	}
 	// Append-only patch — no read-modify-write, so parallel tool results
 	// racing to persist stay safe.
-	return appendLine(filepath.Join(r.convDir(convID), activeFile),
-		lineRecord{Type: lineToolOutput, CallID: callID, Output: output})
+	line := lineRecord{Type: lineToolOutput, CallID: callID, Output: output}
+	for _, a := range atts {
+		line.Attachments = append(line.Attachments, attachmentRecord{
+			URI:       a.URI(),
+			MediaType: a.MediaType(),
+			Name:      a.Name(),
+		})
+	}
+	return appendLine(filepath.Join(r.convDir(convID), activeFile), line)
 }

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
+	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
 )
 
 // ToolCall is a record of a tool invocation. ttype marks provenance: origin
@@ -13,14 +14,15 @@ import (
 // application inserts into the conversation (announcements, subagent
 // results, ...).
 type ToolCall struct {
-	id              string
-	name            string
-	input           string
-	output          string
-	outputBudget    int // Maximum length of output
-	ttype           enum.Tooltype
-	callAt          time.Time
-	optionalContent map[string]string
+	id                string
+	name              string
+	input             string
+	output            string
+	outputBudget      int // Maximum length of output
+	outputAttachments []valueobject.Attachment
+	ttype             enum.Tooltype
+	callAt            time.Time
+	optionalContent   map[string]string
 }
 
 func (t ToolCall) validateInput() error {
@@ -57,6 +59,18 @@ func (t ToolCall) OutputBudget() int                  { return t.outputBudget }
 func (t ToolCall) Type() enum.Tooltype                { return t.ttype }
 func (t ToolCall) CallAt() time.Time                  { return t.callAt }
 func (t ToolCall) OptionalContent() map[string]string { return t.optionalContent }
+
+// OutputAttachments returns media references the tool produced alongside
+// its text output — e.g. a read_media call's image. References only
+// (file://, https://, data:); adapters resolve them at send time.
+func (t ToolCall) OutputAttachments() []valueobject.Attachment { return t.outputAttachments }
+
+// SetOutputAttachments records media references produced by the call.
+// Unlike SetOutput there is no envelope or budget — references are stored
+// verbatim at runtime and on hydration alike.
+func (t *ToolCall) SetOutputAttachments(v []valueobject.Attachment) {
+	t.outputAttachments = v
+}
 
 // SetOptionalContent stores a provider-specific replay artifact on this call
 // (e.g. Gemini's per-functionCall thoughtSignature) under an

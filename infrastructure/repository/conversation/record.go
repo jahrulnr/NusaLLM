@@ -44,10 +44,11 @@ type toolSchemaRecord struct {
 // jsonl line envelope: messages and tool-output patches share one stream
 // per file so appends stay O(1) and ordering is literal.
 type lineRecord struct {
-	Type   string        `json:"type"` // "message" | "tool_output"
-	Data   messageRecord `json:"data,omitempty"`
-	CallID string        `json:"callId,omitempty"`
-	Output string        `json:"output,omitempty"`
+	Type        string             `json:"type"` // "message" | "tool_output"
+	Data        messageRecord      `json:"data,omitempty"`
+	CallID      string             `json:"callId,omitempty"`
+	Output      string             `json:"output,omitempty"`
+	Attachments []attachmentRecord `json:"attachments,omitempty"`
 }
 
 type messageRecord struct {
@@ -63,14 +64,15 @@ type messageRecord struct {
 }
 
 type toolCallRecord struct {
-	ID              string            `json:"id"`
-	Name            string            `json:"name"`
-	Input           string            `json:"input"`
-	Output          string            `json:"output,omitempty"`
-	OutputBudget    int               `json:"outputBudget,omitempty"`
-	Type            string            `json:"type,omitempty"`
-	CallAt          time.Time         `json:"callAt,omitempty"`
-	OptionalContent map[string]string `json:"optionalContent,omitempty"`
+	ID                string             `json:"id"`
+	Name              string             `json:"name"`
+	Input             string             `json:"input"`
+	Output            string             `json:"output,omitempty"`
+	OutputBudget      int                `json:"outputBudget,omitempty"`
+	OutputAttachments []attachmentRecord `json:"outputAttachments,omitempty"`
+	Type              string             `json:"type,omitempty"`
+	CallAt            time.Time          `json:"callAt,omitempty"`
+	OptionalContent   map[string]string  `json:"optionalContent,omitempty"`
 }
 
 type attachmentRecord struct {
@@ -90,7 +92,7 @@ func encodeMessage(m entity.Message) messageRecord {
 		OptionalContent: m.OptionalContent(),
 	}
 	for _, tc := range m.ToolCalls() {
-		r.ToolCalls = append(r.ToolCalls, toolCallRecord{
+		rec := toolCallRecord{
 			ID:              tc.ID(),
 			Name:            tc.Name(),
 			Input:           tc.Input(),
@@ -99,7 +101,15 @@ func encodeMessage(m entity.Message) messageRecord {
 			Type:            tc.Type().String(),
 			CallAt:          tc.CallAt(),
 			OptionalContent: tc.OptionalContent(),
-		})
+		}
+		for _, a := range tc.OutputAttachments() {
+			rec.OutputAttachments = append(rec.OutputAttachments, attachmentRecord{
+				URI:       a.URI(),
+				MediaType: a.MediaType(),
+				Name:      a.Name(),
+			})
+		}
+		r.ToolCalls = append(r.ToolCalls, rec)
 	}
 	for _, a := range m.Attachments() {
 		r.Attachments = append(r.Attachments, attachmentRecord{
@@ -183,6 +193,16 @@ func decodeToolCall(r toolCallRecord) (entity.ToolCall, error) {
 	if r.Output != "" {
 		tc.SetStoredOutput(r.Output)
 	}
+	var atts []valueobject.Attachment
+	for _, a := range r.OutputAttachments {
+		att, err := valueobject.NewAttachment(a.URI, a.MediaType)
+		if err != nil {
+			return entity.ToolCall{}, fmt.Errorf("toolCall %q attachment: %w", r.ID, err)
+		}
+		att.SetName(a.Name)
+		atts = append(atts, att)
+	}
+	tc.SetOutputAttachments(atts)
 	for k, v := range r.OptionalContent {
 		tc.SetOptionalContent(k, v)
 	}

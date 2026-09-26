@@ -217,10 +217,10 @@ func (b *blockingTool) Schema() valueobject.ToolSchema {
 	return s
 }
 
-func (b *blockingTool) Execute(ctx context.Context, _ entity.ToolCall, _ dservice.ToolEmitter) (string, error) {
+func (b *blockingTool) Execute(ctx context.Context, _ entity.ToolCall, _ dservice.ToolEmitter) (dservice.ToolResult, error) {
 	close(b.entered)
 	<-ctx.Done()
-	return "", ctx.Err()
+	return dservice.ToolResult{}, ctx.Err()
 }
 
 // blockingScriptSvc scripts a stuck tool: first call demands the

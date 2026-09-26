@@ -9,6 +9,7 @@ import (
 	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/event"
 	dservice "github.com/jahrulnr/llm-base/infrastructure/domain/service"
+	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
 	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
 )
 
@@ -154,6 +155,7 @@ func pendingCalls(m entity.Message) []entity.ToolCall {
 // cancellation aborts the whole turn.
 func (d Deps) execTool(ctx context.Context, convID string, onEvent event.TurnEventHandler, conv *aggregate.Conversation, msg *entity.Message, call entity.ToolCall) error {
 	out := ""
+	var outAtts []valueobject.Attachment
 	permitted := false
 	for _, s := range conv.Tools() {
 		if s.Name() == call.Name() && s.CallableByAgent() {
@@ -162,7 +164,7 @@ func (d Deps) execTool(ctx context.Context, convID string, onEvent event.TurnEve
 		}
 	}
 	// Live chunks flow to the frontend scoped by call id — they are a
-	// preview, never history; only the Execute return lands in output.
+	// preview, never history; only the Execute result lands in output.
 	emit := func(chunk string) {
 		if onEvent != nil {
 			onEvent(event.NewToolOutputEvent(call, chunk))
@@ -177,7 +179,7 @@ func (d Deps) execTool(ctx context.Context, convID string, onEvent event.TurnEve
 		res, err := tool.Execute(ctx, call, emit)
 		switch {
 		case err == nil:
-			out = res
+			out, outAtts = res.Text, res.Attachments
 		case ctx.Err() != nil:
 			return apperror.New(408, "turn canceled", ctx.Err())
 		default:
@@ -190,9 +192,12 @@ func (d Deps) execTool(ctx context.Context, convID string, onEvent event.TurnEve
 			return apperror.New(500, "tool output rejected", err)
 		}
 	}
+	if err := msg.SetToolOutputAttachments(call.ID(), outAtts); err != nil {
+		return apperror.New(500, "tool output lost", err)
+	}
 	for _, tc := range msg.ToolCalls() {
 		if tc.ID() == call.ID() {
-			return d.Convs.UpdateToolCallOutput(ctx, convID, call.ID(), tc.Output())
+			return d.Convs.UpdateToolCallOutput(ctx, convID, call.ID(), tc.Output(), tc.OutputAttachments())
 		}
 	}
 	return apperror.New(500, "tool output lost", fmt.Errorf("call %s vanished after update", call.ID()))

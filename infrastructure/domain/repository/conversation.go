@@ -44,14 +44,15 @@ type Conversation interface {
 
 	// UpdateToolCallOutput patches the stored output of a previously
 	// appended tool call — a call is persisted pending execution, and its
-	// enveloped output (ToolCall.Output()) arrives later. Each call is an
-	// independent patch: concurrent completions of parallel tool calls are
-	// safe by construction (implementations append patch records rather
-	// than rewriting stored lines), and a crash mid-batch leaves the
-	// remaining calls honestly pending instead of losing every result.
-	// callID resolves globally across segments: a call compacted before its
-	// output arrived is still patched correctly.
-	UpdateToolCallOutput(ctx context.Context, convID, callID, output string) error
+	// enveloped output (ToolCall.Output()) plus any media references it
+	// produced arrive later. Each call is an independent patch: concurrent
+	// completions of parallel tool calls are safe by construction
+	// (implementations append patch records rather than rewriting stored
+	// lines), and a crash mid-batch leaves the remaining calls honestly
+	// pending instead of losing every result. callID resolves globally
+	// across segments: a call compacted before its output arrived is still
+	// patched correctly.
+	UpdateToolCallOutput(ctx context.Context, convID, callID, output string, atts []valueobject.Attachment) error
 
 	// Compact seals messages[:dropBefore] into the next numbered archive
 	// segment and restarts the live history as [summary] + tail — mirroring

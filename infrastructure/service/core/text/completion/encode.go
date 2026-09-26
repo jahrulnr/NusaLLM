@@ -24,7 +24,7 @@ func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool
 		body.Messages = append(body.Messages, MessageBody{Role: enum.RoleSystem.String(), Content: sp})
 	}
 	for _, m := range conv.Messages() {
-		msgs, err := encodeMessage(m)
+		msgs, err := encodeMessage(m, model)
 		if err != nil {
 			return nil, err
 		}
@@ -73,7 +73,11 @@ func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool
 // message followed by tool-role messages when it carries executed calls.
 // Injection calls hydrate the wire as inline text — they are
 // application-originated and must not pose as provider tool calls.
-func encodeMessage(m entity.Message) ([]MessageBody, error) {
+// A call's output attachments ride a synthetic user message right after
+// its tool message: the chat-completions tool role is text-only, so the
+// openclaw-style follow-up is the portable shape — Responses-style wires
+// would put the parts inside function_call_output instead.
+func encodeMessage(m entity.Message, model entity.Model) ([]MessageBody, error) {
 	out := MessageBody{Role: m.Role().String()}
 
 	var origin, injected []entity.ToolCall
@@ -136,6 +140,27 @@ func encodeMessage(m entity.Message) ([]MessageBody, error) {
 			ToolCallID: tc.ID(),
 			Content:    content,
 		})
+		if atts := tc.OutputAttachments(); len(atts) > 0 {
+			// Per-attachment degrade at send time, not record time: the
+			// bound model can change between turns, and a missing file
+			// must not wedge the whole request.
+			parts := []any{map[string]any{"type": "text", "text": "Attached output from tool " + tc.Name() + ":"}}
+			for _, a := range atts {
+				if !model.AcceptsInput(a.Modality()) {
+					parts = append(parts, map[string]any{"type": "text",
+						"text": "(" + a.Modality().String() + " output omitted: model does not accept it)"})
+					continue
+				}
+				p, err := encodeAttachment(a)
+				if err != nil {
+					parts = append(parts, map[string]any{"type": "text",
+						"text": "(media output unavailable: " + a.URI() + ")"})
+					continue
+				}
+				parts = append(parts, p)
+			}
+			msgs = append(msgs, MessageBody{Role: enum.RoleUser.String(), Content: parts})
+		}
 	}
 	return msgs, nil
 }

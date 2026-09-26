@@ -104,6 +104,19 @@ func (m *Message) SetToolOutput(id, output string) error {
 	return errors.New("tool call not found: " + id)
 }
 
+// SetToolOutputAttachments records media references produced by a tool
+// call, matching it by the provider-issued call id. References carry no
+// envelope — runtime and hydration use this same setter.
+func (m *Message) SetToolOutputAttachments(id string, atts []valueobject.Attachment) error {
+	for i := range m.toolCalls {
+		if m.toolCalls[i].ID() == id {
+			m.toolCalls[i].SetOutputAttachments(atts)
+			return nil
+		}
+	}
+	return errors.New("tool call not found: " + id)
+}
+
 // SetStoredToolOutput restores a persisted tool output verbatim — it is
 // already in the enveloped form written by SetOutput. Repository hydration
 // and patch application only.

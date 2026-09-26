@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -189,6 +190,107 @@ func TestToolCallsRoundtrip(t *testing.T) {
 	}
 	if !sawAssistant || !sawTool {
 		t.Fatalf("tool roundtrip broken: %+v", captured.Messages)
+	}
+}
+
+// Tool output attachments leave history as a synthetic user message right
+// after the tool message — the tool role itself stays text-only.
+func TestToolOutputAttachmentsBecomeUserParts(t *testing.T) {
+	img := []byte{0x89, 0x50, 0x4e, 0x47}
+	path := filepath.Join(t.TempDir(), "shot.png")
+	os.WriteFile(path, img, 0o644)
+
+	var captured RequestBody
+	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&captured)
+		json.NewEncoder(w).Encode(map[string]any{
+			"choices": []any{map[string]any{"index": 0,
+				"message": map[string]any{"role": "assistant", "content": "ok"}, "finish_reason": "stop"}},
+		})
+	})
+
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleAssistant, "")
+	tc, _ := entity.NewToolCall("call_1", "read_media", `{"path":"shot.png"}`, enum.TooltypeOrigin)
+	m.AddToolCall(tc)
+	m.SetToolOutput("call_1", "loaded image shot.png")
+	att, _ := valueobject.NewAttachment("file://"+path, "image/png")
+	if err := m.SetToolOutputAttachments("call_1", []valueobject.Attachment{att}); err != nil {
+		t.Fatal(err)
+	}
+	conv.Append(m)
+
+	model, _ := entity.NewModel("m", "test")
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(captured.Messages) != 3 {
+		t.Fatalf("want assistant+tool+user, got %+v", captured.Messages)
+	}
+	tool := captured.Messages[1]
+	if tool.Role != "tool" || tool.ToolCallID != "call_1" {
+		t.Fatalf("tool message malformed: %+v", tool)
+	}
+	media := captured.Messages[2]
+	if media.Role != "user" {
+		t.Fatalf("attachment carrier must be a user message, got %+v", media)
+	}
+	parts, ok := media.Content.([]any)
+	if !ok || len(parts) != 2 {
+		t.Fatalf("expected label+image parts, got %v", media.Content)
+	}
+	url := parts[1].(map[string]any)["image_url"].(map[string]any)["url"].(string)
+	want := "data:image/png;base64," + base64.StdEncoding.EncodeToString(img)
+	if url != want {
+		t.Fatalf("image_url = %q", url)
+	}
+}
+
+// A model that never declared image input gets an honest placeholder
+// instead of a dead payload — the gate lives at send time, not record time.
+func TestToolOutputAttachmentGatedByModality(t *testing.T) {
+	var captured RequestBody
+	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&captured)
+		json.NewEncoder(w).Encode(map[string]any{
+			"choices": []any{map[string]any{"index": 0,
+				"message": map[string]any{"role": "assistant", "content": "ok"}, "finish_reason": "stop"}},
+		})
+	})
+
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleAssistant, "")
+	tc, _ := entity.NewToolCall("call_1", "read_media", `{}`, enum.TooltypeOrigin)
+	m.AddToolCall(tc)
+	m.SetToolOutput("call_1", "loaded")
+	missing, _ := valueobject.NewAttachment("file:///nonexistent.png", "image/png")
+	m.SetToolOutputAttachments("call_1", []valueobject.Attachment{missing})
+	conv.Append(m)
+
+	// text-only model: the attachment must degrade to a text placeholder.
+	model, _ := entity.NewModel("m", "test")
+	model.SetInputModalities([]enum.Modality{enum.ModalityText})
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
+		t.Fatal(err)
+	}
+	media := captured.Messages[2] // assistant + tool + media carrier
+	parts, _ := media.Content.([]any)
+	text, _ := parts[1].(map[string]any)["text"].(string)
+	if !strings.Contains(text, "omitted") {
+		t.Fatalf("expected omitted placeholder, got %+v", parts[1])
+	}
+
+	// vision-capable model but the file is gone: placeholder, not a
+	// failed request. Empty modality list fails open.
+	model, _ = entity.NewModel("m", "test")
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
+		t.Fatal(err)
+	}
+	media = captured.Messages[2]
+	parts, _ = media.Content.([]any)
+	text, _ = parts[1].(map[string]any)["text"].(string)
+	if !strings.Contains(text, "unavailable") {
+		t.Fatalf("expected unavailable placeholder, got %+v", parts[1])
 	}
 }
 

@@ -508,9 +508,9 @@ func (echoTool) Schema() valueobject.ToolSchema {
 	return s
 }
 
-func (echoTool) Execute(_ context.Context, call entity.ToolCall, emit dservice.ToolEmitter) (string, error) {
+func (echoTool) Execute(_ context.Context, call entity.ToolCall, emit dservice.ToolEmitter) (dservice.ToolResult, error) {
 	if emit != nil {
 		emit("running…")
 	}
-	return "echoed: " + call.Input(), nil
+	return dservice.ToolResult{Text: "echoed: " + call.Input()}, nil
 }

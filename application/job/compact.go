@@ -123,8 +123,8 @@ func (d Deps) writeCheckpoint(ctx context.Context, scratch *aggregate.Conversati
 				_ = last.SetToolOutput(call.ID(), "error: only the summary tool is available")
 				continue
 			}
-			if text, err := summary.Execute(ctx, call, nil); err == nil {
-				return text, nil
+			if res, err := summary.Execute(ctx, call, nil); err == nil {
+				return res.Text, nil
 			}
 			_ = last.SetToolOutput(call.ID(), "error: the text field must hold the checkpoint")
 		}
