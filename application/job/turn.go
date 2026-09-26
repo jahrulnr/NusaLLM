@@ -192,6 +192,9 @@ func (d Deps) execTool(ctx context.Context, convID string, onEvent event.TurnEve
 			return apperror.New(500, "tool output rejected", err)
 		}
 	}
+	// Attachments land even when the text output was rejected above and
+	// replaced by an error — the media is produced work, and the model
+	// still deserves to see it.
 	if err := msg.SetToolOutputAttachments(call.ID(), outAtts); err != nil {
 		return apperror.New(500, "tool output lost", err)
 	}

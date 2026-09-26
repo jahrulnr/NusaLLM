@@ -2,6 +2,8 @@ package toolfile
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,6 +70,16 @@ func TestReadMediaToolLoads(t *testing.T) {
 		}
 		if att.Modality() != enum.ModalityImage {
 			t.Errorf("%s: modality = %q", name, att.Modality())
+		}
+		// The pin must describe the bytes the confined read saw — what
+		// send-time resolution will verify against.
+		fixture := pngFixture
+		if name == "jpeg" {
+			fixture = jpegFixture
+		}
+		sum := sha256.Sum256(fixture)
+		if att.SHA256() != hex.EncodeToString(sum[:]) {
+			t.Errorf("%s: sha256 pin = %q, want digest of fixture", name, att.SHA256())
 		}
 	}
 }

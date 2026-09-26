@@ -97,6 +97,7 @@ func TestToolCallRoundtripAndPatch(t *testing.T) {
 	// media references included.
 	att, _ := valueobject.NewAttachment("file:///tmp/shot.png", "image/png")
 	att.SetName("shot.png")
+	att.SetSHA256("deadbeef")
 	if err := repo.UpdateToolCallOutput(t.Context(), "c1", "call-1", "<env>wrapped</env>",
 		[]valueobject.Attachment{att}); err != nil {
 		t.Fatal(err)
@@ -111,7 +112,8 @@ func TestToolCallRoundtripAndPatch(t *testing.T) {
 	}
 	atts := stored.OutputAttachments()
 	if len(atts) != 1 || atts[0].URI() != "file:///tmp/shot.png" ||
-		atts[0].MediaType() != "image/png" || atts[0].Name() != "shot.png" {
+		atts[0].MediaType() != "image/png" || atts[0].Name() != "shot.png" ||
+		atts[0].SHA256() != "deadbeef" {
 		t.Fatalf("attachment lost across patch: %+v", atts)
 	}
 	if stored.OptionalContent()["gemini.thought_signature"] != "sig123" {

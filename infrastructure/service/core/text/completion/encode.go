@@ -72,11 +72,16 @@ func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool
 // encodeMessage emits one wire message for plain turns, or an assistant
 // message followed by tool-role messages when it carries executed calls.
 // Injection calls hydrate the wire as inline text — they are
-// application-originated and must not pose as provider tool calls.
-// A call's output attachments ride a synthetic user message right after
-// its tool message: the chat-completions tool role is text-only, so the
-// openclaw-style follow-up is the portable shape — Responses-style wires
-// would put the parts inside function_call_output instead.
+// application-originated and must not pose as provider tool calls; their
+// output attachments are likewise never encoded (app-produced context is
+// text by contract).
+// A call's output attachments ride a synthetic user message: the
+// chat-completions tool role is text-only, so the openclaw-style
+// follow-up is the portable shape — Responses-style wires would put the
+// parts inside function_call_output instead. Those follow-ups land after
+// the whole tool block: strict providers require an uninterrupted run of
+// tool messages behind tool_calls, so a media-bearing earlier call must
+// not push its user message between two tool results.
 func encodeMessage(m entity.Message, model entity.Model) ([]MessageBody, error) {
 	out := MessageBody{Role: m.Role().String()}
 
@@ -130,6 +135,7 @@ func encodeMessage(m entity.Message, model entity.Model) ([]MessageBody, error) 
 	}
 
 	msgs := []MessageBody{out}
+	var media []MessageBody
 	for _, tc := range origin {
 		content := tc.Output()
 		if content == "" {
@@ -143,8 +149,10 @@ func encodeMessage(m entity.Message, model entity.Model) ([]MessageBody, error) 
 		if atts := tc.OutputAttachments(); len(atts) > 0 {
 			// Per-attachment degrade at send time, not record time: the
 			// bound model can change between turns, and a missing file
-			// must not wedge the whole request.
-			parts := []any{map[string]any{"type": "text", "text": "Attached output from tool " + tc.Name() + ":"}}
+			// must not wedge the whole request. The call id labels the
+			// pairing now that the block is detached from its tool message.
+			parts := []any{map[string]any{"type": "text",
+				"text": "Attached output from tool " + tc.Name() + " (call " + tc.ID() + "):"}}
 			for _, a := range atts {
 				if !model.AcceptsInput(a.Modality()) {
 					parts = append(parts, map[string]any{"type": "text",
@@ -153,43 +161,47 @@ func encodeMessage(m entity.Message, model entity.Model) ([]MessageBody, error) 
 				}
 				p, err := encodeAttachment(a)
 				if err != nil {
-					parts = append(parts, map[string]any{"type": "text",
-						"text": "(media output unavailable: " + a.URI() + ")"})
+					label := "(media output unavailable)"
+					if a.Name() != "" {
+						label = "(media output unavailable: " + a.Name() + ")" // basename only — the URI would leak the workspace path
+					}
+					parts = append(parts, map[string]any{"type": "text", "text": label})
 					continue
 				}
 				parts = append(parts, p)
 			}
-			msgs = append(msgs, MessageBody{Role: enum.RoleUser.String(), Content: parts})
+			media = append(media, MessageBody{Role: enum.RoleUser.String(), Content: parts})
 		}
 	}
-	return msgs, nil
+	return append(msgs, media...), nil
 }
 
 // encodeAttachment maps a stored URI to the wire content part for its
 // modality. Audio must arrive as base64 — URL audio is rejected upstream.
+// Pinned attachments verify here: a digest mismatch surfaces as a resolve
+// error, which callers degrade or propagate as their contract dictates.
 func encodeAttachment(a valueobject.Attachment) (any, error) {
-	uri, mt := a.URI(), a.MediaType()
 	switch a.Modality() {
 	case enum.ModalityImage:
-		u, err := wire.ResolveURI(uri, mt)
+		u, err := wire.ResolveURI(a)
 		if err != nil {
 			return nil, err
 		}
 		return map[string]any{"type": "image_url", "image_url": map[string]any{"url": u}}, nil
 	case enum.ModalityAudio:
-		data, format, err := wire.ResolveBase64(uri, mt)
+		data, format, err := wire.ResolveBase64(a)
 		if err != nil {
 			return nil, err
 		}
 		return map[string]any{"type": "input_audio", "input_audio": map[string]any{"data": data, "format": format}}, nil
 	case enum.ModalityVideo:
-		u, err := wire.ResolveURI(uri, mt)
+		u, err := wire.ResolveURI(a)
 		if err != nil {
 			return nil, err
 		}
 		return map[string]any{"type": "video_url", "video_url": map[string]any{"url": u}}, nil // OpenRouter extension
 	default: // file, text, anything else
-		u, err := wire.ResolveURI(uri, mt)
+		u, err := wire.ResolveURI(a)
 		if err != nil {
 			return nil, err
 		}

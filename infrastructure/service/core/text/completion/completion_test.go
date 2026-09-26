@@ -294,6 +294,97 @@ func TestToolOutputAttachmentGatedByModality(t *testing.T) {
 	}
 }
 
+// With multiple origin calls the tool results must stay one contiguous
+// block — a media-bearing earlier call pushes its synthetic user message
+// after the whole run, never between two tool messages. Strict providers
+// reject interleaved orders, and a persisted poisoned history would fail
+// every subsequent send.
+func TestToolOutputAttachmentsKeepToolBlockContiguous(t *testing.T) {
+	img := []byte{0x89, 0x50, 0x4e, 0x47}
+	path := filepath.Join(t.TempDir(), "shot.png")
+	os.WriteFile(path, img, 0o644)
+
+	var captured RequestBody
+	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&captured)
+		json.NewEncoder(w).Encode(map[string]any{
+			"choices": []any{map[string]any{"index": 0,
+				"message": map[string]any{"role": "assistant", "content": "ok"}, "finish_reason": "stop"}},
+		})
+	})
+
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleAssistant, "")
+	tc1, _ := entity.NewToolCall("call_1", "read_media", `{"path":"shot.png"}`, enum.TooltypeOrigin)
+	tc2, _ := entity.NewToolCall("call_2", "read_file", `{"path":"x.txt"}`, enum.TooltypeOrigin)
+	m.AddToolCall(tc1)
+	m.AddToolCall(tc2)
+	m.SetToolOutput("call_1", "loaded image")
+	m.SetToolOutput("call_2", "file content")
+	att, _ := valueobject.NewAttachment("file://"+path, "image/png")
+	m.SetToolOutputAttachments("call_1", []valueobject.Attachment{att})
+	conv.Append(m)
+
+	model, _ := entity.NewModel("m", "test")
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(captured.Messages) != 4 {
+		t.Fatalf("want assistant+tool+tool+user, got %+v", captured.Messages)
+	}
+	if captured.Messages[1].Role != "tool" || captured.Messages[1].ToolCallID != "call_1" ||
+		captured.Messages[2].Role != "tool" || captured.Messages[2].ToolCallID != "call_2" ||
+		captured.Messages[3].Role != "user" {
+		t.Fatalf("tool block must stay contiguous, got %+v", captured.Messages)
+	}
+	parts, _ := captured.Messages[3].Content.([]any)
+	label, _ := parts[0].(map[string]any)["text"].(string)
+	if !strings.Contains(label, "call_1") {
+		t.Fatalf("detached carrier must name its call, got %q", label)
+	}
+}
+
+// A pinned attachment whose bytes changed since the tool checked them
+// degrades to the same unavailable placeholder as a missing file — never
+// a different payload than what was sniffed.
+func TestToolOutputAttachmentPinMismatchDegrades(t *testing.T) {
+	img := []byte{0x89, 0x50, 0x4e, 0x47}
+	path := filepath.Join(t.TempDir(), "shot.png")
+	os.WriteFile(path, img, 0o644)
+
+	var captured RequestBody
+	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&captured)
+		json.NewEncoder(w).Encode(map[string]any{
+			"choices": []any{map[string]any{"index": 0,
+				"message": map[string]any{"role": "assistant", "content": "ok"}, "finish_reason": "stop"}},
+		})
+	})
+
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleAssistant, "")
+	tc, _ := entity.NewToolCall("call_1", "read_media", `{}`, enum.TooltypeOrigin)
+	m.AddToolCall(tc)
+	m.SetToolOutput("call_1", "loaded")
+	att, _ := valueobject.NewAttachment("file://"+path, "image/png")
+	att.SetSHA256("0bad") // any digest ≠ the file's
+	m.SetToolOutputAttachments("call_1", []valueobject.Attachment{att})
+	conv.Append(m)
+
+	model, _ := entity.NewModel("m", "test")
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
+		t.Fatal(err)
+	}
+	parts, _ := captured.Messages[2].Content.([]any)
+	text, _ := parts[1].(map[string]any)["text"].(string)
+	if !strings.Contains(text, "unavailable") {
+		t.Fatalf("pin mismatch must degrade to placeholder, got %+v", parts[1])
+	}
+	if strings.Contains(text, path) {
+		t.Fatal("placeholder must not leak the workspace path")
+	}
+}
+
 func TestStreamAssemblesMessage(t *testing.T) {
 	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
@@ -67,7 +67,7 @@ func (tool *FileWriteTool) Execute(ctx context.Context, call entity.ToolCall, _ 
 	if info, err := tool.root.Stat(input.Path); err == nil && info.IsDir() {
 		return service.ToolResult{}, fmt.Errorf("%q is a directory", input.Path)
 	}
-	if dir := path.Dir(input.Path); dir != "." {
+	if dir := filepath.Dir(input.Path); dir != "." {
 		// 0o700: created dirs may hold agent-written secrets, matching the
 		// repository convention for key-bearing content.
 		if err := tool.root.MkdirAll(dir, 0o700); err != nil {

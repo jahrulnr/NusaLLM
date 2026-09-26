@@ -78,7 +78,9 @@ distinct invariant, or a meaningful interface boundary.
   the live tail, later segments and stale summaries are discarded.
 - Stored attachments are references (`file://`, `https://`) — `data:` URIs
   are wire-time, adapters materialize at send. Existence is checked at
-  resolve time, never in domain.
+  resolve time, never in domain. An attachment may carry a `sha256`
+  content pin recorded by its producer; adapters verify resolved bytes
+  against it and degrade on mismatch — pins bind local references only.
 - `EstimatedTokens` is a budgeting heuristic; `NeedCompaction(budget)` takes
   the budget as an argument — model switches must apply immediately.
 - Slice/map getters share internals by design — no defensive copies; re-

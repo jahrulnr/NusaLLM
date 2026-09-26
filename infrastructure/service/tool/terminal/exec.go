@@ -78,12 +78,24 @@ func (tool *ExecTool) Execute(ctx context.Context, call entity.ToolCall, emit se
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	budget := call.OutputBudget()
+	// The spill path is chosen before start so the sink can stream into it
+	// the moment output outgrows the in-memory head — a command printing
+	// unbounded output must not grow memory unboundedly with it.
+	safe := strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == '_' || r == '.' {
+			return r
+		}
+		return '_'
+	}, call.ID())
+	spillPath := filepath.Join(os.TempDir(), "llm-base-exec-"+safe+".log")
+
 	cmd := shellCommand(ctx, input.Command)
 	cmd.WaitDelay = waitDelay
 	// stdout and stderr share one writer: os/exec then wires both child
 	// fds to a single pipe, so the merged stream keeps arrival order and
 	// each Write below is one preview chunk.
-	sink := &outputSink{emit: emit}
+	sink := &outputSink{emit: emit, budget: budget, spillPath: spillPath}
 	cmd.Stdout = sink
 	cmd.Stderr = sink
 	if err := cmd.Start(); err != nil {
@@ -91,70 +103,113 @@ func (tool *ExecTool) Execute(ctx context.Context, call entity.ToolCall, emit se
 	}
 	runErr := cmd.Wait()
 
-	full := sink.String()
 	// Exit status is data the model must see — a nonzero exit is not a
-	// Go error. The suffix lands at the end of full, so truncation keeps
-	// it inside the tail.
+	// Go error. It belongs at the end of the stream, so it lands inside
+	// the tail of the excerpt and at the end of the spill file.
+	suffix := ""
 	var exitErr *exec.ExitError
 	switch {
 	case runErr == nil:
 	case errors.As(runErr, &exitErr) && exitErr.ExitCode() > 0:
-		full += fmt.Sprintf("\n(exit %d)", exitErr.ExitCode())
+		suffix = fmt.Sprintf("\n(exit %d)", exitErr.ExitCode())
 	case ctx.Err() != nil:
-		full += fmt.Sprintf("\n(killed: %v)", ctx.Err())
+		suffix = fmt.Sprintf("\n(killed: %v)", ctx.Err())
 	case errors.As(runErr, &exitErr):
-		full += fmt.Sprintf("\n(%s)", exitErr) // signal death, e.g. "signal: killed"
+		suffix = fmt.Sprintf("\n(%s)", exitErr) // signal death, e.g. "signal: killed"
 	default:
-		full += fmt.Sprintf("\n(%v)", runErr)
+		suffix = fmt.Sprintf("\n(%v)", runErr)
 	}
 
-	budget := call.OutputBudget()
-	if len(full) <= budget {
-		return service.ToolResult{Text: full}, nil
+	sink.mu.Lock()
+	head := sink.buf.String()
+	tail := string(sink.tail)
+	total := sink.total
+	spilled := sink.spilled
+	spillErr := sink.spillErr
+	if sink.spill != nil {
+		_, _ = sink.spill.Write([]byte(suffix))
+		_ = sink.spill.Close()
 	}
+	sink.mu.Unlock()
 
-	// Over budget: spill the full output to a temp file and return a
-	// head+tail excerpt naming it — never drop output silently.
-	safe := strings.Map(func(r rune) rune {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == '_' || r == '.' {
-			return r
+	if !spilled {
+		full := head + suffix
+		if len(full) <= budget {
+			return service.ToolResult{Text: full}, nil
 		}
-		return '_'
-	}, call.ID())
-	ref := filepath.Join(os.TempDir(), "llm-base-exec-"+safe+".log")
-	if err := os.WriteFile(ref, []byte(full), 0o600); err != nil {
-		ref = fmt.Sprintf("spill to %s failed: %v", ref, err)
-	} else {
-		ref = "full output: " + ref
+		// Never crossed the budget mid-run but overshot after the exit
+		// suffix (or on a final chunk boundary) — spill the whole string
+		// now; it is still fully in memory.
+		ref := "full output: " + spillPath
+		if err := os.WriteFile(spillPath, []byte(full), 0o600); err != nil {
+			ref = fmt.Sprintf("spill to %s failed: %v", spillPath, err)
+		}
+		return service.ToolResult{Text: truncateOutput(full, budget, ref)}, nil
 	}
-	return service.ToolResult{Text: truncateOutput(full, budget, ref)}, nil
+
+	// Spilled mid-run: the file already holds everything, the excerpt is
+	// assembled from the frozen head and the rolling tail.
+	tail += suffix
+	ref := "full output: " + spillPath
+	if spillErr != nil {
+		ref = fmt.Sprintf("spill to %s failed: %v", spillPath, spillErr)
+	}
+	return service.ToolResult{Text: truncateSpilled(head, tail, total+len(suffix), ref, budget)}, nil
 }
 
 // outputSink is the single writer behind cmd.Stdout+Stderr: one pipe
 // merges both streams in arrival order, and every Write forwards a live
-// preview chunk to emit.
+// preview chunk to emit. Memory stays bounded by the call budget: while
+// output fits it buffers outright; the first Write past the budget opens
+// the spill file, freezes buf as the head region, and keeps only a
+// rolling tail window — the full stream continues into the file.
 type outputSink struct {
-	mu   sync.Mutex
-	buf  bytes.Buffer
-	emit service.ToolEmitter
+	mu        sync.Mutex
+	buf       bytes.Buffer // head region — frozen once spilled
+	tail      []byte       // rolling tail once spilled
+	spill     *os.File
+	spillPath string
+	spillErr  error
+	spilled   bool
+	total     int // everything ever written, for the omitted-byte count
+	budget    int
+	emit      service.ToolEmitter
 }
 
 func (s *outputSink) Write(p []byte) (int, error) {
 	s.mu.Lock()
-	n, _ := s.buf.Write(p)
+	s.total += len(p)
+	if s.spilled {
+		if s.spill != nil {
+			_, _ = s.spill.Write(p)
+		}
+		s.tail = append(s.tail, p...)
+		if len(s.tail) > s.budget {
+			s.tail = s.tail[len(s.tail)-s.budget:]
+		}
+	} else {
+		s.buf.Write(p)
+		if s.buf.Len() > s.budget {
+			s.spilled = true
+			if f, err := os.OpenFile(s.spillPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600); err == nil {
+				s.spill = f
+				_, _ = f.Write(s.buf.Bytes())
+			} else {
+				// Degrade to head+tail without the file — the marker
+				// reports the failure; memory still stays bounded.
+				s.spillErr = err
+			}
+			s.tail = append([]byte(nil), s.buf.Bytes()[max(0, s.buf.Len()-s.budget):]...)
+			s.buf.Truncate(min(s.budget, s.buf.Len()))
+		}
+	}
 	s.mu.Unlock()
 	// Emit outside the lock: the emitter is synchronous, and a slow
 	// consumer must not serialize the two streams against each other.
 	if s.emit != nil {
-		s.emit(string(p[:n]))
+		s.emit(string(p))
 	}
-	return n, nil
-}
-
-func (s *outputSink) String() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.buf.String()
+	return len(p), nil
 }
 
 // truncateOutput keeps a head and tail of full inside budget, joined by
@@ -179,4 +234,31 @@ func truncateOutput(full string, budget int, ref string) string {
 		tailStart++
 	}
 	return full[:head] + fmt.Sprintf(markerFmt, tailStart-head, ref) + full[tailStart:]
+}
+
+// truncateSpilled is truncateOutput for the mid-run spill path: the head
+// comes from the sink's frozen head buffer and the tail from its rolling
+// window, so the omitted middle is derived rather than sliced out of a
+// full string. Both sides are cut on rune boundaries like truncateOutput.
+func truncateSpilled(head, tail string, total int, ref string, budget int) string {
+	const markerFmt = "\n\n[... %d bytes omitted — %s ...]\n\n"
+	room := budget - len(fmt.Sprintf(markerFmt, total, ref))
+	if room <= 0 {
+		return head[:min(budget, len(head))]
+	}
+	headRoom := room * 3 / 5
+	tailRoom := room - headRoom
+	if len(head) > headRoom {
+		head = head[:headRoom]
+		for len(head) > 0 && !utf8.ValidString(head) {
+			head = head[:len(head)-1]
+		}
+	}
+	if len(tail) > tailRoom {
+		tail = tail[len(tail)-tailRoom:]
+		for len(tail) > 0 && !utf8.ValidString(tail) {
+			tail = tail[1:]
+		}
+	}
+	return head + fmt.Sprintf(markerFmt, total-len(head)-len(tail), ref) + tail
 }

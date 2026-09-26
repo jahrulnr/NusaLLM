@@ -140,9 +140,10 @@ func (c *Conversation) AddUsage(u valueobject.Usage) {
 // using a chars/4 heuristic over everything adapters replay onto the wire:
 // system prompt, message content, optionalContent values (signatures,
 // reasoning content, thinking payloads), and tool call input/output.
-// Attachments are billed by providers via media tokenization (image tiles,
-// audio/video duration), not characters — each contributes a flat
-// attachmentTokenEstimate regardless of URI form.
+// Attachments — message-level and tool-produced alike — are billed by
+// providers via media tokenization (image tiles, audio/video duration),
+// not characters — each contributes a flat attachmentTokenEstimate
+// regardless of URI form.
 // Per-model tokenizers differ so no exact count exists — use this for
 // budgeting/compaction decisions only; Usage() holds the provider-reported
 // truth for billing.
@@ -159,6 +160,7 @@ func (c *Conversation) EstimatedTokens() int {
 		}
 		for _, tc := range m.ToolCalls() {
 			chars += len(tc.Input()) + len(tc.Output())
+			flat += len(tc.OutputAttachments()) * attachmentTokenEstimate
 		}
 	}
 	return chars/4 + flat

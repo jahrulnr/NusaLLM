@@ -51,9 +51,18 @@ func TestConversationEstimatedTokens(t *testing.T) {
 	m.AddAttachment(a)
 	c.Append(m)
 
-	// (400 + 400 + 40)/4 + 1000 flat attachment = 1210
-	if got := c.EstimatedTokens(); got != 1210 {
-		t.Fatalf("EstimatedTokens = %d, want 1210", got)
+	// Tool-produced media bills like a message attachment — a media-heavy
+	// history must still trip the compaction budget.
+	am, _ := entity.NewMessage(enum.RoleAssistant, "")
+	tc, _ := entity.NewToolCall("c1", "read_media", strings.Repeat("i", 40), enum.TooltypeOrigin)
+	tc.SetStoredOutput(strings.Repeat("o", 40))
+	tc.SetOutputAttachments([]valueobject.Attachment{a})
+	am.AddToolCall(tc)
+	c.Append(am)
+
+	// (400 + 400 + 40 + 40 + 40)/4 + 2×1000 flat attachments = 2230
+	if got := c.EstimatedTokens(); got != 2230 {
+		t.Fatalf("EstimatedTokens = %d, want 2230", got)
 	}
 }
 

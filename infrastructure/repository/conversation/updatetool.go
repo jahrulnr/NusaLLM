@@ -28,6 +28,7 @@ func (r *ConversationRepository) UpdateToolCallOutput(ctx context.Context, convI
 			URI:       a.URI(),
 			MediaType: a.MediaType(),
 			Name:      a.Name(),
+			SHA256:    a.SHA256(),
 		})
 	}
 	return appendLine(filepath.Join(r.convDir(convID), activeFile), line)

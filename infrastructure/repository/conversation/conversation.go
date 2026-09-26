@@ -200,6 +200,7 @@ func messagesFromLines(lines [][]byte) ([]entity.Message, error) {
 					return nil, fmt.Errorf("tool_output attachment: %w", err)
 				}
 				att.SetName(a.Name)
+				att.SetSHA256(a.SHA256)
 				atts = append(atts, att)
 			}
 			patches = append(patches, patch{lr.CallID, lr.Output, atts})
@@ -209,6 +210,8 @@ func messagesFromLines(lines [][]byte) ([]entity.Message, error) {
 		for i := range msgs {
 			if msgs[i].SetStoredToolOutput(p.callID, p.output) == nil {
 				if p.atts != nil {
+					// Cannot fail — SetStoredToolOutput just matched this
+					// callID, which is the only lookup the setter repeats.
 					_ = msgs[i].SetToolOutputAttachments(p.callID, p.atts)
 				}
 				break

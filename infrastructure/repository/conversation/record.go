@@ -79,6 +79,7 @@ type attachmentRecord struct {
 	URI       string `json:"uri"`
 	MediaType string `json:"mediaType"`
 	Name      string `json:"name,omitempty"`
+	SHA256    string `json:"sha256,omitempty"`
 }
 
 func encodeMessage(m entity.Message) messageRecord {
@@ -107,6 +108,7 @@ func encodeMessage(m entity.Message) messageRecord {
 				URI:       a.URI(),
 				MediaType: a.MediaType(),
 				Name:      a.Name(),
+				SHA256:    a.SHA256(),
 			})
 		}
 		r.ToolCalls = append(r.ToolCalls, rec)
@@ -116,6 +118,7 @@ func encodeMessage(m entity.Message) messageRecord {
 			URI:       a.URI(),
 			MediaType: a.MediaType(),
 			Name:      a.Name(),
+			SHA256:    a.SHA256(),
 		})
 	}
 	return r
@@ -158,6 +161,7 @@ func decodeMessage(r messageRecord) (entity.Message, error) {
 			return entity.Message{}, fmt.Errorf("attachment: %w", err)
 		}
 		att.SetName(a.Name)
+		att.SetSHA256(a.SHA256)
 		m.AddAttachment(att)
 	}
 	for _, t := range r.ToolCalls {
@@ -200,6 +204,7 @@ func decodeToolCall(r toolCallRecord) (entity.ToolCall, error) {
 			return entity.ToolCall{}, fmt.Errorf("toolCall %q attachment: %w", r.ID, err)
 		}
 		att.SetName(a.Name)
+		att.SetSHA256(a.SHA256)
 		atts = append(atts, att)
 	}
 	tc.SetOutputAttachments(atts)

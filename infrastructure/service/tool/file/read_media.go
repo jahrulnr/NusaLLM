@@ -2,6 +2,8 @@ package toolfile
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,7 +24,12 @@ import (
 // boundary; Execute resolves the call input against an os.Root so `..`
 // traversal and symlink escapes fail alike. Payload bytes never enter the
 // tool: the result carries a file:// reference adapters resolve at send
-// time, so size caps are enforced here from the stat, not the read.
+// time, so size caps are enforced here from the stat, not the read. The
+// reference outlives the check, so the content itself is pinned: the
+// sha256 recorded here is hashed through this same confined handle, and
+// send-time resolution verifies it — a file swapped or rewritten after
+// Execute degrades to a placeholder instead of resolving outside what
+// was inspected.
 type ReadMediaTool struct {
 	root     *os.Root
 	rootPath string // absolute root — os.Root does not expose it
@@ -86,11 +93,9 @@ func (tool *ReadMediaTool) Execute(ctx context.Context, call entity.ToolCall, _ 
 	}
 	// Sniff the first 512 bytes — DetectContentType's window. The extension
 	// is caller-supplied and says nothing about the actual payload.
-	prefix, err := io.ReadAll(io.LimitReader(f, 512))
-	_ = f.Close()
-	if err != nil {
-		return service.ToolResult{}, err
-	}
+	prefix := make([]byte, 512)
+	n, _ := io.ReadFull(f, prefix) // short files end early — n is what matters
+	prefix = prefix[:n]
 	mediaType := http.DetectContentType(prefix)
 	if mediaType == "application/octet-stream" {
 		// Unrecognized binary: the extension is the last hint before
@@ -124,8 +129,21 @@ func (tool *ReadMediaTool) Execute(ctx context.Context, call entity.ToolCall, _ 
 		limit = 20 << 20
 	}
 	if info.Size() > limit {
+		_ = f.Close()
 		return service.ToolResult{}, fmt.Errorf("%q exceeds the %d MiB limit for %s media", input.Path, limit>>20, modality)
 	}
+	// Pin the content the reference will resolve to: hash through this
+	// confined handle — never the raw path — so what send-time verifies is
+	// provably the file os.Root allowed us to see. The read continues from
+	// the sniff offset, keeping this to a single pass.
+	h := sha256.New()
+	_, _ = h.Write(prefix)
+	if _, err := io.Copy(h, f); err != nil {
+		_ = f.Close()
+		return service.ToolResult{}, err
+	}
+	_ = f.Close()
+	att.SetSHA256(hex.EncodeToString(h.Sum(nil)))
 	att.SetName(filepath.Base(input.Path))
 	return service.ToolResult{
 		Text:        fmt.Sprintf("loaded %s %s (%s, %d bytes) — it is now attached for the model", modality, att.Name(), mediaType, info.Size()),
