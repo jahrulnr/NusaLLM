@@ -140,7 +140,7 @@ func (d Deps) resolveRoute(ctx context.Context, convID string, conv *aggregate.C
 		// for this style — that's a deployment defect, not a user error.
 		return nil, model, nil, apperror.New(500, "no adapter for gateway style", fmt.Errorf("style %s unregistered", gw.Style()))
 	}
-	return gw, m, svc, nil
+	return gw, m.ApplyUnknownContextDefaults(), svc, nil
 }
 
 // ToolSchemas returns the registered catalog sorted by name — the

@@ -2,9 +2,12 @@ package tui
 
 import (
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/jahrulnr/llm-base/infrastructure/delivery/cli/session"
 	"github.com/jahrulnr/llm-base/infrastructure/delivery/cli/term"
@@ -12,6 +15,8 @@ import (
 	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/event"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
+	"github.com/jahrulnr/llm-base/infrastructure/service/workspace"
+	"github.com/muesli/termenv"
 )
 
 func testModel(t *testing.T) *replModel {
@@ -29,6 +34,192 @@ func TestLiveWritesDeltaVerbatim(t *testing.T) {
 
 	if got := m.live.String(); got != delta {
 		t.Fatalf("live delta = %q, want %q", got, delta)
+	}
+}
+
+func TestLiveHidesReasoningButShowsThinkingPhase(t *testing.T) {
+	m := testModel(t)
+	m.turnActive = true
+
+	m.applyEvent(event.NewReasoningEvent("private chain of thought"))
+
+	if got := m.live.String(); got != "" {
+		t.Fatalf("reasoning leaked into live transcript: %q", got)
+	}
+	if m.phase != "thinking" {
+		t.Fatalf("phase = %q, want thinking", m.phase)
+	}
+	if got := m.renderFooter(false); !strings.Contains(got, "thinking") {
+		t.Fatalf("footer = %q, want thinking indicator", got)
+	}
+}
+
+func TestViewPlacesFooterBadgesUnderComposer(t *testing.T) {
+	m := testModel(t)
+	m.width = 80
+	m.textarea.SetWidth(composerInputWidth(80))
+	m.repl.ConversationID = "conv-123"
+	m.repl.Route = "openrouter"
+	m.repl.ModelID = "gpt-test"
+	m.contextEstimate = 200_000
+	m.contextTotal = 1_000_000
+	m.textarea.SetValue("draft message")
+
+	lines := strings.Split(ansi.Strip(m.View()), "\n")
+	composer, footer := -1, -1
+	for i, line := range lines {
+		if strings.Contains(line, composerPrompt+"draft message") {
+			composer = i
+		}
+		if strings.Contains(line, "openrouter / gpt-test") {
+			footer = i
+		}
+	}
+	if composer < 0 || footer < 0 {
+		t.Fatalf("view missing composer or footer:\n%s", strings.Join(lines, "\n"))
+	}
+	if footer <= composer {
+		t.Fatalf("footer row %d must render below composer row %d", footer, composer)
+	}
+	badges := lines[footer]
+	route, conv := strings.Index(badges, "openrouter / gpt-test"), strings.Index(badges, "conv-123")
+	if conv < route {
+		t.Fatalf("footer badges out of order: %q", badges)
+	}
+	if !strings.Contains(badges, "~200K/1M") {
+		t.Fatalf("footer missing context estimate: %q", badges)
+	}
+	if !strings.Contains(lines[footer+1], "/ for commands") {
+		t.Fatalf("idle hint row = %q, want command hint", lines[footer+1])
+	}
+}
+
+func TestFooterShowsWorkspaceAndActivePhase(t *testing.T) {
+	m := testModel(t)
+	root, err := workspace.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("workspace: %v", err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+	m.repl.Workspace = root
+	m.turnActive = true
+	m.phase = "exec write_file"
+
+	got := ansi.Strip(m.renderFooter(false))
+	for _, want := range []string{filepath.Base(root.Path()), "write_file", "ctrl+c to interrupt"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("footer = %q, missing %q", got, want)
+		}
+	}
+	if strings.Contains(got, "exec write_file") {
+		t.Fatalf("footer should show the tool name without the phase prefix: %q", got)
+	}
+}
+
+func TestWidthChangeRepaintsFromCleanScreen(t *testing.T) {
+	m := testModel(t)
+
+	next, cmd := m.Update(tea.WindowSizeMsg{Width: 110, Height: 30})
+	if cmd != nil {
+		t.Fatal("first size report must not clear the startup banner")
+	}
+	next, cmd = next.Update(tea.WindowSizeMsg{Width: 110, Height: 20})
+	if cmd != nil {
+		t.Fatal("height-only change does not reflow rows and must not clear")
+	}
+	if _, cmd = next.Update(tea.WindowSizeMsg{Width: 70, Height: 20}); cmd == nil {
+		t.Fatal("width change must clear the screen before repainting the frame")
+	}
+}
+
+func TestComposerSurfaceCoversTextareaPadding(t *testing.T) {
+	profile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	t.Cleanup(func() { lipgloss.SetColorProfile(profile) })
+	m := testModel(t)
+	m.width = 40
+	m.textarea.SetWidth(composerInputWidth(40))
+
+	surface := composerSurface.Render("x")
+	surface = surface[:strings.Index(surface, "x")]
+	for line := range strings.Lines(m.renderComposer()) {
+		line = strings.TrimSuffix(line, "\n")
+		// Any cell written right after a reset must reopen the surface.
+		rest := strings.TrimSuffix(line, term.Reset)
+		for _, seg := range strings.Split(rest, term.Reset)[1:] {
+			if !strings.HasPrefix(seg, surface) {
+				t.Fatalf("cells after reset lose the surface color: %q", line)
+			}
+		}
+	}
+}
+
+func TestComposerKeepsFirstLineVisibleAfterNewline(t *testing.T) {
+	m := testModel(t)
+	m.width = 60
+	m.textarea.SetWidth(composerInputWidth(60))
+
+	for _, msg := range []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune("first line")},
+		{Type: tea.KeyCtrlJ},
+		{Type: tea.KeyRunes, Runes: []rune("second line")},
+	} {
+		m.editComposer(msg)
+		// The textarea only scrolls within content set by its last View.
+		_ = m.renderComposer()
+	}
+
+	got := ansi.Strip(m.renderComposer())
+	for _, want := range []string{composerPrompt + "first line", "second line"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("composer = %q, missing %q", got, want)
+		}
+	}
+}
+
+func TestComposerAndFooterFitNarrowWidth(t *testing.T) {
+	m := testModel(t)
+	m.width = 24
+	m.textarea.SetWidth(composerInputWidth(24))
+	m.repl.ConversationID = strings.Repeat("c", 60)
+	m.repl.Route = strings.Repeat("r", 40)
+	m.repl.ModelID = strings.Repeat("m", 40)
+
+	for line := range strings.Lines(m.View()) {
+		if w := ansi.StringWidth(strings.TrimSuffix(line, "\n")); w > 24 {
+			t.Fatalf("view line exceeds width 24 (got %d): %q", w, line)
+		}
+	}
+}
+
+func TestLiveRendersMarkdownAsChatContent(t *testing.T) {
+	m := testModel(t)
+	m.turnActive = true
+
+	m.applyEvent(event.NewDeltaEvent("# Hello\n\n**bold** answer"))
+
+	got := m.View()
+	if strings.Contains(got, "**bold**") {
+		t.Fatalf("assistant markdown leaked as raw syntax: %q", got)
+	}
+	if !strings.Contains(got, "bold") {
+		t.Fatalf("rendered assistant content missing: %q", got)
+	}
+}
+
+func TestLiveShowsCompactToolCallWithoutToolOutput(t *testing.T) {
+	m := testModel(t)
+	call := newTestToolCall(t, "call-1", "exec", `{"command": "pwd"}`)
+
+	m.applyEvent(event.NewToolCallEvent(call))
+	m.applyEvent(event.NewToolOutputEvent(call, "private tool output"))
+
+	got := m.View()
+	if !strings.Contains(got, "⏺") || !strings.Contains(got, `{"command":"pwd"}`) {
+		t.Fatalf("compact tool activity missing: %q", got)
+	}
+	if strings.Contains(got, "call-1") || strings.Contains(got, "private tool output") {
+		t.Fatalf("tool internals leaked into view: %q", got)
 	}
 }
 
@@ -66,9 +257,14 @@ func TestLiveFormatsValidToolCallJSON(t *testing.T) {
 
 	m.applyEvent(event.NewToolCallEvent(call))
 
-	want := "\n" + term.Dim + "[tool lookup call-1]" + term.Reset + "\n{\n  \"city\": \"Paris\",\n  \"count\": 2\n}\n"
-	if got := m.live.String(); got != want {
-		t.Fatalf("rendered tool call = %q, want %q", got, want)
+	got := m.renderLive()
+	for _, want := range []string{"⏺", "lookup", `{"city":"Paris","count":2}`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("rendered tool call = %q, missing %q", got, want)
+		}
+	}
+	if strings.Contains(got, "call-1") || strings.Contains(got, "\n{\n") {
+		t.Fatalf("tool input should be compact, got %q", got)
 	}
 	if got := call.Input(); got != input {
 		t.Fatalf("tool input mutated to %q, want %q", got, input)
@@ -82,42 +278,27 @@ func TestLivePreservesInvalidToolCallJSON(t *testing.T) {
 
 	m.applyEvent(event.NewToolCallEvent(call))
 
-	want := "\n" + term.Dim + "[tool lookup call-2]" + term.Reset + "\n" + input + "\n"
-	if got := m.live.String(); got != want {
-		t.Fatalf("rendered tool call = %q, want raw input %q", got, want)
+	got := m.renderLive()
+	if !strings.Contains(got, input) {
+		t.Fatalf("rendered tool call = %q, want raw input %q", got, input)
+	}
+	if strings.Contains(got, "call-2") {
+		t.Fatalf("tool id should not render in activity row: %q", got)
+	}
+	if strings.Contains(got, "\n\n") {
+		t.Fatalf("tool input should remain a single activity row, got %q", got)
 	}
 }
 
-func TestLivePrintsOneToolOutputHeaderPerCall(t *testing.T) {
+func TestLiveHidesToolOutput(t *testing.T) {
 	m := testModel(t)
 	first := newTestToolCall(t, "call-1", "lookup", `{}`)
-	second := newTestToolCall(t, "call-2", "read", `{}`)
 
 	m.applyEvent(event.NewToolOutputEvent(first, "first"))
-	m.applyEvent(event.NewToolOutputEvent(first, "-second\n"))
-	m.applyEvent(event.NewToolOutputEvent(second, "third"))
-	m.applyEvent(event.NewToolOutputEvent(second, "-fourth"))
 
 	got := m.live.String()
-	want := term.Dim + "[tool output call-1]" + term.Reset + "\nfirst-second\n" +
-		term.Dim + "[tool output call-2]" + term.Reset + "\nthird-fourth"
-	if got != want {
-		t.Fatalf("rendered tool output = %q, want %q", got, want)
-	}
-}
-
-func TestLiveBoundsToolOutputPreview(t *testing.T) {
-	m := testModel(t)
-	call := newTestToolCall(t, "call-1", "exec", `{}`)
-
-	m.applyEvent(event.NewToolOutputEvent(call, strings.Repeat("x", 4096)))
-	m.applyEvent(event.NewToolOutputEvent(call, "more"))
-
-	if got := len(m.live.String()); got > 2100 {
-		t.Fatalf("tool output preview must be bounded, got %d bytes", got)
-	}
-	if !strings.Contains(m.live.String(), "…") {
-		t.Fatal("truncated preview must carry an ellipsis marker")
+	if got != "" {
+		t.Fatalf("tool output should not render, got %q", got)
 	}
 }
 
@@ -130,9 +311,11 @@ func TestLivePrintsUsageCounters(t *testing.T) {
 
 	m.applyEvent(event.NewFinishedEvent(enum.FinishReasonStop, usage))
 
-	want := "\n" + term.Dim + "[usage input=11 cached_read=3 cached_write=2 output=17 total=33]" + term.Reset + "\n"
-	if got := m.live.String(); got != want {
-		t.Fatalf("rendered usage = %q, want %q", got, want)
+	got := m.renderLive()
+	for _, want := range []string{"11 in", "17 out", "33 total", "3 cached read", "2 cached write"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("rendered usage = %q, missing %q", got, want)
+		}
 	}
 }
 

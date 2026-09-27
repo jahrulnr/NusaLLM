@@ -98,7 +98,8 @@ func compactApp(t *testing.T, svc dservice.TextModelService, contextWindow int) 
 // and the turn answers on the compacted tail.
 func TestSendCompactsOverflow(t *testing.T) {
 	svc := &compactSvc{}
-	app, convs := compactApp(t, svc, 60) // budget 54 — the embedded prompt alone overflows
+	// 64_060 total → 60 input allowance → budget 54 at 90% — same headroom as the old 60×90% test.
+	app, convs := compactApp(t, svc, 64_060)
 
 	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "first", nil, nil); err != nil {
 		t.Fatal(err)
@@ -177,7 +178,7 @@ func TestSend413DoesNotLoop(t *testing.T) {
 // one forced compaction, then the retry succeeds.
 func TestSendCompactsOn413(t *testing.T) {
 	svc := &overflowSvc{}
-	app, convs := compactApp(t, svc, 0) // unknown window → estimate never triggers
+	app, convs := compactApp(t, svc, 0) // unknown window → proactive budget is high; this path tests 413
 
 	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "first", nil, nil); err != nil {
 		t.Fatal(err)

@@ -43,7 +43,7 @@ func (c *ModelCommand) Complete(ctx context.Context, arg string) []dservice.Comm
 	}
 	arg = strings.ToLower(arg)
 	var rows []service.CommandCompletion
-	for _, model := range gateway.Models {
+	for _, model := range entity.ListedModels(gateway.Models) {
 		id := model.ID()
 		if arg != "" && !strings.Contains(strings.ToLower(id), arg) {
 			continue
@@ -90,11 +90,12 @@ func (c *ModelCommand) Execute(ctx context.Context, _ string, emitter dservice.C
 	}
 	id := strings.TrimSpace(raw)
 	if id == "" {
-		if len(gateway.Models) == 0 {
-			c.h.Write(emitter, "gateway %s has no models\n", route)
+		listed := entity.ListedModels(gateway.Models)
+		if len(listed) == 0 {
+			c.h.Write(emitter, "gateway %s has no listed models\n", route)
 			return nil
 		}
-		for _, m := range gateway.Models {
+		for _, m := range listed {
 			marker := " "
 			if m.ID() == selected {
 				marker = "*"
@@ -108,6 +109,15 @@ func (c *ModelCommand) Execute(ctx context.Context, _ string, emitter dservice.C
 	}
 	if !entity.ModelCatalogContains(gateway.Models, id) {
 		return fmt.Errorf("model %q is not in gateway %q; use /model to list", id, route)
+	}
+	for _, m := range gateway.Models {
+		if m.ID() != id {
+			continue
+		}
+		if !entity.ModelListedInPicker(m) {
+			return fmt.Errorf("model %q is not listed (context below %d tokens)", id, entity.MinListedContextWindow)
+		}
+		break
 	}
 	c.h.SetModelID(id)
 	c.h.Write(emitter, "model set to %s on %s\n", id, route)

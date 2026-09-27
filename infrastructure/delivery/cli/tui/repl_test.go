@@ -17,6 +17,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	appconversation "github.com/jahrulnr/llm-base/application/conversation"
 	appgateway "github.com/jahrulnr/llm-base/application/gateway"
 	"github.com/jahrulnr/llm-base/infrastructure/config"
@@ -38,7 +39,7 @@ func TestREPLSendsListsAndResumesConversation(t *testing.T) {
 		requests <- raw
 		if err := json.NewEncoder(w).Encode(map[string]any{
 			"choices": []any{map[string]any{
-				"message":       map[string]any{"role": "assistant", "content": "pong"},
+				"message":       map[string]any{"role": "assistant", "content": "pong", "reasoning_content": "private chain of thought"},
 				"finish_reason": "stop",
 			}},
 			"usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
@@ -129,10 +130,13 @@ func TestREPLSendsListsAndResumesConversation(t *testing.T) {
 	if request := string(<-requests); !strings.Contains(request, "data:image/png;base64,") {
 		t.Fatalf("attached image not materialized in provider request: %s", request)
 	}
-	for _, want := range []string{"route set to gw1", "model set to m1", "attached shot.png", "pong", "messages=2", "user: hello", "assistant: pong", "[usage input=10"} {
+	for _, want := range []string{"route set to gw1", "model set to m1", "attached shot.png", "pong", "messages=2", "> hello", "10 in · 5 out · 15 total"} {
 		if !strings.Contains(output.String(), want) {
 			t.Errorf("REPL output missing %q:\n%s", want, output.String())
 		}
+	}
+	if strings.Contains(output.String(), "private chain of thought") {
+		t.Fatalf("provider reasoning leaked into CLI output:\n%s", output.String())
 	}
 
 	var resumedOutput, resumedError bytes.Buffer
@@ -157,10 +161,13 @@ func TestREPLSendsListsAndResumesConversation(t *testing.T) {
 	if !strings.Contains(resumedOutput.String(), "resumed "+repl.ConversationID) {
 		t.Fatalf("conversation resume failed: id=%q output=%q", resumed.ConversationID, resumedOutput.String())
 	}
-	for _, want := range []string{"user: hello", "assistant: pong"} {
+	for _, want := range []string{"> hello", "pong"} {
 		if !strings.Contains(resumedOutput.String(), want) {
 			t.Errorf("resumed output missing %q:\n%s", want, resumedOutput.String())
 		}
+	}
+	if strings.Contains(resumedOutput.String(), "Assistant") || strings.Contains(resumedOutput.String(), "You") {
+		t.Fatalf("chat transcript should not contain role labels:\n%s", resumedOutput.String())
 	}
 	updated, err := conversationRepository.Load(t.Context(), repl.ConversationID)
 	if err != nil {
@@ -579,7 +586,7 @@ func TestToolCallLoopRunsEndToEnd(t *testing.T) {
 						"role": "assistant", "content": "",
 						"tool_calls": []any{map[string]any{
 							"id": "call_1", "type": "function",
-							"function": map[string]any{"name": "exec", "arguments": `{"command":"echo hi-from-tool"}`},
+							"function": map[string]any{"name": "exec", "arguments": `{"command":"printf dG9vbC1vdXRwdXQtc2VjcmV0 | base64 -d"}`},
 						}},
 					},
 					"finish_reason": "tool_calls",
@@ -672,13 +679,17 @@ func TestToolCallLoopRunsEndToEnd(t *testing.T) {
 	}
 	// The second call must carry the tool result back — that is the loop.
 	second := string(requests[1])
-	if !strings.Contains(second, "hi-from-tool") || !strings.Contains(second, `"role":"tool"`) {
+	if !strings.Contains(second, "tool-output-secret") || !strings.Contains(second, `"role":"tool"`) {
 		t.Fatalf("tool output never returned to provider: %s", second[:min(len(second), 400)])
 	}
-	for _, want := range []string{"[tool exec call_1]", "hi-from-tool", "tool said hi"} {
-		if !strings.Contains(output.String(), want) {
+	plainOutput := ansi.Strip(output.String())
+	for _, want := range []string{"⏺ exec", `{"command":"printf dG9vbC1vdXRwdXQtc2VjcmV0 | base64 -d"}`, "tool said hi"} {
+		if !strings.Contains(plainOutput, want) {
 			t.Errorf("output missing %q:\n%s", want, output.String())
 		}
+	}
+	if strings.Contains(plainOutput, "tool-output-secret") {
+		t.Fatalf("tool output leaked into CLI transcript:\n%s", output.String())
 	}
 	if err := conversationApplication.Shutdown(t.Context()); err != nil {
 		t.Fatal(err)

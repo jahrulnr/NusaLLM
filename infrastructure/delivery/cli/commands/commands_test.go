@@ -244,12 +244,12 @@ func TestResumePrintsRecentConversationHistory(t *testing.T) {
 	f.sess.ConversationID = ""
 
 	out := f.run(t, "/resume "+convID)
-	for _, want := range []string{"resumed " + convID, "user: prior question", "user: latest question", "assistant: pong"} {
+	for _, want := range []string{"resumed " + convID, `\> prior question`, `\> latest question`, "pong"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("resume output missing %q:\n%s", want, out)
 		}
 	}
-	if got := strings.Count(out, "assistant: pong"); got != 2 {
+	if got := strings.Count(out, "pong"); got != 2 {
 		t.Fatalf("assistant history entries = %d, want 2:\n%s", got, out)
 	}
 }

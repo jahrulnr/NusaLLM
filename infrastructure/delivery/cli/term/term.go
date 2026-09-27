@@ -15,6 +15,10 @@ const (
 	Dim     = "\x1b[2m"
 	Reverse = "\x1b[7m"
 	Reset   = "\x1b[0m"
+	Cyan    = "\x1b[36m"
+	Green   = "\x1b[32m"
+	Magenta = "\x1b[35m"
+	Yellow  = "\x1b[33m"
 )
 
 // Sanitize strips control characters so untrusted model or tool output

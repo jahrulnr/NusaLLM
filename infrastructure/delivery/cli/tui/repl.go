@@ -171,11 +171,9 @@ func (e *eofInput) Write(p []byte) (int, error) {
 	return 0, errors.New("input is not writable")
 }
 
-// printWelcome commits the startup banner to scrollback before the inline
-// frame opens — hermes/openclaw-style: brand line plus the operator's
-// current surface, and the setup path when no provider exists yet.
+// printWelcome commits startup context to scrollback before the inline
+// frame opens: gateway readiness and the setup path when none exist yet.
 func (r *REPL) printWelcome(ctx context.Context) {
-	fmt.Fprintf(r.stdout, "%score%s — provider-agnostic llm repl\n", term.Bold, term.Reset)
 	gateways, err := r.Gateways.List(ctx)
 	if err != nil || len(gateways) == 0 {
 		fmt.Fprint(r.stdout, term.Dim+`no gateways configured yet — set one up:

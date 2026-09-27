@@ -12,6 +12,7 @@ import (
 	"unsafe"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/jahrulnr/llm-base/infrastructure/delivery/cli/session"
 	"golang.org/x/sys/unix"
 )
@@ -72,7 +73,7 @@ func TestTTYTypingReachesComposer(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(400 * time.Millisecond)
-	if got := out.String(); !strings.Contains(got, "❯ hi") {
+	if got := ansi.Strip(out.String()); !strings.Contains(got, composerPrompt+"hi") {
 		t.Fatalf("composer never received keystrokes; output=%q", got)
 	}
 

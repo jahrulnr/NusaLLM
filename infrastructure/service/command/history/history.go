@@ -20,7 +20,7 @@ func New(h appcommand.SlashSession) dservice.SlashCommand { return &HistoryComma
 
 func (c *HistoryCommand) Name() string        { return "history" }
 func (c *HistoryCommand) Usage() string       { return "/history [count]" }
-func (c *HistoryCommand) Description() string { return "show recent messages and ids" }
+func (c *HistoryCommand) Description() string { return "show recent messages as chat" }
 
 func (c *HistoryCommand) Execute(ctx context.Context, _ string, emitter dservice.CommandEmitter, args ...string) error {
 	raw := ""

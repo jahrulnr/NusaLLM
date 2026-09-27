@@ -135,8 +135,13 @@ func (s *Session) ResolveRoute(ctx context.Context) (route, modelID string, err 
 		}
 	}
 	if modelID == "" && route != "" {
-		if gw, err := s.Gateways.Get(ctx, route); err == nil && !gw.Broken && len(gw.Models) == 1 {
-			modelID = gw.Models[0].ID()
+		if gw, err := s.Gateways.Get(ctx, route); err == nil && !gw.Broken {
+			listed := entity.ListedModels(gw.Models)
+			if len(listed) == 1 {
+				modelID = listed[0].ID()
+			}
+		}
+		if modelID != "" {
 			s.ModelID = modelID
 			s.Notify(fmt.Sprintf("auto-selected model %s — the only model on %s", modelID, route))
 		}

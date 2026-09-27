@@ -166,10 +166,10 @@ func (c *Conversation) EstimatedTokens() int {
 }
 
 // NeedCompaction reports whether the estimated context size has reached
-// budget — the caller derives it from the current model's context window
-// (e.g. model.ContextWindow() * 0.9) so headroom stays reserved for the
-// reply and a model switch is reflected immediately. Budget <= 0 fails
-// open: compaction is a budgeting concern, never a hard gate.
+// budget — the caller derives it via model.CompactionBudgetTokens so
+// headroom stays reserved for the reply and a model switch is reflected
+// immediately. Budget <= 0 fails open: compaction is a budgeting concern,
+// never a hard gate.
 func (c *Conversation) NeedCompaction(budget int) bool {
 	return budget > 0 && c.EstimatedTokens() >= budget
 }

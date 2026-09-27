@@ -7,6 +7,14 @@ import (
 	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
 )
 
+// DefaultUnknownContextWindow and DefaultUnknownMaxOutputTokens are assumed
+// catalog totals when contextWindow is zero — a 2026-era floor for budgeting
+// and wire defaults until the gateway declares real limits.
+const (
+	DefaultUnknownContextWindow   = 256_000
+	DefaultUnknownMaxOutputTokens = 64_000
+)
+
 // Model is a request-scoped route descriptor: which route (gateway surface,
 // which owns the wire style), which model id, and which generation
 // parameters to apply. Models are switchable — the service layer may
@@ -102,6 +110,61 @@ func (m Model) Pricing() valueobject.Pricing          { return m.pricing }
 func (m *Model) SetPricing(v valueobject.Pricing)     { m.pricing = v }
 func (m Model) ContextWindow() int                    { return m.contextWindow }
 func (m *Model) SetContextWindow(v int)               { m.contextWindow = v }
+
+// EffectiveContextWindow is the total context size used for UI budgeting
+// when the catalog left contextWindow at zero.
+func (m Model) EffectiveContextWindow() int {
+	if m.contextWindow > 0 {
+		return m.contextWindow
+	}
+	return DefaultUnknownContextWindow
+}
+
+// ApplyUnknownContextDefaults returns a copy with assumed totals when the
+// catalog left contextWindow at zero. Persisted gateway records stay as-is.
+func (m Model) ApplyUnknownContextDefaults() Model {
+	if m.contextWindow != 0 {
+		return m
+	}
+	m.SetContextWindow(DefaultUnknownContextWindow)
+	if m.maxOutputTokens == nil {
+		v := DefaultUnknownMaxOutputTokens
+		m.SetMaxOutputTokens(&v)
+	}
+	return m
+}
+
+// CompactionBudgetTokens is the estimated input size that triggers proactive
+// compaction — a share of the input allowance after reserving output headroom.
+// Catalog windows below 256K and unknown windows use total−64K input; wider
+// declared windows keep the legacy share of the full context total.
+func (m Model) CompactionBudgetTokens(budgetPct int) int {
+	if budgetPct <= 0 {
+		return 0
+	}
+	allowance := m.compactionInputAllowance()
+	if allowance <= 0 {
+		return 0
+	}
+	return allowance * budgetPct / 100
+}
+
+func (m Model) compactionInputAllowance() int {
+	total := m.contextWindow
+	if total <= 0 {
+		total = DefaultUnknownContextWindow
+		reserve := DefaultUnknownMaxOutputTokens
+		if m.maxOutputTokens != nil && *m.maxOutputTokens > 0 {
+			reserve = *m.maxOutputTokens
+		}
+		return total - reserve
+	}
+	if total < DefaultUnknownContextWindow {
+		return total - DefaultUnknownMaxOutputTokens
+	}
+	return total
+}
+
 func (m Model) InputModalities() []enum.Modality      { return m.inputModalities }
 func (m *Model) SetInputModalities(v []enum.Modality) { m.inputModalities = v }
 func (m Model) OutputModalities() []enum.Modality     { return m.outputModalities }

@@ -21,8 +21,8 @@ func NewDeltaEvent(delta string) TurnEvent {
 	return TurnEvent{kind: enum.TurnEventDelta, delta: delta}
 }
 
-// NewReasoningEvent carries a thinking/reasoning chunk — visible scratchpad
-// for live UI, kept out of the assistant's answer text.
+// NewReasoningEvent carries a thinking/reasoning chunk for live UI status or
+// optional detail, kept out of the assistant's answer text.
 func NewReasoningEvent(delta string) TurnEvent {
 	return TurnEvent{kind: enum.TurnEventReasoning, delta: delta}
 }

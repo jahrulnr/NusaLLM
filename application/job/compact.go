@@ -26,7 +26,7 @@ const compactAttempts = 3
 // a turn that already compacted must not compact again on a provider
 // 413 (one over-sized message would loop forever).
 func (d Deps) maybeCompact(ctx context.Context, convID string, conv *aggregate.Conversation, gw *aggregate.Gateway, model entity.Model, svc dservice.TextModelService, budgetPct, keepTail int) (compacted bool, err error) {
-	budget := model.ContextWindow() * budgetPct / 100
+	budget := model.CompactionBudgetTokens(budgetPct)
 	if !conv.NeedCompaction(budget) || len(conv.Messages()) <= keepTail {
 		// Nothing foldable: a checkpoint that drops zero messages is
 		// noise in history, not headroom.

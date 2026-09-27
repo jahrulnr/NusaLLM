@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -55,9 +54,11 @@ type replModel struct {
 	draft       string // live draft stashed while browsing history
 	queued      []string
 	live        *strings.Builder // pointer: the model is copied per Update
-	toolSeen    map[string]struct{}
-	toolPreview map[string]int
-	turnActive  bool
+	toolRows    []string         // compact tool activity for the current turn
+	usageLine       string // compact token summary for the current turn
+	contextEstimate int    // footer ~estimate/total input budget
+	contextTotal    int
+	turnActive      bool
 	turnCancel  context.CancelFunc
 	spin        spinner.Model
 	phase       string // waiting → thinking → responding → exec <tool>
@@ -70,12 +71,17 @@ type replModel struct {
 
 func newModel(r *REPL, interactive bool) replModel {
 	ta := textarea.New()
-	ta.Prompt = "❯ "
-	ta.Placeholder = "type a message, / for commands"
+	ta.SetPromptFunc(ansi.StringWidth(composerPrompt), func(line int) string {
+		if line == 0 {
+			return composerPrompt
+		}
+		return ""
+	})
+	ta.Placeholder = "Ask anything, / for commands"
 	ta.ShowLineNumbers = false
 	ta.CharLimit = 0
 	ta.SetHeight(1)
-	ta.FocusedStyle.CursorLine = ta.FocusedStyle.CursorLine.UnsetBackground()
+	styleComposer(&ta)
 	ta.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("ctrl+j"))
 	ta.Focus()
 	registry := commands.New(r.Session)
@@ -90,8 +96,6 @@ func newModel(r *REPL, interactive bool) replModel {
 		history:     loadHistory(r.historyFile),
 		historyIdx:  -1,
 		live:        &strings.Builder{},
-		toolSeen:    make(map[string]struct{}),
-		toolPreview: make(map[string]int),
 		interactive: interactive,
 	}
 }
@@ -103,9 +107,17 @@ func (m replModel) Init() tea.Cmd {
 func (m replModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		// The terminal reflows the full-width composer rows on a width
+		// change, so the inline renderer's cursor-up no longer reaches the
+		// old frame top and stale rows stay on screen. Repaint from a clean
+		// screen instead; the first size report arrives before any frame.
+		var cmd tea.Cmd
+		if m.width > 0 && msg.Width != m.width {
+			cmd = tea.ClearScreen
+		}
 		m.width = msg.Width
-		m.textarea.SetWidth(msg.Width)
-		return m, nil
+		m.textarea.SetWidth(composerInputWidth(msg.Width))
+		return m, cmd
 	case turnEventMsg:
 		m.applyEvent(msg.ev)
 		return m, nil
@@ -130,10 +142,7 @@ func (m replModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
-	var cmd tea.Cmd
-	m.textarea, cmd = m.textarea.Update(msg)
-	m.fitComposer()
-	return m, cmd
+	return m, m.editComposer(msg)
 }
 
 // handleKey routes keys through the codex precedence stack: palette/modal
@@ -249,10 +258,7 @@ func (m replModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m.historyNext()
 	}
-	var cmd tea.Cmd
-	m.textarea, cmd = m.textarea.Update(msg)
-	m.fitComposer()
-	return m, cmd
+	return m, m.editComposer(msg)
 }
 
 // submit parses the line: slash commands dispatch to the registry — /edit
@@ -381,7 +387,7 @@ func (m *replModel) runCommand(command, args string) tea.Cmd {
 	// Partial output first, then the error — the command's output is the
 	// context the error describes.
 	if block.Len() > 0 {
-		m.println(block.String())
+		m.println(m.renderCommandOutput(command, block.String()))
 	}
 	if err != nil {
 		m.println("error: " + publicError(err))
@@ -390,7 +396,23 @@ func (m *replModel) runCommand(command, args string) tea.Cmd {
 		m.repl.ClearQueued = false
 		return tea.ClearScreen
 	}
+	m.refreshContextUsage()
 	return nil
+}
+
+func (m replModel) renderCommandOutput(command, output string) string {
+	switch command {
+	case "history":
+		return renderMarkdown(output, m.width)
+	case "resume":
+		header, transcript, ok := strings.Cut(output, "\n")
+		if !ok {
+			return output
+		}
+		return strings.TrimRight(header, "\n") + "\n" + renderMarkdown(transcript, m.width)
+	default:
+		return output
+	}
 }
 
 // startTurn echoes the user input optimistically — committed before the
@@ -408,10 +430,8 @@ func (m *replModel) beginTurn(text string) tea.Cmd {
 		m.println("error: " + publicError(err))
 		return nil
 	}
-	m.println("❯ " + text)
-	m.live.Reset()
-	m.toolSeen = make(map[string]struct{})
-	m.toolPreview = make(map[string]int)
+	m.println(term.Cyan + term.Bold + "> " + term.Sanitize(text) + term.Reset)
+	m.resetLive()
 	m.turnActive = true
 	m.phase = "waiting"
 
@@ -442,10 +462,8 @@ func (m *replModel) beginEdit(args string) tea.Cmd {
 		m.println("error: usage: /edit <message-id> <replacement text>")
 		return nil
 	}
-	m.println("❯ /edit " + messageID)
-	m.live.Reset()
-	m.toolSeen = make(map[string]struct{})
-	m.toolPreview = make(map[string]int)
+	m.println(term.Cyan + term.Bold + "> " + term.Sanitize("/edit "+messageID) + term.Reset)
+	m.resetLive()
 	m.turnActive = true
 	m.phase = "waiting"
 
@@ -468,9 +486,7 @@ func (m *replModel) beginCompact() tea.Cmd {
 		m.println("error: no active conversation; use /resume <id>")
 		return nil
 	}
-	m.live.Reset()
-	m.toolSeen = make(map[string]struct{})
-	m.toolPreview = make(map[string]int)
+	m.resetLive()
 	m.turnActive = true
 	m.phase = "compacting"
 	m.println(term.Dim + "compacting…" + term.Reset)
@@ -502,68 +518,135 @@ func (m replModel) finishTurn(result appconversation.SendResult, err error) (tea
 		m.repl.ConversationID = result.ConversationID
 		m.repl.Attachments = nil
 	}
-	if block := strings.TrimRight(m.live.String(), "\n"); block != "" {
+	if block := m.renderLive(); block != "" {
 		m.println(block)
 	}
-	m.live.Reset()
-	m.toolSeen = make(map[string]struct{})
-	m.toolPreview = make(map[string]int)
+	m.resetLive()
 	if err != nil {
 		m.println("error: " + publicError(err))
 	}
 	cmd := m.drain()
+	m.refreshContextUsage()
 	return m, cmd
 }
 
+func (m *replModel) refreshContextUsage() {
+	m.contextEstimate = 0
+	m.contextTotal = 0
+	if m.repl == nil || m.repl.Conversations == nil || m.repl.ConversationID == "" {
+		return
+	}
+	ctx := m.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	stats, err := m.repl.Conversations.ContextFooterStats(ctx, m.repl.ConversationID, m.repl.Route, m.repl.ModelID)
+	if err != nil {
+		return
+	}
+	m.contextEstimate = stats.Estimate
+	m.contextTotal = stats.Total
+}
+
+func (m *replModel) resetLive() {
+	m.live.Reset()
+	m.toolRows = nil
+	m.usageLine = ""
+}
+
+// renderLive builds the current chat turn from separate assistant, tool, and
+// usage regions. Keeping tool activity out of the assistant buffer lets the
+// Markdown renderer style prose without touching tool rows or ANSI markers.
+func (m replModel) renderLive() string {
+	var b strings.Builder
+	for _, row := range m.toolRows {
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(row)
+	}
+	if strings.TrimSpace(m.live.String()) != "" {
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(renderMarkdown(m.live.String(), m.width))
+	}
+	if m.usageLine != "" {
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(m.usageLine)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 // applyEvent folds a turn event into the live region — text deltas append,
-// tool calls render as bounded blocks, and a usage line closes the turn.
+// tool calls become compact activity rows, and tool output stays hidden.
 func (m *replModel) applyEvent(e event.TurnEvent) {
 	switch e.Kind() {
 	case enum.TurnEventDelta:
 		m.phase = "responding"
 		m.live.WriteString(term.Sanitize(e.Delta()))
 	case enum.TurnEventReasoning:
-		// Thinking text renders dimmed inline — the user should see the
-		// model is alive during long reasoning, not a frozen frame.
-		if m.phase == "waiting" {
-			m.phase = "thinking"
-		}
-		m.live.WriteString(term.Dim + term.Sanitize(e.Delta()) + term.Reset)
+		// Reasoning is a provider scratchpad, not transcript content. Keep
+		// the operator informed through the status line without exposing
+		// private chain-of-thought in scrollback.
+		m.phase = "thinking"
 	case enum.TurnEventToolCall:
 		m.phase = "exec " + e.ToolCall().Name()
 		call := e.ToolCall()
-		input := call.Input()
-		var pretty bytes.Buffer
-		if err := json.Indent(&pretty, []byte(call.Input()), "", "  "); err == nil {
-			input = pretty.String()
+		row := fmt.Sprintf("%s%s⏺ %s%s", term.Yellow, term.Bold, term.Sanitize(call.Name()), term.Reset)
+		if args := compactToolInput(call.Input()); args != "" {
+			row += " " + term.Dim + term.Sanitize(args) + term.Reset
 		}
-		fmt.Fprintf(m.live, "\n%s[tool %s %s]%s\n%s\n", term.Dim, term.Sanitize(call.Name()), term.Sanitize(call.ID()), term.Reset, term.Sanitize(input))
+		m.toolRows = append(m.toolRows, row)
 	case enum.TurnEventToolOutput:
-		call := e.ToolCall()
-		if _, ok := m.toolSeen[call.ID()]; !ok {
-			m.toolSeen[call.ID()] = struct{}{}
-			fmt.Fprintf(m.live, "%s[tool output %s]%s\n", term.Dim, term.Sanitize(call.ID()), term.Reset)
-		}
-		const previewCap = 2048
-		if m.toolPreview[call.ID()] >= previewCap {
-			return
-		}
-		delta := e.Delta()
-		m.toolPreview[call.ID()] += len(delta)
-		if m.toolPreview[call.ID()] > previewCap {
-			delta = delta[:previewCap-(m.toolPreview[call.ID()]-len(delta))]
-			fmt.Fprintf(m.live, "%s%s…%s", term.Sanitize(delta), term.Dim, term.Reset)
-			return
-		}
-		m.live.WriteString(term.Sanitize(delta))
+		// Tool output is useful to the model and logs, but noisy in the
+		// chat transcript. The tool call row remains visible as progress.
 	case enum.TurnEventFinished:
 		usage := e.Usage()
-		fmt.Fprintf(m.live,
-			"\n%s[usage input=%d cached_read=%d cached_write=%d output=%d total=%d]%s\n",
-			term.Dim,
-			usage.InputTokens(), usage.CacheReadTokens(), usage.CacheWriteTokens(),
-			usage.OutputTokens(), usage.Total(), term.Reset)
+		m.usageLine = term.Dim + "↳ " + formatUsage(usage) + term.Reset
 	}
+}
+
+const toolSummaryMax = 96
+
+// compactToolInput keeps a tool activity row to one line without dropping
+// argument names. Valid JSON is compacted; malformed input is whitespace
+// collapsed and preserved as a bounded preview.
+func compactToolInput(input string) string {
+	input = strings.TrimSpace(input)
+	if input == "" || input == "{}" {
+		return ""
+	}
+
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, []byte(input)); err == nil {
+		return truncateInline(compact.String(), toolSummaryMax)
+	}
+	return truncateInline(strings.Join(strings.Fields(input), " "), toolSummaryMax)
+}
+
+func truncateInline(text string, max int) string {
+	if max < 2 {
+		return ""
+	}
+	runes := []rune(text)
+	if len(runes) <= max {
+		return text
+	}
+	return string(runes[:max-1]) + "…"
+}
+
+func formatUsage(usage valueobject.Usage) string {
+	summary := fmt.Sprintf("%d in · %d out · %d total", usage.InputTokens(), usage.OutputTokens(), usage.Total())
+	if usage.CacheReadTokens() != 0 {
+		summary += fmt.Sprintf(" · %d cached read", usage.CacheReadTokens())
+	}
+	if usage.CacheWriteTokens() != 0 {
+		summary += fmt.Sprintf(" · %d cached write", usage.CacheWriteTokens())
+	}
+	return summary
 }
 
 func (m replModel) historyPrev() (tea.Model, tea.Cmd) {
@@ -601,6 +684,18 @@ func (m *replModel) pushHistory(text string) {
 	_ = appendHistory(m.repl.historyFile, text)
 }
 
+// editComposer forwards an edit to the textarea at full height, then fits
+// it. The textarea scrolls its viewport during Update using the current
+// height; editing at the fitted height would scroll a new line into a
+// one-row view and leave the first line hidden after the height grows.
+func (m *replModel) editComposer(msg tea.Msg) tea.Cmd {
+	m.textarea.SetHeight(composerMaxHeight)
+	var cmd tea.Cmd
+	m.textarea, cmd = m.textarea.Update(msg)
+	m.fitComposer()
+	return cmd
+}
+
 func (m *replModel) fitComposer() {
 	h := m.textarea.LineCount()
 	if h > composerMaxHeight {
@@ -612,24 +707,26 @@ func (m *replModel) fitComposer() {
 	m.textarea.SetHeight(h)
 }
 
-// View composes the inline frame: live turn tail, status line, composer,
-// palette — committed history lives in scrollback above, never in View.
+// View composes the inline frame: live turn tail, composer card, footer
+// badges, palette — committed history lives in scrollback above, never in
+// View.
 func (m replModel) View() string {
 	var b strings.Builder
-	if m.live.Len() > 0 {
-		live := m.wrap(m.live.String())
+	if live := m.renderLive(); live != "" {
+		live := m.wrap(live)
 		b.WriteString(live)
 		if !strings.HasSuffix(live, "\n") {
 			b.WriteByte('\n')
 		}
+		b.WriteByte('\n')
 	}
-	b.WriteString(m.wrap(m.statusLine()))
-	b.WriteByte('\n')
-	b.WriteString(m.textarea.View())
 	var paletteRows []commands.Info
 	if m.interactive {
 		paletteRows = m.palette.rows(m.ctx, m.textarea.Value())
 	}
+	b.WriteString(m.renderComposer())
+	b.WriteByte('\n')
+	b.WriteString(m.renderFooter(paletteRows != nil))
 	if paletteRows != nil {
 		b.WriteByte('\n')
 		b.WriteString(m.wrap(m.palette.view(paletteRows)))
@@ -648,28 +745,6 @@ func (m replModel) wrap(s string) string {
 		return s
 	}
 	return ansi.Wrap(s, m.width, " \t")
-}
-
-func (m replModel) statusLine() string {
-	var parts []string
-	if m.repl.ConversationID != "" {
-		parts = append(parts, "conv "+m.repl.ConversationID)
-	}
-	route, modelID := m.repl.Route, m.repl.ModelID
-	if route != "" || modelID != "" {
-		parts = append(parts, strings.TrimSpace(route+" / "+modelID))
-	}
-	if n := len(m.repl.Attachments); n > 0 {
-		parts = append(parts, strconv.Itoa(n)+" attached")
-	}
-	if m.turnActive {
-		phase := m.phase
-		if phase == "" {
-			phase = "running"
-		}
-		parts = append(parts, m.spin.View()+" "+phase+" — ctrl+c to cancel")
-	}
-	return term.Dim + strings.Join(parts, " · ") + term.Reset
 }
 
 // turnPump forwards synchronous turn events into the message loop —
