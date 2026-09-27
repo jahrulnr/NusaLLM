@@ -63,24 +63,33 @@ self-contained, testable algorithm with its own edge cases.
 
 ## Recipe: a new wire-style adapter
 
-`enum.Style` (`infrastructure/domain/enum/style.go`) already defines three
-paradigms — `completion`, `responses`, `messages` — and `nusallm gateway add
---style` accepts all of them, because `admin/gateway.go` validates through
-`enum.ParseStyle`. Only `completion` has an adapter today. The work of adding
-`responses` is: write one `TextModelService`, register it, done. The gateway
-admin, the persistence layer, and the application turn need no changes —
+`enum.Style` (`infrastructure/domain/enum/style.go`) defines four paradigms —
+`completion`, `responses`, `messages`, `generatecontent` — and all four have
+adapters wired in `cmd/nusallm/main.go`. Adding a fifth is: extend the enum,
+write one `TextModelService`, register it, done. The gateway admin, the
+persistence layer, and the application turn need no changes —
 `application/job/turn.go` resolves the adapter with
 `d.Services[gw.Style()]`, and a style with no registered adapter fails as a
 deployment defect (500), not a user error.
 
-The reference implementation is `infrastructure/service/core/text/completion/`
-— five files with distinct jobs: `completion.go` (service lifecycle),
-`dto.go` (wire shapes), `encode.go` (domain → wire), `decode.go`
-(wire → domain), `stream.go` (the SSE read loop).
+Every text adapter follows the same five-file skeleton — `<style>.go`
+(service lifecycle), `dto.go` (wire shapes), `encode.go` (domain → wire),
+`decode.go` (wire → domain), `stream.go` (the SSE read loop). Pick the
+reference whose wire grammar matches yours: `completion/` for role-message
+wires, `responses/` for typed item streams, `messages/` for content-block
+wires with signature-bound replay, `generatecontent/` for role-alternated
+part contents. The replay-template pattern — verbatim provider parts under a
+`<style>.` optionalContent key with `{"refill":…}`/type placeholders for
+domain-owned content — generalizes to any wire that binds signatures to
+bytes; `generatecontent/encode.go`'s `modelParts` is the most complete
+example (signed parts consume their domain slot even when replayed
+verbatim).
 
-1. **Create the package.** Add `infrastructure/service/core/text/<style>/`.
-   Give it a package doc comment like `completion.go`'s — which providers
-   speak this wire and what it deliberately does not cover.
+1. **Create the package.** Add `infrastructure/service/core/text/<style>/`
+   and a `Style<Name>` constant in `enum/style.go` (a `ParseStyle` case is
+   what makes `nusallm gateway add --style` accept it). Give the package a
+   doc comment like `completion.go`'s — which providers speak this wire and
+   what it deliberately does not cover.
 
 2. **Implement the port.** `dservice.TextModelService`
    (`infrastructure/domain/service/text.go`) is a single method:
@@ -129,15 +138,17 @@ The reference implementation is `infrastructure/service/core/text/completion/`
 
 5. **Namespace provider quirks in `optionalContent`.** Never add a
    provider-specific field to a domain entity. Adapters own string keys under
-   a `<style>.` prefix: `decode.go` stores `completion.reasoning_content` on
-   the message for replay, and `encode.go` reads `completion.<param>` keys
-   from `Model.OptionalContent()` into `RequestBody.Extra`. The domain docs
-   name the pattern `gemini.thought_signature`,
-   `deepseek.reasoning_content` — your adapter's keys follow the same shape,
-   and the domain never interprets their values. Provider-epsilon on the
-   wire itself — like
-   the `x-opencode-session` header `completion.go` sets for
-   `enum.OpenCode` endpoints — stays in the adapter.
+   a `<style>.` prefix: `completion.reasoning_content` on the message for
+   replay, `messages.content_blocks` / `responses.output_items` /
+   `generatecontent.parts` for the turn templates, `generatecontent.call_id`
+   on the `ToolCall` for a provider-issued correlation id. `encode.go` reads
+   `<style>.<param>` keys from `Model.OptionalContent()` into
+   `RequestBody.Extra`. The domain never interprets these values.
+   Provider-epsilon on the wire itself — like
+   the `x-opencode-session` header each adapter sets for
+   `enum.OpenCode` endpoints — stays in the adapter; `enum.Provider`
+   (`infrastructure/domain/enum/provider.go`) is the registry new
+   per-gateway characteristics hook into.
 
 6. **Map failures to the apperror contract.** Callers route on
    `StatusCode()`: 429 → try another route, 401/403 → dead credential,
@@ -172,12 +183,12 @@ The reference implementation is `infrastructure/service/core/text/completion/`
    a send, so `logAppend` swallows the error deliberately.
 
 9. **Register it.** In `cmd/nusallm/main.go`, add your adapter to the
-   `services` map keyed by its `enum.Style`, the way
-   `enum.StyleCompletion: textcompletion.New(...)` is wired. Constructor
-   inputs come from config — `textcompletion.Options` maps onto
-   `config.ServiceConfig` timeouts and carries the `Logger` and `FileRoot`;
-   if your adapter needs a new knob, it belongs in `infrastructure/config`,
-   not as a literal in the adapter.
+   `services` map keyed by its `enum.Style` — all four adapters share the
+   same `coretext.Options` (`service/core/text/options.go`), which maps onto
+   `config.ServiceConfig` timeouts and carries the `Logger`, `FileRoot`, and
+   the `Referer`/`Title` attribution headers. If your adapter needs a new
+   knob, it belongs in `infrastructure/config`, not as a literal in the
+   adapter.
 
 After that, `nusallm gateway add <id> --style <yourstyle>` produces a working
 route end to end. Adapter behavior is verified through the port — the

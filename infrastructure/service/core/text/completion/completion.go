@@ -20,23 +20,8 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
 	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
+	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
 )
-
-// Options configures the service. Client defaults to a transport with a
-// header deadline only — interactive streams must not carry a fixed total
-// timeout (reasoning models think for minutes); the idle deadline resets
-// per SSE chunk. Referer/Title ride as OpenRouter attribution headers.
-type Options struct {
-	Client      *http.Client
-	Logger      drepo.Logger
-	Referer     string        // → HTTP-Referer
-	Title       string        // → X-Title
-	FileRoot    string        // root for local file:// attachments; empty disables local refs
-	IdleTimeout time.Duration // per-chunk deadline; default 90s
-	// HeaderTimeout bounds the wait for a response's first byte on the
-	// built-in transport; ignored when Client is supplied. Default 30s.
-	HeaderTimeout time.Duration
-}
 
 // Service is the stateless translator for this wire — endpoint,
 // credentials, and stream preference are read from the gateway argument
@@ -51,7 +36,7 @@ type Service struct {
 }
 
 // New builds the service — Options only; gateways arrive per Send.
-func New(opts Options) *Service {
+func New(opts coretext.Options) *Service {
 	// Options map onto the service config section — zero fields take the
 	// struct-tag defaults, so this adapter owns no literal of its own.
 	svcCfg := config.ServiceConfig{

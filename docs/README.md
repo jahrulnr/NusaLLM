@@ -31,6 +31,5 @@ New to the codebase? Start at the top and stop when you've had enough:
 ## Honest status
 
 These docs describe the code as it exists. Where something is scaffolded
-but not implemented — the `responses`/`messages` wire styles, the HTTP
-and WebSocket deliveries, most `service/core` capability dirs — the docs
-say so rather than document intent.
+but not implemented — the HTTP and WebSocket deliveries, most `service/core`
+capability dirs — the docs say so rather than document intent.

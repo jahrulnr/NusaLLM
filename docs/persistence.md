@@ -270,7 +270,8 @@ records may carry credential references.
 }
 ```
 
-`style` is the wire family (`completion`, `responses`, `messages`).
+`style` is the wire family (`completion`, `responses`, `messages`,
+`generatecontent`).
 `models` is the catalog; each `modelRecord` mirrors every `Model` field —
 `id`, `route`, the generation parameters (`temperature`, `topP`, `topK`,
 `maxOutputTokens`, `presencePenalty`, `frequencyPenalty`, `seed`,

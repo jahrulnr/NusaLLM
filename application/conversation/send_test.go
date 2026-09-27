@@ -24,6 +24,7 @@ import (
 	repoconversation "github.com/jahrulnr/nusallm/infrastructure/repository/conversation"
 	repogateway "github.com/jahrulnr/nusallm/infrastructure/repository/gateway"
 	reposecret "github.com/jahrulnr/nusallm/infrastructure/repository/secret"
+	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
 	textcompletion "github.com/jahrulnr/nusallm/infrastructure/service/core/text/completion"
 )
 
@@ -85,7 +86,7 @@ func fixture(t *testing.T, handler http.HandlerFunc) (*ConversationApp, *aggrega
 	app := New(
 		repoconversation.NewConversationRepository(t.TempDir()),
 		gateways,
-		map[enum.Style]dservice.TextModelService{enum.StyleCompletion: textcompletion.New(textcompletion.Options{})},
+		map[enum.Style]dservice.TextModelService{enum.StyleCompletion: textcompletion.New(coretext.Options{})},
 		nil, // no tool executors
 		config.NewConfig(),
 		"",

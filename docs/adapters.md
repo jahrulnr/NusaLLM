@@ -16,31 +16,51 @@ This document covers what each adapter does on the wire and on disk, verified
 against the current tree. For the port contracts and the domain model they
 normalize into, see [./domain-model.md](./domain-model.md).
 
-## Wire styles: what's wired and what's reserved
+## Wire styles
 
-`enum.Style` (`infrastructure/domain/enum/style.go`) names three API paradigms:
-`completion`, `responses`, and `messages`. A style is a property of a
-`Gateway` — the same model id can be spoken through different paradigms
-depending on the route — and `nusallm gateway add --style` accepts all three
-values (`infrastructure/delivery/cli/admin/gateway.go`).
+`enum.Style` (`infrastructure/domain/enum/style.go`) names four API paradigms:
+`completion`, `responses`, `messages`, and `generatecontent`. A style is a
+property of a `Gateway` — the same model id can be spoken through different
+paradigms depending on the route — and `nusallm gateway add --style` accepts
+all four values (`infrastructure/delivery/cli/admin/gateway.go`).
 
-Only one is implemented today. `cmd/nusallm/main.go` builds the service map as
+All four are wired in `cmd/nusallm/main.go`, which builds the service map as
 
 ```go
 services := map[enum.Style]dservice.TextModelService{
-    enum.StyleCompletion: textcompletion.New(...),
+    enum.StyleCompletion:      textcompletion.New(textOpts),
+    enum.StyleResponses:       textresponses.New(textOpts),
+    enum.StyleMessages:        textmessages.New(textOpts),
+    enum.StyleGenerateContent: textgeneratecontent.New(textOpts),
 }
 ```
 
-so `responses` and `messages` are registered names without adapters. The
-gateway configuration itself is valid — the failure surfaces at send time in
-`application/job/turn.go`, where `d.Services[gw.Style()]` misses and the turn
-returns a 500 `apperror` ("no adapter for gateway style"), deliberately framed
-as a deployment defect rather than a user error. The reserved names correspond
-to the OpenAI Responses API and the Anthropic Messages API; matching empty
-directories exist under `infrastructure/service/core/text/` (`responses/`,
-`messages/`, plus `generatecontent/` for the Gemini-shaped surface), each
-holding only a `.gitkeep`.
+Every adapter shares the same skeleton: a stateless `Service` built once from
+`coretext.Options` (`service/core/text/options.go`) that reads endpoint,
+credentials, and stream preference off the `Gateway` argument of each `Send`.
+They differ in everything the wire demands — auth header, content shape,
+streaming grammar, usage counters, and what must replay byte-exact:
+
+| Style | Surface | Auth | Content shape | Stream grammar | Replay-critical artifacts |
+|---|---|---|---|---|---|
+| `completion` | `POST {endpoint}/chat/completions` | `Authorization: Bearer` | role messages + `tool_calls`/`tool` | unnamed `data:` chunks, `[DONE]` sentinel | `completion.reasoning_content` (DeepSeek-style) |
+| `responses` | `POST {endpoint}/responses` | `Authorization: Bearer` | typed input/output items | named SSE events, `response.completed` terminal | `responses.output_items` template (encrypted reasoning, server items) |
+| `messages` | `POST {endpoint}/messages` | `x-api-key` + `anthropic-version` | content blocks | named SSE events, `message_stop` terminal | `messages.content_blocks` template (thinking signatures) |
+| `generatecontent` | `POST {endpoint}/models/{model}:generateContent` (`:streamGenerateContent?alt=sse`) | `x-goog-api-key` | role-alternated contents of typed parts | `data:` partial responses, EOF terminal — no sentinel | `generatecontent.parts` template + `generatecontent.call_id` per call |
+
+The shared rules all four honor: tools reach the wire only when
+`CallableByAgent()`; generation params are omitempty and unset means
+"provider default"; adapter-namespaced escape keys (`<style>.<param>` on
+`model.OptionalContent()`) flatten verbatim into the request body;
+attachments degrade in place (placeholder text, never a failed request) and
+local references resolve through `wire` beneath `FileRoot`; errors map to
+the `apperror` status contract (413 → compact, 429 → fallback, 401/403 →
+dead credential); and provider quirks — the `x-opencode-session` header on
+`opencode.ai` endpoints, `HTTP-Referer`/`X-Title` attribution — live inside
+each adapter's request leg where `enum.Provider` can grow more.
+
+The sections below cover `completion` in depth; the other three follow the
+same structure, so only their wire-specific mechanics are described after.
 
 ## The completion adapter — `core/text/completion`
 
@@ -150,7 +170,8 @@ A nil handler is fine; a slow one applies backpressure on the read loop.
 
 ### Options and transport
 
-`Options` (`completion.go`) is the whole configuration surface:
+`Options` (`service/core/text/options.go`, shared by all four text adapters)
+is the whole configuration surface:
 
 | Option | Effect |
 |---|---|
@@ -182,7 +203,110 @@ means a dead credential. The adapter's obligations:
   streams, and idle streams are all 502s.
 - Every failure path logs what it can to `Logger` before returning.
 
-## `service/wire` — shared wire mechanics
+## The messages adapter — `core/text/messages`
+
+`textmessages` is the Anthropic-shaped `/messages` adapter. Auth is
+`x-api-key` plus the required `anthropic-version` header; `max_tokens` is
+wire-required so the adapter fills a floor (16384) when the model leaves it
+unset.
+
+The wire is content-block shaped end to end. A stored assistant turn replays
+through an ordered **block template** kept in `optionalContent` under
+`messages.content_blocks`: `{"type":"text"}` and `{"type":"tool_use"}`
+entries are bare placeholders refilled from domain state, while `thinking`,
+`redacted_thinking`, and server blocks are stored as raw JSON and re-emitted
+byte-exact — Anthropic thinking signatures are bound to the prompt prefix,
+so those blocks must never be reserialized through a narrower struct. The
+decoder is why the DTO's `Content` is `[]json.RawMessage`.
+
+Tool results ride `tool_result` blocks inside the next user turn (the wire
+has no tool role); a call's output attachments nest inside its own
+`tool_result` block natively, and an interrupted call yields an
+`(interrupted — no result was recorded)` marker so strict validation still
+sees a result per `tool_use`. Streaming is named SSE: blocks accumulate by
+`content_block_*` index, `message_delta` carries the terminal `stop_reason`
+and cumulative usage, and `message_stop` is the only commit point. Usage is
+*disjoint* — `input_tokens` is already the uncached count — so decode goes
+through `NewUsage`, not `NewUsageFromTotal`. Anthropic reports context
+overflow as a 400 whose message says "prompt is too long"; the adapter
+remaps that to the routing 413 itself.
+
+## The responses adapter — `core/text/responses`
+
+`textresponses` is the OpenAI `/responses` adapter. The wire speaks in typed
+output/input items rather than role messages: `message`, `function_call`,
+`function_call_output`, `reasoning`, plus server-tool items like
+`web_search_call`.
+
+Two deliberate stances define the request leg:
+
+- **Stateless by construction.** `store: false` is sent always and the full
+  item list goes every turn — the repository is the record, and edits would
+  break `previous_response_id` chains anyway. `include:
+  reasoning.encrypted_content` opts into replayable reasoning so stateless
+  turns keep their chain of thought; a stored reasoning item *without* the
+  blob is dropped at encode (documented ZDR behavior — the provider would
+  reject it).
+- **Template replay like messages, one level up.** The turn template sits in
+  `optionalContent` under `responses.output_items` — `{"type":"message"}` and
+  `{"type":"function_call"}` placeholders refill from domain state, reasoning
+  and server items replay verbatim. `responses.id` stores the response id
+  for support/debugging.
+
+`function_call` ↔ `function_call_output` pair on `call_id`; output
+attachments ride a labeled user item after the whole output block because
+`function_call_output.output` is a string on this surface. `usage` is
+*inclusive* (`input_tokens` contains `cached_tokens`) → `NewUsageFromTotal`.
+Streaming is named SSE: text/reasoning deltas stream live,
+`response.completed` carries the full response and is the commit point (the
+loop closes on it rather than waiting for server EOF), with accumulated
+`output_item.done` items as a fallback. `status: "incomplete"` +
+`max_output_tokens` maps to finish reason `length`. Effort maps to
+`reasoning.effort` with `xhigh`/`max` clamped to `high` — the wire ceiling.
+
+## The generatecontent adapter — `core/text/generatecontent`
+
+`textgeneratecontent` is the Gemini `generateContent` adapter. Auth is
+`x-goog-api-key` (Bearer often fails on this host); the model id lives in
+the URL path, so prefixed ids (`google/gemini-3.6-flash`, `models/x`)
+normalize to the bare id. `maxOutputTokens` is always sent — the wire's
+internal default is low enough to truncate agent turns early.
+
+The wire is role-alternated `contents` of typed parts (`user`/`model` only —
+`systemInstruction` is top-level). Its quirks, all handled at encode:
+
+- **Same-role merge.** Adjacent same-role contents are invalid on the wire,
+  so encoding folds neighbors together — this is what lets parallel
+  `functionResponse` parts legally share one user turn, and what merges a
+  following user message into the results turn.
+- **Schema subset.** Gemini `Schema` is a subset of JSON Schema;
+  `sanitizeSchema` whitelists keywords (`type`, `properties`, `items`,
+  `anyOf`, `enum`, bounds…), drops `$schema`/`$ref`/`additionalProperties`,
+  stringifies non-string enums, and prunes `required` entries that name no
+  property — unsanitized declarations get a 400.
+- **Call ids by marker.** `functionCall` parts may carry a provider `id`;
+  when present it's stored on the call's `optionalContent` as
+  `generatecontent.call_id` and echoed back as `functionResponse.id` for
+  correlation. Without one, correlation falls back to name-matching.
+- **Thought signatures.** `thoughtSignature` fields on model parts must
+  replay byte-exact (function-call turns 400 without them). The template —
+  `generatecontent.parts` — stores signed and thought parts verbatim with
+  `{"refill":"text"}`/`{"refill":"functionCall"}` placeholders; a verbatim
+  signed call still consumes its domain call slot so refills stay aligned.
+- **Family-aware thinking.** `generationConfig.thinkingConfig` maps effort
+  by model family: `gemini-3` ids take `thinkingLevel` (clamped to `high`),
+  `gemini-2.5` takes `includeThoughts` alone (invented budgets get
+  rejected), `gemma` omits the config entirely, and unknown families get
+  `includeThoughts` only.
+
+All modalities carry — image, audio, video, and files go `inlineData`
+base64 for local/inline references or `fileData` for remote URLs. Streaming
+emits partial `GenerateContentResponse` payloads per `data:` line with **no
+terminal sentinel** — EOF is the commit point, so a stream that died before
+its first chunk reports truncated while a normal close commits whatever
+accumulated. Consecutive same-kind text parts merge (a `thoughtSignature`
+on the last fragment binds the merged whole). `usageMetadata` is inclusive
+and `thoughtsTokenCount` folds into output tokens.
 
 `wire` holds the mechanics that don't change per adapter family; wire-shaped
 part assembly stays inside each adapter.
@@ -190,8 +314,8 @@ part assembly stays inside each adapter.
 - `sse.go`: `ScanSSE`/`SplitSSE` cut a stream into event blocks on the earliest
   blank-line boundary (`\r\n\r\n` or `\n\n`, mixed-delimiter safe), with an
   8 MiB scanner buffer for fat chunks. `SSEData` joins a block's `data:` lines,
-  skipping keepalive comments; named `event:` lines are left to families that
-  need them.
+  skipping keepalive comments; `SSENamed` additionally extracts the `event:`
+  name for families whose dispatch keys off it (messages, responses).
 - `media.go`: attachment resolution. `MaxAttachmentBytes` caps payloads by
   modality (10 MiB image, 50 MiB audio, 100 MiB video, 20 MiB otherwise).
   `ResolveURI` turns a stored reference into a sendable URL: `data:` passes
@@ -214,7 +338,7 @@ part assembly stays inside each adapter.
 | Directory | Status |
 |---|---|
 | `core/text/completion` | **Implemented** — the adapter above |
-| `core/text/responses`, `core/text/messages`, `core/text/generatecontent` | Scaffolded (`.gitkeep` only) — reserved for the other `enum.Style` paradigms and the Gemini surface |
+| `core/text/messages`, `core/text/responses`, `core/text/generatecontent` | **Implemented** — Anthropic Messages, OpenAI Responses, and Gemini generateContent surfaces; all four styles are wired in `main.go` |
 | `core/audio`, `core/decision`, `core/embedding`, `core/image`, `core/rerank`, `core/speech`, `core/transcription`, `core/video` | Scaffolded (`.gitkeep` only) — no port or adapter exists yet |
 
 Modality *input* (images, audio, video, files attached to a conversation) is

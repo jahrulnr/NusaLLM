@@ -28,6 +28,7 @@ import (
 	repoconversation "github.com/jahrulnr/nusallm/infrastructure/repository/conversation"
 	repogateway "github.com/jahrulnr/nusallm/infrastructure/repository/gateway"
 	reposecret "github.com/jahrulnr/nusallm/infrastructure/repository/secret"
+	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
 	textcompletion "github.com/jahrulnr/nusallm/infrastructure/service/core/text/completion"
 	toolexec "github.com/jahrulnr/nusallm/infrastructure/service/tool/terminal"
 )
@@ -82,7 +83,7 @@ func TestREPLSendsListsAndResumesConversation(t *testing.T) {
 		conversationRepository,
 		gatewayRepository,
 		map[enum.Style]dservice.TextModelService{
-			enum.StyleCompletion: textcompletion.New(textcompletion.Options{FileRoot: workspace}),
+			enum.StyleCompletion: textcompletion.New(coretext.Options{FileRoot: workspace}),
 		},
 		nil,
 		config.NewConfig(),
@@ -255,7 +256,7 @@ func TestAutoSelectNotifyDoesNotDeadlock(t *testing.T) {
 		conversationRepository,
 		gatewayRepository,
 		map[enum.Style]dservice.TextModelService{
-			enum.StyleCompletion: textcompletion.New(textcompletion.Options{FileRoot: workspace}),
+			enum.StyleCompletion: textcompletion.New(coretext.Options{FileRoot: workspace}),
 		},
 		nil,
 		config.NewConfig(),
@@ -354,7 +355,7 @@ func TestPipedCRNeverTriggersPicker(t *testing.T) {
 		conversationRepository,
 		gatewayRepository,
 		map[enum.Style]dservice.TextModelService{
-			enum.StyleCompletion: textcompletion.New(textcompletion.Options{FileRoot: t.TempDir()}),
+			enum.StyleCompletion: textcompletion.New(coretext.Options{FileRoot: t.TempDir()}),
 		},
 		nil,
 		config.NewConfig(),
@@ -458,7 +459,7 @@ func TestConversationArgPicker(t *testing.T) {
 		conversationRepository,
 		gatewayRepository,
 		map[enum.Style]dservice.TextModelService{
-			enum.StyleCompletion: textcompletion.New(textcompletion.Options{FileRoot: workspace}),
+			enum.StyleCompletion: textcompletion.New(coretext.Options{FileRoot: workspace}),
 		},
 		nil,
 		config.NewConfig(),
@@ -636,7 +637,7 @@ func TestToolCallLoopRunsEndToEnd(t *testing.T) {
 		conversationRepository,
 		gatewayRepository,
 		map[enum.Style]dservice.TextModelService{
-			enum.StyleCompletion: textcompletion.New(textcompletion.Options{FileRoot: workspace}),
+			enum.StyleCompletion: textcompletion.New(coretext.Options{FileRoot: workspace}),
 		},
 		map[string]dservice.Tool{"exec": execTool},
 		config.NewConfig(),

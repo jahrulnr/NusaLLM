@@ -46,27 +46,27 @@ type (
 // running turn, a status line, the composer, and the slash palette —
 // committed output queues in outbox and flushes to scrollback via Println.
 type replModel struct {
-	repl        *REPL
-	commands    *commands.Registry
-	textarea    textarea.Model
-	palette     slashPalette
-	history     []string
-	historyIdx  int    // -1 while editing the live draft
-	draft       string // live draft stashed while browsing history
-	queued      []string
-	live         *strings.Builder // in-flight assistant delta not yet sealed
-	liveTimeline []livePiece      // turn transcript in TurnEvent arrival order
-	contextEstimate int    // footer ~estimate/total input budget
+	repl            *REPL
+	commands        *commands.Registry
+	textarea        textarea.Model
+	palette         slashPalette
+	history         []string
+	historyIdx      int    // -1 while editing the live draft
+	draft           string // live draft stashed while browsing history
+	queued          []string
+	live            *strings.Builder // in-flight assistant delta not yet sealed
+	liveTimeline    []livePiece      // turn transcript in TurnEvent arrival order
+	contextEstimate int              // footer ~estimate/total input budget
 	contextTotal    int
 	turnActive      bool
-	turnCancel  context.CancelFunc
-	spin        spinner.Model
-	phase       string // waiting → thinking → responding → exec <tool>
-	runtime     *tuiRuntime
-	outbox      []string
-	interactive bool // stdin is a terminal
-	width       int  // terminal columns; 0 until WindowSizeMsg arrives
-	ctx         context.Context
+	turnCancel      context.CancelFunc
+	spin            spinner.Model
+	phase           string // waiting → thinking → responding → exec <tool>
+	runtime         *tuiRuntime
+	outbox          []string
+	interactive     bool // stdin is a terminal
+	width           int  // terminal columns; 0 until WindowSizeMsg arrives
+	ctx             context.Context
 }
 
 // livePiece is one sealed slice of the turn timeline — either markdown

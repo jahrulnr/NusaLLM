@@ -21,6 +21,7 @@ import (
 	repoconversation "github.com/jahrulnr/nusallm/infrastructure/repository/conversation"
 	repogateway "github.com/jahrulnr/nusallm/infrastructure/repository/gateway"
 	reposecret "github.com/jahrulnr/nusallm/infrastructure/repository/secret"
+	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
 	textcompletion "github.com/jahrulnr/nusallm/infrastructure/service/core/text/completion"
 	toolsummary "github.com/jahrulnr/nusallm/infrastructure/service/tool/summary"
 )
@@ -80,7 +81,7 @@ func newCommandFixture(t *testing.T) *commandFixture {
 		conversationRepository,
 		gatewayRepository,
 		map[enum.Style]dservice.TextModelService{
-			enum.StyleCompletion: textcompletion.New(textcompletion.Options{FileRoot: workspace}),
+			enum.StyleCompletion: textcompletion.New(coretext.Options{FileRoot: workspace}),
 		},
 		map[string]dservice.Tool{toolsummary.Name: toolsummary.NewSummaryTool()},
 		config.NewConfig(),

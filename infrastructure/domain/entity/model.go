@@ -104,12 +104,12 @@ func (m *Model) SetOptionalContent(key, value string) {
 	m.optionalContent[key] = value
 }
 
-func (m Model) ModelType() enum.ModelType             { return m.mtype }
-func (m *Model) SetModelType(v enum.ModelType)        { m.mtype = v }
-func (m Model) Pricing() valueobject.Pricing          { return m.pricing }
-func (m *Model) SetPricing(v valueobject.Pricing)     { m.pricing = v }
-func (m Model) ContextWindow() int                    { return m.contextWindow }
-func (m *Model) SetContextWindow(v int)               { m.contextWindow = v }
+func (m Model) ModelType() enum.ModelType         { return m.mtype }
+func (m *Model) SetModelType(v enum.ModelType)    { m.mtype = v }
+func (m Model) Pricing() valueobject.Pricing      { return m.pricing }
+func (m *Model) SetPricing(v valueobject.Pricing) { m.pricing = v }
+func (m Model) ContextWindow() int                { return m.contextWindow }
+func (m *Model) SetContextWindow(v int)           { m.contextWindow = v }
 
 // EffectiveContextWindow is the total context size used for UI budgeting
 // when the catalog left contextWindow at zero.

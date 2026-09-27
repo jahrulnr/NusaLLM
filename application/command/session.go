@@ -70,23 +70,23 @@ func NewFacade(convs conversationAPI, gateways gatewayAPI, bindings Bindings, wo
 	}
 }
 
-func (f *Facade) ConversationID() string                      { return f.bindings.ConversationID() }
-func (f *Facade) SetConversationID(id string)                 { f.bindings.SetConversationID(id) }
-func (f *Facade) Route() string                               { return f.bindings.Route() }
-func (f *Facade) SetRoute(route string)                       { f.bindings.SetRoute(route) }
-func (f *Facade) ModelID() string                             { return f.bindings.ModelID() }
-func (f *Facade) SetModelID(id string)                        { f.bindings.SetModelID(id) }
-func (f *Facade) Attachments() []valueobject.Attachment       { return f.bindings.Attachments() }
-func (f *Facade) SetAttachments(a []valueobject.Attachment)   { f.bindings.SetAttachments(a) }
-func (f *Facade) AppendAttachment(a valueobject.Attachment)   { f.bindings.AppendAttachment(a) }
-func (f *Facade) Interactive() bool                           { return f.bindings.Interactive() }
-func (f *Facade) SetExit(exit bool)                           { f.bindings.SetExit(exit) }
-func (f *Facade) RequestCancelTurn()                          { f.bindings.RequestCancelTurn() }
-func (f *Facade) CancelTurnActive() bool                      { return f.bindings.CancelTurnActive() }
-func (f *Facade) RequestClearScreen()                         { f.bindings.RequestClearScreen() }
+func (f *Facade) ConversationID() string                    { return f.bindings.ConversationID() }
+func (f *Facade) SetConversationID(id string)               { f.bindings.SetConversationID(id) }
+func (f *Facade) Route() string                             { return f.bindings.Route() }
+func (f *Facade) SetRoute(route string)                     { f.bindings.SetRoute(route) }
+func (f *Facade) ModelID() string                           { return f.bindings.ModelID() }
+func (f *Facade) SetModelID(id string)                      { f.bindings.SetModelID(id) }
+func (f *Facade) Attachments() []valueobject.Attachment     { return f.bindings.Attachments() }
+func (f *Facade) SetAttachments(a []valueobject.Attachment) { f.bindings.SetAttachments(a) }
+func (f *Facade) AppendAttachment(a valueobject.Attachment) { f.bindings.AppendAttachment(a) }
+func (f *Facade) Interactive() bool                         { return f.bindings.Interactive() }
+func (f *Facade) SetExit(exit bool)                         { f.bindings.SetExit(exit) }
+func (f *Facade) RequestCancelTurn()                        { f.bindings.RequestCancelTurn() }
+func (f *Facade) CancelTurnActive() bool                    { return f.bindings.CancelTurnActive() }
+func (f *Facade) RequestClearScreen()                       { f.bindings.RequestClearScreen() }
 
-func (f *Facade) Path() string                              { return f.workspace.Path() }
-func (f *Facade) FS() fs.FS                                 { return f.workspace.FS() }
+func (f *Facade) Path() string { return f.workspace.Path() }
+func (f *Facade) FS() fs.FS    { return f.workspace.FS() }
 func (f *Facade) ResolveAttachment(path string) (valueobject.Attachment, error) {
 	return f.workspace.ResolveAttachment(path)
 }

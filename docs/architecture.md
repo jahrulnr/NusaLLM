@@ -451,9 +451,11 @@ retries behind a running REPL), `repoconversation`, `repolog` (JSONL with
 line-count rotation; every entry scrubbed by `infrastructure/redact`,
 with request/response bodies dropped unless `log.bodies` is on — the
 payload includes conversation content, so it's opt-in), the `services`
-map (`StyleCompletion` → `textcompletion` — the only adapter today;
-`responses` and `messages` parse as styles but wire nothing, which is
-what "no adapter for gateway style" 500s on), the five tools
+map (all four `enum.Style` values — `StyleCompletion` → `textcompletion`,
+`StyleResponses` → `textresponses`, `StyleMessages` → `textmessages`,
+`StyleGenerateContent` → `textgeneratecontent` — sharing one
+`coretext.Options`; a style with no registered adapter would 500 as
+"no adapter for gateway style"), the five tools
 (`read_file`, `write_file`, `apply_patch`, `read_media`, `exec`), then
 `appconversation.New` and `tui.NewREPL`. Workspace root for tools and
 attachments is the process cwd — `os.Root`-confined for file tools and

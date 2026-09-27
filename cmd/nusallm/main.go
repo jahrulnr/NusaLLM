@@ -23,7 +23,11 @@ import (
 	repoconversation "github.com/jahrulnr/nusallm/infrastructure/repository/conversation"
 	repogateway "github.com/jahrulnr/nusallm/infrastructure/repository/gateway"
 	repolog "github.com/jahrulnr/nusallm/infrastructure/repository/log"
+	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
 	textcompletion "github.com/jahrulnr/nusallm/infrastructure/service/core/text/completion"
+	textgeneratecontent "github.com/jahrulnr/nusallm/infrastructure/service/core/text/generatecontent"
+	textmessages "github.com/jahrulnr/nusallm/infrastructure/service/core/text/messages"
+	textresponses "github.com/jahrulnr/nusallm/infrastructure/service/core/text/responses"
 	toolfile "github.com/jahrulnr/nusallm/infrastructure/service/tool/file"
 	toolexec "github.com/jahrulnr/nusallm/infrastructure/service/tool/terminal"
 )
@@ -142,15 +146,21 @@ func run(ctx context.Context) (runErr error) {
 		return err
 	}
 
+	// One adapter instance per wire style — each is stateless and reads the
+	// gateway per Send, so the same instance serves every route of a style.
+	textOpts := coretext.Options{
+		Title:         cfg.App.Name,
+		Referer:       cfg.App.Source,
+		Logger:        logger,
+		HeaderTimeout: time.Duration(cfg.Service.HeaderTimeout),
+		IdleTimeout:   time.Duration(cfg.Service.IdleTimeout),
+		FileRoot:      wd,
+	}
 	services := map[enum.Style]dservice.TextModelService{
-		enum.StyleCompletion: textcompletion.New(textcompletion.Options{
-			Title:         cfg.App.Name,
-			Referer:       cfg.App.Source,
-			Logger:        logger,
-			HeaderTimeout: time.Duration(cfg.Service.HeaderTimeout),
-			IdleTimeout:   time.Duration(cfg.Service.IdleTimeout),
-			FileRoot:      wd,
-		}),
+		enum.StyleCompletion:      textcompletion.New(textOpts),
+		enum.StyleResponses:       textresponses.New(textOpts),
+		enum.StyleMessages:        textmessages.New(textOpts),
+		enum.StyleGenerateContent: textgeneratecontent.New(textOpts),
 	}
 	tools := map[string]dservice.Tool{}
 	readFile, err := toolfile.NewFileReadTool(wd) // workspace root = cwd

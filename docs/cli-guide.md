@@ -143,7 +143,7 @@ the source of truth):
 
 | Flag | Meaning |
 |---|---|
-| `--style <s>` | wire style: `completion`, `responses`, or `messages` |
+| `--style <s>` | wire style: `completion`, `responses`, `messages`, or `generatecontent` |
 | `--endpoint <url>` | provider base URL — the adapter appends its path |
 | `--name <name>` | display name; defaults to the id |
 | `--models a,b,c` | replace the whole catalog; each entry's route equals its id |
@@ -195,15 +195,21 @@ variable exists.
 
 ### Styles, honestly
 
-`--style` accepts `completion`, `responses`, and `messages` — those are
-the enum values (`infrastructure/domain/enum/style.go`). **Today only
-`completion` has a wired adapter in this binary** (`cmd/nusallm/main.go`
-registers `enum.StyleCompletion` alone); it speaks OpenAI-shaped
-`POST <endpoint>/chat/completions`, which covers OpenAI, OpenRouter,
-DeepSeek, Groq, xAI, Mistral, and the compatible long tail. A
-`responses` or `messages` gateway saves fine but fails at send time with
-`no adapter for gateway style`. See [Adapters](./adapters.md) for where
-new styles plug in.
+`--style` accepts `completion`, `responses`, `messages`, and
+`generatecontent` — the enum values in
+`infrastructure/domain/enum/style.go`, and all four have adapters wired in
+`cmd/nusallm/main.go`. Pick the wire your endpoint speaks:
+
+- `completion` — OpenAI-shaped `POST <endpoint>/chat/completions`; covers
+  OpenAI, OpenRouter, DeepSeek, Groq, xAI, Mistral, and the compatible
+  long tail.
+- `responses` — OpenAI's Responses API at `POST <endpoint>/responses`.
+- `messages` — Anthropic at `POST <endpoint>/messages` (`x-api-key` auth).
+- `generatecontent` — Gemini at
+  `POST <endpoint>/models/{model}:generateContent` (`x-goog-api-key`).
+
+See [Adapters](./adapters.md) for what each wire carries and where new
+styles plug in.
 
 ## Managing settings: `nusallm config`
 

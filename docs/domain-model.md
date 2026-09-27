@@ -284,7 +284,7 @@ adapter.
 | Enum | Values | Notes |
 |---|---|---|
 | `Role` | `system`, `user`, `developer`, `assistant` | Message authorship |
-| `Style` | `completion`, `responses`, `messages` | Wire paradigm; the gateway owns it and the app keys adapters on it |
+| `Style` | `completion`, `responses`, `messages`, `generatecontent` | Wire paradigm; the gateway owns it and the app keys adapters on it |
 | `Tooltype` | `injection`, `origin` | App-injected hydration call vs model-originated call |
 | `LLMUserType` | `origin`, `system` | Real user input vs system payload (compaction checkpoints are `system`) |
 | `ToolPermission` | `system`, `agent`, `general` | Who may invoke a `ToolSchema` |

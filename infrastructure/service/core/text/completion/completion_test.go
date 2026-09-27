@@ -18,6 +18,7 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
+	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
 )
 
 // newService spins an httptest server and a fake gateway pointing at it.
@@ -35,7 +36,7 @@ func newService(t *testing.T, stream bool, handler http.HandlerFunc) (*Service, 
 	} else {
 		gw.DisableStream()
 	}
-	return New(Options{}), &gw, srv
+	return New(coretext.Options{}), &gw, srv
 }
 
 func newConv(t *testing.T) *aggregate.Conversation {

@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	appcommand "github.com/jahrulnr/nusallm/application/command"
-	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
+	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 )
 
 // NewCommand is the /new command.
