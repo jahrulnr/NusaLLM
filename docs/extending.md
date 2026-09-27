@@ -1,0 +1,376 @@
+# Extending NusaLLM
+
+This guide is for the contributor — human or agent — making a first change
+to NusaLLM, a provider-agnostic LLM conversation engine written in Go
+(module `github.com/jahrulnr/nusallm`). It teaches three recipes: a new
+wire-style adapter, a new tool, and a new slash command. Each recipe points
+at a real implementation already in the tree; the fastest way through is to
+open that file while you work and mirror its shape.
+
+The architecture docs — [./architecture.md](./architecture.md) for the layer
+map and [./domain-model.md](./domain-model.md) for the conversation model —
+explain what the pieces *are*. This document is about where new behavior is
+allowed to *live*. When they disagree with memory or habit, trust the code:
+package layout and type names evolve, and the `AGENTS.md` file in each layer
+is the authority for that layer's rules.
+
+## Where a new rule belongs
+
+Every change starts with the same question: who owns this decision? The root
+`AGENTS.md` answers it, and the answer is enforced by direction of import —
+domain ports never import their implementations.
+
+- **`infrastructure/domain`** owns provider-independent invariants: what a
+  `Conversation`, `Message`, `Model`, `ToolCall`, or `ToolSchema` *means*. If
+  a rule must hold for every caller — "only real user messages are editable",
+  "a disabled tool is never callable" — it is a method on the domain object
+  that owns the state, e.g. `Conversation.RewriteFrom` in
+  `infrastructure/domain/aggregate/conversation.go` or
+  `ToolSchema.CallableByAgent` in
+  `infrastructure/domain/valueobject/toolschema.go`. No I/O, no wire formats,
+  no provider vocabulary in field names.
+- **`application`** owns sequencing: which route and model a turn uses, when
+  to compact, when to persist, which events to emit, how a canceled turn is
+  handled. It *calls* domain decisions; it must not re-derive them with a
+  second condition. See `application/AGENTS.md`.
+- **`infrastructure/repository`** owns storage: records, serialization,
+  hydration, atomic writes, projections. It validates filesystem boundaries,
+  never business meaning. See [./persistence.md](./persistence.md).
+- **`infrastructure/service`** owns translation and side effects: provider
+  wire protocols, local I/O, tool execution, slash-command handlers.
+  Provider quirks stay inside their adapter.
+- **`infrastructure/config`, `infrastructure/worker`,
+  `infrastructure/prompt`, `infrastructure/error`, `infrastructure/redact`,
+  `cmd`** are mechanisms and composition. Defaults live in config; meaning
+  never does.
+
+When a change spans layers, split it by owner and update callers rather than
+mirroring the check. If ownership is unclear, trace the behavior from use
+case through port to adapter before editing — and don't park a rule in an
+outer layer just because that's where the call site happens to be.
+
+### The method-boundary rule
+
+NusaLLM keeps coherent single-use flows inline, even when the method grows
+long. Extract a helper only when the new boundary has its own reason: a
+reused operation, an interface/DI seam, a separately testable invariant, or
+a named phase whose isolation genuinely clarifies the flow. A helper called
+once that just forwards the caller's state should stay inline — length alone
+buys nothing and costs a file jump. `streamResponse` in
+`infrastructure/service/core/text/completion/stream.go` is one long select
+loop and is better for it; `mergeCallDelta` is extracted because it's a
+self-contained, testable algorithm with its own edge cases.
+
+## Recipe: a new wire-style adapter
+
+`enum.Style` (`infrastructure/domain/enum/style.go`) already defines three
+paradigms — `completion`, `responses`, `messages` — and `nusallm gateway add
+--style` accepts all of them, because `admin/gateway.go` validates through
+`enum.ParseStyle`. Only `completion` has an adapter today. The work of adding
+`responses` is: write one `TextModelService`, register it, done. The gateway
+admin, the persistence layer, and the application turn need no changes —
+`application/job/turn.go` resolves the adapter with
+`d.Services[gw.Style()]`, and a style with no registered adapter fails as a
+deployment defect (500), not a user error.
+
+The reference implementation is `infrastructure/service/core/text/completion/`
+— five files with distinct jobs: `completion.go` (service lifecycle),
+`dto.go` (wire shapes), `encode.go` (domain → wire), `decode.go`
+(wire → domain), `stream.go` (the SSE read loop).
+
+1. **Create the package.** Add `infrastructure/service/core/text/<style>/`.
+   Give it a package doc comment like `completion.go`'s — which providers
+   speak this wire and what it deliberately does not cover.
+
+2. **Implement the port.** `dservice.TextModelService`
+   (`infrastructure/domain/service/text.go`) is a single method:
+
+   ```go
+   Send(ctx context.Context, conv *aggregate.Conversation, gw *aggregate.Gateway,
+       model entity.Model, onEvent event.TurnEventHandler) error
+   ```
+
+   The contract, taken from the port's own doc comment: the adapter is a
+   stateless translator — endpoint, credentials, and stream preference are
+   read from `gw` on every call (`gw.Endpoint()`, `gw.ApiKey()`,
+   `gw.StreamMode()`), so a rotated key or moved endpoint takes effect
+   immediately. `Send` mutates `conv`: append the assistant message with
+   `conv.Append(msg)` and account the spend with `conv.AddUsage(usage)` — see
+   `unaryResponse` in `completion.go` for the exact sequence. Route
+   selection, retries, and fallback are application work; the adapter owns
+   one attempt.
+
+3. **Keep wire shapes in DTOs.** `dto.go` holds structs whose field names are
+   wire names, tagged for `encoding/json`, `omitempty` throughout — an unset
+   generation param must not serialize as a zero (the domain models params as
+   `*T` for exactly this reason). Note `RequestBody.Extra` and its
+   `MarshalJSON`: that's the escape hatch that flattens adapter-namespaced
+   params into the top-level body.
+
+4. **Map domain → wire in encode, wire → domain in decode.** Copy the
+   obligations `encode.go`/`decode.go` fulfill, adapted to your wire's
+   grammar:
+   - Only `CallableByAgent()` tools reach the wire.
+   - Attachments are stored references (`file://`, `https://`); the adapter
+     materializes them at send time via `wire.ResolveURI` /
+     `wire.ResolveBase64` (`infrastructure/service/wire/media.go`), and a
+     modality the bound model doesn't accept degrades to a text placeholder
+     through `model.AcceptsInput` — never silently dropped.
+   - Tool calls the model originated decode as `entity.NewToolCall(id, name,
+     args, enum.TooltypeOrigin)`; `enum.TooltypeInjection` entries are
+     application-supplied hydration and must not pose as provider tool calls
+     (see how `encodeMessage` separates the two).
+   - Usage normalization goes through `valueobject.NewUsage` (disjoint
+     counters) or `valueobject.NewUsageFromTotal` (inclusive total plus a
+     cached subset). `decodeUsage` uses the latter because this wire's
+     `prompt_tokens` is inclusive — get this wrong and input is
+     double-counted. The domain rule is spelled out in
+     `infrastructure/domain/AGENTS.md`.
+
+5. **Namespace provider quirks in `optionalContent`.** Never add a
+   provider-specific field to a domain entity. Adapters own string keys under
+   a `<style>.` prefix: `decode.go` stores `completion.reasoning_content` on
+   the message for replay, and `encode.go` reads `completion.<param>` keys
+   from `Model.OptionalContent()` into `RequestBody.Extra`. The domain docs
+   name the pattern `gemini.thought_signature`,
+   `deepseek.reasoning_content` — your adapter's keys follow the same shape,
+   and the domain never interprets their values. Provider-epsilon on the
+   wire itself — like
+   the `x-opencode-session` header `completion.go` sets for
+   `enum.OpenCode` endpoints — stays in the adapter.
+
+6. **Map failures to the apperror contract.** Callers route on
+   `StatusCode()`: 429 → try another route, 401/403 → dead credential,
+   413 → compact rather than fall back, 502/503/504 → upstream trouble,
+   other 4xx → fix the request. Use `wire.StatusError`
+   (`infrastructure/service/wire/error.go`) for non-2xx responses — it
+   already implements the `context_length`-as-400 → 413 remap and parks the
+   raw upstream body in `Cause` where a frontend never sees it. Public
+   `Message` must be safe to display. A caller-gave-up cancellation is a
+   408, not a 502 — `Send` checks `ctx.Err()` to tell them apart. For
+   mid-stream errors, `statusHint` in `stream.go` shows how to derive a
+   status when the wire carries no HTTP code.
+
+7. **Streaming: commit only at the terminal marker.** `stream.go` treats
+   `finish_reason` / `[DONE]` as the sole commit point — EOF without one is
+   a truncated stream (502), not a finished turn. It accumulates deltas,
+   emits `event.NewDeltaEvent` / `NewReasoningEvent` as they arrive, bounds
+   provider-controlled tool-call indexes (`maxCallIndex`), and resets an idle
+   timer per chunk rather than running a fixed total deadline — reasoning
+   models think for minutes, dead connections are not. `wire.ScanSSE` and
+   `wire.SSEData` frame the stream for you. Whatever your wire's transport,
+   preserve those invariants. If your adapter doesn't stream, the port
+   requires the same observable sequence anyway: emit one delta carrying the
+   full content, then finished — `unaryResponse` shows the shape. `onEvent`
+   may be nil; the `emit` helper in `completion.go` nil-checks it.
+
+8. **Log through the port, never around it.** Diagnostics go to the injected
+   `drepo.Logger` (`Append(ctx, kind, entry)`) under kinds like
+   `provider.request`, `provider.response`, `provider.error`,
+   `provider.stream`. Entries are JSON-normalized and scrubbed by
+   `infrastructure/redact` before they reach disk; logging must never break
+   a send, so `logAppend` swallows the error deliberately.
+
+9. **Register it.** In `cmd/nusallm/main.go`, add your adapter to the
+   `services` map keyed by its `enum.Style`, the way
+   `enum.StyleCompletion: textcompletion.New(...)` is wired. Constructor
+   inputs come from config — `textcompletion.Options` maps onto
+   `config.ServiceConfig` timeouts and carries the `Logger` and `FileRoot`;
+   if your adapter needs a new knob, it belongs in `infrastructure/config`,
+   not as a literal in the adapter.
+
+After that, `nusallm gateway add <id> --style <yourstyle>` produces a working
+route end to end. Adapter behavior is verified through the port — the
+existing tests exercise `Send` against `httptest` servers (see
+`infrastructure/delivery/cli/commands/commands_test.go` for a minimal one),
+not internal helper names.
+
+## Recipe: a new tool
+
+A tool is one callable capability behind `dservice.Tool`
+(`infrastructure/domain/service/tool.go`): `Schema()` advertises a
+`valueobject.ToolSchema`, `Execute` runs the side effect. The reference to
+trace is `infrastructure/service/tool/file/read.go`; `read_media.go` adds
+attachment output and `terminal/exec.go` shows a long-running, unsandboxed
+tool.
+
+1. **Create the package** under `infrastructure/service/tool/<family>/`.
+   Constructor shape: `NewXTool(...) (service.Tool, error)` — it opens any
+   sandbox it needs *and* builds the schema, failing on either, e.g.
+   `NewFileReadTool(root)` calls `os.OpenRoot` then
+   `valueobject.NewToolSchema` and closes the root on schema failure.
+
+2. **Write the schema with honest permissions.**
+   `NewToolSchema(name, description, parametersJSON, enabled, permission)`
+   takes a JSON Schema for parameters and an `enum.ToolPermission`
+   (`infrastructure/domain/enum/toolpermission.go`): `ToolPermissionAgent`
+   for model-callable tools, `ToolPermissionSystem` for application-internal
+   ones, `ToolPermissionGeneral` for both. The check is fail-closed —
+   `CallableByAgent`/`CallableBySystem` return false for disabled or
+   unrecognized permission. The application enforces it: `execTool` in
+   `application/job/turn.go` permits a call only when a schema on the
+   conversation is `CallableByAgent()`, and a denied or unregistered call
+   records `error: tool not permitted` / `error: unknown tool` as its
+   output. Your tool never re-checks permission; it executes.
+
+3. **Treat `call.Input()` as untrusted JSON.** Unmarshal it into a local
+   struct, validate the fields (`exec.go` rejects an empty command even
+   though the schema marks it required — the model wrote it, not you), and
+   respect `call.OutputBudget()` — `read.go` stats before reading and reads
+   through `io.LimitReader` so a huge file can't overshoot. The default
+   budget is 32000 bytes (`entity.NewToolCall`), and
+   `ToolCall.SetOutput` re-enforces it on the way out: over-budget output is
+   replaced by the error, not silently truncated.
+
+4. **Return `ToolResult{Text, Attachments}` — failures included.**
+   `Execute` errors are recorded as the call's output (`"error: …"`) so the
+   model sees an honest result; only `ctx.Err()` aborts the turn. `Text` is
+   wrapped in the untrusted-evidence envelope by `ToolCall.SetOutput`
+   (`infrastructure/domain/entity/toolcall.go`) — confirm, don't echo
+   (`write.go` returns a byte count, not the content). `Attachments` carry
+   *references*, never bytes: `read_media.go` emits a `file://` URI under
+   the workspace, sniffs the real media type, caps by
+   `wire.MaxAttachmentBytes(modality)`, and pins content with
+   `att.SetSHA256` so send-time resolution detects a swapped file. Whether
+   attachments reach the model is decided per-request by the bound model's
+   `AcceptsInput`.
+
+5. **Confine file access to the workspace.** File-touching tools take a root
+   and open it with `os.OpenRoot` — traversal and symlink escapes both fail
+   inside it — then use `wire.OpenRegularFile` so FIFOs and other special
+   files can't block the call. `exec.go` is the deliberate counterexample:
+   there is no root for a shell, and the doc comment says so — its
+   permission bit is the entire gate. Don't build an unsandboxed tool
+   without naming the trade-off.
+
+6. **Stream previews through `emit`, not through the result.** The
+   `ToolEmitter` is synchronous and may be nil; it's a live preview for the
+   frontend (`event.NewToolOutputEvent` in the turn), never persisted
+   history. `exec.go`'s `outputSink` forwards each `Write` as a chunk while
+   bounding memory — past the budget it spills the full stream to a temp
+   file and returns a head+tail excerpt naming where the rest went. Copy
+   that approach for any tool whose output is unbounded.
+
+7. **Register it — or don't.** Agent-facing tools go in the `tools` map in
+   `cmd/nusallm/main.go`, keyed by `tool.Schema().Name()` in the existing
+   loop. The catalog the model sees is `Deps.ToolSchemas()`, sorted by name
+   every turn. The counterexample is `tool/summary/summary.go`: the
+   compaction job constructs it directly (`application/job/compact.go`) and
+   binds only its schema to the scratch conversation, so it's never in the
+   main map and never offered in ordinary turns. If your capability exists
+   for one use case's private dialogue, that is the pattern.
+
+## Recipe: a new slash command
+
+Slash commands live behind a hard boundary: handlers depend on
+`appcommand.SlashSession` — the port in `application/command/session.go` —
+never on concrete application structs. The session facade exposes
+conversation/gateway use cases, workspace file access, output, and session
+bindings (`Bindings`, `WorkspacePort`, `OutputPort` in
+`application/command/ports.go`). Each command is a package under
+`infrastructure/service/command/<name>/`; the registry in
+`infrastructure/service/command/registry.go` only dispatches wired
+instances.
+
+1. **Check the port first.** Does `SlashSession` already expose what the
+   command needs? If not, extend the port and its `Facade` in
+   `application/command/` *first* — that is the layer's own rule
+   (`application/command/AGENTS.md`) — delegating to the existing
+   conversation/gateway use cases rather than reimplementing them. If the
+   capability itself doesn't exist yet, it belongs to whichever layer owns
+   the rule; the session port is where commands gain access to it, not where
+   it's built.
+
+2. **Write the command.** Minimal shape is `command/pwd/pwd.go`; a command
+   with reads and a completer is `command/route/route.go`. Implement
+   `dservice.SlashCommand` (`infrastructure/domain/service/command.go`):
+   `Name()`, `Usage()`, `Description()`, and
+   `Execute(ctx, command, emitter, args...)`. The REPL passes the whole
+   remainder of the input line as `args[0]`; parse it yourself — plain
+   `strings.TrimSpace` for simple commands, `valueobject.NewCommand(raw).SplitFirst()`
+   for `id + tail` shapes. Emit output through `h.Write(emitter, format, args...)`
+   so the transport can sanitize; read session state through the bindings
+   (`h.ConversationID()`, `h.Route()`, `h.SetModelID`, …). Reuse domain
+   decisions — `commandinternal.DisplayTitles` applies the aggregate's
+   list-title rule rather than re-stating it; shared helpers used by several
+   commands live in `infrastructure/service/command/internal/`.
+
+3. **Optionally complete arguments.** Implement
+   `dservice.SlashCommandCompleter` — `Complete(ctx, arg) []CommandCompletion`
+   — and the palette picks it up automatically (`route.go` completes gateway
+   ids). Rows are capped at `commandinternal.MaxRows` by the registry.
+
+4. **Wire it.** Commands are registered in
+   `infrastructure/delivery/cli/commands/wire.go` — `commands.New` builds the
+   session facade via `appcommand.NewFacade` and constructs every command
+   explicitly, the same spirit as tool wiring in `main.go`. Add yours to the
+   `base` slice; `NewRegistry` indexes by `Name()` (lowercased) and `/help`
+   enumerates the wired set through `svccommand.Describe`, so help text is
+   free once you're registered.
+
+5. **Mind the delivery special paths.** Input UX — parsing `/name args`,
+   the palette, rendering — lives in `infrastructure/delivery/cli/tui`
+   (`input.go` parses, `model.go` dispatches through `m.commands.Execute`).
+   Two commands have dedicated TUI flows, `/edit` and `/compact`, handled in
+   `model.go`'s `dispatch` before the registry sees them. If your command
+   duplicates a user flow the REPL already special-cases, align usage text
+   and invariants on both sides — that's an explicit rule in
+   `infrastructure/service/AGENTS.md`, and the reason `/edit`'s help and the
+   REPL's edit path must agree.
+
+## Conventions to match
+
+- **Objects**: unexported fields; `New*(...) (T, error)` constructors that
+  run `validate()`; explicit getters; hydration via setters
+  (`NewToolCall` + `SetCallAt`/`SetStoredOutput`), never a "reconstitute"
+  constructor. Slice and map getters share internals by design — no
+  defensive copies.
+- **Unset ≠ zero**: generation params are `*T`; `enum.Effort` has
+  `IsUnset()`. Absent means "don't send", never a zero on the wire.
+- **Fail-closed vs fail-open is deliberate**: `ToolSchema.CallableBy*`
+  denies on unknown permission; `Model.Accepts*` allows on an empty modality
+  list because the provider is the final validator.
+- **Errors**: one contract — `apperror` (`infrastructure/error/error.go`).
+  Public `Message`, internal `Cause`, HTTP `StatusCode` for routing;
+  `apperror.As` normalizes foreign errors to a 500 with no leakage.
+- **Diagnostics**: the `drepo.Logger` port is a write-only JSONL sink;
+  every entry passes through `infrastructure/redact` before disk, and
+  request/response bodies are stripped entirely unless `log.bodies` is on
+  (see the `Redact` hook in `cmd/nusallm/main.go`).
+- **Secrets**: persisted values are `"env:NAME"` or `"secret:<key>"`
+  references resolved through the `SecretStore` port — never plaintext.
+- **Language**: English for code, comments, and docs.
+
+## Breaking changes are fine — half-measures are not
+
+The root `AGENTS.md` is explicit: the current codebase is the single source
+of truth, and there is no backward-compatibility obligation. Prefer a clean
+break over compatibility layers, shims, fallbacks, or versioned paths — no
+`v1`/`v2` splits, no deprecated APIs kept alive beside their replacements.
+When a contract change breaks callers, update the callers and their tests to
+the new contract in the same change, and delete what the change makes
+obsolete. Tests assert current intended behavior, not historical behavior.
+
+## The verify loop
+
+```sh
+gofmt -w . && go build ./... && go vet ./... && go test ./...
+```
+
+Run the whole chain — it's the bar each `AGENTS.md` sets, and it's fast in
+this module. The `Makefile` has three targets: `make build` produces
+`bin/nusallm`, `make cli` builds and launches the REPL, and `make
+gateway-add` is a convenience recipe for one provider's route; there is no
+test target — use `go test ./...` directly. Media fixtures for end-to-end
+attachment paths live in `test/media/` and are pinned by
+`TestMediaFixtures` in `infrastructure/domain/valueobject/attachment_test.go`
+— if an adapter change touches attachment serialization, that test is the
+tripwire. Beyond that, test the contract at the boundary you changed —
+observable port behavior, ordering, persisted state — not helper names.
+
+---
+
+*Sibling docs: [architecture](./architecture.md) ·
+[domain model](./domain-model.md) · [adapters](./adapters.md) ·
+[persistence](./persistence.md) · [CLI guide](./cli-guide.md) ·
+[README](../README.md)*

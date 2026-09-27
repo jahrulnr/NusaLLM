@@ -1,5 +1,12 @@
 package enum
 
+// Provider enumerates known provider hosts as the anchor for per-gateway
+// wire characteristics: adapters branch on provider identity for quirks
+// like OpenCode's x-opencode-session header or OpenRouter's attribution
+// headers and prompt_cache_key. The constants are consumed as
+// endpoint-match strings; ParseProvider is for adapters that need the
+// branch explicitly. Keep this enum even while usage is thin — it is the
+// registry new provider quirks are expected to key off.
 type Provider string
 
 const (
