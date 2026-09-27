@@ -4,10 +4,11 @@ info:
   version: "0.1.0"
   summary: Local single-seat HTTP API for the NusaLLM conversation engine.
   description: |
-    **Status: proposed contract — not implemented.** This document describes
-    the HTTP surface of the planned WebUI transport for NusaLLM. The
-    `infrastructure/delivery/http` tree is a placeholder today; nothing here
-    is served yet.
+    **Status: implemented.** The HTTP surface described here is served by
+    `nusallm serve`, alongside the multiplexed WebSocket turn channel and
+    the embedded browser WebUI (see `websocket.md` and `docs/README.md`).
+    Interactive Swagger UI itself remains proposed future work — this
+    document is the reference contract.
 
     ## Transport model
 

@@ -1,8 +1,9 @@
 // Package http is the WebUI's HTTP delivery composition root — a
 // loopback-only Gin router that mounts the per-boundary packages under
-// this tree (conversation, gateway, setting, tool, system) behind the
-// shared Host/Origin security envelope. Phases 1-2 of
-// docs/api/contract.md are live; the WebSocket arrives in a later phase.
+// this tree (conversation, gateway, setting, tool, system, webui)
+// behind the shared Host/Origin security envelope. The HTTP contract
+// and the WebSocket turn channel are live; the embedded WebUI assets
+// mount here too so browser, API, and socket share one origin.
 //
 // The transport serializes projections, never domain entities: key
 // material, raw key refs, optionalContent, tool I/O, attachment
@@ -11,6 +12,7 @@ package http
 
 import (
 	"context"
+	"io/fs"
 
 	"github.com/gin-gonic/gin"
 
@@ -20,6 +22,7 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/http/setting"
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/http/system"
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/http/tool"
+	"github.com/jahrulnr/nusallm/infrastructure/delivery/http/webui"
 )
 
 // Deps wires the boundary use cases plus the canonical listen authority
@@ -41,8 +44,11 @@ type Deps struct {
 	// "127.0.0.1:8080". It comes from the bound listener, not from any
 	// configuration the API can change.
 	Authority string
-	// WS upgrades GET /api/ws — phase 3 wires the hub handler here.
+	// WS upgrades GET /api/ws into the conversation hub socket.
 	WS gin.HandlerFunc
+	// WebAssets is the embedded WebUI filesystem served on this origin;
+	// nil keeps the binary API-only.
+	WebAssets fs.FS
 }
 
 // NewHandler builds the contract router. All responses beyond the
@@ -72,6 +78,7 @@ func NewHandler(d Deps) *gin.Engine {
 	if d.WS != nil {
 		api.GET("/ws", d.WS)
 	}
+	webui.Register(r, d.WebAssets, d.Authority)
 
 	r.NoRoute(notFound)
 	return r

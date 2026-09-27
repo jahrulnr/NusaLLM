@@ -20,13 +20,13 @@ import (
 	httpdelivery "github.com/jahrulnr/nusallm/infrastructure/delivery/http"
 	wsdelivery "github.com/jahrulnr/nusallm/infrastructure/delivery/websocket"
 	wsconversation "github.com/jahrulnr/nusallm/infrastructure/delivery/websocket/conversation"
+	"github.com/jahrulnr/nusallm/web"
 )
 
-// serve hosts the WebUI's HTTP API and WebSocket turn channel on
-// loopback — reads, mutations, and `turn.send` streaming under the
-// security envelope of docs/api/contract.md (turn edit/cancel/watch
-// remain future work). The bind address is fixed to 127.0.0.1; only the
-// port is a flag, matching the contract's "no remotely configurable
+// serve hosts the WebUI — embedded browser UI, HTTP API, and the
+// WebSocket turn channel — on loopback under the security envelope of
+// docs/api/contract.md. The bind address is fixed to 127.0.0.1; only
+// the port is a flag, matching the contract's "no remotely configurable
 // listen" rule.
 func serve(args []string) (serveErr error) {
 	port, err := servePort(args)
@@ -89,6 +89,7 @@ func serve(args []string) (serveErr error) {
 		Jobs:      ctx,
 		WS:        wsdelivery.NewHandler(hub, authority).Serve,
 		Authority: authority,
+		WebAssets: web.Assets,
 	})
 	// Loopback only by construction — net.Listen binds the address, and
 	// the handler's Host guard rejects anything else anyway.
@@ -100,7 +101,7 @@ func serve(args []string) (serveErr error) {
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- srv.Serve(ln) }()
 
-	fmt.Fprintf(os.Stderr, "%s: WebUI API listening on http://%s (loopback only)\n", admin.CLIName, authority)
+	fmt.Fprintf(os.Stderr, "%s: WebUI listening on http://%s (loopback only)\n", admin.CLIName, authority)
 	select {
 	case err := <-serveDone:
 		return err // Serve only returns early on a listener failure

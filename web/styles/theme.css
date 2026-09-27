@@ -1,0 +1,63 @@
+/* NusaLLM WebUI theme — design tokens and document chrome only.
+   Widgets carry their own styles inside their shadow roots. */
+
+:root {
+  --bg: #0b0d0c;
+  --panel: #111512;
+  --panel-2: #151a16;
+  --hairline: #232a24;
+  --hairline-strong: #2e372f;
+  --text: #ece9df;
+  --text-dim: #9ba394;
+  --text-faint: #6b7366;
+  --accent: #c8f169;
+  --accent-dim: #8aa84e;
+  --warn: #e0a34a;
+  --danger: #e06a5a;
+  --font-ui: 'Iosevka', 'JetBrains Mono', 'SFMono-Regular', 'Consolas', monospace;
+  --font-prose: 'Charter', 'Iowan Old Style', Georgia, serif;
+  --radius: 6px;
+  --shell-nav: 248px;
+  --shell-side: 320px;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Subtle grid atmosphere — gradients only, no images. */
+body {
+  background-image:
+    linear-gradient(rgba(200, 241, 105, 0.022) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(200, 241, 105, 0.022) 1px, transparent 1px);
+  background-size: 44px 44px;
+}
+
+::selection { background: rgba(200, 241, 105, 0.28); }
+
+/* Consistent dark scrollbars across the chrome. */
+* { scrollbar-width: thin; scrollbar-color: var(--hairline-strong) transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: var(--hairline-strong); border-radius: 4px; }
+*::-webkit-scrollbar-track { background: transparent; }
+
+:focus-visible {
+  outline: 1.5px solid var(--accent);
+  outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

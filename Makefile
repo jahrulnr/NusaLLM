@@ -1,6 +1,6 @@
 build:
 	mkdir -p ./bin
-	go build -o bin/nusallm cmd/nusallm/main.go
+	go build -o bin/nusallm ./cmd/nusallm
 
 cli: build
 	./bin/nusallm
