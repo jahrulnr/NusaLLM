@@ -14,6 +14,8 @@
 package appgateway
 
 import (
+	"sync"
+
 	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 )
 
@@ -21,9 +23,15 @@ import (
 // records reference by name. Unlike conversations there is no
 // per-resource worker — gateways are few, ops are single record writes,
 // and the repository already serializes them.
+//
+// mu serializes each inspect→save read-modify-write (Upsert carries
+// stored hidden fields forward; Delete can interleave mid-window). It
+// is process-local by nature — a CLI process editing the same store
+// concurrently is outside its reach.
 type GatewayApp struct {
 	gateways drepo.Gateway
 	secrets  drepo.SecretStore
+	mu       sync.Mutex
 }
 
 func New(gateways drepo.Gateway, secrets drepo.SecretStore) *GatewayApp {

@@ -26,7 +26,7 @@ func (e upstreamError) Error() string { return string(e) }
 // publicMsg must be frontend-safe; body stays in Cause.
 func StatusError(status int, publicMsg, code string, body []byte) error {
 	if status == 400 && strings.Contains(code+" "+publicMsg, "context_length") {
-		return apperror.New(413, "context length exceeded", UpstreamError(body))
+		return apperror.FromStatus(413, "context length exceeded", UpstreamError(body))
 	}
 	return apperror.FromStatus(status, publicMsg, UpstreamError(body))
 }

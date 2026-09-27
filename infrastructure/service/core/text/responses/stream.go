@@ -154,12 +154,12 @@ func streamFailure(rb *ResponseBody, raw []byte) error {
 		code = errorCode(*rb.Error)
 	}
 	if code == "rate_limit_exceeded" {
-		return apperror.New(429, msg, wire.UpstreamError(raw))
+		return apperror.FromStatus(429, msg, wire.UpstreamError(raw))
 	}
 	if contextOverflow(msg, code) {
-		return apperror.New(413, "context length exceeded", wire.UpstreamError(raw))
+		return apperror.FromStatus(413, "context length exceeded", wire.UpstreamError(raw))
 	}
-	return apperror.New(502, msg, wire.UpstreamError(raw))
+	return apperror.FromStatus(502, msg, wire.UpstreamError(raw))
 }
 
 // readSSE pumps named SSE event payloads until EOF — this wire ends on

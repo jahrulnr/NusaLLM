@@ -148,7 +148,7 @@ func statusError(status int, body []byte) error {
 		status_ = env.Error.Status
 	}
 	if contextOverflow(msg, status_) {
-		return apperror.New(413, "context length exceeded", wire.UpstreamError(body))
+		return apperror.FromStatus(413, "context length exceeded", wire.UpstreamError(body))
 	}
 	return wire.StatusError(status, msg, status_, body)
 }

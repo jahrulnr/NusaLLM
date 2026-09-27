@@ -6,30 +6,14 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
-	"time"
 
-	appconversation "github.com/jahrulnr/nusallm/application/conversation"
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/admin"
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/tui"
-	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
-	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
-	"github.com/jahrulnr/nusallm/infrastructure/redact"
-	repoconversation "github.com/jahrulnr/nusallm/infrastructure/repository/conversation"
-	repogateway "github.com/jahrulnr/nusallm/infrastructure/repository/gateway"
-	repolog "github.com/jahrulnr/nusallm/infrastructure/repository/log"
-	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
-	textcompletion "github.com/jahrulnr/nusallm/infrastructure/service/core/text/completion"
-	textgeneratecontent "github.com/jahrulnr/nusallm/infrastructure/service/core/text/generatecontent"
-	textmessages "github.com/jahrulnr/nusallm/infrastructure/service/core/text/messages"
-	textresponses "github.com/jahrulnr/nusallm/infrastructure/service/core/text/responses"
-	toolfile "github.com/jahrulnr/nusallm/infrastructure/service/tool/file"
-	toolexec "github.com/jahrulnr/nusallm/infrastructure/service/tool/terminal"
 )
 
 func main() {
@@ -61,6 +45,12 @@ func main() {
 			os.Exit(admin.Gateway(args[1:], os.Stdin, os.Stdout, os.Stderr))
 		case "config":
 			os.Exit(admin.Config(args[1:], os.Stdout, os.Stderr))
+		case "serve":
+			if err := serve(args[1:]); err != nil {
+				fmt.Fprintln(os.Stderr, admin.CLIName+":", err)
+				os.Exit(1)
+			}
+			return
 		default:
 			fmt.Fprintf(os.Stderr, "%s: unknown argument %q — try --help\n", admin.CLIName, args[0])
 			os.Exit(2)
@@ -81,6 +71,7 @@ Usage:
   ` + admin.CLIName + ` onboard          guided provider setup wizard
   ` + admin.CLIName + ` gateway <...>    manage provider routes — list/show/add/set/delete
   ` + admin.CLIName + ` config <...>     inspect and patch the config file — show/path/set/unset/validate
+  ` + admin.CLIName + ` serve [--port N] local WebUI API — loopback only (default port 8080)
   ` + admin.CLIName + ` --help           this text
 
 Environment:
@@ -115,79 +106,27 @@ func run(ctx context.Context) (runErr error) {
 	}()
 	cfg := b.Config()
 	dir := cfg.Storage.Dir
-	secrets := b.Secrets()
-	gateways := repogateway.NewGatewayRepository(filepath.Join(dir, "gateways"), secrets)
-	convs := repoconversation.NewConversationRepository(filepath.Join(dir, "conversations"))
-	logOpts := repolog.Options{MaxLines: cfg.Log.MaxLines, MaxFiles: cfg.Log.MaxFiles}
-	if !cfg.Log.Bodies {
-		// Payload logging is opt-in: entries keep the kind tag and any
-		// non-body fields, but request/response content never lands.
-		logOpts.Redact = func(_ string, e any) any {
-			e = redact.Value(e) // credential masking stays regardless
-			switch v := e.(type) {
-			case map[string]any:
-				delete(v, "body")
-				return v
-			case []json.RawMessage:
-				return map[string]any{"chunks": len(v)}
-			case []any:
-				return map[string]any{"chunks": len(v)}
-			default:
-				return map[string]any{"omitted": true}
-			}
-		}
-	}
-	logger, err := repolog.New(filepath.Join(dir, "logs"), logOpts)
+	eng, err := compose(cfg, b.Secrets(), b.ConfigPath())
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if closeErr := eng.logger.Close(); runErr == nil {
+			runErr = closeErr
+		}
+	}()
+	conversationApp := eng.conversations
+	defer func() {
+		// Registered before NewREPL so its failure still retires workers.
+		if shutdownErr := conversationApp.Shutdown(context.Background()); runErr == nil {
+			runErr = shutdownErr
+		}
+	}()
 	wd, err := os.Getwd()
 	if err != nil {
 		return err
 	}
 
-	// One adapter instance per wire style — each is stateless and reads the
-	// gateway per Send, so the same instance serves every route of a style.
-	textOpts := coretext.Options{
-		Title:         cfg.App.Name,
-		Referer:       cfg.App.Source,
-		Logger:        logger,
-		HeaderTimeout: time.Duration(cfg.Service.HeaderTimeout),
-		IdleTimeout:   time.Duration(cfg.Service.IdleTimeout),
-		FileRoot:      wd,
-	}
-	services := map[enum.Style]dservice.TextModelService{
-		enum.StyleCompletion:      textcompletion.New(textOpts),
-		enum.StyleResponses:       textresponses.New(textOpts),
-		enum.StyleMessages:        textmessages.New(textOpts),
-		enum.StyleGenerateContent: textgeneratecontent.New(textOpts),
-	}
-	tools := map[string]dservice.Tool{}
-	readFile, err := toolfile.NewFileReadTool(wd) // workspace root = cwd
-	if err != nil {
-		return err
-	}
-	writeFile, err := toolfile.NewFileWriteTool(wd)
-	if err != nil {
-		return err
-	}
-	patchFile, err := toolfile.NewFilePatchTool(wd)
-	if err != nil {
-		return err
-	}
-	readMedia, err := toolfile.NewReadMediaTool(wd)
-	if err != nil {
-		return err
-	}
-	execTool, err := toolexec.NewExecTool()
-	if err != nil {
-		return err
-	}
-	for _, tool := range []dservice.Tool{readFile, writeFile, patchFile, readMedia, execTool} {
-		tools[tool.Schema().Name()] = tool
-	}
-
-	conversationApp := appconversation.New(convs, gateways, services, tools, cfg, b.ConfigPath())
 	repl, err := tui.NewREPL(tui.Options{
 		Conversations: conversationApp,
 		Gateways:      b.Gateways(),
@@ -198,9 +137,6 @@ func run(ctx context.Context) (runErr error) {
 		return err
 	}
 	defer func() {
-		if shutdownErr := conversationApp.Shutdown(context.Background()); runErr == nil {
-			runErr = shutdownErr
-		}
 		if closeErr := repl.Close(); runErr == nil {
 			runErr = closeErr
 		}

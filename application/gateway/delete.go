@@ -9,5 +9,7 @@ import (
 // stored reference dangles, and the next send surfaces the 404 the app
 // layer already routes on, letting the caller rebind.
 func (app *GatewayApp) Delete(ctx context.Context, id string) error {
+	app.mu.Lock()
+	defer app.mu.Unlock()
 	return app.gateways.Delete(ctx, id)
 }
