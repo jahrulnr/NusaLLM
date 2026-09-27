@@ -1,4 +1,4 @@
-package attach
+package workspace
 
 import (
 	"crypto/sha256"
@@ -23,22 +23,18 @@ func TestResolveAttachmentPinsConfinedMedia(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(rootPath, "shot.png"), cliPNGFixture, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	root, err := os.OpenRoot(rootPath)
+	w, err := Open(rootPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = root.Close() })
+	t.Cleanup(func() { _ = w.Close() })
 
-	abs, err := filepath.Abs(rootPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := Resolve(root, abs, "shot.png")
+	got, err := w.ResolveAttachment("shot.png")
 	if err != nil {
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256(cliPNGFixture)
-	if got.URI() != "file://"+filepath.Join(abs, "shot.png") || got.MediaType() != "image/png" ||
+	if got.URI() != "file://"+filepath.Join(w.Path(), "shot.png") || got.MediaType() != "image/png" ||
 		got.Modality() != enum.ModalityImage || got.Name() != "shot.png" || got.SHA256() != hex.EncodeToString(sum[:]) {
 		t.Fatalf("resolved attachment = uri:%q mime:%q modality:%q name:%q sha256:%q", got.URI(), got.MediaType(), got.Modality(), got.Name(), got.SHA256())
 	}
@@ -50,16 +46,12 @@ func TestResolveAttachmentDoesNotTrustImageExtension(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(rootPath, "not-really.png"), unknown, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	root, err := os.OpenRoot(rootPath)
+	w, err := Open(rootPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = root.Close() })
-	abs, err := filepath.Abs(rootPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	att, err := Resolve(root, abs, "not-really.png")
+	t.Cleanup(func() { _ = w.Close() })
+	att, err := w.ResolveAttachment("not-really.png")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,20 +75,16 @@ func TestResolveAttachmentRejectsUnsafeOrUnsupportedPaths(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(rootPath, "escape.png")); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
-	root, err := os.OpenRoot(rootPath)
+	w, err := Open(rootPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = root.Close() })
-	abs, err := filepath.Abs(rootPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	t.Cleanup(func() { _ = w.Close() })
 
-	for _, path := range []string{"../outside.png", filepath.Join(abs, "note.txt"), "missing.png", "folder", "escape.png"} {
+	for _, path := range []string{"../outside.png", filepath.Join(w.Path(), "note.txt"), "missing.png", "folder", "escape.png"} {
 		t.Run(path, func(t *testing.T) {
-			if _, err := Resolve(root, abs, path); err == nil {
-				t.Fatalf("Resolve(%q) succeeded, want rejection", path)
+			if _, err := w.ResolveAttachment(path); err == nil {
+				t.Fatalf("ResolveAttachment(%q) succeeded, want rejection", path)
 			}
 		})
 	}
@@ -117,16 +105,12 @@ func TestResolveAttachmentEnforcesMediaSizeLimit(t *testing.T) {
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
-	root, err := os.OpenRoot(rootPath)
+	w, err := Open(rootPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = root.Close() })
-	abs, err := filepath.Abs(rootPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Resolve(root, abs, "large.png"); err == nil || !strings.Contains(err.Error(), "10 MiB") {
+	t.Cleanup(func() { _ = w.Close() })
+	if _, err := w.ResolveAttachment("large.png"); err == nil || !strings.Contains(err.Error(), "10 MiB") {
 		t.Fatalf("large attachment error = %v, want 10 MiB limit", err)
 	}
 }

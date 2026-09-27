@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
 	appconversation "github.com/jahrulnr/llm-base/application/conversation"
@@ -20,6 +19,7 @@ import (
 	"github.com/jahrulnr/llm-base/infrastructure/domain/event"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/service"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
+	"github.com/jahrulnr/llm-base/infrastructure/service/workspace"
 )
 
 // Options wires a session to the conversation/gateway applications and
@@ -38,8 +38,7 @@ type Options struct {
 type Session struct {
 	Conversations *appconversation.ConversationApp
 	Gateways      *appgateway.GatewayApp
-	Workspace     *os.Root
-	WorkspacePath string
+	Workspace     *workspace.Root
 	Stderr        io.Writer
 
 	ConversationID string
@@ -70,11 +69,7 @@ func New(opts Options) (*Session, error) {
 	if opts.Workspace == "" {
 		opts.Workspace = "."
 	}
-	workspacePath, err := filepath.Abs(opts.Workspace)
-	if err != nil {
-		return nil, err
-	}
-	workspace, err := os.OpenRoot(workspacePath)
+	workspace, err := workspace.Open(opts.Workspace)
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +80,6 @@ func New(opts Options) (*Session, error) {
 		Conversations: opts.Conversations,
 		Gateways:      opts.Gateways,
 		Workspace:     workspace,
-		WorkspacePath: workspacePath,
 		Stderr:        opts.Stderr,
 	}
 	s.Notify = func(text string) {

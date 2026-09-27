@@ -26,18 +26,11 @@ import (
 )
 
 func TestAttachmentPathAcceptsQuotedSpaces(t *testing.T) {
-	if got, err := attachmentPath(`"images/a photo.png"`); err != nil || got != "images/a photo.png" {
+	if got, err := AttachmentPath(`"images/a photo.png"`); err != nil || got != "images/a photo.png" {
 		t.Fatalf("attachment path = %q, %v", got, err)
 	}
-	if _, err := attachmentPath(`"unterminated`); err == nil {
+	if _, err := AttachmentPath(`"unterminated`); err == nil {
 		t.Fatal("invalid quoted attachment path should fail")
-	}
-}
-
-func TestSplitFirstPreservesReplacementSpacing(t *testing.T) {
-	id, replacement, ok := SplitFirst("  m_123  keep  these spaces  ")
-	if !ok || id != "m_123" || replacement != "keep  these spaces" {
-		t.Fatalf("splitFirst = %q %q %t", id, replacement, ok)
 	}
 }
 

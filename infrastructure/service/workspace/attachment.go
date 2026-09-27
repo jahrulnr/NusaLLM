@@ -1,7 +1,4 @@
-// Package attach resolves workspace-relative attachment paths into
-// pinned, size-checked domain attachments — reads stay confined to the
-// workspace root the session opened.
-package attach
+package workspace
 
 import (
 	"crypto/sha256"
@@ -9,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"path/filepath"
 
 	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
@@ -17,15 +13,16 @@ import (
 	"github.com/jahrulnr/llm-base/infrastructure/service/wire"
 )
 
-// Resolve reads the requested file inside root, detects its media type,
-// enforces the modality size limit, and pins the bytes by hash so the
-// later wire-time read resolves only what the user selected.
-func Resolve(root *os.Root, rootPath, requested string) (attachment valueobject.Attachment, err error) {
+// ResolveAttachment reads the requested file inside the workspace,
+// detects its media type, enforces the modality size limit, and pins the
+// bytes by hash so the later wire-time read resolves only what the user
+// selected.
+func (w *Root) ResolveAttachment(requested string) (attachment valueobject.Attachment, err error) {
 	workspace, err := valueobject.NewWorkspace(requested)
 	if err != nil {
 		return valueobject.Attachment{}, err
 	}
-	f, info, err := wire.OpenRegularFile(root, workspace.Path())
+	f, info, err := wire.OpenRegularFile(w.root, workspace.Path())
 	if err != nil {
 		return valueobject.Attachment{}, fmt.Errorf("%q is not a readable regular file: %w", requested, err)
 	}
@@ -42,7 +39,7 @@ func Resolve(root *os.Root, rootPath, requested string) (attachment valueobject.
 	}
 	prefix = prefix[:n]
 	mediaType := http.DetectContentType(prefix)
-	att, err := valueobject.NewAttachment("file://"+filepath.Join(rootPath, workspace.Path()), mediaType)
+	att, err := valueobject.NewAttachment("file://"+filepath.Join(w.absPath, workspace.Path()), mediaType)
 	if err != nil {
 		return valueobject.Attachment{}, err
 	}
@@ -56,8 +53,6 @@ func Resolve(root *os.Root, rootPath, requested string) (attachment valueobject.
 		return valueobject.Attachment{}, fmt.Errorf("%q exceeds the %d MiB limit for %s media", requested, limit>>20, modality)
 	}
 
-	// Hash the checked file handle rather than the pathname. The pin makes
-	// the later wire-time read resolve only the bytes the user selected.
 	h := sha256.New()
 	_, _ = h.Write(prefix)
 	rest, err := io.Copy(h, io.LimitReader(f, limit+1-int64(len(prefix))))

@@ -22,6 +22,7 @@ import (
 	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/event"
 	"github.com/jahrulnr/llm-base/infrastructure/domain/service"
+	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
 	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
 )
 
@@ -429,12 +430,14 @@ func (m *replModel) beginTurn(text string) tea.Cmd {
 	return tea.Batch(turn, m.spin.Tick)
 }
 
+// beginEdit runs an edit turn on the update loop. Picker UX for bare /edit
+// lives here; a full "/edit <id> <text>" line goes through cmdedit via runCommand.
 func (m *replModel) beginEdit(args string) tea.Cmd {
 	if m.repl.ConversationID == "" {
 		m.println("error: no active conversation; use /resume <id>")
 		return nil
 	}
-	messageID, content, ok := commands.SplitFirst(args)
+	messageID, content, ok := valueobject.NewCommand(args).SplitFirst()
 	if !ok || strings.TrimSpace(content) == "" {
 		m.println("error: usage: /edit <message-id> <replacement text>")
 		return nil
