@@ -1,6 +1,8 @@
-package tui
+package valueobject
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestFormatScaledTokens(t *testing.T) {
 	for _, tc := range []struct {
@@ -15,8 +17,8 @@ func TestFormatScaledTokens(t *testing.T) {
 		{1_000_000, "1M"},
 		{1_500_000, "1.5M"},
 	} {
-		if got := formatScaledTokens(tc.n); got != tc.want {
-			t.Fatalf("formatScaledTokens(%d) = %q, want %q", tc.n, got, tc.want)
+		if got := FormatScaledTokens(tc.n); got != tc.want {
+			t.Fatalf("FormatScaledTokens(%d) = %q, want %q", tc.n, got, tc.want)
 		}
 	}
 }

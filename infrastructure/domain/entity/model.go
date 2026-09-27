@@ -149,6 +149,12 @@ func (m Model) CompactionBudgetTokens(budgetPct int) int {
 	return allowance * budgetPct / 100
 }
 
+// CompactionInputAllowance is the input-side context budget before
+// compaction reserves headroom for the reply (matches footer ~estimate/total).
+func (m Model) CompactionInputAllowance() int {
+	return m.compactionInputAllowance()
+}
+
 func (m Model) compactionInputAllowance() int {
 	total := m.contextWindow
 	if total <= 0 {

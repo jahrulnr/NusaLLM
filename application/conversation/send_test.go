@@ -88,6 +88,7 @@ func fixture(t *testing.T, handler http.HandlerFunc) (*ConversationApp, *aggrega
 		map[enum.Style]dservice.TextModelService{enum.StyleCompletion: textcompletion.New(textcompletion.Options{})},
 		nil, // no tool executors
 		config.NewConfig(),
+		"",
 	)
 	return app, &gw
 }
@@ -561,6 +562,7 @@ func TestAdapterNoAppendIsInternalError(t *testing.T) {
 		map[enum.Style]dservice.TextModelService{enum.StyleCompletion: noAppendSvc{}},
 		nil,
 		config.NewConfig(),
+		"",
 	)
 	result, err := app.Send(t.Context(), "badsvc", "gw1", "m1", "ping", nil, nil)
 	if apperror.As(err).StatusCode() != 500 {
@@ -601,6 +603,7 @@ func TestSendToolLoop(t *testing.T) {
 		map[enum.Style]dservice.TextModelService{enum.StyleCompletion: svc},
 		map[string]dservice.Tool{"echo": echoTool{}},
 		config.NewConfig(),
+		"",
 	)
 	var evs []event.TurnEvent
 	onEvent := func(e event.TurnEvent) { evs = append(evs, e) }

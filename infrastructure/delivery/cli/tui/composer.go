@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/jahrulnr/llm-base/infrastructure/delivery/cli/term"
+	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
 )
 
 const (
@@ -80,10 +82,10 @@ func (m replModel) renderComposer() string {
 // path or id cannot push the route and model out of view. The idle
 // instruction row yields to the palette, which carries its own key hints.
 func (m replModel) renderFooter(paletteOpen bool) string {
-	var context []string
+	var badges []string
 	add := func(color, text string) {
 		if text != "" {
-			context = append(context, color+term.Sanitize(truncateInline(text, footerSegmentLimit))+term.Reset)
+			badges = append(badges, color+term.Sanitize(truncateInline(text, footerSegmentLimit))+term.Reset)
 		}
 	}
 	if m.repl.Workspace != nil {
@@ -95,15 +97,27 @@ func (m replModel) renderFooter(paletteOpen bool) string {
 		}
 		add(term.Green, string(path))
 	}
-	if route, modelID := m.repl.Route, m.repl.ModelID; route != "" || modelID != "" {
+	route, modelID := m.repl.Route, m.repl.ModelID
+	if route == "" || modelID == "" {
+		ctx := m.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		er, em := m.repl.EffectiveRouteModel(ctx)
+		if route == "" {
+			route = er
+		}
+		if modelID == "" {
+			modelID = em
+		}
+	}
+	if route != "" || modelID != "" {
 		add(term.Cyan, strings.Trim(route+" / "+modelID, " /"))
-	} else {
-		add(term.Dim, "no model · /route")
 	}
 	if id := m.repl.ConversationID; id != "" {
 		add(term.Magenta, id)
 		if m.contextTotal > 0 {
-			add(term.Dim, fmt.Sprintf("~%s/%s Tokens", formatScaledTokens(m.contextEstimate), formatScaledTokens(m.contextTotal)))
+			add(term.Dim, fmt.Sprintf("~%s/%s Tokens", valueobject.FormatScaledTokens(m.contextEstimate), valueobject.FormatScaledTokens(m.contextTotal)))
 		}
 	}
 	if n := len(m.repl.Attachments); n > 0 {
@@ -113,17 +127,9 @@ func (m replModel) renderFooter(paletteOpen bool) string {
 		add(term.Yellow, strconv.Itoa(n)+" queued")
 	}
 
-	rows := []string{strings.Join(context, term.Dim+footerSeparator+term.Reset)}
-	switch {
-	case m.turnActive:
-		phase := strings.TrimPrefix(m.phase, "exec ")
-		if phase == "" {
-			phase = "running"
-		}
-		rows = append(rows, term.Cyan+strings.TrimSpace(m.spin.View())+" "+term.Sanitize(phase)+term.Reset+
-			term.Dim+footerSeparator+"ctrl+c to interrupt"+term.Reset)
-	case !paletteOpen:
-		rows = append(rows, term.Dim+"/ for commands"+footerSeparator+"ctrl+j newline"+footerSeparator+"↑ history"+term.Reset)
+	rows := []string{strings.Join(badges, term.Dim+footerSeparator+term.Reset)}
+	if !m.turnActive && !paletteOpen {
+		rows = append(rows, term.Dim+"/ for commands"+footerSeparator+"alt+enter newline"+footerSeparator+"↑ history"+term.Reset)
 	}
 	for i, row := range rows {
 		row = footerIndent + row
@@ -135,33 +141,23 @@ func (m replModel) renderFooter(paletteOpen bool) string {
 	return strings.Join(rows, "\n")
 }
 
-// formatScaledTokens abbreviates token counts for the footer (~200K/1M).
-func formatScaledTokens(n int) string {
-	if n <= 0 {
-		return "0"
+// renderTurnStatus is the in-flight turn line — spinner, phase, interrupt
+// hint — shown directly above the composer.
+func (m replModel) renderTurnStatus() string {
+	if !m.turnActive {
+		return ""
 	}
-	const (
-		thousand = 1_000
-		million  = 1_000_000
-	)
-	if n >= million {
-		if n%million == 0 {
-			return strconv.Itoa(n/million) + "M"
-		}
-		whole := n / million
-		frac := (n % million) * 10 / million
-		if frac == 0 {
-			return strconv.Itoa(whole) + "M"
-		}
-		return strconv.Itoa(whole) + "." + strconv.Itoa(frac) + "M"
+	phase := strings.TrimPrefix(m.phase, "exec ")
+	if phase == "" {
+		phase = "running"
 	}
-	if n >= thousand {
-		if n%thousand == 0 {
-			return strconv.Itoa(n/thousand) + "K"
-		}
-		return strconv.Itoa((n+thousand/2)/thousand) + "K"
+	row := term.Cyan + strings.TrimSpace(m.spin.View()) + " " + term.Sanitize(phase) + term.Reset +
+		term.Dim + footerSeparator + "ctrl+c to interrupt" + term.Reset
+	row = footerIndent + row
+	if m.width > 0 {
+		row = ansi.Truncate(row, m.width, "…")
 	}
-	return strconv.Itoa(n)
+	return row
 }
 
 // displayPath abbreviates the home directory the way shells do.

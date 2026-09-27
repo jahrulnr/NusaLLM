@@ -103,7 +103,7 @@ func (d Deps) writeCheckpoint(ctx context.Context, scratch *aggregate.Conversati
 			return "", apperror.New(408, "compaction canceled", err)
 		}
 		before := len(scratch.Messages())
-		if err := svc.Send(ctx, scratch, gw, model, nil); err != nil {
+		if err := svc.Send(ctx, scratch, gw, model.ApplyUnknownContextDefaults(), nil); err != nil {
 			return "", err
 		}
 		msgs := scratch.Messages()

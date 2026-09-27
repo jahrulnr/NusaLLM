@@ -91,7 +91,7 @@ func compactApp(t *testing.T, svc dservice.TextModelService, contextWindow int) 
 	cfg.Conversation.CompactKeepTail = 2 // small tail keeps the test history tiny
 	return New(convs, gateways,
 		map[enum.Style]dservice.TextModelService{enum.StyleCompletion: svc},
-		nil, cfg), convs
+		nil, cfg, ""), convs
 }
 
 // Proactive: the estimate crosses the window share → the prefix seals

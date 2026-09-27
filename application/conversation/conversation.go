@@ -44,10 +44,11 @@ type queuedJob interface {
 // config (mailbox size feeds the workers, turn limits ride inside deps);
 // workers maps conversation id → its serial executor.
 type ConversationApp struct {
-	cfg     config.ConversationConfig
-	deps    appjob.Deps
-	mu      sync.Mutex
-	workers map[string]*worker.Worker
+	cfg        config.ConversationConfig
+	configPath string
+	deps       appjob.Deps
+	mu         sync.Mutex
+	workers    map[string]*worker.Worker
 
 	shuttingDown bool
 	shutdownDone chan struct{}
@@ -60,6 +61,7 @@ func New(
 	services map[enum.Style]dservice.TextModelService,
 	tools map[string]dservice.Tool,
 	cfg config.Config,
+	configPath string,
 ) *ConversationApp {
 	// Normalize once at the boundary — invalid values clamp and zeros
 	// pull their `default` tag, so every downstream read trusts the
@@ -67,7 +69,8 @@ func New(
 	ccfg := cfg.Conversation
 	ccfg.Normalize()
 	return &ConversationApp{
-		cfg: ccfg,
+		cfg:        ccfg,
+		configPath: configPath,
 		deps: appjob.Deps{
 			Convs:    convs,
 			Gateways: gateways,
@@ -84,8 +87,23 @@ func New(
 // ordinary jobs append FIFO. Posting stays under app.mu through Submit so
 // Shutdown has a clear boundary between accepted and rejected work. A
 // submit racing a worker's teardown gets ErrClosed — respawn and retry.
+func (app *ConversationApp) reloadConfig() {
+	if app.configPath == "" {
+		return
+	}
+	var fresh config.Config
+	if err := fresh.Load(app.configPath); err != nil {
+		return
+	}
+	ccfg := fresh.Conversation
+	ccfg.Normalize()
+	app.cfg = ccfg
+	app.deps.Config = ccfg
+}
+
 func (app *ConversationApp) post(convID string, j queuedJob) {
 	j.Bind(convID)
+	app.reloadConfig()
 	for {
 		app.mu.Lock()
 		if app.shuttingDown {

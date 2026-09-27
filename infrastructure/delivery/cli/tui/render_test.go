@@ -49,8 +49,8 @@ func TestLiveHidesReasoningButShowsThinkingPhase(t *testing.T) {
 	if m.phase != "thinking" {
 		t.Fatalf("phase = %q, want thinking", m.phase)
 	}
-	if got := m.renderFooter(false); !strings.Contains(got, "thinking") {
-		t.Fatalf("footer = %q, want thinking indicator", got)
+	if got := m.renderTurnStatus(); !strings.Contains(got, "thinking") {
+		t.Fatalf("turn status = %q, want thinking indicator", got)
 	}
 }
 
@@ -86,7 +86,7 @@ func TestViewPlacesFooterBadgesUnderComposer(t *testing.T) {
 	if conv < route {
 		t.Fatalf("footer badges out of order: %q", badges)
 	}
-	if !strings.Contains(badges, "~200K/1M") {
+	if !strings.Contains(badges, "~200K/1M Tokens") {
 		t.Fatalf("footer missing context estimate: %q", badges)
 	}
 	if !strings.Contains(lines[footer+1], "/ for commands") {
@@ -105,14 +105,44 @@ func TestFooterShowsWorkspaceAndActivePhase(t *testing.T) {
 	m.turnActive = true
 	m.phase = "exec write_file"
 
-	got := ansi.Strip(m.renderFooter(false))
-	for _, want := range []string{filepath.Base(root.Path()), "write_file", "ctrl+c to interrupt"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("footer = %q, missing %q", got, want)
+	footer := ansi.Strip(m.renderFooter(false))
+	if !strings.Contains(footer, filepath.Base(root.Path())) {
+		t.Fatalf("footer badges = %q, missing workspace", footer)
+	}
+	status := ansi.Strip(m.renderTurnStatus())
+	for _, want := range []string{"write_file", "ctrl+c to interrupt"} {
+		if !strings.Contains(status, want) {
+			t.Fatalf("turn status = %q, missing %q", status, want)
 		}
 	}
-	if strings.Contains(got, "exec write_file") {
-		t.Fatalf("footer should show the tool name without the phase prefix: %q", got)
+	if strings.Contains(status, "exec write_file") {
+		t.Fatalf("turn status should show the tool name without the phase prefix: %q", status)
+	}
+}
+
+func TestViewPlacesTurnStatusAboveComposer(t *testing.T) {
+	m := testModel(t)
+	m.width = 80
+	m.textarea.SetWidth(composerInputWidth(80))
+	m.turnActive = true
+	m.phase = "thinking"
+	m.textarea.SetValue("draft")
+
+	lines := strings.Split(ansi.Strip(m.View()), "\n")
+	composer, status := -1, -1
+	for i, line := range lines {
+		if strings.Contains(line, composerPrompt+"draft") {
+			composer = i
+		}
+		if strings.Contains(line, "thinking") {
+			status = i
+		}
+	}
+	if composer < 0 || status < 0 {
+		t.Fatalf("view missing composer or status:\n%s", strings.Join(lines, "\n"))
+	}
+	if status >= composer {
+		t.Fatalf("status row %d must be above composer row %d", status, composer)
 	}
 }
 
@@ -161,7 +191,7 @@ func TestComposerKeepsFirstLineVisibleAfterNewline(t *testing.T) {
 
 	for _, msg := range []tea.KeyMsg{
 		{Type: tea.KeyRunes, Runes: []rune("first line")},
-		{Type: tea.KeyCtrlJ},
+		{Type: tea.KeyEnter, Alt: true},
 		{Type: tea.KeyRunes, Runes: []rune("second line")},
 	} {
 		m.editComposer(msg)
@@ -204,6 +234,26 @@ func TestLiveRendersMarkdownAsChatContent(t *testing.T) {
 	}
 	if !strings.Contains(got, "bold") {
 		t.Fatalf("rendered assistant content missing: %q", got)
+	}
+}
+
+func TestLiveInterleavesToolCallsWithAssistantText(t *testing.T) {
+	m := testModel(t)
+	call := newTestToolCall(t, "call-1", "write_file", `{"path":"x"}`)
+
+	m.applyEvent(event.NewDeltaEvent("before tool"))
+	m.applyEvent(event.NewToolCallEvent(call))
+	m.applyEvent(event.NewDeltaEvent("after tool"))
+
+	got := ansi.Strip(m.renderLive())
+	before := strings.Index(got, "before tool")
+	tool := strings.Index(got, "write_file")
+	after := strings.Index(got, "after tool")
+	if before < 0 || tool < 0 || after < 0 {
+		t.Fatalf("rendered turn missing a segment: %q", got)
+	}
+	if !(before < tool && tool < after) {
+		t.Fatalf("stream order wrong (before=%d tool=%d after=%d): %q", before, tool, after, got)
 	}
 }
 

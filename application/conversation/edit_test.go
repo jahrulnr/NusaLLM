@@ -168,7 +168,7 @@ func TestEditPreemptsRunningTool(t *testing.T) {
 	app := New(convs, gateways,
 		map[enum.Style]dservice.TextModelService{enum.StyleCompletion: svc},
 		map[string]dservice.Tool{"blocking": tool},
-		config.NewConfig())
+		config.NewConfig(), "")
 	seed, _ := aggregate.NewConversation("room")
 	seed.SetTools([]valueobject.ToolSchema{tool.Schema()})
 	seed.SetRoute("gw1")

@@ -96,6 +96,26 @@ func (s *Session) Close() error {
 	return s.Workspace.Close()
 }
 
+// EffectiveRouteModel returns route and model for display and budgeting:
+// session overrides first, then the active conversation's stored binding.
+func (s *Session) EffectiveRouteModel(ctx context.Context) (route, modelID string) {
+	route, modelID = s.Route, s.ModelID
+	if s.ConversationID == "" || s.Conversations == nil {
+		return route, modelID
+	}
+	info, err := s.Conversations.Info(ctx, s.ConversationID)
+	if err != nil {
+		return route, modelID
+	}
+	if route == "" {
+		route = info.Route
+	}
+	if modelID == "" {
+		modelID = info.ModelID
+	}
+	return route, modelID
+}
+
 // ResolveRoute picks the effective route and model for the next turn —
 // explicit /route + /model selection, the conversation's stored binding,
 // or an unambiguous auto-selection — and must run on the update loop:
@@ -112,9 +132,15 @@ func (s *Session) ResolveRoute(ctx context.Context) (route, modelID string, err 
 		}
 		if route == "" {
 			route = info.Route
+			if route != "" {
+				s.Route = route
+			}
 		}
 		if modelID == "" {
 			modelID = info.ModelID
+			if modelID != "" {
+				s.ModelID = modelID
+			}
 		}
 	}
 	if route == "" {

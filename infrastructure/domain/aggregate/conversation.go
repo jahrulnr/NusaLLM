@@ -137,8 +137,9 @@ func (c *Conversation) AddUsage(u valueobject.Usage) {
 
 // EstimatedTokens approximates the conversation's context size in tokens
 // using a chars/4 heuristic over everything adapters replay onto the wire:
-// system prompt, message content, optionalContent values (signatures,
-// reasoning content, thinking payloads), and tool call input/output.
+// system prompt, agent-offered tool schemas, message content,
+// optionalContent values (signatures, reasoning content, thinking payloads),
+// and tool call input/output.
 // Attachments — message-level and tool-produced alike — are billed by
 // providers via media tokenization (image tiles, audio/video duration),
 // not characters — each contributes a flat attachmentTokenEstimate
@@ -150,6 +151,12 @@ const attachmentTokenEstimate = 1000
 
 func (c *Conversation) EstimatedTokens() int {
 	chars := len(c.systemPrompt)
+	for _, t := range c.tools {
+		if !t.CallableByAgent() {
+			continue
+		}
+		chars += len(t.Name()) + len(t.Description()) + len(t.Parameters())
+	}
 	flat := 0
 	for _, m := range c.messages {
 		chars += len(m.Content())

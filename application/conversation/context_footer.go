@@ -2,17 +2,19 @@ package appconversation
 
 import (
 	"context"
+
+	"github.com/jahrulnr/llm-base/infrastructure/prompt"
 )
 
-// ContextFooterStats is the estimated live input size and the bound model's
-// total context window for the REPL footer (~estimate/total).
+// ContextFooterStats is the estimated live input size and the model's input
+// allowance for the REPL footer (~estimate/total), aligned with compaction.
 type ContextFooterStats struct {
 	Estimate int
 	Total    int
 }
 
 // ContextFooterStats loads the conversation's estimated input tokens and
-// resolves the effective total context from the bound route/model.
+// resolves the input allowance from the bound route/model.
 func (app *ConversationApp) ContextFooterStats(ctx context.Context, convID, route, modelID string) (ContextFooterStats, error) {
 	var stats ContextFooterStats
 	if convID == "" {
@@ -22,6 +24,12 @@ func (app *ConversationApp) ContextFooterStats(ctx context.Context, convID, rout
 	if err != nil {
 		return stats, err
 	}
+	// Mirror send/runTurn: system prompt and tool catalog are code applied
+	// every request, not restored from the conversation record.
+	if conv.SystemPrompt() == "" {
+		conv.SetSystemPrompt(prompt.SystemPrompt("conversation"))
+	}
+	conv.SetTools(app.ToolSchemas())
 	stats.Estimate = conv.EstimatedTokens()
 	if route == "" {
 		route = conv.Route()
@@ -40,6 +48,6 @@ func (app *ConversationApp) ContextFooterStats(ctx context.Context, convID, rout
 	if !ok {
 		return stats, nil
 	}
-	stats.Total = model.ApplyUnknownContextDefaults().EffectiveContextWindow()
+	stats.Total = model.CompactionInputAllowance()
 	return stats, nil
 }

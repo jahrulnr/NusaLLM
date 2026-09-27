@@ -177,7 +177,7 @@ func run(ctx context.Context) (runErr error) {
 		tools[tool.Schema().Name()] = tool
 	}
 
-	conversationApp := appconversation.New(convs, gateways, services, tools, cfg)
+	conversationApp := appconversation.New(convs, gateways, services, tools, cfg, b.ConfigPath())
 	repl, err := tui.NewREPL(tui.Options{
 		Conversations: conversationApp,
 		Gateways:      b.Gateways(),

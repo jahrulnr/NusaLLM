@@ -23,6 +23,7 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 	// clamps and tag defaults fill it.
 	ccfg := d.Config
 	ccfg.Normalize()
+	wireModel := model.ApplyUnknownContextDefaults()
 	// The call surface is live config: a stored conversation can predate
 	// the catalog, so apply the current set every turn — never trust what
 	// the record hydrated. Without this the wire carries no tools and the
@@ -44,11 +45,11 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 			didCompact = shrank
 		}
 		before := len(conv.Messages())
-		err := svc.Send(ctx, conv, gw, model, onEvent)
+		err := svc.Send(ctx, conv, gw, wireModel, onEvent)
 		if err != nil && apperror.As(err).StatusCode() == 413 && !didCompact && len(conv.Messages()) > ccfg.CompactKeepTail {
 			// The provider says overflow even though our estimate
 			// disagreed — believe the provider once: compact and retry.
-			if err := d.compact(ctx, convID, conv, gw, model, svc, ccfg.CompactKeepTail); err != nil {
+			if err := d.compact(ctx, convID, conv, gw, wireModel, svc, ccfg.CompactKeepTail); err != nil {
 				return err
 			}
 			didCompact = true
@@ -140,7 +141,7 @@ func (d Deps) resolveRoute(ctx context.Context, convID string, conv *aggregate.C
 		// for this style — that's a deployment defect, not a user error.
 		return nil, model, nil, apperror.New(500, "no adapter for gateway style", fmt.Errorf("style %s unregistered", gw.Style()))
 	}
-	return gw, m.ApplyUnknownContextDefaults(), svc, nil
+	return gw, m, svc, nil
 }
 
 // ToolSchemas returns the registered catalog sorted by name — the

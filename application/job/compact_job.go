@@ -40,7 +40,7 @@ func (j *Compact) Execute(execCtx context.Context) (err error) {
 		if err != nil {
 			return err
 		}
-		return d.compact(ctx, convID, conv, gw, model, svc, keepTail)
+		return d.compact(ctx, convID, conv, gw, model.ApplyUnknownContextDefaults(), svc, keepTail)
 	}()
 	return err
 }

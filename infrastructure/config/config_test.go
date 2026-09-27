@@ -74,7 +74,7 @@ func TestLoadRejectsMalformedJSON(t *testing.T) {
 func TestNormalizeClampsNegatives(t *testing.T) {
 	c := Config{Conversation: ConversationConfig{MailboxCap: -1, MaxTurnStep: -5}}
 	c.Normalize()
-	if c.Conversation.MailboxCap != 128 || c.Conversation.MaxTurnStep != 16 {
+	if c.Conversation.MailboxCap != 128 || c.Conversation.MaxTurnStep != 512 {
 		t.Fatalf("negatives must clamp to tag defaults, got %+v", c.Conversation)
 	}
 	s := ServiceConfig{IdleTimeout: -1}

@@ -84,6 +84,7 @@ func newCommandFixture(t *testing.T) *commandFixture {
 		},
 		map[string]dservice.Tool{toolsummary.Name: toolsummary.NewSummaryTool()},
 		config.NewConfig(),
+		"",
 	)
 	t.Cleanup(func() { _ = conversationApplication.Shutdown(context.Background()) })
 	sess, err := session.New(session.Options{

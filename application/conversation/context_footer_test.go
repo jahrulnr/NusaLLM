@@ -46,7 +46,7 @@ func TestContextFooterStats(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	app := New(convs, gateways, nil, nil, config.NewConfig())
+	app := New(convs, gateways, nil, nil, config.NewConfig(), "")
 	stats, err := app.ContextFooterStats(t.Context(), "room", "", "")
 	if err != nil {
 		t.Fatal(err)
@@ -56,5 +56,44 @@ func TestContextFooterStats(t *testing.T) {
 	}
 	if stats.Estimate < 190_000 {
 		t.Fatalf("estimate = %d, want ~200k from chars/4", stats.Estimate)
+	}
+}
+
+func TestContextFooterStatsUnknownWindow(t *testing.T) {
+	gw, err := aggregate.NewGateway("gw1", "stub", "http://x", enum.StyleCompletion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw.SetApiKey("sk")
+	m, _ := entity.NewModel("m1", "gw1")
+	gw.SetModels([]entity.Model{m})
+	secrets, err := reposecret.New(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { secrets.Close() })
+	gateways := repogateway.NewGatewayRepository(t.TempDir(), secrets)
+	if err := gateways.Save(t.Context(), &gw); err != nil {
+		t.Fatal(err)
+	}
+	convs := repoconversation.NewConversationRepository(t.TempDir())
+	conv, err := aggregate.NewConversation("room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conv.SetRoute("gw1")
+	conv.SetModelID("m1")
+	if err := convs.Save(t.Context(), conv); err != nil {
+		t.Fatal(err)
+	}
+
+	app := New(convs, gateways, nil, nil, config.NewConfig(), "")
+	stats, err := app.ContextFooterStats(t.Context(), "room", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const wantTotal = entity.DefaultUnknownContextWindow - entity.DefaultUnknownMaxOutputTokens
+	if stats.Total != wantTotal {
+		t.Fatalf("total = %d, want %d", stats.Total, wantTotal)
 	}
 }

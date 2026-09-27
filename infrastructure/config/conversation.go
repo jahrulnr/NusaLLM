@@ -2,7 +2,7 @@ package config
 
 type ConversationConfig struct {
 	MailboxCap  int `json:"mailbox_cap" default:"128"`
-	MaxTurnStep int `json:"max_turn_steps" default:"16"`
+	MaxTurnStep int `json:"max_turn_steps" default:"512"` // heavy coding or debugging may need more steps
 	// CompactBudgetPct is the share of the model's context window that
 	// triggers compaction — headroom above it stays reserved for the reply.
 	CompactBudgetPct int `json:"compact_budget_pct" default:"90"`
