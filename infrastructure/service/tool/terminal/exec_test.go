@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/service"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
 )
 
 func newTool(t *testing.T) service.Tool {
@@ -116,7 +116,7 @@ func TestExecOversizedSpillsAndTruncates(t *testing.T) {
 	if len(out) > budget {
 		t.Fatalf("result exceeds budget: %d > %d", len(out), budget)
 	}
-	spill := filepath.Join(os.TempDir(), "llm-base-exec-oversized-1.log")
+	spill := filepath.Join(os.TempDir(), "nusallm-exec-oversized-1.log")
 	defer os.Remove(spill)
 	if !strings.HasPrefix(out, "1\n2\n3") || !strings.HasSuffix(out, "2000\n") {
 		t.Fatalf("missing head or tail: %q...", out[:80])

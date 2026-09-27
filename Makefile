@@ -1,12 +1,12 @@
 build:
 	mkdir -p ./bin
-	go build -o bin/llm cmd/core/main.go
+	go build -o bin/nusallm cmd/nusallm/main.go
 
 cli: build
-	./bin/llm
+	./bin/nusallm
 
 gateway-add: build
-	./bin/llm gateway add \
+	./bin/nusallm gateway add \
 	opencode --style completion \
 	--endpoint https://opencode.ai/zen/v1 \
 	--models space-bunny-free --key-stdin

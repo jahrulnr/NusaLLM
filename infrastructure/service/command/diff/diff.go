@@ -7,8 +7,8 @@ import (
 	"os/exec"
 	"strings"
 
-	appcommand "github.com/jahrulnr/llm-base/application/command"
-	dservice "github.com/jahrulnr/llm-base/infrastructure/domain/service"
+	appcommand "github.com/jahrulnr/nusallm/application/command"
+	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 )
 
 // DiffCommand is the /diff command.

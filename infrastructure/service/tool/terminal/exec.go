@@ -15,10 +15,10 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/service"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 )
 
 const (
@@ -88,7 +88,7 @@ func (tool *ExecTool) Execute(ctx context.Context, call entity.ToolCall, emit se
 		}
 		return '_'
 	}, call.ID())
-	spillPath := filepath.Join(os.TempDir(), "llm-base-exec-"+safe+".log")
+	spillPath := filepath.Join(os.TempDir(), "nusallm-exec-"+safe+".log")
 
 	cmd := shellCommand(ctx, input.Command)
 	cmd.WaitDelay = waitDelay

@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/aggregate"
-	drepo "github.com/jahrulnr/llm-base/infrastructure/domain/repository"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
-	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
 // Save upserts <id>.json atomically — tmp+rename, so a crash mid-write

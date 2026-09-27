@@ -3,11 +3,11 @@ package appconversation
 import (
 	"context"
 
-	appjob "github.com/jahrulnr/llm-base/application/job"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/aggregate"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/event"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
-	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
+	appjob "github.com/jahrulnr/nusallm/application/job"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
 // SendResult identifies the conversation that received the submission and

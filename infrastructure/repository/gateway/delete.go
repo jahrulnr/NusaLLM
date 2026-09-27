@@ -5,8 +5,8 @@ import (
 	"errors"
 	"os"
 
-	drepo "github.com/jahrulnr/llm-base/infrastructure/domain/repository"
-	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
 // Delete removes <id>.json plus its auto-stored secret — a dangling

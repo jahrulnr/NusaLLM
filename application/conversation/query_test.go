@@ -3,8 +3,8 @@ package appconversation
 import (
 	"testing"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
-	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
 func TestConversationQueries(t *testing.T) {

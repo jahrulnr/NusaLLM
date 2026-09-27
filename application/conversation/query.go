@@ -3,11 +3,11 @@ package appconversation
 import (
 	"context"
 
-	appjob "github.com/jahrulnr/llm-base/application/job"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
-	drepo "github.com/jahrulnr/llm-base/infrastructure/domain/repository"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
-	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
+	appjob "github.com/jahrulnr/nusallm/application/job"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
 // Info returns the lightweight projection for one conversation.

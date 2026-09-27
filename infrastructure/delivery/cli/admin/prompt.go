@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	"golang.org/x/term"
 )
 

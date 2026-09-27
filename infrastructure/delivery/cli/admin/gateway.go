@@ -9,14 +9,14 @@ import (
 	"os"
 	"strings"
 
-	appgateway "github.com/jahrulnr/llm-base/application/gateway"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
+	appgateway "github.com/jahrulnr/nusallm/application/gateway"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 	"golang.org/x/term"
 )
 
-// Gateway is the `core gateway <sub>` handler — list/show/add/set/delete
+// Gateway is the `nusallm gateway <sub>` handler — list/show/add/set/delete
 // over the gateway application. Secret material always goes through the
 // SecretStore; records keep references only.
 func Gateway(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -69,20 +69,20 @@ func Gateway(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			canonical := valueobject.KeyRefSecret + "gateway/" + id + "/api_key"
 			for _, g := range refs {
 				if g.KeyRef == canonical {
-					fmt.Fprintf(stderr, "core: warning: gateway %s references %s — now unresolvable\n",
+					fmt.Fprintf(stderr, "nusallm: warning: gateway %s references %s — now unresolvable\n",
 						g.ID, canonical)
 				}
 			}
 		}
 	default:
-		fmt.Fprintf(stderr, "core: unknown gateway subcommand %q\n", args[0])
+		fmt.Fprintf(stderr, "nusallm: unknown gateway subcommand %q\n", args[0])
 		fmt.Fprint(stderr, gatewayUsage)
 		return 2
 	}
 	return 0
 }
 
-const gatewayUsage = `Usage: core gateway <subcommand> [flags]
+const gatewayUsage = `Usage: nusallm gateway <subcommand> [flags]
 
   list                          list gateways — sanitized, never key material
   show <id>                     gateway detail and its model catalog
@@ -119,7 +119,7 @@ func gatewayWrite(b *Boot, edit bool, args []string, stdout, stderr io.Writer, s
 	}
 	id := args[0]
 	if id == "" || strings.HasPrefix(id, "-") || strings.ContainsAny(id, " \t\n") {
-		fmt.Fprintf(stderr, "core: invalid gateway id %q — no flags or whitespace\n", id)
+		fmt.Fprintf(stderr, "nusallm: invalid gateway id %q — no flags or whitespace\n", id)
 		return 2
 	}
 	fs := flag.NewFlagSet("gateway", flag.ContinueOnError)
@@ -155,16 +155,16 @@ func gatewayWrite(b *Boot, edit bool, args []string, stdout, stderr io.Writer, s
 		}
 	})
 	if len(keyFlags) > 1 {
-		fmt.Fprintf(stderr, "core: %s conflict — pass exactly one key flag\n",
+		fmt.Fprintf(stderr, "nusallm: %s conflict — pass exactly one key flag\n",
 			strings.Join(keyFlags, " and "))
 		return 2
 	}
 	if *streamOn && *noStream {
-		fmt.Fprintln(stderr, "core: --stream and --no-stream conflict — pick one")
+		fmt.Fprintln(stderr, "nusallm: --stream and --no-stream conflict — pick one")
 		return 2
 	}
 	if !edit && *clearKey {
-		fmt.Fprintln(stderr, "core: --clear-key is a `gateway set` flag — a new gateway has no key to clear")
+		fmt.Fprintln(stderr, "nusallm: --clear-key is a `gateway set` flag — a new gateway has no key to clear")
 		return 2
 	}
 
@@ -176,18 +176,18 @@ func gatewayWrite(b *Boot, edit bool, args []string, stdout, stderr io.Writer, s
 			return 1
 		}
 		if info.Broken {
-			fmt.Fprintf(stderr, "core: gateway %s is corrupt — repair it with a full `gateway add %s ...` or delete it\n", id, id)
+			fmt.Fprintf(stderr, "nusallm: gateway %s is corrupt — repair it with a full `gateway add %s ...` or delete it\n", id, id)
 			return 1
 		}
 		in = appgateway.InputFromInfo(info)
 	} else if existing, err := b.gateways.Get(context.Background(), id); err == nil && !existing.Broken {
-		fmt.Fprintf(stderr, "core: gateway %s already exists — edit it with `gateway set %s [flags]`\n", id, id)
+		fmt.Fprintf(stderr, "nusallm: gateway %s already exists — edit it with `gateway set %s [flags]`\n", id, id)
 		return 1
 	}
 	if *style != "" {
 		s, ok := enum.ParseStyle(*style)
 		if !ok {
-			fmt.Fprintf(stderr, "core: unknown style %q — completion | responses | messages\n", *style)
+			fmt.Fprintf(stderr, "nusallm: unknown style %q — completion | responses | messages\n", *style)
 			return 2
 		}
 		in.Style = s
@@ -223,12 +223,12 @@ func gatewayWrite(b *Boot, edit bool, args []string, stdout, stderr io.Writer, s
 	// must not have already consumed stdin.
 	if !edit && in.Style == "" {
 		if !isTTY(stdin) {
-			fmt.Fprintln(stderr, "core: --style is required — completion | responses | messages (or run: core onboard)")
+			fmt.Fprintln(stderr, "nusallm: --style is required — completion | responses | messages (or run: nusallm onboard)")
 			return 2
 		}
 	}
 	if !edit && in.Endpoint == "" && !isTTY(stdin) {
-		fmt.Fprintln(stderr, "core: --endpoint is required — e.g. https://api.openai.com/v1 (or run: core onboard)")
+		fmt.Fprintln(stderr, "nusallm: --endpoint is required — e.g. https://api.openai.com/v1 (or run: nusallm onboard)")
 		return 2
 	}
 	if *clearKey {
@@ -238,14 +238,14 @@ func gatewayWrite(b *Boot, edit bool, args []string, stdout, stderr io.Writer, s
 	if *keyEnv != "" {
 		if strings.HasPrefix(*keyEnv, valueobject.KeyRefEnv) ||
 			strings.HasPrefix(*keyEnv, valueobject.KeyRefSecret) {
-			fmt.Fprintf(stderr, "core: --key-env wants a bare variable name, not %q\n", *keyEnv)
+			fmt.Fprintf(stderr, "nusallm: --key-env wants a bare variable name, not %q\n", *keyEnv)
 			return 2
 		}
 		ref := valueobject.KeyRefEnv + *keyEnv
 		in.ApiKey = &ref
 	}
 	if *keyLiteral != "" {
-		fmt.Fprintln(stderr, "core: note: a literal --key is visible in shell history and ps; prefer --key-stdin or --key-env")
+		fmt.Fprintln(stderr, "nusallm: note: a literal --key is visible in shell history and ps; prefer --key-stdin or --key-env")
 		in.ApiKey = keyLiteral
 	}
 	if *keyStdin {
@@ -255,7 +255,7 @@ func gatewayWrite(b *Boot, edit bool, args []string, stdout, stderr io.Writer, s
 			return 1
 		}
 		if k == "" {
-			fmt.Fprintln(stderr, "core: empty key on stdin")
+			fmt.Fprintln(stderr, "nusallm: empty key on stdin")
 			return 1
 		}
 		in.ApiKey = &k
@@ -279,7 +279,7 @@ func gatewayWrite(b *Boot, edit bool, args []string, stdout, stderr io.Writer, s
 			case "3", "messages":
 				in.Style = enum.StyleMessages
 			default:
-				fmt.Fprintf(stderr, "core: unknown style %q\n", pick)
+				fmt.Fprintf(stderr, "nusallm: unknown style %q\n", pick)
 				return 2
 			}
 		}
@@ -313,7 +313,7 @@ func gatewayWrite(b *Boot, edit bool, args []string, stdout, stderr io.Writer, s
 		}
 	}
 	if in.Endpoint == "" {
-		fmt.Fprintln(stderr, "core: --endpoint is required — e.g. https://api.openai.com/v1 (or run: core onboard)")
+		fmt.Fprintln(stderr, "nusallm: --endpoint is required — e.g. https://api.openai.com/v1 (or run: nusallm onboard)")
 		return 2
 	}
 	if err := b.gateways.Upsert(context.Background(), in); err != nil {
@@ -335,7 +335,7 @@ func gatewayList(b *Boot, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if len(list) == 0 {
-		fmt.Fprintln(stdout, "no gateways configured — see core gateway add --help")
+		fmt.Fprintln(stdout, "no gateways configured — see nusallm gateway add --help")
 		return 0
 	}
 	for _, g := range list {

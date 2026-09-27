@@ -3,7 +3,7 @@ package wire
 import (
 	"strings"
 
-	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
 // UpstreamError wraps a raw response body as the internal cause — never

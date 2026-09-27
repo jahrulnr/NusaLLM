@@ -1,6 +1,6 @@
 package command
 
-import "github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
+import "github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 
 // AttachmentPath parses and validates an /attach workspace path.
 func AttachmentPath(raw string) (string, error) {

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
 // Compact folds the live tail into a checkpoint on demand — the manual

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/jahrulnr/llm-base/infrastructure/delivery/cli/commands"
-	"github.com/jahrulnr/llm-base/infrastructure/delivery/cli/term"
+	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/commands"
+	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/term"
 )
 
 // paletteMaxRows caps the visible palette window; overflow scrolls.

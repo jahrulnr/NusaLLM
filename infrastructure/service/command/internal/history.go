@@ -3,10 +3,10 @@ package commandinternal
 import (
 	"strings"
 
-	appcommand "github.com/jahrulnr/llm-base/application/command"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/service"
+	appcommand "github.com/jahrulnr/nusallm/application/command"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
 )
 
 // Write formats a message transcript for slash-command output (terminal

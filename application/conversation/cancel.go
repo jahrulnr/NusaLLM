@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
-	"github.com/jahrulnr/llm-base/infrastructure/worker"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
+	"github.com/jahrulnr/nusallm/infrastructure/worker"
 )
 
 // Cancel aborts the job currently running on the conversation's worker —

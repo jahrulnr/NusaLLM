@@ -13,8 +13,8 @@ import (
 	"strings"
 	"sync"
 
-	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
-	"github.com/jahrulnr/llm-base/infrastructure/redact"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
+	"github.com/jahrulnr/nusallm/infrastructure/redact"
 )
 
 const activeFile = "active.jsonl"

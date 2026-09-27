@@ -21,13 +21,13 @@ import (
 	"fmt"
 	"sync"
 
-	appjob "github.com/jahrulnr/llm-base/application/job"
-	"github.com/jahrulnr/llm-base/infrastructure/config"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
-	drepo "github.com/jahrulnr/llm-base/infrastructure/domain/repository"
-	dservice "github.com/jahrulnr/llm-base/infrastructure/domain/service"
-	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
-	"github.com/jahrulnr/llm-base/infrastructure/worker"
+	appjob "github.com/jahrulnr/nusallm/application/job"
+	"github.com/jahrulnr/nusallm/infrastructure/config"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
+	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
+	"github.com/jahrulnr/nusallm/infrastructure/worker"
 )
 
 // queuedJob is what a room's worker runs: a worker.Job plus the result

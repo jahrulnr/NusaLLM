@@ -12,12 +12,12 @@ import (
 	"fmt"
 	"sync/atomic"
 
-	"github.com/jahrulnr/llm-base/infrastructure/config"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
-	drepo "github.com/jahrulnr/llm-base/infrastructure/domain/repository"
-	dservice "github.com/jahrulnr/llm-base/infrastructure/domain/service"
-	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
-	"github.com/jahrulnr/llm-base/infrastructure/worker"
+	"github.com/jahrulnr/nusallm/infrastructure/config"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
+	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
+	"github.com/jahrulnr/nusallm/infrastructure/worker"
 )
 
 // Deps is everything a job may reach — the domain ports plus the

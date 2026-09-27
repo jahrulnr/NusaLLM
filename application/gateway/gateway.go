@@ -14,7 +14,7 @@
 package appgateway
 
 import (
-	drepo "github.com/jahrulnr/llm-base/infrastructure/domain/repository"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 )
 
 // GatewayApp fronts the drepo.Gateway port plus the SecretStore the

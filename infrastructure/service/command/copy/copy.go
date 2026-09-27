@@ -7,9 +7,9 @@ import (
 	"strings"
 
 	"github.com/atotto/clipboard"
-	appcommand "github.com/jahrulnr/llm-base/application/command"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
-	dservice "github.com/jahrulnr/llm-base/infrastructure/domain/service"
+	appcommand "github.com/jahrulnr/nusallm/application/command"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 )
 
 // CopyCommand is the /copy command.

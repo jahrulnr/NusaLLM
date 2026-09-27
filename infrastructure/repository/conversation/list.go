@@ -6,7 +6,7 @@ import (
 	"os"
 	"sort"
 
-	drepo "github.com/jahrulnr/llm-base/infrastructure/domain/repository"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 )
 
 // List reads every conversation's meta and returns infos newest activity

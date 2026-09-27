@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 )
 
 func mustAttachment(t *testing.T, uri, mt string) valueobject.Attachment {

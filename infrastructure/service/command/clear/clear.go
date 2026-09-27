@@ -5,8 +5,8 @@ import (
 	"errors"
 	"strings"
 
-	appcommand "github.com/jahrulnr/llm-base/application/command"
-	dservice "github.com/jahrulnr/llm-base/infrastructure/domain/service"
+	appcommand "github.com/jahrulnr/nusallm/application/command"
+	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 )
 
 // ClearCommand is the /clear command.

@@ -3,9 +3,9 @@ package appconversation
 import (
 	"context"
 
-	appjob "github.com/jahrulnr/llm-base/application/job"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/event"
-	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
+	appjob "github.com/jahrulnr/nusallm/application/job"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
 // Edit rewrites a user message and resends the turn from it — the

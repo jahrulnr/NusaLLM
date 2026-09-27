@@ -3,9 +3,9 @@ package cmdquit
 import (
 	"context"
 
-	appcommand "github.com/jahrulnr/llm-base/application/command"
-	dservice "github.com/jahrulnr/llm-base/infrastructure/domain/service"
-	cmdexit "github.com/jahrulnr/llm-base/infrastructure/service/command/exit"
+	appcommand "github.com/jahrulnr/nusallm/application/command"
+	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
+	cmdexit "github.com/jahrulnr/nusallm/infrastructure/service/command/exit"
 )
 
 // QuitCommand is an alias for /exit.

@@ -3,9 +3,9 @@ package commandinternal
 import (
 	"context"
 
-	appcommand "github.com/jahrulnr/llm-base/application/command"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/aggregate"
-	drepo "github.com/jahrulnr/llm-base/infrastructure/domain/repository"
+	appcommand "github.com/jahrulnr/nusallm/application/command"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 )
 
 // DisplayTitles resolves list labels for many conversations. Set titles skip

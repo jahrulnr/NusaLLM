@@ -13,7 +13,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/jahrulnr/llm-base/infrastructure/delivery/cli/session"
+	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/session"
 	"golang.org/x/sys/unix"
 )
 

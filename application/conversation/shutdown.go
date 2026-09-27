@@ -3,8 +3,8 @@ package appconversation
 import (
 	"context"
 
-	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
-	"github.com/jahrulnr/llm-base/infrastructure/worker"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
+	"github.com/jahrulnr/nusallm/infrastructure/worker"
 )
 
 // Shutdown rejects future posts, terminates every current room worker, and

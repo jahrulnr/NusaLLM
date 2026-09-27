@@ -5,7 +5,7 @@ import (
 	"errors"
 	"os"
 
-	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
 // Delete removes the whole conversation directory — meta, live tail, and

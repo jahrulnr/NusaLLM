@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	appcommand "github.com/jahrulnr/llm-base/application/command"
-	dservice "github.com/jahrulnr/llm-base/infrastructure/domain/service"
-	commandinternal "github.com/jahrulnr/llm-base/infrastructure/service/command/internal"
+	appcommand "github.com/jahrulnr/nusallm/application/command"
+	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
+	commandinternal "github.com/jahrulnr/nusallm/infrastructure/service/command/internal"
 )
 
 // ListCommand is the /list command.

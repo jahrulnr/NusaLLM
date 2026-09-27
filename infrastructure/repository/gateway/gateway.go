@@ -19,9 +19,9 @@ import (
 	"path/filepath"
 	"sync"
 
-	drepo "github.com/jahrulnr/llm-base/infrastructure/domain/repository"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
-	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
 // GatewayRepository is a JSON-file-backed Gateway store. secrets is the

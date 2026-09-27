@@ -12,10 +12,10 @@ import (
 	"sync"
 
 	tea "github.com/charmbracelet/bubbletea"
-	appconversation "github.com/jahrulnr/llm-base/application/conversation"
-	appgateway "github.com/jahrulnr/llm-base/application/gateway"
-	"github.com/jahrulnr/llm-base/infrastructure/delivery/cli/session"
-	"github.com/jahrulnr/llm-base/infrastructure/delivery/cli/term"
+	appconversation "github.com/jahrulnr/nusallm/application/conversation"
+	appgateway "github.com/jahrulnr/nusallm/application/gateway"
+	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/session"
+	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/term"
 )
 
 // Options wires the REPL to the use cases, its workspace, and the terminal.
@@ -177,8 +177,8 @@ func (r *REPL) printWelcome(ctx context.Context) {
 	gateways, err := r.Gateways.List(ctx)
 	if err != nil || len(gateways) == 0 {
 		fmt.Fprint(r.stdout, term.Dim+`no gateways configured yet — set one up:
-  core gateway add <id> --style completion --endpoint <url> --models <m> --key-stdin
-  or run the wizard: core onboard
+  nusallm gateway add <id> --style completion --endpoint <url> --models <m> --key-stdin
+  or run the wizard: nusallm onboard
 `+term.Reset)
 	} else {
 		ready := 0

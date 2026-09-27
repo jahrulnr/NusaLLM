@@ -3,7 +3,7 @@ package aggregate
 import (
 	"strings"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 )
 
 const listTitleFallback = "untitled"

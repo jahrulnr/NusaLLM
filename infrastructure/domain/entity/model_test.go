@@ -3,7 +3,7 @@ package entity
 import (
 	"testing"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 )
 
 func TestNewModel(t *testing.T) {

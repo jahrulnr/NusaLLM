@@ -7,10 +7,10 @@ import (
 	"strings"
 	"unicode"
 
-	appcommand "github.com/jahrulnr/llm-base/application/command"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/service"
-	dservice "github.com/jahrulnr/llm-base/infrastructure/domain/service"
+	appcommand "github.com/jahrulnr/nusallm/application/command"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
+	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 )
 
 // ModelCommand is the /model command.

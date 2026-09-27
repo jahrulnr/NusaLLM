@@ -5,12 +5,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
-	drepo "github.com/jahrulnr/llm-base/infrastructure/domain/repository"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
-	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
-	repogateway "github.com/jahrulnr/llm-base/infrastructure/repository/gateway"
-	reposecret "github.com/jahrulnr/llm-base/infrastructure/repository/secret"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
+	repogateway "github.com/jahrulnr/nusallm/infrastructure/repository/gateway"
+	reposecret "github.com/jahrulnr/nusallm/infrastructure/repository/secret"
 )
 
 func newApp(t *testing.T) (*GatewayApp, drepo.SecretStore, string) {

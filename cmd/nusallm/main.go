@@ -1,4 +1,4 @@
-// Command core loads configuration, wires repositories, service adapters,
+// Command nusallm loads configuration, wires repositories, service adapters,
 // tools, and applications, then serves an interactive terminal REPL.
 // Admin subcommands are routes on the CLI delivery boundary — this file
 // is the mux, not the handler.
@@ -14,34 +14,34 @@ import (
 	"syscall"
 	"time"
 
-	appconversation "github.com/jahrulnr/llm-base/application/conversation"
-	"github.com/jahrulnr/llm-base/infrastructure/delivery/cli/admin"
-	"github.com/jahrulnr/llm-base/infrastructure/delivery/cli/tui"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
-	dservice "github.com/jahrulnr/llm-base/infrastructure/domain/service"
-	"github.com/jahrulnr/llm-base/infrastructure/redact"
-	repoconversation "github.com/jahrulnr/llm-base/infrastructure/repository/conversation"
-	repogateway "github.com/jahrulnr/llm-base/infrastructure/repository/gateway"
-	repolog "github.com/jahrulnr/llm-base/infrastructure/repository/log"
-	textcompletion "github.com/jahrulnr/llm-base/infrastructure/service/core/text/completion"
-	toolfile "github.com/jahrulnr/llm-base/infrastructure/service/tool/file"
-	toolexec "github.com/jahrulnr/llm-base/infrastructure/service/tool/terminal"
+	appconversation "github.com/jahrulnr/nusallm/application/conversation"
+	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/admin"
+	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/tui"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
+	"github.com/jahrulnr/nusallm/infrastructure/redact"
+	repoconversation "github.com/jahrulnr/nusallm/infrastructure/repository/conversation"
+	repogateway "github.com/jahrulnr/nusallm/infrastructure/repository/gateway"
+	repolog "github.com/jahrulnr/nusallm/infrastructure/repository/log"
+	textcompletion "github.com/jahrulnr/nusallm/infrastructure/service/core/text/completion"
+	toolfile "github.com/jahrulnr/nusallm/infrastructure/service/tool/file"
+	toolexec "github.com/jahrulnr/nusallm/infrastructure/service/tool/terminal"
 )
 
 func main() {
 	args := os.Args[1:]
-	// People repeat the invocation target — "core" via habit, argv[0]'s
-	// name, or `go run ./... cmd/core/main.go` leaking the file into
-	// argv. Strip a leading token while it is the program name or a
-	// file that exists on disk (the `go run` build target); a token
-	// that merely ends in .go is an argument, not noise.
+	// People repeat the invocation target via habit, argv[0]'s name, or
+	// `go run ./cmd/nusallm/main.go` leaking the file into argv. Strip a
+	// leading token while it is the program name or a file that exists on
+	// disk (the `go run` build target); a token that merely ends in .go is
+	// an argument, not noise. "core" is still stripped for old scripts.
 	for len(args) > 0 {
 		tok := args[0]
 		isFile := false
 		if fi, err := os.Stat(tok); err == nil && !fi.IsDir() {
 			isFile = true
 		}
-		if tok != "core" && tok != filepath.Base(os.Args[0]) && !isFile {
+		if tok != admin.CLIName && tok != "core" && tok != filepath.Base(os.Args[0]) && !isFile {
 			break
 		}
 		args = args[1:]
@@ -58,33 +58,33 @@ func main() {
 		case "config":
 			os.Exit(admin.Config(args[1:], os.Stdout, os.Stderr))
 		default:
-			fmt.Fprintf(os.Stderr, "core: unknown argument %q — try --help\n", args[0])
+			fmt.Fprintf(os.Stderr, "%s: unknown argument %q — try --help\n", admin.CLIName, args[0])
 			os.Exit(2)
 		}
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
 	defer stop()
 	if err := run(ctx); err != nil {
-		fmt.Fprintln(os.Stderr, "core:", err)
+		fmt.Fprintln(os.Stderr, admin.CLIName+":", err)
 		os.Exit(1)
 	}
 }
 
-const usage = `core — interactive LLM conversation REPL
+var usage = admin.ProductName + ` — interactive LLM conversation REPL
 
 Usage:
-  core                  interactive REPL
-  core onboard          guided provider setup wizard
-  core gateway <...>    manage provider routes — list/show/add/set/delete
-  core config <...>     inspect and patch the config file — show/path/set/unset/validate
-  core --help           this text
+  ` + admin.CLIName + `                  interactive REPL
+  ` + admin.CLIName + ` onboard          guided provider setup wizard
+  ` + admin.CLIName + ` gateway <...>    manage provider routes — list/show/add/set/delete
+  ` + admin.CLIName + ` config <...>     inspect and patch the config file — show/path/set/unset/validate
+  ` + admin.CLIName + ` --help           this text
 
 Environment:
   CONFIG_PATH   path to the JSON config (default: embedded defaults);
                 a missing file is generated once at startup
 
 Provider setup (once per provider):
-  core gateway add openai --style completion \
+  ` + admin.CLIName + ` gateway add openai --style completion \
       --endpoint https://api.openai.com/v1 --models gpt-5 --key-stdin
 
 Inside the REPL:

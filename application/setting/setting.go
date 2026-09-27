@@ -12,8 +12,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/jahrulnr/llm-base/infrastructure/config"
-	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
+	"github.com/jahrulnr/nusallm/infrastructure/config"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
 // SettingApp fronts the config file path. There is no repository — the

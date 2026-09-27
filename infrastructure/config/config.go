@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"time"
 
-	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
 type Config struct {

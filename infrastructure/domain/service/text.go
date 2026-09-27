@@ -3,9 +3,9 @@ package service
 import (
 	"context"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/aggregate"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/event"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
 )
 
 type TextModelService interface {

@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 )
 
 // Compact seals the first dropBefore message lines verbatim into the next

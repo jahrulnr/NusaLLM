@@ -3,7 +3,7 @@ package valueobject
 import (
 	"testing"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 )
 
 func TestNewToolSchema(t *testing.T) {

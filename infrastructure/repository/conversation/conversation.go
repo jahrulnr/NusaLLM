@@ -22,11 +22,11 @@ import (
 	"sync"
 	"time"
 
-	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
-	drepo "github.com/jahrulnr/llm-base/infrastructure/domain/repository"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 )
 
 const (

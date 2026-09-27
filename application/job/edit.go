@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/aggregate"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/event"
-	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
-	"github.com/jahrulnr/llm-base/infrastructure/prompt"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
+	"github.com/jahrulnr/nusallm/infrastructure/prompt"
 )
 
 // Edit rewrites one user message and regenerates the turn from it —

@@ -1,4 +1,4 @@
-module github.com/jahrulnr/llm-base
+module github.com/jahrulnr/nusallm
 
 go 1.26.5
 

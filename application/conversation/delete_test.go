@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
-	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
 // Deleting an idle room removes storage and retires its worker.

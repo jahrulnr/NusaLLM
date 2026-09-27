@@ -10,8 +10,8 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/service"
-	commandinternal "github.com/jahrulnr/llm-base/infrastructure/service/command/internal"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
+	commandinternal "github.com/jahrulnr/nusallm/infrastructure/service/command/internal"
 )
 
 // Registry dispatches wired slash commands by name.

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jahrulnr/llm-base/infrastructure/delivery/cli/commands"
+	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/commands"
 )
 
 func testPalette() *slashPalette {

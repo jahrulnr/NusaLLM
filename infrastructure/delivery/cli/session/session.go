@@ -12,14 +12,14 @@ import (
 	"os"
 	"strings"
 
-	appconversation "github.com/jahrulnr/llm-base/application/conversation"
-	appgateway "github.com/jahrulnr/llm-base/application/gateway"
-	"github.com/jahrulnr/llm-base/infrastructure/delivery/cli/term"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/event"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/service"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
-	"github.com/jahrulnr/llm-base/infrastructure/service/workspace"
+	appconversation "github.com/jahrulnr/nusallm/application/conversation"
+	appgateway "github.com/jahrulnr/nusallm/application/gateway"
+	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/term"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
+	"github.com/jahrulnr/nusallm/infrastructure/service/workspace"
 )
 
 // Options wires a session to the conversation/gateway applications and

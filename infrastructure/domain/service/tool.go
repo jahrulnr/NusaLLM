@@ -3,8 +3,8 @@ package service
 import (
 	"context"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 )
 
 // ToolEmitter streams incremental output while a call runs — chunks are a

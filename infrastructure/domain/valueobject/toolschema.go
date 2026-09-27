@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 )
 
 // ToolSchema describes a tool the agent may call. Adapters translate it into

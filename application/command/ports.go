@@ -4,8 +4,8 @@ import (
 	"io"
 	"io/fs"
 
-	dservice "github.com/jahrulnr/llm-base/infrastructure/domain/service"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
+	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 )
 
 // Bindings is the mutable slash-client selection delivery owns — active

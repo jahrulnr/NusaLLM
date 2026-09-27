@@ -13,13 +13,13 @@ import (
 	"path/filepath"
 	"strings"
 
-	appgateway "github.com/jahrulnr/llm-base/application/gateway"
-	"github.com/jahrulnr/llm-base/application/setting"
-	"github.com/jahrulnr/llm-base/application/setup"
-	"github.com/jahrulnr/llm-base/infrastructure/config"
-	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
-	repogateway "github.com/jahrulnr/llm-base/infrastructure/repository/gateway"
-	reposecret "github.com/jahrulnr/llm-base/infrastructure/repository/secret"
+	appgateway "github.com/jahrulnr/nusallm/application/gateway"
+	"github.com/jahrulnr/nusallm/application/setting"
+	"github.com/jahrulnr/nusallm/application/setup"
+	"github.com/jahrulnr/nusallm/infrastructure/config"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
+	repogateway "github.com/jahrulnr/nusallm/infrastructure/repository/gateway"
+	reposecret "github.com/jahrulnr/nusallm/infrastructure/repository/secret"
 	"golang.org/x/term"
 )
 
@@ -89,7 +89,7 @@ func EnsureConfig(path string, stderr io.Writer) error {
 		return err
 	}
 	if created {
-		fmt.Fprintf(stderr, "core: no config found; wrote defaults to %s\n", path)
+		fmt.Fprintf(stderr, "nusallm: no config found; wrote defaults to %s\n", path)
 	}
 	return nil
 }
@@ -148,10 +148,10 @@ func loadEnvFile(path string) {
 // plus the wrapped cause, so "invalid gateway" also says *why*.
 func printErr(w io.Writer, err error) {
 	if appErr, ok := errors.AsType[apperror.IAppError](err); ok {
-		fmt.Fprintln(w, "core:", appErr.Caused())
+		fmt.Fprintln(w, "nusallm:", appErr.Caused())
 		return
 	}
-	fmt.Fprintln(w, "core:", err)
+	fmt.Fprintln(w, "nusallm:", err)
 }
 
 func isTTY(r io.Reader) bool {

@@ -5,9 +5,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
-	drepo "github.com/jahrulnr/llm-base/infrastructure/domain/repository"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 )
 
 func TestSendReportsUserLineCommittedWhenAppendReturnsMetadataError(t *testing.T) {

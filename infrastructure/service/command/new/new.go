@@ -5,9 +5,9 @@ import (
 	"errors"
 	"strings"
 
-	appcommand "github.com/jahrulnr/llm-base/application/command"
-	dservice "github.com/jahrulnr/llm-base/infrastructure/domain/service"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
+	appcommand "github.com/jahrulnr/nusallm/application/command"
+	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 )
 
 // NewCommand is the /new command.

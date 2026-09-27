@@ -7,13 +7,13 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/aggregate"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
-	drepo "github.com/jahrulnr/llm-base/infrastructure/domain/repository"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
-	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
-	reposecret "github.com/jahrulnr/llm-base/infrastructure/repository/secret"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
+	reposecret "github.com/jahrulnr/nusallm/infrastructure/repository/secret"
 )
 
 func ptr[T any](v T) *T { return &v }

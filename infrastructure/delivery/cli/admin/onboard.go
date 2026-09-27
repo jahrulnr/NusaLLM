@@ -8,19 +8,19 @@ import (
 	"os"
 	"strings"
 
-	appgateway "github.com/jahrulnr/llm-base/application/gateway"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
+	appgateway "github.com/jahrulnr/nusallm/application/gateway"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	"golang.org/x/term"
 )
 
-// Onboard is the `core onboard` handler — the goclaw-style guided setup:
+// Onboard is the `nusallm onboard` handler — the goclaw-style guided setup:
 // a banner, numbered steps, prompts with defaults, and a summary. It
 // produces exactly what `gateway add` would — the wizard is a friendlier
 // front door, not a second provisioning path. Requires a TTY; scripted
 // setup uses the gateway/config flags.
 func Onboard(stdin *os.File, stdout, stderr io.Writer) int {
 	if !term.IsTerminal(int(stdin.Fd())) {
-		fmt.Fprintln(stderr, "core: onboard needs an interactive terminal; use `core gateway add` flags instead")
+		fmt.Fprintln(stderr, "nusallm: onboard needs an interactive terminal; use `nusallm gateway add` flags instead")
 		return 2
 	}
 	b, err := LoadBoot(false)
@@ -34,7 +34,7 @@ func Onboard(stdin *os.File, stdout, stderr io.Writer) int {
 	in := bufio.NewReader(stdin)
 
 	fmt.Fprintln(out, "╔══════════════════════════════════════════╗")
-	fmt.Fprintln(out, "║        core — provider setup             ║")
+	fmt.Fprintln(out, "║       "+ProductName+" — provider setup        ║")
 	fmt.Fprintln(out, "╚══════════════════════════════════════════╝")
 	fmt.Fprintln(out)
 	if existing, err := b.gateways.List(context.Background()); err == nil && len(existing) > 0 {
@@ -93,7 +93,7 @@ func Onboard(stdin *os.File, stdout, stderr io.Writer) int {
 	fmt.Fprint(out, "  Writing gateway... ")
 	if err := b.gateways.Upsert(context.Background(), in2); err != nil {
 		fmt.Fprintln(out, "FAILED")
-		fmt.Fprintln(stderr, "core:", err)
+		fmt.Fprintln(stderr, "nusallm:", err)
 		return 1
 	}
 	fmt.Fprintln(out, "OK")
@@ -108,7 +108,7 @@ func Onboard(stdin *os.File, stdout, stderr io.Writer) int {
 		keyNote = " · key vaulted"
 	}
 	fmt.Fprintf(out, "  gateway  %s (%s) · %d model(s)%s\n", id, style, len(in2.Models), keyNote)
-	fmt.Fprintln(out, "  next:    core           — start the REPL")
+	fmt.Fprintln(out, "  next:    "+CLIName+"           — start the REPL")
 	fmt.Fprintf(out, "           /route %s then /model <id> — inside the session\n", id)
 	return 0
 }

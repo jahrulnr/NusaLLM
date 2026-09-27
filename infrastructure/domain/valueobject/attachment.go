@@ -5,7 +5,7 @@ import (
 	"mime"
 	"strings"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 )
 
 // Attachment is a non-text content reference carried by a message. The

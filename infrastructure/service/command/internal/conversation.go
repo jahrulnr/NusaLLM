@@ -6,9 +6,9 @@ import (
 	"strings"
 	"unicode"
 
-	appcommand "github.com/jahrulnr/llm-base/application/command"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/aggregate"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/service"
+	appcommand "github.com/jahrulnr/nusallm/application/command"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
 )
 
 func Conversations(h appcommand.SlashSession, cmd string) func(context.Context, string) []service.CommandCompletion {

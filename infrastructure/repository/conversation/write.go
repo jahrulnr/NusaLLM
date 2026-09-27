@@ -5,7 +5,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/aggregate"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
 )
 
 // Save upserts meta.json — creates the conversation directory on first

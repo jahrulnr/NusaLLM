@@ -4,7 +4,7 @@ import (
 	"context"
 	"path/filepath"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 )
 
 // AppendMessage appends one message line to active.jsonl — O(1), never

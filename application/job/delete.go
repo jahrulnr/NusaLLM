@@ -3,7 +3,7 @@ package job
 import (
 	"context"
 
-	"github.com/jahrulnr/llm-base/infrastructure/worker"
+	"github.com/jahrulnr/nusallm/infrastructure/worker"
 )
 
 // Delete removes the room — meta, live tail, every sealed segment — and

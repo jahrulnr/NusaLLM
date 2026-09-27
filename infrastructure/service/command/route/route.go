@@ -7,10 +7,10 @@ import (
 	"strings"
 	"unicode"
 
-	appcommand "github.com/jahrulnr/llm-base/application/command"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/service"
-	dservice "github.com/jahrulnr/llm-base/infrastructure/domain/service"
+	appcommand "github.com/jahrulnr/nusallm/application/command"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
+	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 )
 
 // RouteCommand is the /route command.
@@ -69,7 +69,7 @@ func (c *RouteCommand) Execute(ctx context.Context, _ string, emitter dservice.C
 			return err
 		}
 		if len(gateways) == 0 {
-			c.h.Write(emitter, "no configured gateways — add one: core gateway add <id> --style <style> --endpoint <url> --models <m> --key-stdin\n")
+			c.h.Write(emitter, "no configured gateways — add one: nusallm gateway add <id> --style <style> --endpoint <url> --models <m> --key-stdin\n")
 			return nil
 		}
 		selected := c.h.Route()

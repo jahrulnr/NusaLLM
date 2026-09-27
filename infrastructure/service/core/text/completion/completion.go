@@ -13,13 +13,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jahrulnr/llm-base/infrastructure/config"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/aggregate"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/event"
-	drepo "github.com/jahrulnr/llm-base/infrastructure/domain/repository"
-	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
+	"github.com/jahrulnr/nusallm/infrastructure/config"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
 // Options configures the service. Client defaults to a transport with a

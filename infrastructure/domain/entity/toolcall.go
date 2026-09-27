@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 )
 
 // ToolCall is a record of a tool invocation. ttype marks provenance: origin

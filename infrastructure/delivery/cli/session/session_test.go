@@ -3,14 +3,14 @@ package session
 import (
 	"testing"
 
-	appconversation "github.com/jahrulnr/llm-base/application/conversation"
-	"github.com/jahrulnr/llm-base/infrastructure/config"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/aggregate"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
-	repoconversation "github.com/jahrulnr/llm-base/infrastructure/repository/conversation"
-	repogateway "github.com/jahrulnr/llm-base/infrastructure/repository/gateway"
-	reposecret "github.com/jahrulnr/llm-base/infrastructure/repository/secret"
+	appconversation "github.com/jahrulnr/nusallm/application/conversation"
+	"github.com/jahrulnr/nusallm/infrastructure/config"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	repoconversation "github.com/jahrulnr/nusallm/infrastructure/repository/conversation"
+	repogateway "github.com/jahrulnr/nusallm/infrastructure/repository/gateway"
+	reposecret "github.com/jahrulnr/nusallm/infrastructure/repository/secret"
 )
 
 func TestEffectiveRouteModelUsesConversationBinding(t *testing.T) {

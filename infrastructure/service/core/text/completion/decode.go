@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
-	"github.com/jahrulnr/llm-base/infrastructure/service/wire"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
+	"github.com/jahrulnr/nusallm/infrastructure/service/wire"
 )
 
 // decodeMessage maps a wire assistant message onto a domain Message:

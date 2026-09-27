@@ -3,7 +3,7 @@ package repository
 import (
 	"context"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/aggregate"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
 )
 
 // GatewaySecretKey is the canonical SecretStore key a gateway's apiKey

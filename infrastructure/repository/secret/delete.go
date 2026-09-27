@@ -3,7 +3,7 @@ package reposecret
 import (
 	"context"
 
-	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
 // Delete removes key — 404 when absent.

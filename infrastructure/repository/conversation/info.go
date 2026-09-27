@@ -3,7 +3,7 @@ package repoconversation
 import (
 	"context"
 
-	drepo "github.com/jahrulnr/llm-base/infrastructure/domain/repository"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 )
 
 // Info projects meta.json — O(1), no message parsing.

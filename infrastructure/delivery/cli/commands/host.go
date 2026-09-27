@@ -3,13 +3,13 @@ package commands
 import (
 	"context"
 
-	appcommand "github.com/jahrulnr/llm-base/application/command"
-	"github.com/jahrulnr/llm-base/infrastructure/delivery/cli/session"
-	"github.com/jahrulnr/llm-base/infrastructure/delivery/cli/term"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/event"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/service"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
-	svccommand "github.com/jahrulnr/llm-base/infrastructure/service/command"
+	appcommand "github.com/jahrulnr/nusallm/application/command"
+	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/session"
+	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/term"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
+	svccommand "github.com/jahrulnr/nusallm/infrastructure/service/command"
 )
 
 // Registry is the terminal-bound slash-command registry.

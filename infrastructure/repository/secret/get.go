@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"errors"
 
-	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
 // Get returns the stored value — 404 for an unknown key.

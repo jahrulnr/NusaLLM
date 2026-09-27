@@ -1,4 +1,4 @@
-# AGENTS.md - llm-base
+# AGENTS.md - NusaLLM
 
 ## Architecture and ownership
 

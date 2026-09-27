@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/jahrulnr/llm-base/application/setting"
+	"github.com/jahrulnr/nusallm/application/setting"
 )
 
-// Config is the `core config <sub>` handler — show/path/set/unset/
+// Config is the `nusallm config <sub>` handler — show/path/set/unset/
 // validate over the config file, decoded leniently so repair commands
 // still work on a file strict loading would reject.
 func Config(args []string, stdout, stderr io.Writer) int {
@@ -83,14 +83,14 @@ func Config(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, string(out))
 		fmt.Fprintln(stdout, "takes effect on next start")
 	default:
-		fmt.Fprintf(stderr, "core: unknown config subcommand %q\n", args[0])
+		fmt.Fprintf(stderr, "nusallm: unknown config subcommand %q\n", args[0])
 		fmt.Fprint(stderr, configUsage)
 		return 2
 	}
 	return 0
 }
 
-const configUsage = `Usage: core config <subcommand>
+const configUsage = `Usage: nusallm config <subcommand>
 
   show                 effective config — file values over defaults
   path                 resolved config file path

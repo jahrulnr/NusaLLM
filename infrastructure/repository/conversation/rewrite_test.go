@@ -3,10 +3,10 @@ package repoconversation
 import (
 	"testing"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
-	drepo "github.com/jahrulnr/llm-base/infrastructure/domain/repository"
-	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
 func msgIDs(t *testing.T, repo drepo.Conversation, id string) []string {

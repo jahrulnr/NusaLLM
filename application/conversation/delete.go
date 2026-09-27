@@ -3,8 +3,8 @@ package appconversation
 import (
 	"context"
 
-	appjob "github.com/jahrulnr/llm-base/application/job"
-	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
+	appjob "github.com/jahrulnr/nusallm/application/job"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
 // Delete removes the conversation and everything it stored — meta, the

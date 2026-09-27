@@ -8,9 +8,9 @@ import (
 	"net/http"
 	"path/filepath"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
-	"github.com/jahrulnr/llm-base/infrastructure/service/wire"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
+	"github.com/jahrulnr/nusallm/infrastructure/service/wire"
 )
 
 // ResolveAttachment reads the requested file inside the workspace,

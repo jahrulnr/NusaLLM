@@ -11,8 +11,8 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/jahrulnr/llm-base/infrastructure/delivery/cli/term"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
+	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/term"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 )
 
 const (

@@ -3,8 +3,8 @@ package aggregate
 import (
 	"testing"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 )
 
 func TestListDisplayTitle(t *testing.T) {

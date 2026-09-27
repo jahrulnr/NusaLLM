@@ -4,13 +4,13 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jahrulnr/llm-base/infrastructure/config"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/aggregate"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/event"
-	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
-	repoconversation "github.com/jahrulnr/llm-base/infrastructure/repository/conversation"
+	"github.com/jahrulnr/nusallm/infrastructure/config"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
+	repoconversation "github.com/jahrulnr/nusallm/infrastructure/repository/conversation"
 )
 
 // loopSvc asks for a tool on every provider call — the model that never

@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/aggregate"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
 )
 
 // List hydrates every <id>.json in the directory, sorted by id for stable

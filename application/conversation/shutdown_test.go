@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	appjob "github.com/jahrulnr/llm-base/application/job"
-	"github.com/jahrulnr/llm-base/infrastructure/config"
-	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
+	appjob "github.com/jahrulnr/nusallm/application/job"
+	"github.com/jahrulnr/nusallm/infrastructure/config"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
 type blockingShutdownJob struct {

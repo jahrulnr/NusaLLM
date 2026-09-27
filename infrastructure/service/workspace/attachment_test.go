@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 )
 
 var cliPNGFixture = []byte{

@@ -8,8 +8,8 @@ import (
 	"sort"
 	"strings"
 
-	drepo "github.com/jahrulnr/llm-base/infrastructure/domain/repository"
-	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
 // Inspect reads the record and hydrates it WITHOUT resolving the stored

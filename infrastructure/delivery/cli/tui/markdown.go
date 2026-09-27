@@ -5,7 +5,7 @@ import (
 
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/glamour/styles"
-	"github.com/jahrulnr/llm-base/infrastructure/delivery/cli/term"
+	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/term"
 )
 
 const (

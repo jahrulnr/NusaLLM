@@ -7,11 +7,11 @@ import (
 	"io"
 	"os"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/entity"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/service"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
-	"github.com/jahrulnr/llm-base/infrastructure/service/wire"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
+	"github.com/jahrulnr/nusallm/infrastructure/service/wire"
 )
 
 // FileReadTool reads a text file under a fixed root — the constructor

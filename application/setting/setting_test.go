@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jahrulnr/llm-base/infrastructure/config"
+	"github.com/jahrulnr/nusallm/infrastructure/config"
 )
 
 func newApp(t *testing.T) (*SettingApp, string) {

@@ -6,8 +6,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/aggregate"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 )
 
 // Load reads <id>.json and hydrates the aggregate. The apiKey record

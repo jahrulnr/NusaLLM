@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
-	"github.com/jahrulnr/llm-base/infrastructure/domain/valueobject"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 )
 
 func TestNewMessage(t *testing.T) {

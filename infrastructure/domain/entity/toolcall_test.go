@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jahrulnr/llm-base/infrastructure/domain/enum"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 )
 
 func mustCall(t *testing.T, id, name, input string, tt enum.Tooltype) ToolCall {

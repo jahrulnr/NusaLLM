@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	apperror "github.com/jahrulnr/llm-base/infrastructure/error"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
 func newStore(t *testing.T) *Store {

@@ -8,7 +8,7 @@ import (
 	"io/fs"
 	"os"
 
-	"github.com/jahrulnr/llm-base/infrastructure/config"
+	"github.com/jahrulnr/nusallm/infrastructure/config"
 )
 
 // EnsureConfig guarantees a config file at path. An empty path means the

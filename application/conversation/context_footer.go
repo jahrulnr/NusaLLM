@@ -3,7 +3,7 @@ package appconversation
 import (
 	"context"
 
-	"github.com/jahrulnr/llm-base/infrastructure/prompt"
+	"github.com/jahrulnr/nusallm/infrastructure/prompt"
 )
 
 // ContextFooterStats is the estimated live input size and the model's input
