@@ -277,6 +277,9 @@ func encodeAttachment(a valueobject.Attachment, fileRoot string) (ContentBlock, 
 func source(a valueobject.Attachment, fileRoot string) (*SourceBody, error) {
 	uri := a.URI()
 	if strings.HasPrefix(uri, "https://") || strings.HasPrefix(uri, "http://") {
+		if _, err := wire.ResolveURI(a, fileRoot); err != nil {
+			return nil, err
+		}
 		return &SourceBody{Type: "url", URL: uri}, nil
 	}
 	data, _, err := wire.ResolveBase64(a, fileRoot)
@@ -291,6 +294,9 @@ func source(a valueobject.Attachment, fileRoot string) (*SourceBody, error) {
 func textSource(a valueobject.Attachment, fileRoot string) (*SourceBody, error) {
 	uri := a.URI()
 	if strings.HasPrefix(uri, "https://") || strings.HasPrefix(uri, "http://") {
+		if _, err := wire.ResolveURI(a, fileRoot); err != nil {
+			return nil, err
+		}
 		return &SourceBody{Type: "url", URL: uri}, nil
 	}
 	data, _, err := wire.ResolveBase64(a, fileRoot)

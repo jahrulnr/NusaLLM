@@ -669,6 +669,27 @@ func TestStreamCancelIsNotUpstreamError(t *testing.T) {
 	}
 }
 
+func TestStreamSuccessDropsPartialTool(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"}}]}\n\n"))
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"exec\",\"arguments\":\"{\\\"command\\\":\\\"ok.sh\\\"}\"}}]}}]}\n\n"))
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"c2\",\"type\":\"function\",\"function\":{\"name\":\"exec\",\"arguments\":\"{\\\"cmd\"}}]}}]}\n\n"))
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"finish_reason\":\"tool_calls\"}]}\n\n"))
+		w.Write([]byte("data: [DONE]\n\n"))
+	})
+	conv := newConv(t)
+	model, _ := entity.NewModel("m", "test")
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	last := conv.Last()
+	calls := last.ToolCalls()
+	if len(calls) != 1 || calls[0].ID() != "c1" {
+		t.Fatalf("partial tool call must be dropped: %+v", calls)
+	}
+}
+
 func TestStreamCancelKeepsCompleteToolDropsPartial(t *testing.T) {
 	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

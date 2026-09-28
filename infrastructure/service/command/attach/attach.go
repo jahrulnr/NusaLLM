@@ -9,7 +9,7 @@ import (
 	appcommand "github.com/jahrulnr/nusallm/application/command"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
-	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
+	svccommand "github.com/jahrulnr/nusallm/infrastructure/service/command"
 )
 
 // AttachCommand is the /attach command.
@@ -79,11 +79,11 @@ func (c *AttachCommand) Execute(_ context.Context, _ string, emitter dservice.Co
 		}
 		return nil
 	}
-	workspace, err := valueobject.ParseWorkspacePath(raw)
+	path, err := svccommand.AttachmentPath(raw)
 	if err != nil {
 		return err
 	}
-	attachment, err := c.h.ResolveAttachment(workspace.Path())
+	attachment, err := c.h.ResolveAttachment(path)
 	if err != nil {
 		return err
 	}

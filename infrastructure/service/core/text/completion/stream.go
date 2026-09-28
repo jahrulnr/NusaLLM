@@ -80,7 +80,7 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 				emit(onEvent, event.NewErrorEvent(err))
 				return err
 			}
-			return s.commitStream(conv, onEvent, content.String(), reasoning.String(), calls, finish, usage)
+			return s.commitStream(conv, onEvent, content.String(), reasoning.String(), completeToolCalls(calls), finish, usage)
 		case ev := <-events:
 			timer.Reset(s.idle)
 			if ev.done {

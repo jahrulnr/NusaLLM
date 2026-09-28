@@ -20,9 +20,10 @@ type ContextFooterStats struct {
 // when route/modelID name a known model — the footer shows "~/192K"
 // before the first send.
 func (app *ConversationApp) ContextFooterStats(ctx context.Context, convID, route, modelID string) (ContextFooterStats, error) {
+	deps := app.depsSnapshot()
 	var stats ContextFooterStats
 	if convID != "" {
-		conv, err := app.deps.Convs.Load(ctx, convID)
+		conv, err := deps.Convs.Load(ctx, convID)
 		if err != nil {
 			if apperror.As(err).StatusCode() != apperror.StatusNotFound {
 				return stats, err
@@ -47,7 +48,7 @@ func (app *ConversationApp) ContextFooterStats(ctx context.Context, convID, rout
 	if route == "" || modelID == "" {
 		return stats, nil
 	}
-	gw, err := app.deps.Gateways.Load(ctx, route)
+	gw, err := deps.Gateways.Load(ctx, route)
 	if err != nil {
 		return stats, nil
 	}

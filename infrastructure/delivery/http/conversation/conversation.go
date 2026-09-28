@@ -38,8 +38,8 @@ type Writer interface {
 	Compact(ctx context.Context, id string) error
 }
 
-// Deps wires the use cases; Writes is optional — nil leaves the mutation
-// routes unregistered.
+// Deps wires the use cases; Reads and Writes are optional — nil leaves
+// the corresponding routes unregistered.
 type Deps struct {
 	Reads  Reader
 	Writes Writer
@@ -57,10 +57,12 @@ func Register(api *gin.RouterGroup, d Deps) {
 		jobs = context.Background()
 	}
 	s := &server{reads: d.Reads, writes: d.Writes, jobs: jobs}
-	api.GET("/conversations", s.list)
-	api.GET("/conversations/:id", s.get)
-	api.GET("/conversations/:id/messages", s.messages)
-	api.GET("/context", s.context)
+	if d.Reads != nil {
+		api.GET("/conversations", s.list)
+		api.GET("/conversations/:id", s.get)
+		api.GET("/conversations/:id/messages", s.messages)
+		api.GET("/context", s.context)
+	}
 	if d.Writes != nil {
 		api.PATCH("/conversations/:id", s.rename)
 		api.DELETE("/conversations/:id", s.delete)

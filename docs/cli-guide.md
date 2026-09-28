@@ -1,10 +1,11 @@
 # NusaLLM CLI Guide
 
 `nusallm` is the terminal client for NusaLLM, a provider-agnostic LLM
-conversation engine. One binary gives you an interactive REPL, a small set
-of admin subcommands for providers and configuration, and nothing else —
-there is no daemon, no account system, and no telemetry. The REPL is the
-product; the subcommands exist to feed it providers and settings.
+conversation engine. One binary gives you an interactive REPL, a loopback
+WebUI (`nusallm serve`), a small set of admin subcommands for providers
+and configuration, and nothing else — no account system and no telemetry.
+The REPL and the WebUI are two transports over the same engine; the
+subcommands exist to feed both providers and settings.
 
 This guide covers installing the binary, wiring a provider, driving the
 REPL, and the knobs the config file exposes. For what the engine is doing
@@ -27,7 +28,16 @@ make build
 
 # Build and run in one step
 make cli
+
+# Loopback WebUI (HTTP API + browser UI + WebSocket turns)
+make serve
+# or: nusallm serve [--port N]
 ```
+
+`serve` binds `127.0.0.1` only. The port comes from `server.port` in
+config (default `10998`); `--port` overrides it for one process. Configured
+`server.hosts` values are the accepted `Host`/`Origin` names for HTTP and
+the WebSocket upgrade — see [WebUI API contract](./api/contract.md).
 
 Running from source without building also works:
 

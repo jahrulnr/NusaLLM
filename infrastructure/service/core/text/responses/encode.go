@@ -27,11 +27,13 @@ var errUnsupported = errPlain("modality has no carrier on this wire")
 // reasoning so stateless turns keep their chain of thought.
 func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool, fileRoot string) (*RequestBody, error) {
 	body := &RequestBody{
-		Model:          model.ID(),
-		PromptCacheKey: conv.ID(),
-		Store:          false,
-		Include:        []string{"reasoning.encrypted_content"},
-		Stream:         stream,
+		Model:   model.ID(),
+		Store:   false,
+		Include: []string{"reasoning.encrypted_content"},
+		Stream:  stream,
+	}
+	if id := conv.ID(); id != "" {
+		body.PromptCacheKey = id
 	}
 	if sp := conv.SystemPrompt(); sp != "" {
 		body.Instructions = sp
@@ -277,6 +279,9 @@ func encodeAttachment(a valueobject.Attachment, fileRoot string) (PartBody, erro
 		return PartBody{Type: "input_image", ImageURL: u}, nil
 	case enum.ModalityFile, enum.ModalityText:
 		if remote {
+			if _, err := wire.ResolveURI(a, fileRoot); err != nil {
+				return PartBody{}, err
+			}
 			return PartBody{Type: "input_file", FileURL: uri, Filename: safeAttachmentName(a.Name())}, nil
 		}
 		u, err := wire.ResolveURI(a, fileRoot) // data: URI form

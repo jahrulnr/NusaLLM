@@ -61,13 +61,6 @@ func (d Deps) compact(ctx context.Context, convID string, conv *aggregate.Conver
 	if err != nil {
 		return err
 	}
-	// The model's own handoff tokens belong to the room's accounting —
-	// the scratch conv collected them so the caller can merge. Persist
-	// immediately: a failed retry below must not lose the spend.
-	conv.AddUsage(scratch.Usage())
-	if err := d.Convs.Save(ctx, conv); err != nil {
-		return err
-	}
 
 	next, err := entity.NewMessage(enum.RoleUser,
 		strings.Replace(prompt.UserPrompt("compacted-continue"), "{{compacted_summaries}}", checkpoint, 1))
@@ -90,6 +83,12 @@ func (d Deps) compact(ctx context.Context, convID string, conv *aggregate.Conver
 		return err
 	}
 	conv.Compact(next, dropBefore)
+	// Handoff spend merges only after the fold commits — a failed
+	// Compact must not persist usage against an unchanged history.
+	conv.AddUsage(scratch.Usage())
+	if err := d.Convs.Save(ctx, conv); err != nil {
+		return err
+	}
 	return nil
 }
 

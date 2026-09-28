@@ -2,6 +2,19 @@ package main
 
 import "testing"
 
+func TestServeHelpRequested(t *testing.T) {
+	for _, args := range [][]string{{"--help"}, {"-h"}, {"help"}} {
+		if !serveHelpRequested(args) {
+			t.Fatalf("serveHelpRequested(%v) = false, want true", args)
+		}
+	}
+	for _, args := range [][]string{nil, {"--port", "1"}} {
+		if serveHelpRequested(args) {
+			t.Fatalf("serveHelpRequested(%v) = true, want false", args)
+		}
+	}
+}
+
 func TestServePort(t *testing.T) {
 	cases := []struct {
 		name    string

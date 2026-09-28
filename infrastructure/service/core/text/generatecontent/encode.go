@@ -400,6 +400,9 @@ func attachmentPart(a valueobject.Attachment, model entity.Model, fileRoot strin
 func encodeAttachment(a valueobject.Attachment, fileRoot string) (PartBody, error) {
 	uri := a.URI()
 	if strings.HasPrefix(uri, "https://") || strings.HasPrefix(uri, "http://") {
+		if _, err := wire.ResolveURI(a, fileRoot); err != nil {
+			return PartBody{}, err
+		}
 		return PartBody{FileData: &FileDataBody{MIMEType: a.MediaType(), FileURI: uri}}, nil
 	}
 	data, _, err := wire.ResolveBase64(a, fileRoot)

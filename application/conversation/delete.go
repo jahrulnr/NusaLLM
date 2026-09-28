@@ -17,7 +17,7 @@ import (
 // abandons Delete mid-flight must not half-delete a room.
 func (app *ConversationApp) Delete(ctx context.Context, convID string) error {
 	res := make(chan error, 1)
-	j := &appjob.Delete{Deps: app.deps}
+	j := &appjob.Delete{}
 	j.Result = res
 	app.post(convID, j)
 	select {

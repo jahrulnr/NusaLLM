@@ -260,10 +260,18 @@ func (r *ConversationRepository) loadMessages(convID string, includeSealed bool)
 		if err != nil {
 			return nil, err
 		}
+		present := make(map[int]struct{}, meta.SealedSegments)
 		for _, f := range segs {
 			n, _ := strconv.Atoi(strings.TrimSuffix(filepath.Base(f), ".jsonl"))
 			if n < meta.SealedSegments { // committed segments only
 				files = append(files, f)
+				present[n] = struct{}{}
+			}
+		}
+		for i := 0; i < meta.SealedSegments; i++ {
+			if _, ok := present[i]; !ok {
+				return nil, fmt.Errorf("conversation %s: sealed segment %d.jsonl missing (meta sealedSegments=%d)",
+					convID, i, meta.SealedSegments)
 			}
 		}
 	}

@@ -25,10 +25,11 @@ import (
 const maxEntries = 1000
 
 type browseDTO struct {
-	Path    string     `json:"path"`
-	Parent  string     `json:"parent,omitempty"`
-	Roots   []rootDTO  `json:"roots"`
-	Entries []entryDTO `json:"entries"`
+	Path      string     `json:"path"`
+	Parent    string     `json:"parent,omitempty"`
+	Roots     []rootDTO  `json:"roots"`
+	Entries   []entryDTO `json:"entries"`
+	Truncated bool       `json:"truncated,omitempty"`
 }
 
 type rootDTO struct {
@@ -76,6 +77,7 @@ func browse(c *gin.Context) {
 	if parent := filepath.Dir(dir); parent != dir {
 		out.Parent = parent
 	}
+	truncated := false
 	for _, e := range ents {
 		if !e.IsDir() && e.Type()&os.ModeSymlink == 0 {
 			continue // picker feeds directories; symlinks get statted below
@@ -88,15 +90,17 @@ func browse(c *gin.Context) {
 				continue
 			}
 		}
+		if len(out.Entries) >= maxEntries {
+			truncated = true
+			break
+		}
 		out.Entries = append(out.Entries, entryDTO{
 			Name:   e.Name(),
 			Path:   filepath.Join(dir, e.Name()),
 			Hidden: strings.HasPrefix(e.Name(), "."),
 		})
-		if len(out.Entries) >= maxEntries {
-			break
-		}
 	}
+	out.Truncated = truncated
 	sort.Slice(out.Entries, func(i, j int) bool { return out.Entries[i].Name < out.Entries[j].Name })
 	c.JSON(http.StatusOK, out)
 }

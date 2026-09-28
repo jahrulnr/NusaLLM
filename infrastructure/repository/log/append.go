@@ -37,6 +37,9 @@ func (l *Logger) Append(ctx context.Context, kind string, entry any) error {
 	if _, err := l.f.Write(append(raw, '\n')); err != nil {
 		return err
 	}
+	if err := l.f.Sync(); err != nil {
+		return err
+	}
 	l.lines++
 	if l.maxLines > 0 && l.lines >= l.maxLines {
 		return l.rotate()

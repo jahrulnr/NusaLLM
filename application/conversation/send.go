@@ -56,7 +56,6 @@ func (app *ConversationApp) Send(
 	res := make(chan error, 1)
 	receipt := appjob.NewPersistenceReceipt()
 	j := &appjob.Send{
-		Deps:    app.deps,
 		Ctx:     ctx,
 		Receipt: receipt,
 

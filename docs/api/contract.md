@@ -203,7 +203,7 @@ Full schemas, typed errors, and examples live in
 | `GET /api/settings` | Effective settings document (projected — see below). |
 | `PATCH /api/settings` | One leaf write — body `{key, value}`. |
 | `GET /api/tools` | Registered tool catalog: `name`, `description`, `parameters`, `enabled`, `permission`. |
-| `GET /api/fs/browse?path=` | Directory-only listing for the workspace picker — `{ "path", "parent", "roots": [{"name","path"}], "entries": [{"name","path","hidden"}] }`. Empty `path` defaults to the owner's home; `parent` ascends toward the filesystem root and `roots` jumps to `/` (or present drive letters on Windows). `path` must be absolute (`400`); missing directories are `404`, unreadable `403`. Listings cap at 1000 directories; file contents are never served. |
+| `GET /api/fs/browse?path=` | Directory-only listing for the workspace picker — `{ "path", "parent", "roots": [{"name","path"}], "entries": [{"name","path","hidden"}], "truncated"?: true }`. Empty `path` defaults to the owner's home; `parent` ascends toward the filesystem root and `roots` jumps to `/` (or present drive letters on Windows). `path` must be absolute (`400`); missing directories are `404`, unreadable `403`. Listings cap at 1000 directories (`truncated: true` when more remain); file contents are never served. |
 | `GET /api/context?conversationId&route&modelId` | Composer-footer stats — `{ "estimate", "total" }`: estimated live input tokens and the bound model's input allowance. `conversationId` is optional — a fresh room still resolves `total` when `route`+`modelId` name a known model. |
 | `GET /api/ws` | WebSocket upgrade — `101`; frames defined in [`websocket.md`](./websocket.md). |
 
@@ -340,34 +340,24 @@ shape in brief:
 
 ## Implementation work required
 
-This contract needs pieces the codebase does not have today. Flagging
-them honestly — none of these exist yet:
+Phases 1–4 are implemented in `infrastructure/delivery/http` and
+`infrastructure/delivery/websocket`. Remaining gaps:
 
 - ~~**The HTTP delivery itself.**~~ Done in phase 1: Gin wiring in
   `infrastructure/delivery/http`, `nusallm serve` as the `cmd` entry,
   the loopback bind, and the `Host`/`Origin` middleware described above.
-- **The WS hub.** One connection registry fanning domain `TurnEvent`s
-  out to subscribers by `conversationId`/`turnId`. `ConversationApp.Send`
-  and `Edit` block until the job finishes — the hub runs each accepted
-  turn in a goroutine around the blocking call: journal and emit
-  `turn.opened` first, invoke the app, then map the return to the
-  terminal frame. No submit-without-await application seam is needed.
-- **Per-turn cancellation lives in the hub.** Each accepted turn gets a
-  server-scoped `context.WithCancel` keyed by `turnId`, and
-  `turn.cancel` invokes it. The existing job contract already makes
-  this work for both queued and running jobs — a queued send canceled
-  via ctx returns `408` having touched nothing, a running one
-  interrupts — so no application-layer change is required. The
-  room-wide `ConversationApp.Cancel` must NOT back `turn.cancel`: it
-  interrupts whichever job happens to be running, not the addressed
-  turn.
-- **A bounded per-turn event journal** for `turn.watch` replay —
-  `turn.opened` is recorded as `seq` 0 before any event can be emitted,
-  and each socket's outbound writes are serialized through a single
-  bounded-buffer writer. Retention is a deployment constant, and expiry
-  is a normal outcome answered by `turn.resync_required`.
-- **Server-side turn ids.** Minted `t_<base32>` via the domain ID rule
-  at accept time, before scheduling.
+- ~~**The WS hub.**~~ Done in phase 3: connection registry in
+  `infrastructure/delivery/websocket/conversation`, fan-out by
+  `conversationId`/`turnId`, goroutine-per-turn around blocking
+  `Send`/`Edit`, `turn.opened` journaled before stream frames.
+- ~~**Per-turn cancellation lives in the hub.**~~ Done in phase 4:
+  server-scoped cancel per `turnId`; `turn.cancel` never maps to
+  room-wide `ConversationApp.Cancel`.
+- ~~**A bounded per-turn event journal** for `turn.watch` replay.~~ Done
+  in phase 4: `turn.opened` at `seq` 0, bounded retention, expiry →
+  `turn.resync_required`.
+- ~~**Server-side turn ids.**~~ Done: `t_<base32>` minted at accept
+  time via the domain ID rule.
 - ~~**Projections.**~~ Done for reads in phase 1: message→DTO
   projection (owner-visible tool call records, attachment
   uri/name references, `optionalContent` dropped), the gateway `keyState`
@@ -380,10 +370,9 @@ them honestly — none of these exist yet:
   the same store can still interleave; close cross-process atomicity
   only if multi-writer operation becomes real. The wire is untouched by
   this rule.
-- **Non-blocking fan-out.** A slow or dead subscriber must never stall
-  the provider read loop — bounded per-subscriber buffers with
-  drop-and-disconnect on overflow, since the domain's
-  `TurnEventHandler` applies synchronous backpressure by design.
+- ~~**Non-blocking fan-out.**~~ Done: bounded per-subscriber buffers
+  with drop-and-disconnect on overflow so a slow client cannot stall the
+  provider read loop.
 - **Swagger UI serving** of `openapi.yaml`, loopback-only.
 
 ## Build phases and acceptance matrix

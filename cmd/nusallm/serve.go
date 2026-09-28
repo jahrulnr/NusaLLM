@@ -25,11 +25,24 @@ import (
 	"github.com/jahrulnr/nusallm/web"
 )
 
+const serveUsage = `Usage: ` + admin.CLIName + ` serve [--port N]
+
+Local WebUI — embedded browser UI, HTTP API, and WebSocket turn channel.
+Binds 127.0.0.1 only; port defaults to server.port in config.
+
+Flags:
+  --port N   loopback port for this process (1..65535)
+`
+
 // serve hosts the WebUI — embedded browser UI, HTTP API, and the
 // WebSocket turn channel — on 127.0.0.1. The port and accepted HTTP
 // hostnames come from server settings; --port can override the configured
 // port for one process invocation.
 func serve(args []string) (serveErr error) {
+	if serveHelpRequested(args) {
+		fmt.Print(serveUsage)
+		return nil
+	}
 	b, err := admin.LoadBoot(true)
 	if err != nil {
 		return err
@@ -155,4 +168,14 @@ func servePort(args []string, configuredPort int) (int, error) {
 		return 0, fmt.Errorf("serve: --port must be 1..65535, got %d", *port)
 	}
 	return *port, nil
+}
+
+func serveHelpRequested(args []string) bool {
+	for _, a := range args {
+		switch a {
+		case "-h", "--help", "help":
+			return true
+		}
+	}
+	return false
 }

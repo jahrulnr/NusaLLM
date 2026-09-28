@@ -73,22 +73,7 @@ func compose(cfg config.Config, secrets *reposecret.Store, configPath string) (*
 
 	logOpts := repolog.Options{MaxLines: cfg.Log.MaxLines, MaxFiles: cfg.Log.MaxFiles}
 	if !cfg.Log.Bodies {
-		// Payload logging is opt-in: entries keep the kind tag and any
-		// non-body fields, but request/response content never lands.
-		logOpts.Redact = func(_ string, e any) any {
-			e = redact.Value(e) // credential masking stays regardless
-			switch v := e.(type) {
-			case map[string]any:
-				delete(v, "body")
-				return v
-			case []json.RawMessage:
-				return map[string]any{"chunks": len(v)}
-			case []any:
-				return map[string]any{"chunks": len(v)}
-			default:
-				return map[string]any{"omitted": true}
-			}
-		}
+		logOpts.Redact = redactWithoutBodies
 	}
 	logger, err := repolog.New(filepath.Join(dir, "logs"), logOpts)
 	if err != nil {
@@ -116,4 +101,26 @@ func compose(cfg config.Config, secrets *reposecret.Store, configPath string) (*
 		conversations: appconversation.New(convs, gateways, services, tools, cfg, configPath),
 		logger:        logger,
 	}, nil
+}
+
+// redactWithoutBodies scrubs provider payloads when log.bodies is false.
+// provider.request is logged as unmarshaled JSON (the whole body), not a
+// map with a "body" key — omit it entirely. Response/error maps still drop
+// only their "body" field so status and request_id survive.
+func redactWithoutBodies(kind string, e any) any {
+	e = redact.Value(e)
+	if kind == "provider.request" {
+		return map[string]any{"omitted": true}
+	}
+	switch v := e.(type) {
+	case map[string]any:
+		delete(v, "body")
+		return v
+	case []json.RawMessage:
+		return map[string]any{"chunks": len(v)}
+	case []any:
+		return map[string]any{"chunks": len(v)}
+	default:
+		return map[string]any{"omitted": true}
+	}
 }

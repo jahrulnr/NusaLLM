@@ -713,6 +713,9 @@ paths:
                         name: { type: string }
                         path: { type: string }
                         hidden: { type: boolean }
+                  truncated:
+                    type: boolean
+                    description: True when more than 1000 directories exist under path.
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/ForbiddenOrigin" }
         "404": { $ref: "#/components/responses/NotFound" }

@@ -484,6 +484,14 @@ func TestStreamMidError(t *testing.T) {
 	}
 }
 
+func TestEncodeAttachmentRejectsPinnedRemoteFileURL(t *testing.T) {
+	a, _ := valueobject.NewAttachment("https://example.com/doc.pdf", "application/pdf")
+	a.SetSHA256(strings.Repeat("a", 64))
+	if _, err := encodeAttachment(a, ""); err == nil {
+		t.Fatal("pinned remote https file attachment must fail")
+	}
+}
+
 func TestImageFileAttachmentBecomesDataURI(t *testing.T) {
 	img := []byte{0x89, 0x50, 0x4e, 0x47} // tiny png stub
 	path := filepath.Join(t.TempDir(), "x.png")

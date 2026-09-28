@@ -26,6 +26,7 @@ type Config struct {
 // Normalize runs each section's normalization — invalid values clamp to
 // unconfigured, zeros fill from `default` tags.
 func (c *Config) Normalize() {
+	ApplyDefaults(&c.App)
 	c.Server.Normalize()
 	c.Conversation.Normalize()
 	c.Service.Normalize()

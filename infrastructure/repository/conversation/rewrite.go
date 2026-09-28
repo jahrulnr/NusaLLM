@@ -76,37 +76,45 @@ func (r *ConversationRepository) RewriteFrom(ctx context.Context, convID, msgID,
 		if !found {
 			continue
 		}
-		var buf bytes.Buffer
+		var merged [][]byte
 		for _, prev := range segs[:i] { // earlier eras come back verbatim
 			lines, err := readLines(prev)
 			if err != nil {
 				return err
 			}
-			for _, l := range lines {
-				buf.Write(l)
-				buf.WriteByte('\n')
-			}
+			merged = append(merged, lines...)
 		}
-		for _, l := range cut {
-			buf.Write(l)
-			buf.WriteByte('\n')
-		}
-		// Patches live in the tail and resolve globally by call id — keep
-		// the ones that still find a home; dead ones are harmless.
+		merged = append(merged, cut...)
+		var tailPatches [][]byte
 		for _, l := range activeLines {
 			var lr lineRecord
 			if json.Unmarshal(l, &lr) == nil && lr.Type != lineMessage {
-				buf.Write(l)
-				buf.WriteByte('\n')
+				tailPatches = append(tailPatches, l)
 			}
 		}
-		if err := writeFileAtomic(active, buf.Bytes(), 0o644); err != nil {
+		live, err := toolCallIDsFromMessageLines(merged)
+		if err != nil {
 			return err
 		}
+		merged, err = dropDeadToolOutputPatches(merged, live)
+		if err != nil {
+			return err
+		}
+		tailPatches, err = dropDeadToolOutputPatches(tailPatches, live)
+		if err != nil {
+			return err
+		}
+		merged = append(merged, tailPatches...)
+		// Drop sealed segments before the new tail lands — if active
+		// were published first, a crash could reload merged history
+		// plus the old segments and double-count the repromoted era.
 		for _, f := range segs {
 			if err := os.Remove(f); err != nil {
 				return err
 			}
+		}
+		if err := writeFileAtomic(active, joinLines(merged), 0o644); err != nil {
+			return err
 		}
 		return r.recountMeta(convID)
 	}
@@ -137,16 +145,19 @@ func rewriteCut(lines [][]byte, msgID, content string) (cut [][]byte, found bool
 		}
 		cut = append(cut, lines[:i]...)
 		cut = append(cut, patched)
-		// Patch records resolve globally by call id — one sitting past
-		// the cut may still answer a call in the retained prefix (e.g.
-		// after Compact relocated every patch to the tail). Dropping it
-		// would resurrect the call as unanswered on reload; dead ones
-		// are harmless, so every patch survives the truncation.
 		for _, l := range lines[i+1:] {
 			var tail lineRecord
 			if json.Unmarshal(l, &tail) == nil && tail.Type != lineMessage {
 				cut = append(cut, l)
 			}
+		}
+		live, err := toolCallIDsFromMessageLines(cut)
+		if err != nil {
+			return nil, false, err
+		}
+		cut, err = dropDeadToolOutputPatches(cut, live)
+		if err != nil {
+			return nil, false, err
 		}
 		return cut, true, nil
 	}
@@ -169,6 +180,14 @@ func (r *ConversationRepository) recountMeta(convID string) error {
 	if err != nil {
 		return err
 	}
+	segs, err := sealedSegments(r.convDir(convID))
+	if err != nil {
+		return err
+	}
+	meta.SealedSegments = len(segs)
+	if err := r.writeMeta(convID, meta); err != nil {
+		return err
+	}
 	active, err := r.loadMessages(convID, false)
 	if err != nil {
 		return err
@@ -177,12 +196,7 @@ func (r *ConversationRepository) recountMeta(convID string) error {
 	if err != nil {
 		return err
 	}
-	segs, err := sealedSegments(r.convDir(convID))
-	if err != nil {
-		return err
-	}
 	meta.ActiveCount = len(active)
 	meta.MessageCount = len(all)
-	meta.SealedSegments = len(segs)
 	return r.writeMeta(convID, meta)
 }

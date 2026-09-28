@@ -124,12 +124,25 @@ func TestExecOversizedSpillsAndTruncates(t *testing.T) {
 	if !strings.Contains(out, "bytes omitted") || !strings.Contains(out, "full output: "+spill) {
 		t.Fatalf("marker missing count or spill path: %q", out)
 	}
-	data, err := os.ReadFile(spill)
-	if err != nil {
-		t.Fatalf("spill file: %v", err)
+	if _, err := os.Stat(spill); !os.IsNotExist(err) {
+		t.Fatal("spill file must be removed after execute")
 	}
-	if !strings.HasPrefix(string(data), "1\n2\n3") || !strings.HasSuffix(string(data), "2000\n") {
-		t.Fatalf("spill does not hold the full output: %d bytes", len(data))
+}
+
+func TestExecNegativeTimeoutIgnored(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	res, err := newTool(t).Execute(ctx,
+		mustCall(t, "neg-timeout", `{"command":"sleep 30","timeout_ms":-1}`, 0), nil)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("negative timeout_ms must not shorten the run oddly: %v", elapsed)
+	}
+	if !strings.Contains(res.Text, "killed") {
+		t.Fatalf("expected cancel kill, got %q", res.Text)
 	}
 }
 

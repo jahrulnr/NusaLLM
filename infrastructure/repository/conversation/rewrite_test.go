@@ -1,6 +1,8 @@
 package repoconversation
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
@@ -104,6 +106,18 @@ func TestRewriteFromSealedPromotesEra(t *testing.T) {
 	if info.SealedSegments != 0 || info.MessageCount != 5 || info.ActiveCount != 5 {
 		t.Fatalf("counters after promote: %+v", info)
 	}
+	// Repromotion must not leave numbered segments on disk — they would
+	// duplicate the merged era if meta ever drifted.
+	dir := filepath.Join(repo.(*ConversationRepository).path, "c1")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Name() != activeFile && e.Name() != metaFile && filepath.Ext(e.Name()) == ".jsonl" {
+			t.Fatalf("stale segment after repromote: %s", e.Name())
+		}
+	}
 }
 
 func TestRewriteFromNotFound(t *testing.T) {
@@ -172,6 +186,26 @@ func TestRewriteFromDropsPendingCall(t *testing.T) {
 
 // A patch written after the edit target still belongs to a retained
 // call — patches resolve globally, so the cut must carry them along.
+func TestRewriteFromDropsOrphanToolOutputPatches(t *testing.T) {
+	repo := newRepo(t)
+	r := repo.(*ConversationRepository)
+	if err := repo.Save(t.Context(), newConv(t, "c1")); err != nil {
+		t.Fatal(err)
+	}
+	appendMsgs(t, repo, "c1", "u1", "u2")
+	appendOrphanToolOutputPatch(t, r, "c1", "ghost-call")
+	ids := msgIDs(t, repo, "c1")
+
+	if err := repo.RewriteFrom(t.Context(), "c1", ids[0], "u1*"); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range activeToolOutputCallIDs(t, r, "c1") {
+		if id == "ghost-call" {
+			t.Fatal("rewrite must drop orphan tool_output patch from active")
+		}
+	}
+}
+
 func TestRewriteFromKeepsPatchesForRetainedCalls(t *testing.T) {
 	repo := newRepo(t)
 	if err := repo.Save(t.Context(), newConv(t, "c1")); err != nil {

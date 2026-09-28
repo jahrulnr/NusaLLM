@@ -13,8 +13,8 @@ import (
 
 // Compact seals the first dropBefore message lines verbatim into the next
 // numbered segment, then rewrites active.jsonl as [summary] + surviving
-// messages + every patch line — patches stay global so late outputs still
-// reach sealed calls.
+// messages + live patch lines — patches stay global so late outputs still
+// reach sealed calls; orphan patches are dropped.
 func (r *ConversationRepository) Compact(ctx context.Context, convID string, summary entity.Message, dropBefore int) error {
 	if err := validID(convID); err != nil {
 		return err
@@ -35,8 +35,8 @@ func (r *ConversationRepository) Compact(ctx context.Context, convID string, sum
 	var msgLines, patchLines [][]byte
 	for _, l := range lines {
 		var lr lineRecord
-		if json.Unmarshal(l, &lr) != nil {
-			continue
+		if err := json.Unmarshal(l, &lr); err != nil {
+			return fmt.Errorf("corrupt line: %w", err)
 		}
 		if lr.Type == lineMessage {
 			msgLines = append(msgLines, l)
@@ -63,7 +63,16 @@ func (r *ConversationRepository) Compact(ctx context.Context, convID string, sum
 	// The sealed file is committed only once meta counts it — failures
 	// below leave it an orphan the meta-bounded loader ignores.
 
-	// Rewrite active: summary + surviving messages + every patch line.
+	// Rewrite active: summary + surviving messages + patch lines for calls
+	// still present in the retained history (sealed prefix + active tail).
+	live, err := toolCallIDsFromMessageLines(msgLines)
+	if err != nil {
+		return err
+	}
+	patchLines, err = dropDeadToolOutputPatches(patchLines, live)
+	if err != nil {
+		return err
+	}
 	buf.Reset()
 	sum, err := json.Marshal(lineRecord{Type: lineMessage, Data: encodeMessage(summary)})
 	if err != nil {

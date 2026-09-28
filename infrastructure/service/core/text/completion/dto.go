@@ -8,15 +8,15 @@ import "encoding/json"
 
 // Prompt Cache Option
 type RequestPromptCacheOption struct {
-	TTL string `json:"ttl" default:"30m"`
+	TTL string `json:"ttl,omitempty"`
 }
 
 // RequestBody is POST /chat/completions. Params are omitempty throughout —
 // unset means "provider default", never send a zero.
 type RequestBody struct {
 	Model             string                     `json:"model"`
-	PromptCacheKey    string                     `json:"prompt_cache_key"`
-	PromptCacheOption RequestPromptCacheOption   `json:"prompt_cache_options"`
+	PromptCacheKey    string                     `json:"prompt_cache_key,omitempty"`
+	PromptCacheOption RequestPromptCacheOption   `json:"prompt_cache_options,omitempty"`
 	Messages          []MessageBody              `json:"messages"`
 	Tools             []ToolBody                 `json:"tools,omitempty"`
 	Stream            bool                       `json:"stream,omitempty"`

@@ -1,8 +1,11 @@
 package repoconversation
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
@@ -155,6 +158,98 @@ func TestAppendMessageReportsCommittedLineWhenMetaWriteFails(t *testing.T) {
 	}
 	if len(loaded.Messages()) != 1 || loaded.Messages()[0].Content() != message.Content() {
 		t.Fatalf("committed line missing from history: %+v", loaded.Messages())
+	}
+}
+
+func TestCompactRejectsCorruptLine(t *testing.T) {
+	repo := newRepo(t)
+	if err := repo.Save(t.Context(), newConv(t, "c1")); err != nil {
+		t.Fatal(err)
+	}
+	appendMsgs(t, repo, "c1", "m1", "m2")
+	r := repo.(*ConversationRepository)
+	active := filepath.Join(r.path, "c1", activeFile)
+	lines, err := os.ReadFile(active)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := bytes.Split(bytes.TrimSuffix(lines, []byte("\n")), []byte("\n"))
+	if len(parts) < 2 {
+		t.Fatal("need two message lines")
+	}
+	parts[0] = []byte("not-json")
+	if err := os.WriteFile(active, append(bytes.Join(parts, []byte("\n")), '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sum, _ := entity.NewMessage(enum.RoleUser, "S")
+	if err := repo.Compact(t.Context(), "c1", sum, 1); err == nil {
+		t.Fatal("compact must fail on corrupt active line")
+	}
+}
+
+func TestLoadAtRejectsMissingSealedSegment(t *testing.T) {
+	repo := newRepo(t)
+	r := repo.(*ConversationRepository)
+	if err := repo.Save(t.Context(), newConv(t, "c1")); err != nil {
+		t.Fatal(err)
+	}
+	appendMsgs(t, repo, "c1", "m1", "m2", "m3")
+	sum, _ := entity.NewMessage(enum.RoleUser, "S")
+	if err := repo.Compact(t.Context(), "c1", sum, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(r.path, "c1", "0.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.LoadAt(t.Context(), "c1", 0, 0); err == nil ||
+		!strings.Contains(err.Error(), "sealed segment 0.jsonl missing") {
+		t.Fatalf("LoadAt with missing segment → %v", err)
+	}
+}
+
+func activeToolOutputCallIDs(t *testing.T, r *ConversationRepository, convID string) []string {
+	t.Helper()
+	lines, err := readLines(filepath.Join(r.path, convID, activeFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, l := range lines {
+		var lr lineRecord
+		if err := json.Unmarshal(l, &lr); err != nil {
+			t.Fatal(err)
+		}
+		if lr.Type == lineToolOutput {
+			ids = append(ids, lr.CallID)
+		}
+	}
+	return ids
+}
+
+func appendOrphanToolOutputPatch(t *testing.T, r *ConversationRepository, convID, callID string) {
+	t.Helper()
+	active := filepath.Join(r.path, convID, activeFile)
+	if err := appendLine(active, lineRecord{Type: lineToolOutput, CallID: callID, Output: "orphan"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCompactDropsOrphanToolOutputPatches(t *testing.T) {
+	repo := newRepo(t)
+	r := repo.(*ConversationRepository)
+	if err := repo.Save(t.Context(), newConv(t, "c1")); err != nil {
+		t.Fatal(err)
+	}
+	appendMsgs(t, repo, "c1", "m1", "m2", "m3")
+	appendOrphanToolOutputPatch(t, r, "c1", "ghost-call")
+	sum, _ := entity.NewMessage(enum.RoleUser, "S")
+	if err := repo.Compact(t.Context(), "c1", sum, 1); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range activeToolOutputCallIDs(t, r, "c1") {
+		if id == "ghost-call" {
+			t.Fatal("compact must drop orphan tool_output patch from active")
+		}
 	}
 }
 

@@ -101,6 +101,14 @@ func TestLoadMissingFile(t *testing.T) {
 	}
 }
 
+func TestAppDefaultsOnNormalize(t *testing.T) {
+	var c Config
+	c.Normalize()
+	if c.App.Name != "NusaLLM" || c.App.Source != "https://github.com/jahrulnr/NusaLLM" {
+		t.Fatalf("App defaults not applied: %+v", c.App)
+	}
+}
+
 func TestLoadEmptyPathYieldsDefaults(t *testing.T) {
 	c := NewConfig()
 	c.Conversation.MailboxCap = 1 // simulate a caller mutation

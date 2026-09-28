@@ -193,6 +193,72 @@ func TestRawMessageScrubbed(t *testing.T) {
 }
 
 // A record bigger than the old 8MB scanner cap must not brick reopen.
+func TestResumeTruncatesTornTail(t *testing.T) {
+	dir := t.TempDir()
+	good := `{"ts":"2024-01-01T00:00:00Z","kind":"evt","data":1}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, activeFile), []byte(good+`{"ts":"2024`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	l, err := New(dir, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+
+	if err := l.Append(t.Context(), "evt", 2); err != nil {
+		t.Fatal(err)
+	}
+	l.Close()
+
+	raw, err := os.ReadFile(filepath.Join(dir, activeFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), good) {
+		t.Fatal("resumed good line missing")
+	}
+	lines := readLines(t, filepath.Join(dir, activeFile))
+	if len(lines) != 2 {
+		t.Fatalf("active lines = %d, want 2", len(lines))
+	}
+	for _, line := range lines {
+		var rec struct {
+			Kind string `json:"kind"`
+		}
+		if err := json.Unmarshal([]byte(line), &rec); err != nil || rec.Kind != "evt" {
+			t.Fatalf("invalid line after torn resume: %q", line)
+		}
+	}
+}
+
+func TestResumeDropsInvalidFinalLine(t *testing.T) {
+	dir := t.TempDir()
+	good := `{"ts":"2024-01-01T00:00:00Z","kind":"evt","data":1}` + "\n"
+	bad := `not-json` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, activeFile), []byte(good+bad), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	l, err := New(dir, Options{MaxLines: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+
+	if err := l.Append(t.Context(), "evt", 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Append(t.Context(), "evt", 3); err != nil {
+		t.Fatal(err)
+	}
+	l.Close()
+
+	if got := len(readLines(t, filepath.Join(dir, "0.jsonl"))); got != 3 {
+		t.Fatalf("seg0 = %d, want 3 (1 resumed + 2 appended)", got)
+	}
+}
+
 func TestHugeRecordReopens(t *testing.T) {
 	dir := t.TempDir()
 	l, err := New(dir, Options{MaxLines: 2})

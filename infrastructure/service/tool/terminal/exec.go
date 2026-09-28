@@ -24,6 +24,7 @@ import (
 const (
 	defaultExecTimeout = 120 * time.Second
 	maxExecTimeout     = 10 * time.Minute
+	maxExecSpillBytes  = 32 << 20 // cap spill file growth
 	// waitDelay caps how long Wait may block on output pipes a stray
 	// grandchild inherited — without it a detached process stalls the
 	// tool forever even after its shell is dead.
@@ -89,6 +90,7 @@ func (tool *ExecTool) Execute(ctx context.Context, call entity.ToolCall, emit se
 		return '_'
 	}, call.ID())
 	spillPath := filepath.Join(os.TempDir(), "nusallm-exec-"+safe+".log")
+	defer os.Remove(spillPath)
 
 	cmd := shellCommand(ctx, input.Command)
 	cmd.WaitDelay = waitDelay
@@ -132,7 +134,7 @@ func (tool *ExecTool) Execute(ctx context.Context, call entity.ToolCall, emit se
 	spilled := sink.spilled
 	spillErr := sink.spillErr
 	if sink.spill != nil {
-		_, _ = sink.spill.Write([]byte(suffix))
+		sink.writeSpill([]byte(suffix))
 		_ = sink.spill.Close()
 	}
 	sink.mu.Unlock()
@@ -146,7 +148,11 @@ func (tool *ExecTool) Execute(ctx context.Context, call entity.ToolCall, emit se
 		// suffix (or on a final chunk boundary) — spill the whole string
 		// now; it is still fully in memory.
 		ref := "full output: " + spillPath
-		if err := os.WriteFile(spillPath, []byte(full), 0o600); err != nil {
+		toWrite := full
+		if len(toWrite) > maxExecSpillBytes {
+			toWrite = toWrite[:maxExecSpillBytes]
+		}
+		if err := os.WriteFile(spillPath, []byte(toWrite), 0o600); err != nil {
 			ref = fmt.Sprintf("spill to %s failed: %v", spillPath, err)
 		}
 		return service.ToolResult{Text: truncateOutput(full, budget, ref)}, nil
@@ -169,16 +175,31 @@ func (tool *ExecTool) Execute(ctx context.Context, call entity.ToolCall, emit se
 // the spill file, freezes buf as the head region, and keeps only a
 // rolling tail window — the full stream continues into the file.
 type outputSink struct {
-	mu        sync.Mutex
-	buf       bytes.Buffer // head region — frozen once spilled
-	tail      []byte       // rolling tail once spilled
-	spill     *os.File
-	spillPath string
-	spillErr  error
-	spilled   bool
-	total     int // everything ever written, for the omitted-byte count
-	budget    int
-	emit      service.ToolEmitter
+	mu           sync.Mutex
+	buf          bytes.Buffer // head region — frozen once spilled
+	tail         []byte       // rolling tail once spilled
+	spill        *os.File
+	spillPath    string
+	spillErr     error
+	spilled      bool
+	spillWritten int
+	total        int // everything ever written, for the omitted-byte count
+	budget       int
+	emit         service.ToolEmitter
+}
+
+func (s *outputSink) writeSpill(p []byte) {
+	if s.spill == nil || len(p) == 0 || s.spillWritten >= maxExecSpillBytes {
+		return
+	}
+	n := len(p)
+	if s.spillWritten+n > maxExecSpillBytes {
+		n = maxExecSpillBytes - s.spillWritten
+	}
+	if n > 0 {
+		_, _ = s.spill.Write(p[:n])
+		s.spillWritten += n
+	}
 }
 
 func (s *outputSink) Write(p []byte) (int, error) {
@@ -186,7 +207,7 @@ func (s *outputSink) Write(p []byte) (int, error) {
 	s.total += len(p)
 	if s.spilled {
 		if s.spill != nil {
-			_, _ = s.spill.Write(p)
+			s.writeSpill(p)
 		}
 		s.tail = append(s.tail, p...)
 		if len(s.tail) > s.budget {
@@ -198,7 +219,7 @@ func (s *outputSink) Write(p []byte) (int, error) {
 			s.spilled = true
 			if f, err := os.OpenFile(s.spillPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600); err == nil {
 				s.spill = f
-				_, _ = f.Write(s.buf.Bytes())
+				s.writeSpill(s.buf.Bytes())
 			} else {
 				// Degrade to head+tail without the file — the marker
 				// reports the failure; memory still stays bounded.

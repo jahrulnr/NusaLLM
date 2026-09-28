@@ -387,8 +387,9 @@ their implementations.
 
 **`repository.Conversation`** (`conversation.go`) is the conversation
 store. Its ordering contract: `Save` upserts the conversation-level record
-(id, route/modelID binding, title, system prompt, tools, usage) and must
-precede `AppendMessage`, which persists one message per turn and reports
+(id, route/modelID binding, title, tools, usage — not the system prompt,
+which is embedded and applied per turn) and must precede `AppendMessage`,
+which persists one message per turn and reports
 via a `persisted` bool whether the message line committed even if a later
 metadata projection failed.
 

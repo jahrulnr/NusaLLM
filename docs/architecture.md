@@ -27,6 +27,8 @@ flowchart TB
         tui["cli/tui — bubbletea REPL"]
         adm["cli/admin — onboard · gateway · config"]
         sess["cli/session — per-terminal state"]
+        httpd["http — REST reads/writes · WebUI assets"]
+        wsd["websocket — multiplexed turn channel"]
     end
 
     subgraph app["application — use cases"]
@@ -42,12 +44,14 @@ flowchart TB
 
     subgraph adapters["infrastructure — adapters & mechanisms"]
         repo["repository/ — JSONL store · sqlite secrets"]
-        svc["service/ — completion adapter · tools · slash commands · workspace"]
+        svc["service/ — four text wire adapters · tools · slash commands · workspace"]
         mech["config · worker · prompt · error · redact"]
     end
 
     main --> tui
     main --> adm
+    main --> httpd
+    main --> wsd
     main -. wires .-> repo
     main -. wires .-> svc
     tui --> sess
@@ -65,7 +69,7 @@ flowchart TB
 |---|---|
 | `cmd/nusallm` | Composition root: argv mux, then wires repositories, adapters, tools, and apps in `main.go` |
 | `infrastructure/delivery/cli` | Terminal boundary — `tui/` bubbletea model, `session/` per-terminal state, `commands/` registry wiring, `admin/` operator subcommands, `term/` ANSI safety |
-| `infrastructure/delivery/http`, `infrastructure/delivery/websocket` | Placeholder packages only — the transport boundary the design reserves, not implemented |
+| `infrastructure/delivery/http`, `infrastructure/delivery/websocket` | WebUI transport — Gin REST (`nusallm serve`), embedded assets, loopback `Host`/`Origin` guards, and the multiplexed turn WebSocket |
 | `application/conversation` | Broker: maps conversation ids to per-room `worker.Worker`s, owns queue order, preemption, eviction, shutdown |
 | `application/job` | The use-case bodies: `Send`, `Edit`, `Compact`, `Delete`, `Rename`, and the shared `runTurn` agent loop |
 | `application/gateway` | Gateway management: upserts, vault key-reference writes, sanitized `GatewayInfo` projections |
@@ -73,7 +77,7 @@ flowchart TB
 | `application/setting`, `application/setup` | Operator view/mutation of the JSON config file; first-run config provisioning |
 | `infrastructure/domain` | Pure domain: `aggregate/`, `entity/`, `enum/`, `valueobject/`, `event/`, plus ports in `repository/` and `service/` |
 | `infrastructure/repository` | Port implementations: `conversation/` JSONL store, `gateway/` JSON records, `secret/` sqlite vault, `log/` JSONL diagnostics |
-| `infrastructure/service` | Outbound adapters: `core/text/completion/` wire adapter, `tool/` implementations, `command/` slash-command handlers, `workspace/` sandbox, `wire/` shared encoding helpers |
+| `infrastructure/service` | Outbound adapters: four `core/text/*` wire adapters (completion, responses, messages, generatecontent), `tool/` implementations, `command/` slash-command handlers, `workspace/` sandbox, `wire/` shared encoding helpers |
 | `infrastructure/config`, `worker`, `prompt`, `error`, `redact` | Mechanisms: settings parsing, the serial job executor, embedded prompts, the error contract, credential scrubbing |
 
 ## The dependency rule
@@ -100,18 +104,18 @@ knows what JSONL is or what SSE stands for.
 
 Everything concrete meets in `cmd/nusallm/main.go`. The function `run`
 loads config, opens the sqlite secret store, constructs the filesystem
-repositories, builds the one `completion`-style service adapter,
-constructs the five agent tools, and hands all of it to
-`appconversation.New` and `tui.NewREPL`. The file's own comment sets the
-tone: for admin subcommands "this file is the mux, not the handler" —
-routing to `infrastructure/delivery/cli/admin` functions that return
-exit codes, keeping even argv dispatch a delivery concern.
+repositories, builds the four `enum.Style` text adapters (completion,
+responses, messages, generatecontent), constructs the five agent tools,
+and hands all of it to `appconversation.New` and either `tui.NewREPL` or
+the `serve` HTTP/WebSocket stack. The file's own comment sets the tone:
+for admin subcommands "this file is the mux, not the handler" — routing
+to `infrastructure/delivery/cli/admin` functions that return exit codes,
+keeping even argv dispatch a delivery concern.
 
 A consequence worth internalizing: `application/conversation` could host
-a CLI, an HTTP handler, or a test harness with identical results, and the
-http/websocket trees exist as placeholders precisely because the design
-expects them. The mechanism is deliberately unfinished; the direction is
-not.
+a CLI, an HTTP handler, or a test harness with identical results — the
+http and websocket packages are live transports on the same use cases,
+not a parallel product.
 
 ## Who owns a rule
 
@@ -464,9 +468,9 @@ by the `ToolPermissionAgent` check in `execTool`.
 
 Config resolves as `CONFIG_PATH` env → JSON file → `default` struct tags;
 a `.env` in cwd can set `CONFIG_PATH` itself (real env wins). When
-`repl.Run` returns, the deferred teardown runs in reverse: the
-conversation app shuts down first (reject posts, terminate every worker,
-wait for their loops), the REPL releases its handles, and the boot
+`repl.Run` returns, the deferred teardown runs in reverse: the REPL
+releases its handles first, then the conversation app shuts down (reject
+posts, terminate every worker, wait for their loops), and the boot
 resources — including the sqlite secret store — close last.
 
 ## Working in this codebase
