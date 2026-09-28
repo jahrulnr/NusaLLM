@@ -1,4 +1,6 @@
 import { Widget, el, clear } from '../../lib/dom.js';
+import { statusOrb, statusOrbStylesheet } from '../../lib/status-orb.js';
+import { toolOrbPhase } from '../../lib/tool-phase.js';
 
 // One tool call rendered with owner-visible I/O. Input and output stay
 // exact and are inserted as text via code-block, never interpreted as
@@ -11,6 +13,7 @@ class ToolActivity extends Widget {
 
   constructor() {
     super();
+    this.shadowRoot.insertBefore(el('link', { rel: 'stylesheet', href: statusOrbStylesheet }), this.root);
     this._tool = null;
     this._build();
     this._sync();
@@ -34,6 +37,17 @@ class ToolActivity extends Widget {
     this.root.classList.add('tool');
     this.details = el('details', { class: 'details' });
     this.summaryEl = el('summary', { class: 'summary' });
+    this.orb = statusOrb();
+    this.nameEl = el('span', { class: 'name' });
+    this.callIdEl = el('span', { class: 'callid' });
+    this.statusEl = el('span', { class: 'status' });
+    this.summaryEl.append(
+      this.orb.node,
+      this.nameEl,
+      this.callIdEl,
+      this.statusEl,
+      el('span', { class: 'chev', 'aria-hidden': 'true', text: '›' }),
+    );
     this.bodyEl = el('div', { class: 'body' });
     this.details.append(this.summaryEl, this.bodyEl);
     this.details.addEventListener('toggle', () => {
@@ -67,15 +81,6 @@ class ToolActivity extends Widget {
   _sync() {
     const t = this._tool;
     const status = t?.status || 'pending';
-
-    clear(this.summaryEl);
-    this.summaryEl.append(
-      el('span', { class: 'glyph', 'aria-hidden': 'true', text: '⚒' }),
-      el('span', { class: 'name', text: t?.name || 'tool' }),
-      t?.callId ? el('span', { class: 'callid', text: t.callId }) : null,
-      el('span', { class: `status ${status}`, text: status }),
-      el('span', { class: 'chev', 'aria-hidden': 'true', text: '›' }),
-    );
 
     // Input: preserve the exact argument string produced by the model.
     const input = t?.input ?? '';
@@ -114,6 +119,17 @@ class ToolActivity extends Widget {
       this.outputNote.hidden = false;
       this.outputNote.textContent = this._outputText(status);
     }
+
+    const phase = toolOrbPhase(status, output);
+    this.orb.set(phase);
+    this.nameEl.textContent = t?.name || 'tool';
+    this.callIdEl.textContent = t?.callId || '';
+    this.callIdEl.hidden = !t?.callId;
+    this.statusEl.textContent = status;
+    this.statusEl.className = `status phase-${phase}`;
+    this.details.classList.remove('phase-live', 'phase-idle', 'phase-done', 'phase-failed');
+    this.details.classList.add(`phase-${phase}`);
+    this.details.setAttribute('aria-busy', phase === 'live' ? 'true' : 'false');
   }
 
   _outputText(status) {

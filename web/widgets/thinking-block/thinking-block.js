@@ -1,14 +1,17 @@
 import { Widget, el, clear } from '../../lib/dom.js';
+import { statusOrb, statusOrbStylesheet } from '../../lib/status-orb.js';
 
 // Thinking lifecycle affordance — native <details>. Provider reasoning
 // arrives as ordered turn.reasoning chunks and renders as live Markdown.
+// The card stays collapsed until the user opens it. The orb carries the
+// live/done signal so a stream does not open and shut the panel.
 class ThinkingBlock extends Widget {
   static stylesheet = new URL('./thinking-block.css', import.meta.url);
 
   constructor() {
     super();
+    this.shadowRoot.insertBefore(el('link', { rel: 'stylesheet', href: statusOrbStylesheet }), this.root);
     this._state = { status: 'done', startedAt: null, elapsedMs: null };
-    this._userToggled = false;
     this._renderedText = '';
     this._bodyPinned = true;
     this._lastBodyTop = 0;
@@ -37,9 +40,9 @@ class ThinkingBlock extends Widget {
     this.root.classList.add('thinking');
     this.details = el('details', { class: 'details' });
     this.summaryEl = el('summary', { class: 'summary' });
-    this.orb = el('span', { class: 'orb', 'aria-hidden': 'true' });
+    this.orb = statusOrb();
     this.label = el('span', { class: 'label' });
-    this.summaryEl.append(this.orb, this.label, el('span', {
+    this.summaryEl.append(this.orb.node, this.label, el('span', {
       class: 'chev', 'aria-hidden': 'true', text: '›',
     }));
     this.bodyEl = el('div', { class: 'body' });
@@ -54,12 +57,11 @@ class ThinkingBlock extends Widget {
       this._lastBodyTop = top;
     });
     this.details.append(this.summaryEl, this.bodyEl);
-    // Gesture listeners (not the async 'toggle' event) — once the user
-    // chooses, their state wins over the status-derived default.
-    const markToggled = () => { this._userToggled = true; };
-    this.summaryEl.addEventListener('click', markToggled);
-    this.summaryEl.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') markToggled();
+    this.details.addEventListener('toggle', () => {
+      if (this.details.open && this._bodyPinned) {
+        this.bodyEl.scrollTop = this.bodyEl.scrollHeight;
+        this._lastBodyTop = this.bodyEl.scrollTop;
+      }
     });
     this.root.append(this.details);
   }
@@ -68,7 +70,9 @@ class ThinkingBlock extends Widget {
     const s = this._state;
     const active = s.status === 'active';
 
-    this.orb.className = `orb${active ? ' active' : ''}`;
+    this.orb.set(active ? 'live' : 'done');
+    this.details.classList.toggle('live', active);
+    this.details.setAttribute('aria-busy', active ? 'true' : 'false');
     this.label.textContent = active ? 'Thinking' : s.elapsedMs == null ? 'Thought' : `Thought for ${this._elapsed()}`;
 
     // Append only the new suffix so completed Markdown stays mounted.
@@ -81,8 +85,6 @@ class ThinkingBlock extends Widget {
     if (!active) this.reasoning.finishStream();
     this._renderedText = text;
     this.summaryText.hidden = !text;
-
-    if (!this._userToggled) this.details.open = active;
   }
 
   _elapsed() {

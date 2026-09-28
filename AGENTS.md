@@ -43,6 +43,10 @@ state the reason in the change description; if there is none, keep it inline.
 
 - Treat user feedback such as "bad experience" or "bad UI" as a request to overhaul or restyle the affected screen or flow as a whole—not just fix the specific UI issue they mentioned. Address the broader experience while keeping the redesign within the affected scope.
 
+## Running application
+
+A task from the user means the user is not currently working in the application. If the application is already active, the agent may stop or restart it.
+
 ## Breaking Changes Policy
 
 This project does not maintain backward compatibility with previous implementations.

@@ -1,0 +1,83 @@
+/* Lifecycle orb. Live: hollow yellow core, spinner, and a slow breathe.
+   Idle: dim hollow core with a slower breathe. Done: solid green.
+   Failed: solid red. The box is fixed so the breathe never shifts the row. */
+
+.status-orb {
+  position: relative;
+  width: 14px;
+  height: 14px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+.orb-spin,
+.orb-core { grid-area: 1 / 1; }
+
+.orb-spin {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1.5px solid transparent;
+  opacity: 0;
+  box-sizing: border-box;
+}
+
+.orb-core {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1.5px solid var(--text-faint);
+  background: transparent;
+  box-sizing: border-box;
+}
+
+.status-orb[data-phase='live'] .orb-core {
+  border-color: var(--warn);
+  animation: orb-breathe 1.6s ease-in-out infinite;
+}
+
+.status-orb[data-phase='live'] .orb-spin {
+  opacity: 1;
+  border-top-color: var(--warn);
+  border-right-color: rgba(224, 163, 74, 0.35);
+  animation: orb-spin 0.9s linear infinite;
+}
+
+.status-orb[data-phase='idle'] .orb-core {
+  border-color: var(--text-dim);
+  animation: orb-idle 2.4s ease-in-out infinite;
+}
+
+.status-orb[data-phase='done'] .orb-core {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.status-orb[data-phase='failed'] .orb-core {
+  border-color: var(--danger);
+  background: var(--danger);
+}
+
+@keyframes orb-spin { to { transform: rotate(360deg); } }
+
+@keyframes orb-breathe {
+  0%, 100% { transform: scale(0.78); box-shadow: 0 0 0 0 rgba(224, 163, 74, 0); }
+  50% { transform: scale(1); box-shadow: 0 0 6px rgba(224, 163, 74, 0.55); }
+}
+
+@keyframes orb-idle {
+  0%, 100% { transform: scale(0.82); }
+  50% { transform: scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-orb[data-phase='live'] .orb-spin,
+  .status-orb[data-phase='live'] .orb-core,
+  .status-orb[data-phase='idle'] .orb-core {
+    animation: none;
+  }
+  .status-orb[data-phase='live'] .orb-core {
+    box-shadow: 0 0 0 1.5px var(--warn);
+  }
+}

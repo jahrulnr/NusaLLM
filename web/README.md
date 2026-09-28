@@ -137,12 +137,21 @@ provider replay artifacts in `optionalContent`, attachment bytes or
 
 - `nusa-thinking-block` renders ordered reasoning text from
   `turn.reasoning` chunks and persisted assistant `parts` as Markdown,
-  including closed Mermaid fences. Its bounded body follows live text
+  including closed Mermaid fences. The card stays collapsed until the
+  user opens it; a live thought does not expand or collapse the panel.
+  Its orb is yellow and animated while reasoning is active, then solid
+  green when that stretch finishes. The bounded body follows live text
   until the user scrolls up, and resumes following at the bottom.
   A card appears only when the provider supplied reasoning text.
 - `nusa-tool-activity` renders call metadata plus the **exact** input
   and output (live chunks or the payload inside the persisted record), each in
-  a visible section when the tool card expands. Content is inserted as text —
+  a visible section when the user expands the card. The card stays
+  collapsed on its own. Its orb is yellow and animated while the call is
+  `requested` or `streaming` (including a running exec that is still
+  idle or waiting on output), dim and slowly pulsing when the record is
+  `pending`, solid green when `settled` cleanly, and solid red when the
+  stored output is a tool error (`error: …`), `interrupted by user`, a
+  nonzero `(exit N)`, or a `(signal: …)` death. Content is inserted as text —
   never rendered as HTML or Markdown. Output scrolls within a bounded
   area and follows live chunks until the user scrolls up.
 - Error bodies and internal causes stay server-side; terminals carry

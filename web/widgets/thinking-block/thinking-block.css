@@ -8,6 +8,7 @@
   background: var(--panel);
 }
 .details[open] { border-color: var(--hairline-strong); }
+.details.live { border-color: rgba(224, 163, 74, 0.55); }
 
 .summary {
   display: flex;
@@ -22,21 +23,6 @@
 }
 .summary::-webkit-details-marker { display: none; }
 .summary:hover { color: var(--text); }
-
-/* The only restrained glow in the system — an active reasoning pulse. */
-.orb {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--text-faint);
-  flex-shrink: 0;
-}
-.orb.active {
-  background: var(--accent);
-  box-shadow: 0 0 8px rgba(200, 241, 105, 0.45);
-  animation: pulse 1.4s ease-in-out infinite;
-}
-@keyframes pulse { 50% { opacity: 0.35; box-shadow: none; } }
 
 .label { flex: 1; }
 .chev { transition: transform 140ms ease; color: var(--text-faint); }
@@ -62,6 +48,3 @@
   overflow-wrap: anywhere;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .orb.active { animation: none; box-shadow: 0 0 6px rgba(200, 241, 105, 0.3); }
-}
