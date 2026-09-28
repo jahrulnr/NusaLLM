@@ -72,7 +72,13 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 			}
 		}
 		err := svc.Send(ctx, conv, gw, wireModel, captureEvent)
-		if err != nil && apperror.As(err).StatusCode() == 413 && !didCompact && len(conv.Messages()) > ccfg.CompactKeepTail {
+		added := conv.Messages()[before:]
+		// A canceled stream may already have appended the text and
+		// reasoning that arrived, plus tool calls whose argument deltas
+		// finished. Persist that partial message and mark those calls
+		// interrupted instead of dropping the turn from history.
+		canceled := err != nil && (ctx.Err() != nil || apperror.As(err).StatusCode() == 408)
+		if err != nil && !canceled && apperror.As(err).StatusCode() == 413 && !didCompact && len(conv.Messages()) > ccfg.CompactKeepTail {
 			// The provider says overflow even though our estimate
 			// disagreed — believe the provider once: compact and retry.
 			if err := d.compact(ctx, convID, conv, gw, wireModel, svc, ccfg.CompactKeepTail); err != nil {
@@ -81,9 +87,15 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 			didCompact = true
 			continue
 		}
-		if err != nil {
+		if err != nil && !canceled {
 			// A cancel landing mid-body-read can surface as an upstream
 			// error from the adapter — normalize before it misroutes.
+			if ctx.Err() != nil {
+				return apperror.New(408, "turn canceled", ctx.Err())
+			}
+			return err
+		}
+		if canceled && len(added) == 0 {
 			if ctx.Err() != nil {
 				return apperror.New(408, "turn canceled", ctx.Err())
 			}
@@ -92,12 +104,16 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 		// The port contract is one assistant append per call — verify it
 		// instead of trusting conv.Last(), so a misbehaving adapter can't
 		// duplicate the user line or silently drop output.
-		added := conv.Messages()[before:]
 		if len(added) == 0 {
 			return apperror.New(500, "adapter produced no message", fmt.Errorf("service appended 0 messages"))
 		}
 		if len(parts) > 0 {
 			conv.Last().SetParts(parts)
+		}
+		if canceled || ctx.Err() != nil {
+			if err := stampInterrupted(conv.Last()); err != nil {
+				return err
+			}
 		}
 		for _, m := range added {
 			if _, err := d.Convs.AppendMessage(ctx, convID, m); err != nil {
@@ -109,10 +125,13 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 		if err := d.Convs.Save(ctx, conv); err != nil {
 			return err
 		}
-		if err := ctx.Err(); err != nil {
-			// The reply is already persisted — paid for, keep it — but a
-			// canceled caller must not read success.
-			return apperror.New(408, "turn canceled", err)
+		if canceled || ctx.Err() != nil {
+			// The partial reply is already persisted. A canceled caller
+			// must not read success or continue into tool execution.
+			if ctx.Err() != nil {
+				return apperror.New(408, "turn canceled", ctx.Err())
+			}
+			return err
 		}
 
 		msgs := conv.Messages()
@@ -128,9 +147,18 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 		}
 		for _, call := range pending {
 			if err := ctx.Err(); err != nil {
+				if err := d.persistInterrupted(ctx, convID, last); err != nil {
+					return err
+				}
 				return apperror.New(408, "turn canceled", err)
 			}
 			if err := d.execTool(ctx, convID, onEvent, conv, last, call); err != nil {
+				if ctx.Err() != nil {
+					if stampErr := d.persistInterrupted(ctx, convID, last); stampErr != nil {
+						return stampErr
+					}
+					return apperror.New(408, "turn canceled", ctx.Err())
+				}
 				return err
 			}
 		}
@@ -184,6 +212,51 @@ func (d Deps) ToolSchemas() []valueobject.ToolSchema {
 		return strings.Compare(a.Name(), b.Name())
 	})
 	return schemas
+}
+
+// stampInterrupted records "interrupted by user" on origin calls that
+// never received a result. Incomplete argument streams are not on the
+// message — adapters omit them before appending.
+func stampInterrupted(msg *entity.Message) error {
+	if msg == nil {
+		return nil
+	}
+	for _, tc := range msg.ToolCalls() {
+		if tc.Type() != enum.TooltypeOrigin || tc.Output() != "" {
+			continue
+		}
+		if err := msg.SetToolOutput(tc.ID(), "interrupted by user"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// persistInterrupted writes the interrupted marker for calls that are
+// already in history with an empty output — a stop during execution.
+func (d Deps) persistInterrupted(ctx context.Context, convID string, msg *entity.Message) error {
+	if msg == nil {
+		return nil
+	}
+	for _, tc := range msg.ToolCalls() {
+		if tc.Type() != enum.TooltypeOrigin || tc.Output() != "" {
+			continue
+		}
+		if err := msg.SetToolOutput(tc.ID(), "interrupted by user"); err != nil {
+			return err
+		}
+		updated := ""
+		for _, cur := range msg.ToolCalls() {
+			if cur.ID() == tc.ID() {
+				updated = cur.Output()
+				break
+			}
+		}
+		if err := d.Convs.UpdateToolCallOutput(ctx, convID, tc.ID(), updated, nil); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // pendingCalls returns the model-originated calls still awaiting output on

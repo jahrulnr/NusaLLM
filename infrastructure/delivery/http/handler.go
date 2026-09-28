@@ -80,7 +80,7 @@ func NewHandler(d Deps) *gin.Engine {
 	if d.WS != nil {
 		api.GET("/ws", d.WS)
 	}
-	webui.Register(r, d.WebAssets, d.Authorities)
+	webui.Register(r, d.WebAssets)
 
 	r.NoRoute(notFound)
 	return r

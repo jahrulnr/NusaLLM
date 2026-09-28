@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
@@ -40,6 +41,9 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 		terminal *ResponseBody
 		stopSeen bool
 		logged   []json.RawMessage
+		text     strings.Builder
+		reason   strings.Builder
+		fns      []fnAcc
 	)
 	timer := time.NewTimer(s.idle)
 	defer timer.Stop()
@@ -48,6 +52,9 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 		select {
 		case <-ctx.Done():
 			s.logAppend(ctx, "provider.stream", logged)
+			if err := s.commitCanceled(conv, onEvent, text.String(), reason.String(), fns, nil); err != nil {
+				return err
+			}
 			return apperror.New(408, "request canceled or timed out", ctx.Err())
 		case <-timer.C:
 			s.logAppend(ctx, "provider.stream", logged)
@@ -78,17 +85,35 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 			logged = append(logged, ev.data)
 			switch se.Type {
 			case "response.output_text.delta":
+				text.WriteString(se.Delta)
 				emit(onEvent, event.NewDeltaEvent(se.Delta))
 			case "response.reasoning_summary_text.delta":
 				// Official summary text — published for display, it may
 				// cross to the owner.
+				reason.WriteString(se.Delta)
 				emit(onEvent, event.NewReasoningSummaryEvent(se.Delta))
 			case "response.reasoning_text.delta":
 				// Raw reasoning remains a distinct ordered content event.
+				reason.WriteString(se.Delta)
 				emit(onEvent, event.NewReasoningEvent(se.Delta))
+			case "response.output_item.added":
+				noteFunctionCall(&fns, se.OutputIndex, se.Item, false)
+			case "response.function_call_arguments.delta":
+				if slot := fnSlot(&fns, se.OutputIndex); slot != nil {
+					slot.args.WriteString(se.Delta)
+				}
+			case "response.function_call_arguments.done":
+				if slot := fnSlot(&fns, se.OutputIndex); slot != nil {
+					if se.Arguments != "" {
+						slot.args.Reset()
+						slot.args.WriteString(se.Arguments)
+					}
+					slot.done = true
+				}
 			case "response.output_item.done":
 				if len(se.Item) > 0 {
 					fallback = append(fallback, se.Item)
+					noteFunctionCall(&fns, se.OutputIndex, se.Item, true)
 				}
 			case "response.completed", "response.incomplete":
 				stopSeen = true
@@ -110,11 +135,109 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 				emit(onEvent, event.NewErrorEvent(err))
 				return err
 			}
-			// response.created, output_item.added, content_part.*,
-			// function_call_arguments.delta — nothing to fold in; the
-			// committed message rebuilds from terminal output anyway.
+			// response.created, content_part.* — nothing else to fold in; a
+			// completed turn still rebuilds from the terminal output.
 		}
 	}
+}
+
+// fnAcc is one function call assembled from argument deltas. done means
+// the provider closed the call; a still-open call is kept only when its
+// argument JSON has already closed.
+type fnAcc struct {
+	id, name string
+	args     strings.Builder
+	done     bool
+}
+
+func fnSlot(fns *[]fnAcc, i int) *fnAcc {
+	if i < 0 || i > 64 {
+		return nil
+	}
+	for len(*fns) <= i {
+		*fns = append(*fns, fnAcc{})
+	}
+	return &(*fns)[i]
+}
+
+func noteFunctionCall(fns *[]fnAcc, index int, raw json.RawMessage, done bool) {
+	var it ItemShape
+	if json.Unmarshal(raw, &it) != nil || it.Type != "function_call" {
+		return
+	}
+	slot := fnSlot(fns, index)
+	if slot == nil {
+		return
+	}
+	if it.CallID != "" {
+		slot.id = it.CallID
+	}
+	if it.Name != "" {
+		slot.name = it.Name
+	}
+	if it.Arguments != "" {
+		slot.args.Reset()
+		slot.args.WriteString(it.Arguments)
+	}
+	if done {
+		slot.done = true
+	}
+}
+
+func fnComplete(c fnAcc) bool {
+	if c.id == "" || c.name == "" {
+		return false
+	}
+	args := c.args.String()
+	if args == "" {
+		return c.done
+	}
+	return json.Valid([]byte(args))
+}
+
+// commitCanceled writes the text, reasoning, and finished tool calls that
+// arrived before the caller stopped the stream. An open tool-argument
+// delta is left out. A stream with nothing to keep is a no-op.
+func (s *Service) commitCanceled(conv *aggregate.Conversation, onEvent event.TurnEventHandler, text, reasoning string, calls []fnAcc, usage *UsageBody) error {
+	var output []json.RawMessage
+	if text != "" {
+		raw, err := json.Marshal(map[string]any{
+			"type": "message", "role": "assistant",
+			"content": []map[string]string{{"type": "output_text", "text": text}},
+		})
+		if err != nil {
+			return err
+		}
+		output = append(output, raw)
+	}
+	if reasoning != "" {
+		raw, err := json.Marshal(map[string]any{
+			"type":    "reasoning",
+			"summary": []map[string]string{{"type": "summary_text", "text": reasoning}},
+		})
+		if err != nil {
+			return err
+		}
+		output = append(output, raw)
+	}
+	for _, c := range calls {
+		if !fnComplete(c) {
+			continue
+		}
+		args := c.args.String()
+		if args == "" {
+			args = "{}"
+		}
+		raw, err := json.Marshal(ItemBody{Type: "function_call", CallID: c.id, Name: c.name, Arguments: args})
+		if err != nil {
+			return err
+		}
+		output = append(output, raw)
+	}
+	if len(output) == 0 {
+		return nil
+	}
+	return s.commitStream(conv, onEvent, &ResponseBody{Status: "incomplete", Output: output, Usage: usage}, nil)
 }
 
 // commitStream turns the terminal response into the assistant message

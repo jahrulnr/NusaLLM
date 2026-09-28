@@ -5,8 +5,9 @@ const STYLES = ['completion', 'responses', 'messages', 'generatecontent'];
 
 // Provider CRUD. The editor keeps the wire body honest: apiKey is a
 // tri-state (Keep omits it, Replace sends the string, Clear sends ""),
-// and editing preserves every advanced field of surviving models —
-// only the id set is edited here. The stored key or ref is never
+// and editing preserves every advanced field of surviving models.
+// Models are viewed through a searchable list; only explicit imports
+// can add ids. The stored key or ref is never
 // rendered.
 class ProviderManager extends Widget {
   static stylesheet = new URL('./provider-manager.css', import.meta.url);
@@ -49,13 +50,10 @@ class ProviderManager extends Widget {
   }
 
   _render() {
+    if (this._dialog?.open) this._dialog.close();
+    this._dialog = null;
     clear(this.root);
     this.root.classList.add('providers');
-
-    if (this._editing || this._creating) {
-      this._renderForm();
-      return;
-    }
 
     this.root.append(el('div', { class: 'row-head' }, [
       el('span', { class: 'count', text: `${this._gateways.length} gateway${this._gateways.length === 1 ? '' : 's'}` }),
@@ -67,7 +65,6 @@ class ProviderManager extends Widget {
 
     if (!this._gateways.length) {
       this.root.append(el('div', { class: 'hint', text: 'No gateways yet — add one to enable sending.' }));
-      return;
     }
     for (const g of this._gateways) {
       if (this._confirmId === g.id) {
@@ -107,10 +104,24 @@ class ProviderManager extends Widget {
         ]),
       ]));
     }
+    if (this._editing || this._creating) this._renderForm();
   }
 
   _renderForm() {
     const g = this._editing; // null when creating
+    const dialog = el('dialog', { class: 'editor-dialog', 'aria-label': g ? `Edit ${g.id}` : 'New gateway' });
+    const form = el('div', { class: 'editor-form' });
+    const close = () => {
+      if (this._saving) return;
+      this._editing = null;
+      this._creating = false;
+      this._discovery = null;
+      this._render();
+    };
+    dialog.addEventListener('cancel', (event) => {
+      event.preventDefault();
+      close();
+    });
     const field = (label, node) => el('label', { class: 'field' }, [
       el('span', { class: 'field-label', text: label }), node,
     ]);
@@ -121,12 +132,14 @@ class ProviderManager extends Widget {
       STYLES.map((s) => el('option', { value: s, text: s, selected: g && g.style === s })));
     const endpoint = el('input', { class: 'in', value: g ? g.endpoint : '', 'aria-label': 'Endpoint URL' });
     const stream = el('input', { type: 'checkbox', checked: g ? !!g.stream : true, 'aria-label': 'Streaming' });
-    const models = el('textarea', {
-      class: 'in models', rows: '4',
-      placeholder: 'one model id per line',
-      'aria-label': 'Model ids',
+    this._modelIds = new Set((g?.models || []).map((m) => m.id));
+    this._modelSearch = el('input', {
+      class: 'in', type: 'search', placeholder: 'Search configured models',
+      'aria-label': 'Search configured models',
     });
-    models.value = g ? (g.models || []).map((m) => m.id).join('\n') : '';
+    this._modelList = el('div', { class: 'model-list', role: 'list', 'aria-label': 'Configured models', tabindex: '0' });
+    this._modelCount = el('span', { class: 'count' });
+    this._modelSearch.addEventListener('input', () => this._renderModels());
 
     // API key tri-state — the current value never renders, only a mode.
     const keyMode = el('select', { class: 'in', 'aria-label': 'API key mode' }, [
@@ -136,10 +149,12 @@ class ProviderManager extends Widget {
     ]);
     const keyValue = el('input', {
       class: 'in', type: 'password', autocomplete: 'off',
-      placeholder: 'new api key', 'aria-label': 'New API key', hidden: true,
+      placeholder: 'new api key', 'aria-label': 'New API key',
     });
+    const keyField = field('new api key', keyValue);
+    keyField.hidden = true;
     keyMode.addEventListener('change', () => {
-      keyValue.hidden = keyMode.value !== 'replace';
+      keyField.hidden = keyMode.value !== 'replace';
     });
 
     const error = el('div', { class: 'form-error' });
@@ -147,7 +162,6 @@ class ProviderManager extends Widget {
     const save = () => {
       if (this._saving) return;
       const gid = g ? g.id : id.value.trim();
-      const modelIds = models.value.split('\n').map((s) => s.trim()).filter(Boolean);
       if (!gid) {
         error.textContent = 'gateway id is required';
         return;
@@ -159,7 +173,7 @@ class ProviderManager extends Widget {
         style: style.value,
         endpoint: endpoint.value.trim(),
         stream: stream.checked,
-        models: modelIds.map((mid) => byId.get(mid) || {
+        models: [...this._modelIds].map((mid) => byId.get(mid) || {
           id: mid, route: '', contextWindow: 0,
           pricing: { inputPerMillionUsd: 0, outputPerMillionUsd: 0, cacheReadPerMillionUsd: 0, cacheWritePerMillionUsd: 0 },
         }),
@@ -180,14 +194,19 @@ class ProviderManager extends Widget {
       emit(this, 'gateway-save', { id: gid, body });
     };
 
-    this.root.append(
-      el('div', { class: 'form-head', text: g ? `Edit ${g.id}` : 'New gateway' }),
+    form.append(
       field('id', id),
       field('name', name),
       field('api style', style),
       field('endpoint', endpoint),
       field('stream', el('span', { class: 'check' }, [stream])),
-      field('models', models),
+      el('div', { class: 'field' }, [
+        el('div', { class: 'model-head' }, [
+          el('span', { class: 'field-label', text: 'models' }), this._modelCount,
+        ]),
+        this._modelSearch,
+        this._modelList,
+      ]),
       el('div', { class: 'import-actions' }, [
         el('button', {
           class: 'btn', type: 'button', disabled: !g,
@@ -197,25 +216,39 @@ class ProviderManager extends Widget {
       ]),
       this.discoveryHost = el('div', { class: 'discovery' }),
       field('api key', keyMode),
-      field('', keyValue),
+      keyField,
       error,
+    );
+    dialog.append(
+      el('div', { class: 'dialog-head' }, [
+        el('div', { class: 'dialog-title', text: g ? `Edit ${g.id}` : 'New gateway' }),
+        el('button', { class: 'icon-btn dialog-close', type: 'button', 'aria-label': 'Close gateway editor', onclick: close }, [icon('x', 16)]),
+      ]),
+      form,
       el('div', { class: 'form-actions' }, [
         el('button', { class: 'btn accent', type: 'button', onclick: save }, [el('span', { text: 'Save' })]),
-        el('button', {
-          class: 'btn', type: 'button',
-          onclick: () => {
-            if (this._saving) return;
-            this._editing = null;
-            this._creating = false;
-            this._discovery = null;
-            this._render();
-          },
-        }, [el('span', { text: 'Cancel' })]),
+        el('button', { class: 'btn', type: 'button', onclick: close }, [el('span', { text: 'Cancel' })]),
       ]),
     );
-    this._modelsInput = models;
+    this.root.append(dialog);
+    this._dialog = dialog;
+    dialog.showModal();
+    this._renderModels();
     this._formError = error;
     this._renderDiscovery();
+  }
+
+  _renderModels() {
+    const ids = [...this._modelIds];
+    const q = this._modelSearch.value.trim().toLowerCase();
+    const visible = ids.filter((id) => id.toLowerCase().includes(q));
+    this._modelCount.textContent = q ? `${visible.length} of ${ids.length}` : `${ids.length} configured`;
+    clear(this._modelList);
+    if (!visible.length) {
+      this._modelList.append(el('div', { class: 'model-empty', text: q ? 'No matching models.' : 'No models configured yet.' }));
+      return;
+    }
+    for (const id of visible) this._modelList.append(el('div', { class: 'model-item', role: 'listitem', text: id }));
   }
 
   _fetchModels(id) {
@@ -237,30 +270,33 @@ class ProviderManager extends Widget {
       this.discoveryHost.append(el('p', { class: 'form-error', text: result.error }));
       return;
     }
-    const existing = new Set(this._modelsInput.value.split('\n').map((s) => s.trim()).filter(Boolean));
-    const available = (result.models || []).filter((id) => !existing.has(id));
-    if (!available.length) {
-      this.discoveryHost.append(el('p', { class: 'hint', text: 'No new models found.' }));
+    const catalog = result.models || [];
+    if (!catalog.length) {
+      this.discoveryHost.append(el('p', { class: 'hint', text: 'Provider returned no models.' }));
       return;
     }
-    const search = el('input', { class: 'in', type: 'search', placeholder: 'Filter models', 'aria-label': 'Filter discovered models' });
+    const newCount = catalog.filter((id) => !this._modelIds.has(id)).length;
+    const search = el('input', { class: 'in', type: 'search', placeholder: 'Search provider models', 'aria-label': 'Search provider models' });
     const select = el('select', { class: 'in discovered-list', multiple: true, size: '10', 'aria-label': 'Discovered models' },
-      available.map((id) => el('option', { value: id, text: id })));
+      catalog.map((id) => el('option', {
+        value: id,
+        text: this._modelIds.has(id) ? `${id} · configured` : id,
+        disabled: this._modelIds.has(id),
+      })));
     search.addEventListener('input', () => {
       const q = search.value.toLowerCase();
       for (const option of select.options) option.hidden = !option.value.toLowerCase().includes(q);
     });
     this.discoveryHost.append(
-      el('div', { class: 'discovery-head', text: `${available.length} new models available` }),
+      el('div', { class: 'discovery-head', text: `${catalog.length} available from provider · ${newCount} new` }),
       search,
       select,
       el('button', {
-        class: 'btn accent', type: 'button',
+        class: 'btn accent', type: 'button', disabled: !newCount,
         onclick: () => {
-          const chosen = [...select.selectedOptions].map((option) => option.value);
-          const ids = new Set(this._modelsInput.value.split('\n').map((s) => s.trim()).filter(Boolean));
-          for (const id of chosen) ids.add(id);
-          this._modelsInput.value = [...ids].join('\n');
+          const chosen = [...select.selectedOptions].filter((option) => !option.hidden).map((option) => option.value);
+          for (const id of chosen) this._modelIds.add(id);
+          this._renderModels();
           this._renderDiscovery();
         },
       }, [el('span', { text: 'Add selected to gateway' })]),

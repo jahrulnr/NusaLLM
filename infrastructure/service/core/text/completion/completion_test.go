@@ -664,4 +664,47 @@ func TestStreamCancelIsNotUpstreamError(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("cancel did not unblock Send")
 	}
+	if last := conv.Last(); last == nil || last.Role() != enum.RoleAssistant || last.Content() != "x" {
+		t.Fatalf("canceled stream dropped the delta: %+v", conv.Last())
+	}
+}
+
+func TestStreamCancelKeepsCompleteToolDropsPartial(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"think\",\"content\":\"hello\"}}]}\n\n"))
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"exec\",\"arguments\":\"{\\\"command\\\":\\\"somecode.sh\\\"}\"}}]}}]}\n\n"))
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"c2\",\"type\":\"function\",\"function\":{\"name\":\"exec\",\"arguments\":\"{\\\"command\\\":\\\"tail\"}}]}}]}\n\n"))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	conv := newConv(t)
+	model, _ := entity.NewModel("m", "test")
+	done := make(chan error, 1)
+	go func() { done <- svc.Send(ctx, conv, gw, model, nil) }()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if got := apperror.As(err).StatusCode(); got != 408 {
+			t.Fatalf("cancel → %d, want 408", got)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("cancel did not unblock Send")
+	}
+	last := conv.Last()
+	if last == nil || last.Content() != "hello" {
+		t.Fatalf("partial text: %+v", last)
+	}
+	if got := last.OptionalContent()["completion.reasoning_content"]; got != "think" {
+		t.Fatalf("reasoning: %q", got)
+	}
+	calls := last.ToolCalls()
+	if len(calls) != 1 || calls[0].ID() != "c1" || calls[0].Name() != "exec" {
+		t.Fatalf("tools: %+v", calls)
+	}
+	if calls[0].Input() != `{"command":"somecode.sh"}` {
+		t.Fatalf("complete command: %s", calls[0].Input())
+	}
 }

@@ -60,6 +60,17 @@ func (c *Conversation) Compact(summary entity.Message, dropBefore int) {
 	c.messages = append([]entity.Message{summary}, c.messages[dropBefore:]...)
 }
 
+// CanManualCompact reports whether a manual checkpoint can fold history.
+// The live tail has to be longer than the messages that stay afterwards.
+// A tail that is only a previous checkpoint plus the kept messages is
+// still longer than keepTail, so another explicit fold is allowed.
+func (c *Conversation) CanManualCompact(keepTail int) bool {
+	if keepTail < 0 {
+		keepTail = 0
+	}
+	return len(c.messages) > keepTail
+}
+
 // RewriteFrom replaces a user message's content and drops every message
 // after it — the edit-and-regenerate primitive: the live history ends at
 // the edited message, so the caller resends the turn from that point.

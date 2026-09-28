@@ -54,6 +54,15 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 		select {
 		case <-ctx.Done():
 			s.logAppend(ctx, "provider.stream", logged)
+			// Keep text and reasoning that already arrived. A tool call
+			// stays only when its argument delta is valid JSON; a call
+			// still streaming arguments is dropped.
+			kept := completeToolCalls(calls)
+			if content.Len() > 0 || reasoning.Len() > 0 || len(kept) > 0 {
+				if err := s.commitStream(conv, onEvent, content.String(), reasoning.String(), kept, "", usage); err != nil {
+					return err
+				}
+			}
 			return apperror.New(408, "request canceled or timed out", ctx.Err())
 		case <-timer.C:
 			s.logAppend(ctx, "provider.stream", logged)
@@ -134,6 +143,20 @@ func (s *Service) commitStream(conv *aggregate.Conversation, onEvent event.TurnE
 	}
 	emit(onEvent, event.NewFinishedEvent(msg.FinishReason(), u))
 	return nil
+}
+
+// completeToolCalls keeps calls whose id, name, and argument JSON all
+// arrived. A truncated argument string is not a call yet.
+func completeToolCalls(calls []ToolCallBody) []ToolCallBody {
+	kept := make([]ToolCallBody, 0, len(calls))
+	for _, c := range calls {
+		args := c.Function.Arguments
+		if c.ID == "" || c.Function.Name == "" || args == "" || !json.Valid([]byte(args)) {
+			continue
+		}
+		kept = append(kept, c)
+	}
+	return kept
 }
 
 // mergeCallDelta folds a streamed tool_calls fragment into the call at its

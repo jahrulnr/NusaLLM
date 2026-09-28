@@ -13,6 +13,8 @@ class ConversationHeader extends Widget {
     this._gateways = [];
     this._selection = null;
     this._connection = 'closed';
+    this._compactState = null;
+    this._compactAvailable = false;
     this._renaming = false;
     this._confirmingDelete = false;
     this._render();
@@ -33,6 +35,8 @@ class ConversationHeader extends Widget {
     if (!this.picker && !this.wsPicker) this._render();
   }
   set connection(state) { this._connection = state; this._render(); }
+  set compactState(state) { this._compactState = state; this._render(); }
+  set compactAvailable(v) { this._compactAvailable = !!v; this._render(); }
 
   _render() {
     clear(this.root);
@@ -114,11 +118,15 @@ class ConversationHeader extends Widget {
         }, [el('span', { text: 'Keep' })]),
       ]));
     } else if (conv) {
+      const compactDisabled = this._compactState || !this._compactAvailable;
+      const compactLabel = this._compactState === 'running' ? 'Compacting…'
+        : this._compactState === 'done' ? 'Compacted' : 'Compact';
       this.root.append(
         el('button', {
-          class: 'icon-btn', type: 'button', 'aria-label': 'Compact conversation',
+          class: 'compact-btn', type: 'button', 'aria-label': 'Compact conversation',
+          disabled: compactDisabled,
           onclick: () => emit(this, 'conversation-compact'),
-        }, [icon('refresh', 13)]),
+        }, [el('span', { text: compactLabel })]),
         el('button', {
           class: 'icon-btn danger', type: 'button', 'aria-label': 'Delete conversation',
           onclick: () => { this._confirmingDelete = true; this._render(); },

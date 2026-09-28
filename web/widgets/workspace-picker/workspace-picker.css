@@ -29,14 +29,16 @@
 .trigger svg { flex-shrink: 0; }
 
 .menu {
+  box-sizing: border-box;
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
   min-width: min(240px, calc(100vw - 24px));
   max-width: min(320px, calc(100vw - 24px));
   max-height: 320px;
-  overflow-y: auto;
-  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--panel-2);
   border: 1px solid var(--hairline-strong);
   border-radius: var(--radius);
@@ -44,6 +46,7 @@
   z-index: 50;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
 }
+.ws-entries { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; }
 
 .menu-item {
   display: flex;
@@ -67,6 +70,7 @@
 .menu-empty { padding: 8px; color: var(--text-faint); font-size: 12px; }
 
 .ws-path {
+  flex: none;
   padding: 4px 8px;
   font-size: 11px;
   color: var(--text-dim);
@@ -76,7 +80,7 @@
   direction: rtl; /* tail of the path is the meaningful end */
   text-align: left;
 }
-.ws-roots { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 8px 6px; }
+.ws-roots { display: flex; flex: none; flex-wrap: wrap; gap: 4px; padding: 2px 8px 6px; }
 .ws-root {
   padding: 2px 7px;
   background: var(--bg);
@@ -88,8 +92,9 @@
   cursor: pointer;
 }
 .ws-root:hover { color: var(--text); border-color: var(--hairline-strong); }
-.ws-actions { display: flex; flex-direction: column; gap: 4px; padding: 6px 8px 2px; }
+.ws-actions { display: flex; flex: none; flex-direction: column; gap: 4px; padding: 6px 8px 2px; }
 .ws-choose, .ws-keep {
+  min-width: 0;
   padding: 6px 8px;
   border-radius: 4px;
   font: inherit;
@@ -104,5 +109,5 @@
 .ws-keep:hover { color: var(--text); border-color: var(--hairline-strong); }
 
 @media (max-width: 520px) {
-  .menu { left: auto; right: 0; }
+  .menu { right: auto; }
 }

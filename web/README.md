@@ -34,11 +34,15 @@ via `embed.go` and served by the same Gin origin as the HTTP API and the
 - Events bubble + compose upward; properties flow downward.
 - `app-shell` is orchestration only — API/socket instances, hash
   routing (`#conversation=<id>`), and property/event coordination.
-- `#settings` is a full workspace page for providers, model import,
-  application settings, and tools. Manual import lives inside the gateway
-  editor — "Fetch models from provider" reads the provider's model catalog
+- `#settings` is a full workspace page with collapsible provider, model import,
+  and application settings. Gateway editing uses a scrollable dialog with
+  persistent Save and Cancel actions; application leaves auto-save on change.
+  Manual import lives inside the gateway editor — "Fetch models from provider" reads the provider's model catalog
   through `/api/gateways/<id>/available-models`; selected IDs join the
-  gateway's editable model list and persist through its normal `PUT` save.
+  gateway's searchable, read-only model list and persist through its normal
+  `PUT` save. The fetched catalog shows already configured ids too, so it
+  can be searched to check current provider availability. Searching never
+  changes the gateway's model catalog.
   `serve` additionally auto-imports on boot and hourly, merging newly
   advertised model ids into each gateway record (existing entries keep
   their parameters; the stored key reference is never rewritten).
@@ -56,9 +60,10 @@ via `embed.go` and served by the same Gin origin as the HTTP API and the
   `/api/fs/browse` — directories only, home by default, ascendable to the
   filesystem root, never free-typed. It emits `workspace-change`, which
   rides `turn.send` as `workspace` and persists on the room.
-- The composer footer shows the TUI's `~estimate/total Tokens` line,
-  fed by `/api/context` — refreshed on room load, selection change, and
-  turn completion.
+- The composer shows context use as a compact percentage with a details
+  panel for estimated and total tokens. `/api/context` refreshes on room
+  load, selection change, and turn completion. The message field grows with
+  the draft, and the send button enables when a message can be sent.
 
 ## Rendering
 
@@ -87,8 +92,9 @@ serialized renders. Supported families are whatever the pinned library
 ships (flowchart, sequence, state, class, ER, gantt, …); exotic or
 experimental types follow upstream support.
 
-Live text appends as plain text; Markdown is parsed when that text
-segment closes. An unterminated Mermaid fence renders as an ordinary
+Live text renders as Markdown on each animation frame. Completed blocks
+append to the DOM after a blank line; only the unfinished tail is reparsed
+as deltas arrive. An unterminated Mermaid fence renders as an ordinary
 code block badged `mermaid · streaming` — Mermaid never sees incomplete
 syntax. Render failures are nonfatal: the last valid diagram
 stays up with `Waiting for complete diagram`, or a `Diagram could not
@@ -130,13 +136,15 @@ provider replay artifacts in `optionalContent`, attachment bytes or
 `sha256` pins, and internal error causes stay server-side.
 
 - `nusa-thinking-block` renders ordered reasoning text from
-  `turn.reasoning` chunks and persisted assistant `parts` as plain
-  `textContent`. A card appears only when the provider supplied
-  reasoning text; an empty reasoning marker is not shown.
+  `turn.reasoning` chunks and persisted assistant `parts` as Markdown,
+  including closed Mermaid fences. Its bounded body follows live text
+  until the user scrolls up, and resumes following at the bottom.
+  A card appears only when the provider supplied reasoning text.
 - `nusa-tool-activity` renders call metadata plus the **exact** input
   and output (live chunks or the payload inside the persisted record), each in
-  its own collapsible code-block section. Content is inserted as text —
-  never rendered as HTML or Markdown.
+  a visible section when the tool card expands. Content is inserted as text —
+  never rendered as HTML or Markdown. Output scrolls within a bounded
+  area and follows live chunks until the user scrolls up.
 - Error bodies and internal causes stay server-side; terminals carry
   only status/code/message.
 
@@ -147,8 +155,8 @@ each command owns a projection whose `segments` array records the turn
 *in arrival order* — thinking segments, markdown text segments, and tool
 segments interleave exactly as the server emitted them, and output text
 never concatenates across a thinking/tool boundary. `message-thread`
-keys one widget per `segment.id`, appends text deltas to existing text
-nodes, and leaves earlier widgets in place. At completion, matching
+keys one widget per `segment.id`, appends completed Markdown blocks while
+rerendering the unfinished tail, and leaves earlier widgets in place. At completion, matching
 widgets move into the persisted history without losing open details or
 code scroll position.
 Completed assistant messages persist the same ordered parts in history,

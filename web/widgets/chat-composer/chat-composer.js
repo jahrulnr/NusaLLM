@@ -38,17 +38,17 @@ class ChatComposer extends Widget {
   set context(stats) { this._context = stats || null; this._syncButton(); }
 
   get value() { return this.input ? this.input.value : ''; }
-  set value(v) { if (this.input) { this.input.value = v || ''; this._autosize(); } }
+  set value(v) { if (this.input) { this.input.value = v || ''; this._autosize(); this._syncButton(); } }
   clear() { this.value = ''; if (this.input) this.input.focus(); }
 
   _render() {
     this.root.classList.add('composer');
     this.input = el('textarea', {
       class: 'input', rows: '1',
-      placeholder: 'Message the model — Enter sends, Shift+Enter breaks a line',
+      placeholder: 'Ask anything, or describe a task…',
       'aria-label': 'Message input',
     });
-    this.input.addEventListener('input', () => this._autosize());
+    this.input.addEventListener('input', () => { this._autosize(); this._syncButton(); });
     this.input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
@@ -56,18 +56,51 @@ class ChatComposer extends Widget {
       }
     });
     this.button = el('button', { class: 'send', type: 'button' });
-    this.statusEl = el('div', { class: 'status' });
-    this.tokensEl = el('div', { class: 'tokens', 'aria-label': 'Context usage' });
+    this.statusEl = el('span', { class: 'status' });
+    this.contextPct = el('span', { class: 'context-pct' });
+    this.contextUsage = el('span', { class: 'context-usage' });
+    this.contextFill = el('span', { class: 'context-fill' });
+    this.contextDetails = el('details', { class: 'context', hidden: true }, [
+      el('summary', { class: 'context-trigger', 'aria-label': 'Context usage' }, [
+        el('span', { class: 'context-dot', 'aria-hidden': 'true' }),
+        el('span', { text: 'Context' }),
+        this.contextPct,
+      ]),
+      el('div', { class: 'context-popover' }, [
+        el('div', { class: 'context-head' }, [
+          el('span', { text: 'Context usage' }),
+          el('button', {
+            class: 'context-close', type: 'button', 'aria-label': 'Close context usage',
+            onclick: () => { this.contextDetails.open = false; },
+          }, [icon('x', 13)]),
+        ]),
+        this.contextUsage,
+        el('div', { class: 'context-track' }, [this.contextFill]),
+        el('div', { class: 'context-caption', text: 'Estimated tokens in this conversation' }),
+      ]),
+    ]);
+    this.root.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') this.contextDetails.open = false;
+    });
     this.root.append(
-      el('div', { class: 'row' }, [this.input, this.button]),
-      el('div', { class: 'footer' }, [this.statusEl, this.tokensEl]),
+      this.input,
+      el('div', { class: 'footer' }, [
+        el('div', { class: 'footer-left' }, [
+          this.contextDetails,
+          this.statusEl,
+        ]),
+        el('div', { class: 'footer-right' }, [
+          el('span', { class: 'shortcut', text: 'Enter to send · Shift+Enter for new line' }),
+          this.button,
+        ]),
+      ]),
     );
     this._syncButton();
   }
 
   _autosize() {
     this.input.style.height = 'auto';
-    this.input.style.height = Math.min(this.input.scrollHeight, 200) + 'px';
+    this.input.style.height = Math.min(this.input.scrollHeight, 220) + 'px';
   }
 
   _send() {
@@ -88,19 +121,25 @@ class ChatComposer extends Widget {
     } else {
       this.button.className = 'send';
       this.button.setAttribute('aria-label', 'Send message');
-      this.button.disabled = !this._canSend || this._connection !== 'open';
+      this.button.disabled = !this._canSend || this._connection !== 'open' || !this.input.value.trim();
       this.button.onclick = () => this._send();
-      this.button.append(icon('send', 13));
+      this.button.append(icon('arrow-up', 16));
     }
-    const reason = this._busy ? 'responding…'
-      : this._connection !== 'open' ? 'socket ' + this._connection
-      : !this._canSend ? 'select a model'
+    const reason = this._busy ? 'Responding…'
+      : !this._canSend ? 'Select a model to send'
       : '';
     this.statusEl.textContent = reason;
+    this.statusEl.hidden = !reason;
     const c = this._context;
-    this.tokensEl.textContent = c && c.total
-      ? `~${fmtTok(c.estimate)}/${fmtTok(c.total)} Tokens`
-      : '';
+    this.contextDetails.hidden = !c?.total;
+    if (c?.total) {
+      const pct = Math.max(0, Math.min(100, Math.round((c.estimate || 0) / c.total * 100)));
+      this.contextPct.textContent = `${pct}%`;
+      this.contextUsage.textContent = `~${fmtTok(c.estimate)} / ${fmtTok(c.total)} tokens · ${pct}% used`;
+      this.contextFill.style.width = `${pct}%`;
+    } else {
+      this.contextDetails.open = false;
+    }
   }
 }
 

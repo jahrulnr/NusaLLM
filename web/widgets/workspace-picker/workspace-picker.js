@@ -121,15 +121,17 @@ class WorkspacePicker extends Widget {
       }));
     }
     menu.append(roots);
+    const entries = el('div', { class: 'ws-entries', role: 'listbox', 'aria-label': 'Directories' });
     if (b.parent) {
-      menu.append(this._item('..', 'up', () => this._navigate(b.parent)));
+      entries.append(this._item('..', 'up', () => this._navigate(b.parent)));
     }
     for (const entry of b.entries || []) {
-      menu.append(this._item(entry.name, '', () => this._navigate(entry.path), entry.path === current));
+      entries.append(this._item(entry.name, '', () => this._navigate(entry.path), entry.path === current));
     }
     if (b.entries && !b.entries.length && !b.parent) {
-      menu.append(el('div', { class: 'menu-empty', text: 'No subdirectories' }));
+      entries.append(el('div', { class: 'menu-empty', text: 'No subdirectories' }));
     }
+    menu.append(entries);
     menu.append(el('div', { class: 'ws-actions' }, [
       el('button', {
         class: 'ws-choose', type: 'button',
@@ -172,7 +174,7 @@ class WorkspacePicker extends Widget {
     this.root.append(this.trigger);
 
     if (!this._open) return;
-    const menu = el('div', { class: 'menu', role: 'listbox', 'aria-label': 'Workspace' });
+    const menu = el('div', { class: 'menu', 'aria-label': 'Workspace' });
     this._renderMenu(menu);
     menu.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
@@ -181,6 +183,11 @@ class WorkspacePicker extends Widget {
       }
     });
     this.root.append(menu);
+    // Keep the popup inside the viewport even when the header picker
+    // sits at either edge. Recompute after every navigation/rerender.
+    const bounds = this.getBoundingClientRect();
+    const width = menu.getBoundingClientRect().width;
+    menu.style.left = `${Math.max(8 - bounds.left, Math.min(0, innerWidth - 8 - bounds.left - width))}px`;
     this._installDismiss();
   }
 }

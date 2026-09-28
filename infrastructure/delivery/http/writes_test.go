@@ -174,15 +174,16 @@ func TestDeleteConversationIs204AndRunsUnderJobsCtx(t *testing.T) {
 	}
 }
 
-func TestCompactConversation204(t *testing.T) {
+func TestCompactConversationReturnsCompletedState(t *testing.T) {
 	fcw := &fakeConvWrites{}
-	h := newTestHandler(t, Deps{ConversationWrites: fcw, Jobs: context.Background()})
+	convs := &fakeConversations{infos: []drepo.ConversationInfo{{ID: "c_1", SealedSegments: 1}}}
+	h := newTestHandler(t, Deps{Conversations: convs, ConversationWrites: fcw, Jobs: context.Background()})
 	req := httptest.NewRequest("POST", "http://"+testAuthority+"/api/conversations/c_1/compactions", nil)
 	req.Header.Set("Origin", "http://"+testAuthority)
 	rec := httptest.NewRecorder()
 	(*h).ServeHTTP(rec, req)
-	if rec.Code != 204 || len(fcw.compacted) != 1 {
-		t.Fatalf("want 204 + one compaction, got %d %v", rec.Code, fcw.compacted)
+	if rec.Code != 200 || len(fcw.compacted) != 1 || decodeBody(t, rec)["sealedSegments"] != float64(1) {
+		t.Fatalf("want completed compaction state, got %d %v %s", rec.Code, fcw.compacted, rec.Body.String())
 	}
 }
 

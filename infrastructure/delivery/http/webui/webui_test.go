@@ -49,14 +49,8 @@ func TestIndexServesWithSecurityHeaders(t *testing.T) {
 	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
 		t.Errorf("content-type %q", ct)
 	}
-	csp := w.Header().Get("Content-Security-Policy")
-	for _, want := range []string{
-		"default-src 'self'", "script-src 'self'", "style-src 'self'",
-		"connect-src 'self' ws://" + authority, "frame-ancestors 'none'",
-	} {
-		if !strings.Contains(csp, want) {
-			t.Errorf("CSP missing %q in %q", want, csp)
-		}
+	if csp := w.Header().Get("Content-Security-Policy"); csp != "" {
+		t.Errorf("CSP must not be set, got %q", csp)
 	}
 	if w.Header().Get("Cache-Control") != "no-cache" {
 		t.Error("no-cache missing")
@@ -86,6 +80,19 @@ func TestWidgetAssetsServeAndHead(t *testing.T) {
 	}
 	if ct := request(r, "GET", "/vendor/mermaid/mermaid.min.js", authority).Header().Get("Content-Type"); !strings.Contains(ct, "javascript") {
 		t.Errorf("vendored bundle content-type %q", ct)
+	}
+}
+
+func TestStylesheetsStayAvailableFromBrowserCache(t *testing.T) {
+	r := router(t)
+	for _, p := range []string{"/styles/theme.css", "/widgets/x/x.css"} {
+		w := request(r, "GET", p, authority)
+		if got := w.Header().Get("Cache-Control"); got != "private, max-age=86400" {
+			t.Errorf("GET %s cache-control = %q", p, got)
+		}
+	}
+	if got := request(r, "GET", "/widgets/x/x.js", authority).Header().Get("Cache-Control"); got != "no-cache" {
+		t.Errorf("JS cache-control = %q", got)
 	}
 }
 

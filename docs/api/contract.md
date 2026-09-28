@@ -194,7 +194,7 @@ Full schemas, typed errors, and examples live in
 | `GET /api/conversations/{id}/messages?start&limit` | Ranged history; `start >= 0` absolute, negative counts back from the end. `limit` max 100. |
 | `PATCH /api/conversations/{id}` | Rename — body `{title}`. |
 | `DELETE /api/conversations/{id}` | Delete the room and its storage; queued jobs on it die `410`. |
-| `POST /api/conversations/{id}/compactions` | Queue a manual compaction on the room's worker; `204` when it finishes. |
+| `POST /api/conversations/{id}/compactions` | Queue a manual compaction on the room's worker; `200` with the updated conversation when it finishes. |
 | `GET /api/gateways?offset&limit` · `GET /api/gateways/{id}` | Sanitized gateway projections (paged list, sorted by id), including broken records. |
 | `GET /api/gateways/{id}/available-models` | Fetch all model IDs advertised by the configured provider endpoint; returns `{ "data": ["model-id", ...] }` without changing the gateway. The UI selects IDs and saves the merged catalog through `PUT`. |
 | `GET /api/gateways/{id}/providers?model={modelId}` | Upstream backends an aggregator route can serve the model through — `{ "data": [{ "name", "slug" }] }`, empty for direct providers. `model` is required (`400` without it). The picker echoes `slug` back as `payload.provider` on `turn.send`. |
@@ -298,7 +298,9 @@ a UI can route on a closed set, never on provider error text.
 
 Success codes: `200` for reads and updates (`PATCH` rename, `PATCH`
 settings, `PUT` gateway — upsert is idempotent so there is no `201`),
-`204` for deletes and completed compactions, `101` for the WS upgrade.
+`204` for deletes, `101` for the WS upgrade. Conversation detail includes
+`canCompact`; it is true when the live tail is longer than the configured
+keep-tail, including after a checkpoint when that tail still exceeds it.
 
 ## WebSocket surface
 
@@ -420,7 +422,7 @@ Acceptance checks (each maps to a contract clause):
 | A4 | Loopback bind | Server refuses connections on non-loopback interfaces; `server.port` and `server.hosts` apply after restart. |
 | A5 | Conversation list paging | `offset`/`limit` honored, `limit` > 100 → `400`; page metadata `total`/`hasMore` correct. |
 | A6 | Message ranges | `start=-50` returns the last ≤50; `effectiveStart`/`nextStart`/`hasMore` consistent with `total`. |
-| A7 | Rename/delete/compaction | `PATCH` rename `200`; `DELETE` `204` then `404`; compaction `204` on success, `400` nothing-to-compact, `429` full mailbox. |
+| A7 | Rename/delete/compaction | `PATCH` rename `200`; `DELETE` `204` then `404`; compaction `200` with updated projection on success, `400` nothing-to-compact (including repeat), `429` full mailbox. |
 | A8 | Gateway tri-state | `PUT` with absent `apiKey` keeps stored ref; `""` clears; literal vaults; `keyState`/`keySet` correct; no key material or raw ref in any response. |
 | A9 | Settings | `GET` exposes `server`, `conversation`, `service`, and `log` leaves without `storage`/`App`/paths; `PATCH` leaf `200`, invalid values → `400`; writes atomic and schema-ordered. |
 | A10 | Tools | Catalog exposes name/description/parameters/enabled/permission; nothing internal leaks. |

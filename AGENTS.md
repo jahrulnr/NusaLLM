@@ -39,6 +39,10 @@ invariant, or a named phase whose isolation materially clarifies the flow.
 Do not create a helper solely to make a method shorter. Before extracting,
 state the reason in the change description; if there is none, keep it inline.
 
+## UI/UX Feedback
+
+- Treat user feedback such as "bad experience" or "bad UI" as a request to overhaul or restyle the affected screen or flow as a whole—not just fix the specific UI issue they mentioned. Address the broader experience while keeping the redesign within the affected scope.
+
 ## Breaking Changes Policy
 
 This project does not maintain backward compatibility with previous implementations.

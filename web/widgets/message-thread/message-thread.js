@@ -18,17 +18,25 @@ class MessageThread extends Widget {
     this._loading = false;
     this._hasConversation = false;
     this._historyNotice = false;
+    this._compactState = null;
     this._editingId = null;
     this._pinned = true; // pinned to bottom until the user scrolls up
+    this._lastScrollTop = 0;
     // Live-stream widget instances keyed by segment.id — preserved
     // across frames so user expansion/scroll state survives deltas.
     this._segmentWidgets = new Map();
     this._toolExpanded = new Map();
     this._annCursor = 0;
     this._caret = el('span', { class: 'caret', 'aria-hidden': 'true' });
+    this._contentResize = new ResizeObserver(() => {
+      if (this._pinned) this._scrollToEnd();
+    });
     this.root.addEventListener('scroll', () => {
-      this._pinned =
-        this.root.scrollTop + this.root.clientHeight >= this.root.scrollHeight - 80;
+      const top = this.root.scrollTop;
+      const atEnd = top + this.root.clientHeight >= this.root.scrollHeight - 2;
+      if (atEnd) this._pinned = true;
+      else if (top < this._lastScrollTop) this._pinned = false;
+      this._lastScrollTop = top;
     });
     this._render();
   }
@@ -62,13 +70,16 @@ class MessageThread extends Widget {
         this._handoffIndex = 0;
         for (const i of replaced) {
           const node = this._message(next[i]);
+          this._contentResize.unobserve(this._messageNodes[i]);
           this._messageNodes[i].replaceWith(node);
           this._messageNodes[i] = node;
+          this._contentResize.observe(node);
         }
         for (let i = previous.length; i < next.length; i++) {
           const node = this._message(next[i]);
           this.streamEl.before(node);
           this._messageNodes.push(node);
+          this._contentResize.observe(node);
         }
         this._handoffSegments = null;
         if (this._pinned) this._scrollToEnd();
@@ -83,6 +94,20 @@ class MessageThread extends Widget {
     if (this._historyNotice === !!v) return;
     this._historyNotice = !!v;
     this._render();
+  }
+  set compactState(state) {
+    this._compactState = state;
+    if (this.compactEl) this._renderCompactState();
+  }
+
+  _renderCompactState() {
+    const state = this._compactState;
+    this.compactEl.hidden = !state;
+    this.compactEl.className = `compact-status${state === 'running' ? ' running' : ''}`;
+    this.compactText.textContent = state === 'running'
+      ? 'Context compacting'
+      : 'Context compacted';
+    if (state && this._pinned) this._scrollToEnd();
   }
   // stream: a live turn projection, or null. A different projection id
   // resets all segment widget instances and the announcement cursor —
@@ -111,13 +136,20 @@ class MessageThread extends Widget {
   }
 
   disconnectedCallback() {
+    this._contentResize.disconnect();
     if (this._streamRaf) {
       cancelAnimationFrame(this._streamRaf);
       this._streamRaf = null;
     }
   }
 
+  connectedCallback() {
+    for (const node of this._messageNodes || []) this._contentResize.observe(node);
+    if (this.streamEl) this._contentResize.observe(this.streamEl);
+  }
+
   _render() {
+    this._contentResize.disconnect();
     clear(this.root);
     this._messageNodes = [];
     this.root.classList.add('thread');
@@ -148,6 +180,7 @@ class MessageThread extends Widget {
       const node = this._message(m);
       this.root.append(node);
       this._messageNodes.push(node);
+      this._contentResize.observe(node);
     }
     this._mountStream();
     // A fresh conversation load lands at the end unconditionally.
@@ -288,7 +321,14 @@ class MessageThread extends Widget {
     this.liveEl = el('div', {
       class: 'sr-only', 'aria-live': 'polite', 'aria-atomic': 'false',
     });
-    this.root.append(this.streamEl, this.liveEl);
+    this.compactText = el('span');
+    this.compactEl = el('div', { class: 'compact-status', role: 'status' }, [
+      el('span', { class: 'compact-symbol', 'aria-hidden': 'true', text: '⇥' }),
+      this.compactText,
+    ]);
+    this.root.append(this.streamEl, this.compactEl, this.liveEl);
+    this._contentResize.observe(this.streamEl);
+    this._renderCompactState();
     this._renderStream();
   }
 
@@ -363,6 +403,7 @@ class MessageThread extends Widget {
 
   _scrollToEnd() {
     this.root.scrollTop = this.root.scrollHeight;
+    this._lastScrollTop = this.root.scrollTop;
   }
 }
 

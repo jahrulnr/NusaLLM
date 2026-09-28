@@ -336,6 +336,70 @@ func TestQueuedSendCancelable(t *testing.T) {
 
 // Cancel kills the running send — 408, not an upstream error — after its
 // user message has committed.
+func TestCancelPersistsArrivedDeltasAndCompleteTools(t *testing.T) {
+	started := make(chan struct{})
+	app, gw := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"think\",\"content\":\"hello\"}}]}\n\n"))
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"exec\",\"arguments\":\"{\\\"command\\\":\\\"somecode.sh\\\"}\"}}]}}]}\n\n"))
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"c2\",\"type\":\"function\",\"function\":{\"name\":\"exec\",\"arguments\":\"{\\\"command\\\":\\\"tail\"}}]}}]}\n\n"))
+		w.(http.Flusher).Flush()
+		close(started)
+		<-r.Context().Done()
+	})
+	gw.EnableStream()
+	if err := app.deps.Gateways.Save(t.Context(), gw); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan sendOutcome, 1)
+	go func() {
+		result, err := app.Send(t.Context(), "partial", "gw1", "m1", "ping", nil, appjob.SendOptions{}, nil)
+		done <- sendOutcome{result: result, err: err}
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream did not start")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if err := app.Cancel(t.Context(), "partial"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case outcome := <-done:
+		if apperror.As(outcome.err).StatusCode() != 408 {
+			t.Fatalf("canceled send → %v, want 408", outcome.err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("cancel did not finish the send")
+	}
+	conv, err := app.deps.Convs.Load(t.Context(), "partial")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs := conv.Messages()
+	if len(msgs) != 2 || msgs[1].Role() != enum.RoleAssistant || msgs[1].Content() != "hello" {
+		t.Fatalf("history: %+v", msgs)
+	}
+	asst := msgs[1]
+	var sawReason bool
+	for _, part := range asst.Parts() {
+		if part.Kind == entity.MessagePartReasoning && part.Text == "think" {
+			sawReason = true
+		}
+	}
+	if !sawReason {
+		t.Fatalf("reasoning parts: %+v", asst.Parts())
+	}
+	calls := asst.ToolCalls()
+	if len(calls) != 1 || calls[0].Name() != "exec" || calls[0].Input() != `{"command":"somecode.sh"}` {
+		t.Fatalf("tools: %+v", calls)
+	}
+	if !strings.Contains(calls[0].Output(), "interrupted by user") {
+		t.Fatalf("output: %s", calls[0].Output())
+	}
+}
+
 func TestCancelRunningSend(t *testing.T) {
 	release := make(chan struct{})
 	var releaseOnce sync.Once

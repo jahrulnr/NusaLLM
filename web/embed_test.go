@@ -28,7 +28,7 @@ func TestAssetsContainEverySurface(t *testing.T) {
 	widgets := []string{
 		"app-shell", "nav-sidebar", "conversation-header", "message-thread",
 		"chat-composer", "model-picker", "settings-page", "provider-manager",
-		"settings-editor", "tool-catalog", "toast-stack",
+		"settings-editor", "toast-stack",
 		"markdown-view", "code-block", "thinking-block", "tool-activity",
 		"mermaid-diagram",
 	}
@@ -92,7 +92,7 @@ func TestAppJSImportsShellLast(t *testing.T) {
 	for _, w := range []string{
 		"nav-sidebar", "conversation-header", "message-thread",
 		"chat-composer", "model-picker", "settings-page", "provider-manager",
-		"settings-editor", "tool-catalog", "toast-stack",
+		"settings-editor", "toast-stack",
 		"markdown-view", "code-block", "thinking-block", "tool-activity",
 		"mermaid-diagram",
 	} {

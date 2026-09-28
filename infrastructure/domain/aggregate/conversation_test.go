@@ -108,6 +108,28 @@ func TestConversationCompact(t *testing.T) {
 	}
 }
 
+func TestManualCompactWhileTailExceedsKeep(t *testing.T) {
+	c := mustConv(t)
+	for _, role := range []enum.Role{enum.RoleUser, enum.RoleAssistant, enum.RoleUser, enum.RoleAssistant} {
+		m, _ := entity.NewMessage(role, "previous turn")
+		c.Append(m)
+	}
+	if !c.CanManualCompact(2) {
+		t.Fatal("history longer than the keep-tail should be foldable")
+	}
+	checkpoint, _ := entity.NewMessage(enum.RoleUser, "checkpoint")
+	checkpoint.SetUserType(enum.LLMUserTypeSystem)
+	c.Compact(checkpoint, 2)
+	// checkpoint + kept tail is still longer than keepTail, so an explicit
+	// fold remains available instead of failing the button.
+	if !c.CanManualCompact(2) {
+		t.Fatal("checkpoint plus a longer tail should stay foldable")
+	}
+	if c.CanManualCompact(3) {
+		t.Fatal("a tail that fits in the keep window is not foldable")
+	}
+}
+
 func TestConversationAddUsageAccumulates(t *testing.T) {
 	c := mustConv(t)
 	u1, _ := valueobject.NewUsage(100, 0, 0, 50)

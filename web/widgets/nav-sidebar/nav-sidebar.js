@@ -106,10 +106,6 @@ class NavSidebar extends Widget {
     this.footerEl.append(
       el('span', { class: `conn-dot ${this._connection}` }),
       el('span', { class: 'conn-label', text: label }),
-      el('button', {
-        class: 'icon-btn', type: 'button', 'aria-label': 'Workspace settings',
-        onclick: () => emit(this, 'settings-open'),
-      }, [icon('gear', 14)]),
     );
   }
 }

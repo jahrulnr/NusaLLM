@@ -27,7 +27,6 @@ class AppShell extends Widget {
     this.allConversations = [];
     this.gateways = [];
     this.settings = {};
-    this.tools = [];
 
     this.activeId = null;       // selected conversation id (the VIEW)
     this.conversation = null;   // its detail projection
@@ -35,6 +34,7 @@ class AppShell extends Widget {
     this.selection = null;      // {route, modelId, effort, provider, workspace} next-send binding
     this.command = null;        // the one in-flight command (see above)
     this.settledStream = null;  // keep the final live view through history refresh
+    this.compactPending = new Set(); // room ids with a compact request in flight
     this.generation = 0;        // stale-response token
     this.sidebarOpen = matchMedia('(min-width: 761px)').matches;
     this.settingsOpen = false;
@@ -81,7 +81,6 @@ class AppShell extends Widget {
     on(this.sidebar, 'conversation-select', ({ id }) => this.select(id));
     on(this.sidebar, 'conversation-new', () => this.newConversation());
     on(this.sidebar, 'conversation-search', ({ query }) => this._filter(query));
-    on(this.sidebar, 'settings-open', () => this.openSettings());
 
     on(this.header, 'sidebar-toggle', () => { this.sidebarOpen = !this.sidebarOpen; this.sidebar.open = this.sidebarOpen; });
     on(this.header, 'settings-open', () => this.openSettings());
@@ -121,11 +120,10 @@ class AppShell extends Widget {
   }
 
   async _boot() {
-    const [convs, gws, cfg, tools] = await Promise.allSettled([
+    const [convs, gws, cfg] = await Promise.allSettled([
       this.api.listConversations({ limit: 100 }),
       this.api.listGateways({ limit: 100 }),
       this.api.getSettings(),
-      this.api.listTools(),
     ]);
     if (convs.status === 'fulfilled') {
       this.allConversations = convs.value.data || [];
@@ -140,12 +138,8 @@ class AppShell extends Widget {
     if (cfg.status === 'fulfilled') {
       this.settings = cfg.value;
       this.settingsPage.settings = this.settings;
+      this._syncCompact();
     } else this._toast('error', 'Settings', this._errText(cfg.reason));
-    if (tools.status === 'fulfilled') {
-      this.tools = tools.value.data || [];
-      this.settingsPage.tools = this.tools;
-    } else this._toast('error', 'Tools', this._errText(tools.reason));
-
     const settingsRoute = location.hash === '#settings';
     if (!this._selectFromHash() && this.allConversations.length) {
       this.select(this.allConversations[0].id);
@@ -286,6 +280,7 @@ class AppShell extends Widget {
     // linger as if it described this id.
     this.conversation = { id };
     this.header.conversation = this.conversation;
+    this._syncCompact();
     this.messages = [];
     this.thread.messages = this.messages;
     this._syncComposer();
@@ -297,6 +292,7 @@ class AppShell extends Widget {
       if (gen !== this.generation) return; // a newer selection won
       this.conversation = conv;
       this.header.conversation = conv;
+      this._syncCompact();
       this.messages = page.messages || [];
       this.thread.messages = this.messages;
       this.thread.historyNotice = page.effectiveStart > 0;
@@ -331,6 +327,7 @@ class AppShell extends Widget {
     this._setHash('');
     this.sidebar.activeId = null;
     this.header.conversation = null;
+    this._syncCompact();
     this.thread.hasConversation = false;
     this.thread.messages = this.messages;
     this.thread.historyNotice = false;
@@ -357,6 +354,17 @@ class AppShell extends Widget {
     this.composer.canSend = canSend;
     this.composer.selection = this.selection;
     this.composer.busy = !!this.command; // stays busy in every room
+  }
+
+  _syncCompact() {
+    const conv = this.conversation;
+    const running = !!(conv?.id && this.compactPending.has(conv.id));
+    const done = !!(conv?.sealedSegments && conv.canCompact === false);
+    const state = running ? 'running' : done ? 'done' : null;
+    this.header.compactState = state;
+    this.compactAvailable = !!(conv?.canCompact && !state);
+    this.header.compactAvailable = this.compactAvailable;
+    this.thread.compactState = state;
   }
 
   // The live stream renders only in the room that owns the command.
@@ -490,7 +498,7 @@ class AppShell extends Widget {
         stream: cmd.stream,
       };
       this.command = null;
-      if (f.type === 'turn.failed') {
+      if (f.type === 'turn.failed' && !interruptedTurn(f)) {
         this._toast('error', 'Turn failed', (f.payload && f.payload.message) || f.code || 'error');
       }
       // Authoritative refresh of the command's own room — even if the
@@ -543,6 +551,7 @@ class AppShell extends Widget {
 
   async _refresh(convId) {
     const gen = this.generation;
+    let loaded = false;
     try {
       const [conv, page] = await Promise.all([
         this.api.getConversation(convId),
@@ -551,14 +560,18 @@ class AppShell extends Widget {
       if (convId === this.activeId && gen === this.generation) {
         this.conversation = conv;
         this.header.conversation = conv;
+        this._syncCompact();
         // History adopts matching live widgets before the stream is
         // retired, keeping their DOM, styles, and details state intact.
         this.messages = page.messages || [];
         this.thread.messages = this.messages;
         this.thread.historyNotice = page.effectiveStart > 0;
+        loaded = true;
       }
     } catch { /* list refresh still runs */ }
-    if (this.settledStream?.conversationId === convId) {
+    // Drop the live projection only after history has the persisted
+    // turn. A failed refresh keeps the interrupted text on screen.
+    if (loaded && this.settledStream?.conversationId === convId) {
       this.settledStream = null;
       this._syncStream();
     }
@@ -587,6 +600,7 @@ class AppShell extends Widget {
       if (this.activeId === id && gen === this.generation) {
         this.conversation = conv;
         this.header.conversation = conv;
+        this._syncCompact();
       }
       this._refreshList();
     } catch (err) { this._toast('error', 'Rename', this._errText(err)); }
@@ -594,11 +608,22 @@ class AppShell extends Widget {
 
   async _compact() {
     const id = this.activeId;
+    if (!id || this.compactPending.has(id) || !this.compactAvailable) return;
+    this.compactPending.add(id);
+    this._syncCompact();
     try {
-      await this.api.compactConversation(id);
-      this._toast('info', 'Compact', 'Compaction accepted.');
-      this._refresh(id); // the captured target, not whatever is selected now
+      const conv = await this.api.compactConversation(id);
+      if (this.activeId === id) {
+        this.conversation = conv;
+        this.header.conversation = conv;
+      }
+      await this._refresh(id); // the captured target, not whatever is selected now
+      this._syncContext();
     } catch (err) { this._toast('error', 'Compact', this._errText(err)); }
+    finally {
+      this.compactPending.delete(id);
+      this._syncCompact();
+    }
   }
 
   async _delete() {
@@ -654,6 +679,7 @@ class AppShell extends Widget {
     try {
       this.settings = await this.api.patchSetting(key, value);
       this.settingsPage.settings = this.settings;
+      this._syncCompact();
       this._toast('info', 'Settings', `${key} updated.`);
     } catch (err) {
       // Re-project the last good document so a failed input doesn't
@@ -672,6 +698,13 @@ class AppShell extends Widget {
   _errText(err) {
     return (err && (err.detail || err.message)) || 'request failed';
   }
+}
+
+// A user stop is a 408 interrupted terminal. The partial reply stays;
+// it is not a failed turn.
+function interruptedTurn(frame) {
+  const payload = (frame && frame.payload) || {};
+  return payload.status === 408 || payload.code === 'interrupted';
 }
 
 customElements.define('nusa-app', AppShell);

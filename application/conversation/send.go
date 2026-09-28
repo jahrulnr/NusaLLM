@@ -75,10 +75,20 @@ func (app *ConversationApp) Send(
 		result.UserMessagePersisted = receipt.UserMessagePersisted()
 		return result, err
 	case <-ctx.Done():
-		// Read through the receipt's append lock: if AppendMessage is in
-		// flight, its commit decision must finish before this result is
-		// returned. A queued job never reaches that append and stays false.
+		// A queued send has not appended its user line — return now so
+		// the caller is not stuck behind the turn in front of it. A
+		// send that already committed the user line is inside the turn;
+		// wait for the job so a partial assistant reply is on disk
+		// before the terminal frame is emitted.
 		result.UserMessagePersisted = receipt.UserMessagePersisted()
+		if !result.UserMessagePersisted {
+			return result, apperror.New(408, "send canceled", ctx.Err())
+		}
+		err := <-res
+		result.UserMessagePersisted = receipt.UserMessagePersisted()
+		if err != nil {
+			return result, err
+		}
 		return result, apperror.New(408, "send canceled", ctx.Err())
 	}
 }

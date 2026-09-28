@@ -159,6 +159,7 @@ paths:
                 messageCount: 14
                 activeCount: 6
                 sealedSegments: 2
+                canCompact: true
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/ForbiddenOrigin" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -306,12 +307,17 @@ paths:
         summary, keeping the configured tail messages live.
 
         The request blocks until the queued job completes — including any
-        time spent waiting behind a running turn — and answers `204` when
-        done. A client that abandons the request early does not cancel the
-        job; the compaction still lands. Requires a same-origin `Origin`
-        header.
+        time spent waiting behind a running turn — and answers `200` with
+        the updated conversation when done. A live tail that already fits
+        in the keep-tail answers `400`. A client that abandons the
+        request early does not cancel the job; the compaction still lands.
+        Requires a same-origin `Origin` header.
       responses:
-        "204": { description: Compaction completed. }
+        "200":
+          description: Compaction completed; updated conversation projection.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Conversation" }
         "400":
           description: e.g. nothing to compact — the live tail fits within the keep-tail.
           content:
@@ -877,6 +883,9 @@ components:
           type: integer
           minimum: 0
           description: Number of compacted archive segments.
+        canCompact:
+          type: boolean
+          description: Present on detail and completed-compaction responses; whether manual compaction can fold new live history.
       additionalProperties: false
 
     Page:

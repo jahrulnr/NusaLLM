@@ -32,9 +32,9 @@ func (j *Compact) Execute(execCtx context.Context) (err error) {
 			return err // 404 — no room, nothing to fold
 		}
 		keepTail := d.Config.CompactKeepTail
-		if len(conv.Messages()) <= keepTail {
+		if !conv.CanManualCompact(keepTail) {
 			return apperror.New(400, "nothing to compact",
-				fmt.Errorf("conversation %s has %d messages, keep-tail is %d", convID, len(conv.Messages()), keepTail))
+				fmt.Errorf("conversation %s has no new foldable history (messages %d, keep-tail %d)", convID, len(conv.Messages()), keepTail))
 		}
 		gw, model, svc, err := d.resolveRoute(ctx, convID, conv, "", "")
 		if err != nil {

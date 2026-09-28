@@ -21,6 +21,7 @@ import (
 // *appconversation.ConversationApp satisfies it.
 type Reader interface {
 	Info(ctx context.Context, id string) (drepo.ConversationInfo, error)
+	CanCompact(ctx context.Context, id string) (bool, error)
 	List(ctx context.Context) ([]drepo.ConversationInfo, error)
 	History(ctx context.Context, id string, start, end int) ([]entity.Message, error)
 	ContextFooterStats(ctx context.Context, convID, route, modelID string) (appconversation.ContextFooterStats, error)

@@ -16,7 +16,14 @@ func (s *server) get(c *gin.Context) {
 		transport.RespondError(c, err)
 		return
 	}
-	c.JSON(200, toConversation(info))
+	available, err := s.reads.CanCompact(c.Request.Context(), id)
+	if err != nil {
+		transport.RespondError(c, err)
+		return
+	}
+	out := toConversation(info)
+	out.CanCompact = &available
+	c.JSON(200, out)
 }
 
 // messages resolves ?start against the current history length —

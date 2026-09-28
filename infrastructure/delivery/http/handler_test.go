@@ -51,6 +51,11 @@ func (f *fakeConversations) Info(_ context.Context, id string) (drepo.Conversati
 	return drepo.ConversationInfo{}, apperror.New(404, "conversation not found", errors.New("no row"))
 }
 
+func (f *fakeConversations) CanCompact(_ context.Context, id string) (bool, error) {
+	_, err := f.Info(context.Background(), id)
+	return false, err
+}
+
 func (f *fakeConversations) List(context.Context) ([]drepo.ConversationInfo, error) {
 	return f.infos, f.err
 }

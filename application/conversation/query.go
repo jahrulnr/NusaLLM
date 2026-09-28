@@ -15,6 +15,15 @@ func (app *ConversationApp) Info(ctx context.Context, id string) (drepo.Conversa
 	return app.deps.Convs.Info(ctx, id)
 }
 
+// CanCompact reports whether manual compaction would fold new live history.
+func (app *ConversationApp) CanCompact(ctx context.Context, id string) (bool, error) {
+	conv, err := app.deps.Convs.Load(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	return conv.CanManualCompact(app.deps.Config.CompactKeepTail), nil
+}
+
 // List returns conversation projections ordered by recent activity.
 func (app *ConversationApp) List(ctx context.Context) ([]drepo.ConversationInfo, error) {
 	return app.deps.Convs.List(ctx)

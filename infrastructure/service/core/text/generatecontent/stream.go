@@ -44,6 +44,12 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 		select {
 		case <-ctx.Done():
 			s.logAppend(ctx, "provider.stream", logged)
+			kept := completeParts(parts)
+			if partsHaveContent(kept) {
+				if err := s.commitStream(conv, onEvent, kept, "", usage, blocked); err != nil {
+					return err
+				}
+			}
 			return apperror.New(408, "request canceled or timed out", ctx.Err())
 		case <-timer.C:
 			s.logAppend(ctx, "provider.stream", logged)
@@ -93,6 +99,40 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 			}
 		}
 	}
+}
+
+// completeParts drops a function call whose args object is still open.
+// Gemini delivers calls as whole parts; a truncated args payload is not
+// a call yet. Text and thought parts stay.
+func completeParts(parts []json.RawMessage) []json.RawMessage {
+	kept := make([]json.RawMessage, 0, len(parts))
+	for _, raw := range parts {
+		var p PartBody
+		if json.Unmarshal(raw, &p) != nil {
+			continue
+		}
+		if p.FunctionCall != nil {
+			args := p.FunctionCall.Args
+			if p.FunctionCall.Name == "" || len(args) == 0 || !json.Valid(args) {
+				continue
+			}
+		}
+		kept = append(kept, raw)
+	}
+	return kept
+}
+
+func partsHaveContent(parts []json.RawMessage) bool {
+	for _, raw := range parts {
+		var p PartBody
+		if json.Unmarshal(raw, &p) != nil {
+			continue
+		}
+		if p.Text != "" || p.FunctionCall != nil || p.Thought {
+			return true
+		}
+	}
+	return false
 }
 
 // appendPart folds one streamed part into the accumulator and emits its

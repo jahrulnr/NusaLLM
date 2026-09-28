@@ -1,6 +1,8 @@
-:host { display: block; font-family: var(--font-ui); }
+:host { display: block; position: relative; z-index: 10; font-family: var(--font-ui); }
 
 .header {
+  position: relative;
+  z-index: 10;
   box-sizing: border-box;
   display: flex;
   align-items: center;
@@ -24,6 +26,18 @@
 }
 .icon-btn:hover { color: var(--text); background: var(--panel-2); }
 .icon-btn.danger:hover { color: var(--danger); }
+.compact-btn {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 10.5px;
+  padding: 5px 8px;
+  cursor: pointer;
+}
+.compact-btn:hover:not(:disabled) { color: var(--text); border-color: var(--hairline-strong); }
+.compact-btn:disabled { opacity: .56; cursor: default; }
 
 .title {
   display: inline-flex;
@@ -73,6 +87,7 @@ nusa-model-picker { flex: 0 1 auto; min-width: 0; max-width: min(300px, 40vw); }
   .confirm { gap: 6px; padding: 3px 6px; }
   .confirm-text { display: none; }
   .icon-btn { padding: 4px; }
+  .compact-btn { padding: 4px 6px; font-size: 10px; }
 }
 
 .confirm {

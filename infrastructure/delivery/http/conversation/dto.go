@@ -28,6 +28,7 @@ type conversationDTO struct {
 	MessageCount   int                    `json:"messageCount"`
 	ActiveCount    int                    `json:"activeCount"`
 	SealedSegments int                    `json:"sealedSegments"`
+	CanCompact     *bool                  `json:"canCompact,omitempty"`
 }
 
 func toConversation(i drepo.ConversationInfo) conversationDTO {

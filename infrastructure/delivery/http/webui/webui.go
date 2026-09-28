@@ -19,13 +19,18 @@ import (
 // Register mounts the exact asset surfaces onto the engine. A nil
 // assets FS registers nothing — the API-only composition stays valid.
 // There is deliberately no SPA fallback: unknown paths 404.
-func Register(r *gin.Engine, assets fs.FS, authorities []string) {
+func Register(r *gin.Engine, assets fs.FS) {
 	if assets == nil {
 		return
 	}
 	serve := func(c *gin.Context) {
-		headers(c, authorities)
+		headers(c)
 		name := strings.TrimPrefix(path.Clean("/"+c.Request.URL.Path), "/")
+		// Shadow-root stylesheets can be requested again when a widget is
+		// recreated. Keep CSS fresh in the browser while the server is down.
+		if strings.HasSuffix(name, ".css") {
+			c.Writer.Header().Set("Cache-Control", "private, max-age=86400")
+		}
 		if name == "" {
 			name = "index.html"
 		}
@@ -52,19 +57,12 @@ func Register(r *gin.Engine, assets fs.FS, authorities []string) {
 	}
 }
 
-// headers pins the asset responses to this origin: no caching staleness
-// for a local tool, no content-type sniffing, no referrer leakage, and
-// a CSP that admits only same-origin scripts/styles plus the WS dial.
-func headers(c *gin.Context, authorities []string) {
+// headers pins cache and content-type behavior for asset responses.
+// No Content-Security-Policy: diagram and markdown rendering need the
+// styles their own markup carries.
+func headers(c *gin.Context) {
 	h := c.Writer.Header()
 	h.Set("Cache-Control", "no-cache")
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Referrer-Policy", "no-referrer")
-	connectSrc := []string{"'self'"}
-	for _, authority := range authorities {
-		connectSrc = append(connectSrc, "ws://"+authority)
-	}
-	h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; "+
-		"style-src 'self'; img-src 'self' data:; connect-src "+strings.Join(connectSrc, " ")+"; "+
-		"object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
 }

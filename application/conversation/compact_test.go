@@ -95,6 +95,40 @@ func compactApp(t *testing.T, svc dservice.TextModelService, contextWindow int) 
 		nil, cfg, ""), convs
 }
 
+func TestManualCompactAllowsAnotherFoldWhileTailExceedsKeep(t *testing.T) {
+	svc := &compactSvc{}
+	app, convs := compactApp(t, svc, 0)
+	for _, content := range []string{"first", "second"} {
+		if _, err := app.Send(t.Context(), "room", "gw1", "m1", content, nil, appjob.SendOptions{}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if available, err := app.CanCompact(t.Context(), "room"); err != nil || !available {
+		t.Fatalf("expected foldable history, available=%v err=%v", available, err)
+	}
+	if err := app.Compact(t.Context(), "room"); err != nil {
+		t.Fatal(err)
+	}
+	// The checkpoint plus the kept tail is still longer than keep-tail,
+	// so a second explicit fold is a real compaction, not an error.
+	if available, err := app.CanCompact(t.Context(), "room"); err != nil || !available {
+		t.Fatalf("tail still longer than keep-tail must stay foldable, available=%v err=%v", available, err)
+	}
+	if err := app.Compact(t.Context(), "room"); err != nil {
+		t.Fatal(err)
+	}
+	info, err := convs.Info(t.Context(), "room")
+	if err != nil || info.SealedSegments != 2 {
+		t.Fatalf("second compact sealed segments: %+v %v", info, err)
+	}
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "third", nil, appjob.SendOptions{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if available, err := app.CanCompact(t.Context(), "room"); err != nil || !available {
+		t.Fatalf("new history must permit another compact, available=%v err=%v", available, err)
+	}
+}
+
 // Proactive: the estimate crosses the window share → the prefix seals
 // and the turn answers on the compacted tail.
 func TestSendCompactsOverflow(t *testing.T) {

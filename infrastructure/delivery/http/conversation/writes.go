@@ -57,5 +57,17 @@ func (s *server) compact(c *gin.Context) {
 		transport.RespondError(c, err)
 		return
 	}
-	c.Status(204)
+	info, err := s.reads.Info(s.jobs, id)
+	if err != nil {
+		transport.RespondError(c, err)
+		return
+	}
+	available, err := s.reads.CanCompact(s.jobs, id)
+	if err != nil {
+		transport.RespondError(c, err)
+		return
+	}
+	out := toConversation(info)
+	out.CanCompact = &available
+	c.JSON(200, out)
 }

@@ -12,8 +12,6 @@ class ToolActivity extends Widget {
   constructor() {
     super();
     this._tool = null;
-    this._hasInitialTool = false;
-    this._outToggled = false;   // Output section
     this._build();
     this._sync();
   }
@@ -26,10 +24,6 @@ class ToolActivity extends Widget {
   set tool(t) {
     this._tool = t || null;
     this._sync();
-    if (t && !this._hasInitialTool) {
-      this.details.open = t.status === 'requested' || t.status === 'streaming';
-      this._hasInitialTool = true;
-    }
   }
 
   get expanded() { return this.details.open; }
@@ -42,36 +36,32 @@ class ToolActivity extends Widget {
     this.summaryEl = el('summary', { class: 'summary' });
     this.bodyEl = el('div', { class: 'body' });
     this.details.append(this.summaryEl, this.bodyEl);
+    this.details.addEventListener('toggle', () => {
+      if (this.details.open && this._tool?.status === 'streaming') this.outputCode.scrollToEnd();
+    });
     this.root.append(this.details);
 
-    // Persistent section elements — nested details keep their open
-    // state across property updates; code widgets keep theirs.
+    // Both sections are visible as soon as the tool card opens. Code
+    // widgets stay mounted across stream updates and keep scroll state.
     this.inputCode = document.createElement('nusa-code-block');
+    this.inputCode.classList.add('tool-code');
     this.inputNote = el('p', { class: 'note', text: 'No input was recorded.' });
     this.inputSec = this._section('Input', [this.inputNote, this.inputCode]);
 
     this.outputCode = document.createElement('nusa-code-block');
+    this.outputCode.classList.add('tool-code');
     this.outputCode.language = 'text';
     this.outputNote = el('p', { class: 'note' });
-    this.outputSec = this._section('Output', [this.outputNote, this.outputCode], (d) => {
-      this._outDet = d;
-      d.querySelector('summary').addEventListener('click', () => { this._outToggled = true; });
-      d.querySelector('summary').addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') this._outToggled = true;
-      });
-    });
+    this.outputSec = this._section('Output', [this.outputNote, this.outputCode]);
 
     this.bodyEl.append(this.inputSec, this.outputSec);
   }
 
-  _section(title, content, onBuilt) {
-    const d = el('details', { class: 'sec' });
-    d.append(
-      el('summary', { class: 'sec-summary', text: title }),
+  _section(title, content) {
+    return el('section', { class: 'sec', 'aria-label': title }, [
+      el('div', { class: 'sec-heading', text: title }),
       el('div', { class: 'sec-body' }, content),
-    );
-    if (onBuilt) onBuilt(d);
-    return d;
+    ]);
   }
 
   _sync() {
@@ -93,7 +83,11 @@ class ToolActivity extends Widget {
       let lang = 'text';
       try { JSON.parse(input); lang = 'json'; } catch { /* raw string stays */ }
       if (this.inputCode.language !== lang) this.inputCode.language = lang;
-      if (this.inputCode._code !== input) this.inputCode.code = input;
+      if (this.inputCode._code !== input) {
+        const firstInput = !this.inputCode._code;
+        this.inputCode.code = input;
+        if (firstInput) this.inputCode.scrollToStart();
+      }
       this.inputCode.hidden = false;
       this.inputNote.hidden = true;
     } else {
@@ -109,7 +103,10 @@ class ToolActivity extends Widget {
       if (wrapped) output = wrapped[1];
     }
     if (output) {
-      if (this.outputCode._code !== output) this.outputCode.code = output;
+      if (this.outputCode._code !== output) {
+        this.outputCode.code = output;
+        if (status !== 'streaming') this.outputCode.scrollToStart();
+      }
       this.outputCode.hidden = false;
       this.outputNote.hidden = true;
     } else {
@@ -117,7 +114,6 @@ class ToolActivity extends Widget {
       this.outputNote.hidden = false;
       this.outputNote.textContent = this._outputText(status);
     }
-    if (!this._outToggled) this._outDet.open = status === 'streaming';
   }
 
   _outputText(status) {

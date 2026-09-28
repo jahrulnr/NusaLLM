@@ -37,6 +37,8 @@
 
 .scroll {
   margin: 0;
+  max-height: var(--code-max-height, none);
+  overflow-y: auto;
   overflow-x: auto;
   padding: 10px 0;
 }
@@ -77,3 +79,8 @@
 .tok-delete { color: #e06a5a; background: rgba(224, 106, 90, 0.08); display: inline; }
 .line:has(.tok-insert) { border-left: 2px solid rgba(166, 209, 137, 0.5); }
 .line:has(.tok-delete) { border-left: 2px solid rgba(224, 106, 90, 0.5); }
+
+:host(.tool-code) .codeblock { margin: 0; border: 0; border-radius: 0; background: none; }
+:host(.tool-code) .chrome { padding: 2px 0; border: 0; background: none; }
+:host(.tool-code) .scroll { padding: 3px 0; }
+:host(.tool-code) .line::before { display: none; }

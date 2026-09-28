@@ -14,6 +14,7 @@ class SettingsEditor extends Widget {
   set settings(doc) { this._settings = doc || {}; this._render(); }
 
   _render() {
+    const expanded = new Set([...this.root.querySelectorAll('details[open]')].map((group) => group.dataset.section));
     clear(this.root);
     this.root.classList.add('settings');
     const sections = Object.entries(this._settings || {}).filter(([, value]) => value && typeof value === 'object');
@@ -21,12 +22,14 @@ class SettingsEditor extends Widget {
       this.root.append(el('div', { class: 'hint', text: 'No settings exposed.' }));
       return;
     }
+    this.root.append(el('p', { class: 'save-hint', text: 'Auto-save: text and number fields save when you leave them; checkboxes save immediately.' }));
     for (const [section, values] of sections) {
-      const group = el('section', { class: 'group' }, [
-        el('h3', { text: section[0].toUpperCase() + section.slice(1) }),
+      const group = el('details', { class: 'group', 'data-section': section, open: expanded.has(section) }, [
+        el('summary', { text: section[0].toUpperCase() + section.slice(1) }),
       ]);
+      const body = el('div', { class: 'group-body' });
       if (section === 'server') {
-        group.append(el('p', { class: 'hint', text: 'Port and host changes take effect after restart.' }));
+        body.append(el('p', { class: 'hint', text: 'Port and host changes take effect after restart.' }));
       }
       const fields = el('div', { class: 'fields' });
       for (const [leaf, value] of Object.entries(values)) {
@@ -36,7 +39,8 @@ class SettingsEditor extends Widget {
           this._input(key, value),
         ]));
       }
-      group.append(fields);
+      body.append(fields);
+      group.append(body);
       this.root.append(group);
     }
   }

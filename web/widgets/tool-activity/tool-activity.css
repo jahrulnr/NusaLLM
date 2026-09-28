@@ -49,30 +49,23 @@
 .chev { transition: transform 140ms ease; color: var(--text-faint); }
 .details[open] .chev { transform: rotate(90deg); }
 
-.body { border-top: 1px dashed var(--hairline); padding: 4px 10px 8px; }
+.body { border-top: 1px solid var(--hairline); padding: 8px 12px 10px; }
 
 [hidden] { display: none !important; }
 
-.sec { padding: 4px 0 0; }
-.sec-summary {
+.sec + .sec { margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--hairline); }
+.sec-heading {
   font-size: 9.5px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--text-faint);
-  cursor: pointer;
-  user-select: none;
-  padding: 3px 0;
+  padding: 2px 0 1px;
 }
-.sec-summary:hover { color: var(--text-dim); }
-.sec-summary::marker { color: var(--text-faint); }
 .sec-body {
   font-size: 11.5px;
   color: var(--text-dim);
-  padding: 2px 0 6px 14px;
-  border-left: 1px solid var(--hairline);
-  margin-left: 3px;
+  padding: 0;
 }
-.sec-body nusa-code-block { margin: 4px 0 2px; }
-.note { margin: 0; color: var(--text-faint); font-style: italic; }
-
-
+.sec-body nusa-code-block { margin: 4px 0 0; }
+.sec-body nusa-code-block { --code-max-height: min(320px, 42vh); }
+.note { margin: 5px 0; color: var(--text-faint); font-style: italic; }

@@ -39,6 +39,7 @@ type blockAcc struct {
 	args     strings.Builder // input_json_delta
 	id, name string          // tool_use head at block start
 	raw      json.RawMessage // non-model block start payload
+	done     bool            // content_block_stop seen
 }
 
 // streamResponse consumes the named-SSE body per the wire rules: blocks
@@ -67,6 +68,12 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 		select {
 		case <-ctx.Done():
 			s.logAppend(ctx, "provider.stream", logged)
+			kept := partialBlocks(blocks)
+			if blocksHaveContent(kept) {
+				if err := s.commitStream(conv, onEvent, kept, "", usage); err != nil {
+					return err
+				}
+			}
 			return apperror.New(408, "request canceled or timed out", ctx.Err())
 		case <-timer.C:
 			s.logAppend(ctx, "provider.stream", logged)
@@ -115,6 +122,10 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 				if se.Usage != nil {
 					usage = se.Usage // cumulative — the last one wins
 				}
+			case "content_block_stop":
+				if se.Index >= 0 && se.Index < len(blocks) {
+					blocks[se.Index].done = true
+				}
 			case "message_stop":
 				stopSeen = true
 			case "error":
@@ -151,6 +162,39 @@ func startBlock(blocks []blockAcc, i int, head ContentBlock) []blockAcc {
 		blocks[i].thinking.WriteString(head.Thinking)
 	}
 	return blocks
+}
+
+// partialBlocks drops tool_use blocks whose argument delta never
+// finished. A stopped block, or one whose JSON already closed, stays.
+func partialBlocks(blocks []blockAcc) []blockAcc {
+	kept := make([]blockAcc, 0, len(blocks))
+	for _, b := range blocks {
+		if b.kind == "tool_use" && !toolUseComplete(b) {
+			continue
+		}
+		kept = append(kept, b)
+	}
+	return kept
+}
+
+func toolUseComplete(b blockAcc) bool {
+	if b.id == "" || b.name == "" {
+		return false
+	}
+	args := b.args.String()
+	if args == "" {
+		return b.done
+	}
+	return json.Valid([]byte(args))
+}
+
+func blocksHaveContent(blocks []blockAcc) bool {
+	for _, b := range blocks {
+		if b.text.Len() > 0 || b.thinking.Len() > 0 || b.kind == "tool_use" || len(b.raw) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // applyDelta folds one delta into the accumulator at index and emits the

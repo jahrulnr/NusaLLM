@@ -1,7 +1,7 @@
 :host { display: block; }
 
 .md { font-family: var(--font-prose); font-size: 13.5px; line-height: 1.62; color: var(--text); }
-.stream-plain { white-space: pre-wrap; overflow-wrap: anywhere; }
+.stream-tail { display: contents; }
 .md > :first-child { margin-top: 0; }
 .md > :last-child { margin-bottom: 0; }
 

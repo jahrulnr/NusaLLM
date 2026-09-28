@@ -14,7 +14,9 @@ class MarkdownView extends Widget {
     this._content = '';
     this._raf = 0;
     this._blockCache = new Map();
-    this._streamTextNode = null;
+    this._streamWrap = null;
+    this._streamOffset = 0;
+    this._streamBlockCount = 0;
   }
 
   disconnectedCallback() {
@@ -36,6 +38,10 @@ class MarkdownView extends Widget {
   // every stream delta without quadratic DOM churn.
   set content(v) {
     this._content = v == null ? '' : String(v);
+    this._streamWrap = null;
+    this._streamTail = null;
+    this._streamOffset = 0;
+    this._streamBlockCount = 0;
     this._dirty = true;
     if (!this.isConnected) return;
     cancelAnimationFrame(this._raf);
@@ -45,23 +51,67 @@ class MarkdownView extends Widget {
     });
   }
 
-  // Live deltas append one text node. Markdown parsing runs once when
-  // the segment closes, so a stream does not replace prose DOM per token.
+  // Completed blocks stay mounted; only the unfinished tail is parsed
+  // again as deltas arrive. A blank line outside a fence seals the prefix.
   appendStreamText(chunk) {
     if (!chunk) return;
-    if (!this._streamTextNode) {
+    if (!this._streamWrap) {
       clear(this.root);
-      this._streamTextNode = document.createTextNode('');
-      this.root.append(el('div', { class: 'md stream-plain' }, [this._streamTextNode]));
+      this._streamWrap = el('div', { class: 'md' });
+      this._streamTail = el('div', { class: 'stream-tail' });
+      this._streamWrap.append(this._streamTail);
+      this.root.append(this._streamWrap);
     }
     this._content += chunk;
-    this._streamTextNode.appendData(chunk);
+    cancelAnimationFrame(this._raf);
+    this._raf = requestAnimationFrame(() => this._renderStream());
   }
 
   finishStream() {
-    if (!this._streamTextNode) return;
-    this._streamTextNode = null;
+    if (!this._streamWrap) return;
+    cancelAnimationFrame(this._raf);
+    this._streamWrap = null;
+    this._streamTail = null;
+    this._streamOffset = 0;
+    this._streamBlockCount = 0;
     this._render();
+  }
+
+  _renderStream() {
+    if (!this._streamWrap) return;
+    const pending = this._content.slice(this._streamOffset);
+    let stableEnd = 0;
+    let fence = null;
+    let pos = 0;
+    while (pos < pending.length) {
+      const end = pending.indexOf('\n', pos);
+      if (end < 0) break;
+      const line = pending.slice(pos, end);
+      const marker = line.match(/^ {0,3}(`{3,}|~{3,})/);
+      if (fence) {
+        if (new RegExp(`^ {0,3}${fence[0]}{${fence.length},}\\s*$`).test(line)) fence = null;
+      } else if (marker) {
+        fence = marker[1];
+      } else if (!line.trim()) {
+        stableEnd = end + 1;
+      }
+      pos = end + 1;
+    }
+    try {
+      if (stableEnd) {
+        const blocks = parseMarkdown(pending.slice(0, stableEnd));
+        for (const block of blocks) {
+          const node = this._block(block, `b${this._streamBlockCount++}`);
+          if (node) this._streamTail.before(node);
+        }
+        this._streamOffset += stableEnd;
+      }
+      const tail = parseMarkdown(this._content.slice(this._streamOffset));
+      const nodes = tail.map((block, i) => this._block(block, `b${this._streamBlockCount + i}`)).filter(Boolean);
+      this._streamTail.replaceChildren(...nodes);
+    } catch {
+      this._streamTail.replaceChildren(el('p', { text: this._content.slice(this._streamOffset) }));
+    }
   }
 
   _render() {
