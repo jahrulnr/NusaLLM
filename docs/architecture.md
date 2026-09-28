@@ -343,9 +343,9 @@ before the status can misroute.
 
 Events travel `adapter → onEvent → turnPump.Handle → tea.Program.Send →
 turnEventMsg → applyEvent`, which folds them into the live region: deltas
-accumulate markdown, reasoning flips the status line to "thinking"
-(provider scratchpad, never transcript), tool calls render as activity
-rows, and `Finished` seals the block with a usage line. `finishTurn`
+accumulate markdown, reasoning text stays in arrival order in the
+transcript, tool calls and output render as activity, and `Finished`
+seals the block with a usage line. `finishTurn`
 flushes the live block to scrollback and drains the input queue.
 
 On disk the whole time: `data/conversations/<id>/` holds `meta.json`,

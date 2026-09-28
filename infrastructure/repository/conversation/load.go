@@ -28,6 +28,7 @@ func (r *ConversationRepository) Load(ctx context.Context, convID string) (*aggr
 	c.SetTitle(meta.Title)
 	c.SetRoute(meta.Route)
 	c.SetModelID(meta.ModelID)
+	c.SetWorkspace(meta.Workspace)
 	// systemPrompt is not restored: it is code (embedded templates), and
 	// older metas carrying a stamped copy are ignored so every room gets
 	// the current template.

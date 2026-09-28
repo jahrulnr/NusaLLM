@@ -1,9 +1,7 @@
 package tui
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -69,12 +67,15 @@ type replModel struct {
 	ctx             context.Context
 }
 
-// livePiece is one sealed slice of the turn timeline — either markdown
-// source or a preformatted line (tool activity, usage). Order is event
+// livePiece is one sealed slice of the turn timeline. Order is event
 // order only; render walks the slice once.
 type livePiece struct {
-	markdown string
-	line     string
+	markdown   string
+	line       string
+	reasoning  string
+	toolOutput string
+	toolCallID string
+	toolName   string
 }
 
 func newModel(r *REPL, interactive bool) replModel {
@@ -567,7 +568,7 @@ func (m *replModel) resetLive() {
 }
 
 func (m *replModel) sealLiveMarkdown() {
-	if strings.TrimSpace(m.live.String()) == "" {
+	if m.live.Len() == 0 {
 		m.live.Reset()
 		return
 	}
@@ -601,62 +602,66 @@ func (m replModel) renderLive() string {
 		if piece.line != "" {
 			write(piece.line)
 		}
+		if piece.reasoning != "" {
+			write(piece.reasoning)
+		}
+		if piece.toolOutput != "" {
+			write(term.Dim + "↳ " + term.Sanitize(piece.toolName) + ": " + piece.toolOutput + term.Reset)
+		}
 	}
-	if strings.TrimSpace(m.live.String()) != "" {
+	if m.live.Len() > 0 {
 		write(renderMarkdown(m.live.String(), m.width))
 	}
-	return strings.TrimRight(b.String(), "\n")
+	return b.String()
 }
 
-// applyEvent folds a turn event into the live region — text deltas append,
-// tool calls become compact activity rows, and tool output stays hidden.
+// applyEvent folds a turn event into the live region in arrival order.
 func (m *replModel) applyEvent(e event.TurnEvent) {
 	switch e.Kind() {
 	case enum.TurnEventDelta:
 		m.phase = "responding"
 		m.live.WriteString(term.Sanitize(e.Delta()))
-	case enum.TurnEventReasoning:
-		// Reasoning is a provider scratchpad, not transcript content. Keep
-		// the operator informed through the status line without exposing
-		// private chain-of-thought in scrollback.
+	case enum.TurnEventReasoning, enum.TurnEventReasoningSummary:
 		m.phase = "thinking"
+		m.sealLiveMarkdown()
+		text := term.Sanitize(e.Delta())
+		if text != "" {
+			if len(m.liveTimeline) > 0 && m.liveTimeline[len(m.liveTimeline)-1].reasoning != "" {
+				m.liveTimeline[len(m.liveTimeline)-1].reasoning += text
+			} else {
+				m.liveTimeline = append(m.liveTimeline, livePiece{reasoning: text})
+			}
+		}
 	case enum.TurnEventToolCall:
 		m.phase = "exec " + e.ToolCall().Name()
 		m.sealLiveMarkdown()
 		m.appendLiveLine(formatToolActivityRow(e.ToolCall()))
 	case enum.TurnEventToolOutput:
-		// Tool output is useful to the model and logs, but noisy in the
-		// chat transcript. The tool call row remains visible as progress.
+		m.sealLiveMarkdown()
+		call := e.ToolCall()
+		text := term.Sanitize(e.Delta())
+		if text != "" {
+			if len(m.liveTimeline) > 0 {
+				last := &m.liveTimeline[len(m.liveTimeline)-1]
+				if last.toolCallID == call.ID() && last.toolOutput != "" {
+					last.toolOutput += text
+					break
+				}
+			}
+			m.liveTimeline = append(m.liveTimeline, livePiece{
+				toolOutput: text, toolCallID: call.ID(), toolName: call.Name(),
+			})
+		}
 	case enum.TurnEventFinished:
 		m.sealLiveMarkdown()
 		m.appendLiveLine(term.Dim + "↳ " + formatUsage(e.Usage()) + term.Reset)
 	}
 }
 
-const toolSummaryMax = 96
-
 func formatToolActivityRow(call entity.ToolCall) string {
 	row := fmt.Sprintf("%s%s⏺ %s%s", term.Yellow, term.Bold, term.Sanitize(call.Name()), term.Reset)
-	if args := compactToolInput(call.Input()); args != "" {
-		row += " " + term.Dim + term.Sanitize(args) + term.Reset
-	}
+	row += " " + term.Dim + term.Sanitize(call.Input()) + term.Reset
 	return row
-}
-
-// compactToolInput keeps a tool activity row to one line without dropping
-// argument names. Valid JSON is compacted; malformed input is whitespace
-// collapsed and preserved as a bounded preview.
-func compactToolInput(input string) string {
-	input = strings.TrimSpace(input)
-	if input == "" || input == "{}" {
-		return ""
-	}
-
-	var compact bytes.Buffer
-	if err := json.Compact(&compact, []byte(input)); err == nil {
-		return truncateInline(compact.String(), toolSummaryMax)
-	}
-	return truncateInline(strings.Join(strings.Fields(input), " "), toolSummaryMax)
 }
 
 func truncateInline(text string, max int) string {

@@ -15,7 +15,7 @@ import (
 // encodeRequest maps domain state onto the wire body. Attachments are
 // resolved to sendable form here (data:/https passthrough, file:// read +
 // base64) — the domain stores references only.
-func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool, fileRoot string) (*RequestBody, error) {
+func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool, fileRoot, endpoint string) (*RequestBody, error) {
 	body := &RequestBody{Model: model.ID(), PromptCacheKey: conv.ID(), Stream: stream}
 	if stream {
 		body.StreamOptions = &StreamOptions{IncludeUsage: true} // else usage never arrives
@@ -53,6 +53,20 @@ func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool
 	body.Stop = model.StopSequences()
 	if e := model.Effort(); !e.IsUnset() {
 		body.ReasoningEffort = e.String() // OpenAI native; OpenRouter translates
+	}
+	// An upstream pin routes an aggregator request to one named backend —
+	// no silent fallback to a provider the user did not pick.
+	if up := model.Upstream(); up != "" && strings.Contains(endpoint, string(enum.OpenRouter)) {
+		pref, err := json.Marshal(map[string]any{
+			"order":           []string{up},
+			"allow_fallbacks": false,
+		})
+		if err == nil {
+			if body.Extra == nil {
+				body.Extra = map[string]json.RawMessage{}
+			}
+			body.Extra["provider"] = pref
+		}
 	}
 	// Adapter-namespaced escape hatch: "completion.<param>" lands verbatim.
 	for k, v := range model.OptionalContent() {

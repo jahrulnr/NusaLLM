@@ -16,6 +16,7 @@ import (
 
 type Config struct {
 	App          App                `json:"-"`
+	Server       ServerConfig       `json:"server"`
 	Conversation ConversationConfig `json:"conversation"`
 	Service      ServiceConfig      `json:"service"`
 	Storage      StorageConfig      `json:"storage"`
@@ -25,15 +26,16 @@ type Config struct {
 // Normalize runs each section's normalization — invalid values clamp to
 // unconfigured, zeros fill from `default` tags.
 func (c *Config) Normalize() {
+	c.Server.Normalize()
 	c.Conversation.Normalize()
 	c.Service.Normalize()
 	c.Storage.Normalize()
 	c.Log.Normalize()
 }
 
-// NewConfig returns the defaults — every tunable reads its `default`
-// struct tag, so the tag is the single source of truth and nothing
-// downstream re-declares a literal.
+// NewConfig returns the defaults — scalar tunables read their `default`
+// struct tags, while section normalizers fill compound values such as
+// server host lists.
 func NewConfig() Config {
 	var c Config
 	c.Normalize()
@@ -83,6 +85,9 @@ func Validate(raw []byte) (Config, error) {
 			fmt.Errorf("trailing data after the JSON document"))
 	}
 	fresh.Normalize()
+	if err := fresh.Server.validate(); err != nil {
+		return Config{}, apperror.NewInternalError("config load failed", err)
+	}
 	return fresh, nil
 }
 

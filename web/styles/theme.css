@@ -23,9 +23,11 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 
+/* The shell fills the viewport; scrolling stays inside its own panels. */
 html, body {
   margin: 0;
   height: 100%;
+  overflow: hidden;
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-ui);

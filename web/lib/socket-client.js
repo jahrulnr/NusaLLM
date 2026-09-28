@@ -70,12 +70,17 @@ export class TurnSocket extends EventTarget {
     this._state('closed');
   }
 
-  sendTurn({ conversationId = null, route = '', modelId = '', content }) {
+  sendTurn({ conversationId = null, route = '', modelId = '', content,
+    effort = '', provider = '', workspace = '' }) {
+    const payload = { route, modelId, content };
+    if (effort) payload.effort = effort;
+    if (provider) payload.provider = provider;
+    if (workspace) payload.workspace = workspace;
     return this._command({
       type: 'turn.send',
       requestId: requestId(),
       conversationId,
-      payload: { route, modelId, content },
+      payload,
     });
   }
 

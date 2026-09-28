@@ -67,7 +67,7 @@ func newCommandFixture(t *testing.T) *commandFixture {
 	}
 	t.Cleanup(func() { _ = secrets.Close() })
 	gatewayRepository := repogateway.NewGatewayRepository(filepath.Join(storage, "gateways"), secrets)
-	gatewayApplication := appgateway.New(gatewayRepository, secrets)
+	gatewayApplication := appgateway.New(gatewayRepository, secrets, nil)
 	stream := false
 	if err := gatewayApplication.Upsert(t.Context(), appgateway.GatewayInput{
 		ID: "gw1", Name: "Test gateway", Style: enum.StyleCompletion, Endpoint: server.URL,

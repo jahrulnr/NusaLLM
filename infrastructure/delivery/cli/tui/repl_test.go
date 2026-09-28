@@ -57,7 +57,7 @@ func TestREPLSendsListsAndResumesConversation(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = secrets.Close() })
 	gatewayRepository := repogateway.NewGatewayRepository(filepath.Join(storage, "gateways"), secrets)
-	gatewayApplication := appgateway.New(gatewayRepository, secrets)
+	gatewayApplication := appgateway.New(gatewayRepository, secrets, nil)
 	key := "local-test-key"
 	stream := false
 	if err := gatewayApplication.Upsert(t.Context(), appgateway.GatewayInput{
@@ -132,13 +132,10 @@ func TestREPLSendsListsAndResumesConversation(t *testing.T) {
 	if request := string(<-requests); !strings.Contains(request, "data:image/png;base64,") {
 		t.Fatalf("attached image not materialized in provider request: %s", request)
 	}
-	for _, want := range []string{"route set to gw1", "model set to m1", "attached shot.png", "pong", "messages=2", "> hello", "10 in · 5 out · 15 total"} {
+	for _, want := range []string{"route set to gw1", "model set to m1", "attached shot.png", "private chain of thought", "pong", "messages=2", "> hello", "10 in · 5 out · 15 total"} {
 		if !strings.Contains(output.String(), want) {
 			t.Errorf("REPL output missing %q:\n%s", want, output.String())
 		}
-	}
-	if strings.Contains(output.String(), "private chain of thought") {
-		t.Fatalf("provider reasoning leaked into CLI output:\n%s", output.String())
 	}
 
 	var resumedOutput, resumedError bytes.Buffer
@@ -238,7 +235,7 @@ func TestAutoSelectNotifyDoesNotDeadlock(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = secrets.Close() })
 	gatewayRepository := repogateway.NewGatewayRepository(filepath.Join(storage, "gateways"), secrets)
-	gatewayApplication := appgateway.New(gatewayRepository, secrets)
+	gatewayApplication := appgateway.New(gatewayRepository, secrets, nil)
 	key := "local-test-key"
 	stream := false
 	// Exactly one gateway with one model — the first send auto-selects
@@ -342,7 +339,7 @@ func TestPipedCRNeverTriggersPicker(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = secrets.Close() })
 	gatewayRepository := repogateway.NewGatewayRepository(filepath.Join(storage, "gateways"), secrets)
-	gatewayApplication := appgateway.New(gatewayRepository, secrets)
+	gatewayApplication := appgateway.New(gatewayRepository, secrets, nil)
 	stream := false
 	if err := gatewayApplication.Upsert(t.Context(), appgateway.GatewayInput{
 		ID: "gw1", Name: "Test gateway", Style: enum.StyleCompletion, Endpoint: server.URL,
@@ -439,7 +436,7 @@ func TestConversationArgPicker(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = secrets.Close() })
 	gatewayRepository := repogateway.NewGatewayRepository(filepath.Join(storage, "gateways"), secrets)
-	gatewayApplication := appgateway.New(gatewayRepository, secrets)
+	gatewayApplication := appgateway.New(gatewayRepository, secrets, nil)
 	stream := false
 	if err := gatewayApplication.Upsert(t.Context(), appgateway.GatewayInput{
 		ID: "gw1", Name: "Test gateway", Style: enum.StyleCompletion, Endpoint: server.URL,
@@ -617,7 +614,7 @@ func TestToolCallLoopRunsEndToEnd(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = secrets.Close() })
 	gatewayRepository := repogateway.NewGatewayRepository(filepath.Join(storage, "gateways"), secrets)
-	gatewayApplication := appgateway.New(gatewayRepository, secrets)
+	gatewayApplication := appgateway.New(gatewayRepository, secrets, nil)
 	key := "local-test-key"
 	stream := false
 	if err := gatewayApplication.Upsert(t.Context(), appgateway.GatewayInput{
@@ -689,13 +686,10 @@ func TestToolCallLoopRunsEndToEnd(t *testing.T) {
 		t.Fatalf("tool output never returned to provider: %s", second[:min(len(second), 400)])
 	}
 	plainOutput := ansi.Strip(output.String())
-	for _, want := range []string{"⏺ exec", `{"command":"printf dG9vbC1vdXRwdXQtc2VjcmV0 | base64 -d"}`, "tool said hi"} {
+	for _, want := range []string{"⏺ exec", `{"command":"printf dG9vbC1vdXRwdXQtc2VjcmV0 | base64 -d"}`, "tool-output-secret", "tool said hi"} {
 		if !strings.Contains(plainOutput, want) {
 			t.Errorf("output missing %q:\n%s", want, output.String())
 		}
-	}
-	if strings.Contains(plainOutput, "tool-output-secret") {
-		t.Fatalf("tool output leaked into CLI transcript:\n%s", output.String())
 	}
 	if err := conversationApplication.Shutdown(t.Context()); err != nil {
 		t.Fatal(err)

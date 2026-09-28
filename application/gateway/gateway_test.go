@@ -22,7 +22,7 @@ func newApp(t *testing.T) (*GatewayApp, drepo.SecretStore, string) {
 	t.Cleanup(func() { secrets.Close() })
 	dir := t.TempDir()
 	repo := repogateway.NewGatewayRepository(dir, secrets)
-	return New(repo, secrets), secrets, dir
+	return New(repo, secrets, nil), secrets, dir
 }
 
 func strptr(s string) *string { return &s }

@@ -1,6 +1,7 @@
 package appconversation
 
 import (
+	appjob "github.com/jahrulnr/nusallm/application/job"
 	"net/http"
 	"sync/atomic"
 	"testing"
@@ -13,7 +14,7 @@ import (
 // Deleting an idle room removes storage and retires its worker.
 func TestDeleteIdle(t *testing.T) {
 	app, _ := fixture(t, okHandler)
-	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "hi", nil, nil); err != nil {
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "hi", nil, appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := app.Delete(t.Context(), "room"); err != nil {
@@ -45,7 +46,10 @@ func TestDeleteWhileLive(t *testing.T) {
 		okHandler(w, r)
 	})
 	sent := make(chan error, 1)
-	go func() { _, err := app.Send(t.Context(), "room", "gw1", "m1", "ping", nil, nil); sent <- err }()
+	go func() {
+		_, err := app.Send(t.Context(), "room", "gw1", "m1", "ping", nil, appjob.SendOptions{}, nil)
+		sent <- err
+	}()
 	time.Sleep(50 * time.Millisecond) // send is holding the slot
 
 	if err := app.Delete(t.Context(), "room"); err != nil {
@@ -76,10 +80,13 @@ func TestDeleteFlushesPending(t *testing.T) {
 		<-release
 		okHandler(w, r)
 	})
-	go app.Send(t.Context(), "room", "gw1", "m1", "first", nil, nil)
+	go app.Send(t.Context(), "room", "gw1", "m1", "first", nil, appjob.SendOptions{}, nil)
 	time.Sleep(50 * time.Millisecond)
 	queued := make(chan error, 1)
-	go func() { _, err := app.Send(t.Context(), "room", "", "", "second", nil, nil); queued <- err }()
+	go func() {
+		_, err := app.Send(t.Context(), "room", "", "", "second", nil, appjob.SendOptions{}, nil)
+		queued <- err
+	}()
 	time.Sleep(50 * time.Millisecond) // second is queued
 
 	if err := app.Delete(t.Context(), "room"); err != nil {
@@ -103,13 +110,13 @@ func TestDeleteFlushesPending(t *testing.T) {
 // trace of the old history.
 func TestSendAfterDeleteMintsFreshRoom(t *testing.T) {
 	app, _ := fixture(t, okHandler)
-	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "old life", nil, nil); err != nil {
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "old life", nil, appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := app.Delete(t.Context(), "room"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "new life", nil, nil); err != nil {
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "new life", nil, appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	conv, err := app.deps.Convs.Load(t.Context(), "room")

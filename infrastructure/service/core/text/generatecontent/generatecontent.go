@@ -66,7 +66,7 @@ func New(opts coretext.Options) *Service {
 // uniformly either way.
 func (s *Service) Send(ctx context.Context, conv *aggregate.Conversation, gw *aggregate.Gateway, model entity.Model, onEvent event.TurnEventHandler) error {
 	stream := gw.StreamMode()
-	body, err := encodeRequest(conv, model, s.fileRoot)
+	body, err := encodeRequest(conv, model, coretext.FileRoot(conv, s.fileRoot))
 	if err != nil {
 		return err
 	}

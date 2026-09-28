@@ -71,7 +71,7 @@ Usage:
   ` + admin.CLIName + ` onboard          guided provider setup wizard
   ` + admin.CLIName + ` gateway <...>    manage provider routes — list/show/add/set/delete
   ` + admin.CLIName + ` config <...>     inspect and patch the config file — show/path/set/unset/validate
-  ` + admin.CLIName + ` serve [--port N] local WebUI — loopback only (default port 8080)
+  ` + admin.CLIName + ` serve [--port N] local WebUI — loopback only (default port 10998 from server.port)
   ` + admin.CLIName + ` --help           this text
 
 Environment:

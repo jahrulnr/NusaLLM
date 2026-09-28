@@ -19,12 +19,12 @@ import (
 // Register mounts the exact asset surfaces onto the engine. A nil
 // assets FS registers nothing — the API-only composition stays valid.
 // There is deliberately no SPA fallback: unknown paths 404.
-func Register(r *gin.Engine, assets fs.FS, authority string) {
+func Register(r *gin.Engine, assets fs.FS, authorities []string) {
 	if assets == nil {
 		return
 	}
 	serve := func(c *gin.Context) {
-		headers(c, authority)
+		headers(c, authorities)
 		name := strings.TrimPrefix(path.Clean("/"+c.Request.URL.Path), "/")
 		if name == "" {
 			name = "index.html"
@@ -46,7 +46,7 @@ func Register(r *gin.Engine, assets fs.FS, authority string) {
 		r.GET(p, serve)
 		r.HEAD(p, serve)
 	}
-	for _, p := range []string{"/styles/*path", "/lib/*path", "/widgets/*path"} {
+	for _, p := range []string{"/styles/*path", "/lib/*path", "/widgets/*path", "/vendor/*path"} {
 		r.GET(p, serve)
 		r.HEAD(p, serve)
 	}
@@ -55,12 +55,16 @@ func Register(r *gin.Engine, assets fs.FS, authority string) {
 // headers pins the asset responses to this origin: no caching staleness
 // for a local tool, no content-type sniffing, no referrer leakage, and
 // a CSP that admits only same-origin scripts/styles plus the WS dial.
-func headers(c *gin.Context, authority string) {
+func headers(c *gin.Context, authorities []string) {
 	h := c.Writer.Header()
 	h.Set("Cache-Control", "no-cache")
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Referrer-Policy", "no-referrer")
+	connectSrc := []string{"'self'"}
+	for _, authority := range authorities {
+		connectSrc = append(connectSrc, "ws://"+authority)
+	}
 	h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; "+
-		"style-src 'self'; img-src 'self' data:; connect-src 'self' ws://"+authority+
-		"; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+		"style-src 'self'; img-src 'self' data:; connect-src "+strings.Join(connectSrc, " ")+"; "+
+		"object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
 }

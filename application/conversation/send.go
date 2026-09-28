@@ -43,6 +43,7 @@ func (app *ConversationApp) Send(
 	modelID string,
 	message string,
 	attachments []valueobject.Attachment,
+	opts appjob.SendOptions,
 	onEvent event.TurnEventHandler,
 ) (SendResult, error) {
 	if convID == "" {
@@ -63,6 +64,7 @@ func (app *ConversationApp) Send(
 		ModelID:     modelID,
 		Message:     message,
 		Attachments: attachments,
+		Opts:        opts,
 		OnEvent:     onEvent,
 	}
 	j.Result = res

@@ -4,6 +4,9 @@ build:
 
 cli: build
 	./bin/nusallm
+	
+serve: build
+	./bin/nusallm serve
 
 gateway-add: build
 	./bin/nusallm gateway add \

@@ -2,6 +2,7 @@ package appconversation
 
 import (
 	"context"
+	appjob "github.com/jahrulnr/nusallm/application/job"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -101,11 +102,11 @@ func TestSendCompactsOverflow(t *testing.T) {
 	// 64_060 total → 60 input allowance → budget 54 at 90% — same headroom as the old 60×90% test.
 	app, convs := compactApp(t, svc, 64_060)
 
-	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "first", nil, nil); err != nil {
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "first", nil, appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	// Second send: 3 live messages > keepTail 2 → compaction must run.
-	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "second", nil, nil); err != nil {
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "second", nil, appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	conv, err := convs.Load(t.Context(), "room")
@@ -151,7 +152,7 @@ func TestSend413DoesNotLoop(t *testing.T) {
 	svc := &deadEndSvc{}
 	app, convs := compactApp(t, svc, 0)
 
-	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "one", nil, nil); err == nil || apperror.As(err).StatusCode() != 413 {
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "one", nil, appjob.SendOptions{}, nil); err == nil || apperror.As(err).StatusCode() != 413 {
 		t.Fatalf("a lone message is unfoldable — 413 must propagate: %v", err)
 	}
 	if svc.sawCompact.Load() {
@@ -159,12 +160,12 @@ func TestSend413DoesNotLoop(t *testing.T) {
 	}
 	// A 413 never appends an assistant message — after two sends the
 	// room holds two user lines, still at keepTail → no fold yet.
-	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "two", nil, nil); err == nil {
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "two", nil, appjob.SendOptions{}, nil); err == nil {
 		t.Fatal("expected 413")
 	}
 	// Third send: 3 messages > keepTail → exactly one compact, then
 	// the retried send still 413s and must surface, not re-compact.
-	_, err := app.Send(t.Context(), "room", "gw1", "m1", "three", nil, nil)
+	_, err := app.Send(t.Context(), "room", "gw1", "m1", "three", nil, appjob.SendOptions{}, nil)
 	if err == nil || apperror.As(err).StatusCode() != 413 {
 		t.Fatalf("persistent overflow must surface the provider's 413: %v", err)
 	}
@@ -180,13 +181,13 @@ func TestSendCompactsOn413(t *testing.T) {
 	svc := &overflowSvc{}
 	app, convs := compactApp(t, svc, 0) // unknown window → proactive budget is high; this path tests 413
 
-	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "first", nil, nil); err != nil {
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "first", nil, appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if svc.sawCompact.Load() {
 		t.Fatal("compaction must not run on a first overflow-free send")
 	}
-	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "second", nil, nil); err != nil {
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "second", nil, appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !svc.sawCompact.Load() {

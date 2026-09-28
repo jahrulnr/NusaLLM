@@ -17,6 +17,7 @@ import (
 	"sync"
 
 	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
+	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 )
 
 // GatewayApp fronts the drepo.Gateway port plus the SecretStore the
@@ -31,9 +32,10 @@ import (
 type GatewayApp struct {
 	gateways drepo.Gateway
 	secrets  drepo.SecretStore
+	catalog  dservice.ModelCatalog
 	mu       sync.Mutex
 }
 
-func New(gateways drepo.Gateway, secrets drepo.SecretStore) *GatewayApp {
-	return &GatewayApp{gateways: gateways, secrets: secrets}
+func New(gateways drepo.Gateway, secrets drepo.SecretStore, catalog dservice.ModelCatalog) *GatewayApp {
+	return &GatewayApp{gateways: gateways, secrets: secrets, catalog: catalog}
 }

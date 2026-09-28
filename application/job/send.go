@@ -43,6 +43,15 @@ func (r *PersistenceReceipt) appendUserMessage(appendMessage func() (bool, error
 	return err
 }
 
+// SendOptions carries the UI's per-turn selections — reasoning effort,
+// an aggregator upstream pin, and the workspace the room's tools work
+// in. Zero values keep the conversation's stored binding.
+type SendOptions struct {
+	Effort    enum.Effort // unset/default = the model's configured effort
+	Upstream  string      // aggregator backend name; "" = the gateway decides
+	Workspace string      // absolute dir; "" = keep the room's binding
+}
+
 // Send is one user turn as a queued command: it validates routing,
 // persists the user message, then runs the turn loop until the model
 // stops asking for tools or the step cap is hit. Ctx is the caller's —
@@ -57,6 +66,7 @@ type Send struct {
 	ModelID     string
 	Message     string
 	Attachments []valueobject.Attachment
+	Opts        SendOptions
 	OnEvent     event.TurnEventHandler
 }
 
@@ -89,6 +99,15 @@ func (j *Send) Execute(execCtx context.Context) (err error) {
 			return err
 		}
 		route, modelID := gw.ID(), model.ID()
+		// Per-turn selections override the catalog entry in memory; the
+		// room's workspace rebinds the same way route/modelID do below.
+		if !j.Opts.Effort.IsUnset() {
+			model.SetEffort(j.Opts.Effort)
+		}
+		model.SetUpstream(j.Opts.Upstream)
+		if j.Opts.Workspace != "" {
+			conv.SetWorkspace(j.Opts.Workspace)
+		}
 
 		user, err := entity.NewMessage(enum.RoleUser, j.Message)
 		if err != nil {

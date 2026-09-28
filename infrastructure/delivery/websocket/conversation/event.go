@@ -9,12 +9,11 @@ import (
 // onEvent projects one application turn event onto the turn's
 // subscriber set under h.mu — the lock keeps a turn's frames totally
 // ordered and blocks post-terminal emission. Content-bearing events
-// (delta) are chunked for outbound bounding; marker events cross as
-// metadata only: reasoning content, tool input, and tool output never
-// reach the socket. Markers coalesce — one phase frame per reasoning
-// stretch, one tool_output per call — so a provider chunk burst never
-// becomes a frame burst. Mid-turn errors are the sender's retry noise —
-// the job's own return produces the single terminal frame.
+// (delta, tool input, tool output, reasoning) are chunked for outbound
+// bounding: every nonempty provider chunk crosses in order, split at
+// the byte bound. Reasoning also gets one phase marker per stretch.
+// Mid-turn errors are the sender's retry noise — the job's own return
+// produces the single terminal frame.
 func (h *Hub) onEvent(t *turn, ev event.TurnEvent) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -27,13 +26,19 @@ func (h *Hub) onEvent(t *turn, ev event.TurnEvent) {
 		for _, chunk := range splitDelta(ev.Delta(), outboundChunkBytes) {
 			h.emitLocked(t, "turn.delta", deltaPayload{Text: chunk}, false)
 		}
-	case enum.TurnEventReasoning:
-		// One marker per reasoning stretch — the content itself never
-		// crosses and a chunk burst never produces a frame burst.
+	case enum.TurnEventReasoning, enum.TurnEventReasoningSummary:
+		// Both raw reasoning and provider-supplied summaries remain in
+		// arrival order on the owner-facing transcript.
 		if !t.inReasoning {
 			t.inReasoning = true
 			if !h.emitLocked(t, "turn.phase", phasePayload{Phase: "reasoning"}, false) {
 				h.markOverflowedLocked(t)
+			}
+		}
+		for _, chunk := range splitDelta(ev.Delta(), outboundChunkBytes) {
+			if !h.emitLocked(t, "turn.reasoning", reasoningPayload{Text: chunk}, false) {
+				h.markOverflowedLocked(t)
+				break
 			}
 		}
 	case enum.TurnEventToolCall:
@@ -46,14 +51,32 @@ func (h *Hub) onEvent(t *turn, ev event.TurnEvent) {
 			// Provider-originated metadata exceeded the frame bound —
 			// terminate this turn only, sanitized.
 			h.markOverflowedLocked(t)
+			break
+		}
+		// The exact argument string is streamed separately so a large
+		// input can never turn the call metadata into an oversized frame.
+		for _, chunk := range splitDelta(tc.Input(), outboundChunkBytes) {
+			if !h.emitLocked(t, "turn.tool_input", toolInputPayload{
+				CallID: tc.ID(),
+				Text:   chunk,
+			}, false) {
+				h.markOverflowedLocked(t)
+				break
+			}
 		}
 	case enum.TurnEventToolOutput:
+		// Live stream content for the local owner — every nonempty
+		// chunk crosses in order at the outbound byte bound. It is
+		// progress, not proof the call finished.
 		t.inReasoning = false
 		callID := ev.ToolCall().ID()
-		if _, seen := t.seenToolOut[callID]; !seen {
-			t.seenToolOut[callID] = struct{}{}
-			if !h.emitLocked(t, "turn.tool_output", toolOutputPayload{CallID: callID}, false) {
+		for _, chunk := range splitDelta(ev.Delta(), outboundChunkBytes) {
+			if !h.emitLocked(t, "turn.tool_output", toolOutputPayload{
+				CallID: callID,
+				Text:   chunk,
+			}, false) {
 				h.markOverflowedLocked(t)
+				break
 			}
 		}
 	case enum.TurnEventFinished:

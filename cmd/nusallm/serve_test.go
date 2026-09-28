@@ -9,7 +9,7 @@ func TestServePort(t *testing.T) {
 		want    int
 		wantErr bool
 	}{
-		{"default", nil, 8080, false},
+		{"default", nil, 10998, false},
 		{"flag", []string{"--port", "9090"}, 9090, false},
 		{"flag equals", []string{"--port=9090"}, 9090, false},
 		{"edge low", []string{"--port", "1"}, 1, false},
@@ -22,7 +22,7 @@ func TestServePort(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := servePort(tc.args)
+			got, err := servePort(tc.args, 10998)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("want error, got port %d", got)

@@ -17,6 +17,7 @@ type metaRecord struct {
 	Title          string             `json:"title,omitempty"`
 	Route          string             `json:"route,omitempty"`
 	ModelID        string             `json:"modelId,omitempty"`
+	Workspace      string             `json:"workspace,omitempty"`
 	Tools          []toolSchemaRecord `json:"tools,omitempty"`
 	Usage          usageRecord        `json:"usage"`
 	MessageCount   int                `json:"messageCount"`
@@ -52,15 +53,22 @@ type lineRecord struct {
 }
 
 type messageRecord struct {
-	ID              string             `json:"id"`
-	Role            string             `json:"role"`
-	Content         string             `json:"content"`
-	UserType        string             `json:"userType,omitempty"`
-	FinishReason    string             `json:"finishReason,omitempty"`
-	CreatedAt       time.Time          `json:"createdAt"`
-	ToolCalls       []toolCallRecord   `json:"toolCalls,omitempty"`
-	Attachments     []attachmentRecord `json:"attachments,omitempty"`
-	OptionalContent map[string]string  `json:"optionalContent,omitempty"`
+	ID              string              `json:"id"`
+	Role            string              `json:"role"`
+	Content         string              `json:"content"`
+	UserType        string              `json:"userType,omitempty"`
+	FinishReason    string              `json:"finishReason,omitempty"`
+	Parts           []messagePartRecord `json:"parts,omitempty"`
+	CreatedAt       time.Time           `json:"createdAt"`
+	ToolCalls       []toolCallRecord    `json:"toolCalls,omitempty"`
+	Attachments     []attachmentRecord  `json:"attachments,omitempty"`
+	OptionalContent map[string]string   `json:"optionalContent,omitempty"`
+}
+
+type messagePartRecord struct {
+	Kind       string `json:"kind"`
+	Text       string `json:"text,omitempty"`
+	ToolCallID string `json:"toolCallId,omitempty"`
 }
 
 type toolCallRecord struct {
@@ -91,6 +99,13 @@ func encodeMessage(m entity.Message) messageRecord {
 		FinishReason:    m.FinishReason().String(),
 		CreatedAt:       m.CreatedAt(),
 		OptionalContent: m.OptionalContent(),
+	}
+	for _, part := range m.Parts() {
+		r.Parts = append(r.Parts, messagePartRecord{
+			Kind:       part.Kind,
+			Text:       part.Text,
+			ToolCallID: part.ToolCallID,
+		})
 	}
 	for _, tc := range m.ToolCalls() {
 		rec := toolCallRecord{
@@ -164,6 +179,15 @@ func decodeMessage(r messageRecord) (entity.Message, error) {
 		att.SetSHA256(a.SHA256)
 		m.AddAttachment(att)
 	}
+	parts := make([]entity.MessagePart, 0, len(r.Parts))
+	for _, part := range r.Parts {
+		parts = append(parts, entity.MessagePart{
+			Kind:       part.Kind,
+			Text:       part.Text,
+			ToolCallID: part.ToolCallID,
+		})
+	}
+	m.SetParts(parts)
 	for _, t := range r.ToolCalls {
 		tc, err := decodeToolCall(t)
 		if err != nil {

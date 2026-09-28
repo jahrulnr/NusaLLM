@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
 
@@ -608,7 +609,60 @@ func TestOversizeMetadataTerminatesTurn(t *testing.T) {
 	}
 }
 
-func TestReasoningAndToolOutputCoalesce(t *testing.T) {
+func TestToolInputStreamsBoundedExact(t *testing.T) {
+	// Input larger than any one frame streams as ordered chunks; it is
+	// owner-visible content, not a reason to terminate the turn.
+	input := strings.Repeat("i", maxFrameBytes+outboundChunkBytes)
+	tc, _ := entity.NewToolCall("call_big", "write_file", input, enum.TooltypeOrigin)
+	h := newHub(t, stubSender{fn: func(_ context.Context, convID, _, _, _ string,
+		onEvent event.TurnEventHandler) (appconversation.SendResult, error) {
+		onEvent(event.NewToolCallEvent(tc))
+		return appconversation.SendResult{ConversationID: convID, UserMessagePersisted: true}, nil
+	}})
+	ws := dial(t, h)
+	sendCommand(t, ws, `{"type":"turn.send","requestId":"r","payload":{"content":"x"}}`)
+
+	var got strings.Builder
+	inputFrames := 0
+	for {
+		f := readFrame(t, ws)
+		if f.Type == "turn.completed" {
+			break
+		}
+		if f.Type == "turn.failed" {
+			t.Fatalf("large input terminated turn: %+v", f)
+		}
+		if f.Type == "turn.tool_call" {
+			var meta map[string]any
+			if err := json.Unmarshal(f.Payload, &meta); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := meta["input"]; ok {
+				t.Fatal("tool_call metadata carried unbounded input")
+			}
+		}
+		if f.Type != "turn.tool_input" {
+			continue
+		}
+		inputFrames++
+		var p toolInputPayload
+		if err := json.Unmarshal(f.Payload, &p); err != nil {
+			t.Fatal(err)
+		}
+		if p.CallID != "call_big" || len(p.Text) > outboundChunkBytes {
+			t.Fatalf("bad input chunk: id=%q bytes=%d", p.CallID, len(p.Text))
+		}
+		got.WriteString(p.Text)
+	}
+	if inputFrames < 2 {
+		t.Fatalf("large input was not chunked: %d frames", inputFrames)
+	}
+	if got.String() != input {
+		t.Fatalf("reassembled input differs: %d vs %d bytes", got.Len(), len(input))
+	}
+}
+
+func TestToolOutputStreamsOrderedChunks(t *testing.T) {
 	tc, _ := entity.NewToolCall("call_1", "read_file", "{}", enum.TooltypeOrigin)
 	h := newHub(t, stubSender{fn: func(_ context.Context, convID, _, _, _ string,
 		onEvent event.TurnEventHandler) (appconversation.SendResult, error) {
@@ -619,9 +673,11 @@ func TestReasoningAndToolOutputCoalesce(t *testing.T) {
 		onEvent(event.NewDeltaEvent("text"))
 		// New stretch after text → a second marker is correct.
 		onEvent(event.NewReasoningEvent("d"))
-		// Tool output burst for one call → one marker.
+		// Tool output is live content: every event chunk crosses in
+		// order as its own frame — no coalescing, no dedupe.
 		onEvent(event.NewToolCallEvent(tc))
 		onEvent(event.NewToolOutputEvent(tc, "chunk1"))
+		onEvent(event.NewToolOutputEvent(tc, ""))
 		onEvent(event.NewToolOutputEvent(tc, "chunk2"))
 		onEvent(event.NewToolOutputEvent(tc, "chunk3"))
 		return appconversation.SendResult{ConversationID: convID, UserMessagePersisted: true}, nil
@@ -629,20 +685,144 @@ func TestReasoningAndToolOutputCoalesce(t *testing.T) {
 	ws := dial(t, h)
 	sendCommand(t, ws, `{"type":"turn.send","requestId":"r","payload":{"content":"x"}}`)
 	counts := map[string]int{}
+	var seqs []int
+	var out strings.Builder
 	for {
 		f := readFrame(t, ws)
 		counts[f.Type]++
 		if f.Type == "turn.completed" {
 			break
 		}
+		if f.Seq != nil {
+			seqs = append(seqs, *f.Seq)
+		}
+		if f.Type == "turn.tool_output" {
+			var p toolOutputPayload
+			if err := json.Unmarshal(f.Payload, &p); err != nil {
+				t.Fatal(err)
+			}
+			if p.CallID != "call_1" {
+				t.Fatalf("tool_output callId %q", p.CallID)
+			}
+			out.WriteString(p.Text)
+		}
 	}
 	if counts["turn.phase"] != 2 {
 		t.Fatalf("phase frames %d, want 2 (one per stretch)", counts["turn.phase"])
 	}
-	if counts["turn.tool_output"] != 1 {
-		t.Fatalf("tool_output frames %d, want 1", counts["turn.tool_output"])
+	if counts["turn.tool_output"] != 3 {
+		t.Fatalf("tool_output frames %d, want 3 (one per event chunk)", counts["turn.tool_output"])
+	}
+	if out.String() != "chunk1chunk2chunk3" {
+		t.Fatalf("tool output reassembled %q", out.String())
+	}
+	for i, s := range seqs {
+		if s != i {
+			t.Fatalf("seq %v — want strict 0..n", seqs)
+		}
 	}
 	if counts["turn.tool_call"] != 1 || counts["turn.delta"] != 1 {
 		t.Fatalf("counts %v", counts)
+	}
+}
+
+func TestReasoningSummaryStreamsOrderedChunks(t *testing.T) {
+	// Official summaries are owner-visible content: every nonempty
+	// event chunk crosses in order as its own frame set, split at the
+	// byte bound; the stretch still coalesces to one phase marker.
+	big := strings.Repeat("s", outboundChunkBytes) + "TAIL"
+	h := newHub(t, stubSender{fn: func(_ context.Context, convID, _, _, _ string,
+		onEvent event.TurnEventHandler) (appconversation.SendResult, error) {
+		onEvent(event.NewReasoningSummaryEvent("part1 "))
+		onEvent(event.NewReasoningSummaryEvent(""))
+		onEvent(event.NewReasoningSummaryEvent(big))
+		return appconversation.SendResult{ConversationID: convID, UserMessagePersisted: true}, nil
+	}})
+	ws := dial(t, h)
+	sendCommand(t, ws, `{"type":"turn.send","requestId":"r","payload":{"content":"x"}}`)
+	counts := map[string]int{}
+	var seqs []int
+	var out strings.Builder
+	for {
+		f := readFrame(t, ws)
+		counts[f.Type]++
+		if f.Type == "turn.completed" {
+			break
+		}
+		if f.Seq != nil {
+			seqs = append(seqs, *f.Seq)
+		}
+		if f.Type == "turn.reasoning" {
+			var p reasoningPayload
+			if err := json.Unmarshal(f.Payload, &p); err != nil {
+				t.Fatal(err)
+			}
+			if len(p.Text) > outboundChunkBytes {
+				t.Fatalf("reasoning chunk %d bytes exceeds bound", len(p.Text))
+			}
+			if !utf8.ValidString(p.Text) {
+				t.Fatal("reasoning chunk split a UTF-8 sequence")
+			}
+			out.WriteString(p.Text)
+		}
+	}
+	if counts["turn.phase"] != 1 {
+		t.Fatalf("phase frames %d, want 1 (one per stretch)", counts["turn.phase"])
+	}
+	if counts["turn.reasoning"] != 3 {
+		t.Fatalf("reasoning frames %d, want 3 (small + empty + split pair)", counts["turn.reasoning"])
+	}
+	if out.String() != "part1 "+big {
+		t.Fatalf("summary reassembled %q", out.String())
+	}
+	for i, s := range seqs {
+		if s != i {
+			t.Fatalf("seq %v — want strict 0..n", seqs)
+		}
+	}
+}
+
+func TestToolOutputChunkingUTF8(t *testing.T) {
+	// Tool output larger than the per-frame bound splits at the byte
+	// cap without breaking a rune, and reassembles exactly.
+	big := strings.Repeat("a", outboundChunkBytes) + strings.Repeat("世", 12000) // 36KiB of multibyte
+	tc, _ := entity.NewToolCall("call_1", "read_file", "{}", enum.TooltypeOrigin)
+	h := newHub(t, stubSender{fn: func(_ context.Context, convID, _, _, _ string,
+		onEvent event.TurnEventHandler) (appconversation.SendResult, error) {
+		onEvent(event.NewToolCallEvent(tc))
+		onEvent(event.NewToolOutputEvent(tc, big))
+		return appconversation.SendResult{UserMessagePersisted: true}, nil
+	}})
+	ws := dial(t, h)
+	sendCommand(t, ws, `{"type":"turn.send","requestId":"r","payload":{"content":"x"}}`)
+
+	var got strings.Builder
+	frames := 0
+	for {
+		f := readFrame(t, ws)
+		if f.Type == "turn.completed" {
+			break
+		}
+		if f.Type != "turn.tool_output" {
+			continue
+		}
+		frames++
+		var p toolOutputPayload
+		if err := json.Unmarshal(f.Payload, &p); err != nil {
+			t.Fatal(err)
+		}
+		if len(p.Text) > outboundChunkBytes {
+			t.Fatalf("tool_output chunk %d bytes exceeds bound", len(p.Text))
+		}
+		if !utf8.ValidString(p.Text) {
+			t.Fatal("tool_output chunk split a UTF-8 sequence")
+		}
+		got.WriteString(p.Text)
+	}
+	if frames < 2 {
+		t.Fatalf("expected split into >1 frame, got %d", frames)
+	}
+	if got.String() != big {
+		t.Fatalf("reassembled tool output differs: %d vs %d bytes", got.Len(), len(big))
 	}
 }

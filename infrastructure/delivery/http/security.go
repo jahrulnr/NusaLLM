@@ -2,6 +2,7 @@ package http
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -10,24 +11,29 @@ import (
 
 // guard is the contract's security envelope: the server is loopback-only
 // with no auth, so Host and Origin checks are what keep other websites
-// from driving the API through a victim's browser. Host must equal the
-// canonical listen authority on every request (blocks DNS-rebinding);
-// unsafe methods additionally require an Origin exactly equal to the
-// server's own origin — absent is rejected, non-browser callers must
-// send it. Safe methods need no Origin: the server sends no CORS
-// allow-headers, so a cross-origin page could not read responses anyway.
-func guard(authority string) gin.HandlerFunc {
+// from driving the API through a victim's browser. Host must match a
+// configured authority on every request; unsafe methods also require an
+// Origin matching that authority. Safe methods need no Origin: the server
+// sends no CORS allow-headers, so a cross-origin page could not read
+// responses anyway.
+func guard(authorities []string) gin.HandlerFunc {
+	allowedHosts := make(map[string]struct{}, len(authorities))
+	allowedOrigins := make(map[string]struct{}, len(authorities))
+	for _, authority := range authorities {
+		allowedHosts[strings.ToLower(authority)] = struct{}{}
+		allowedOrigins[strings.ToLower("http://"+authority)] = struct{}{}
+	}
 	return func(c *gin.Context) {
-		if c.Request.Host != authority {
+		if _, ok := allowedHosts[strings.ToLower(c.Request.Host)]; !ok {
 			transport.WriteProblem(c, http.StatusForbidden, "forbidden_origin",
-				"Host header does not match the listen address")
+				"Host header does not match a configured server host")
 			return
 		}
 		switch c.Request.Method {
 		case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
-			if c.GetHeader("Origin") != "http://"+authority {
+			if _, ok := allowedOrigins[strings.ToLower(c.GetHeader("Origin"))]; !ok {
 				transport.WriteProblem(c, http.StatusForbidden, "forbidden_origin",
-					"unsafe methods require Origin: http://"+authority)
+					"unsafe methods require an Origin matching a configured server host")
 				return
 			}
 		}

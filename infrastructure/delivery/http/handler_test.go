@@ -13,11 +13,13 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	appconversation "github.com/jahrulnr/nusallm/application/conversation"
 	appgateway "github.com/jahrulnr/nusallm/application/gateway"
 	"github.com/jahrulnr/nusallm/infrastructure/config"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
+	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
@@ -71,8 +73,20 @@ func (f *fakeConversations) History(_ context.Context, id string, start, end int
 
 func (f *fakeConversations) ToolSchemas() []valueobject.ToolSchema { return f.tools }
 
+func (f *fakeConversations) ContextFooterStats(context.Context, string, string, string) (appconversation.ContextFooterStats, error) {
+	return appconversation.ContextFooterStats{}, nil
+}
+
 type fakeGateways struct {
 	infos []appgateway.GatewayInfo
+}
+
+func (f *fakeGateways) DiscoverModels(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+
+func (f *fakeGateways) DiscoverProviders(context.Context, string, string) ([]dservice.UpstreamProvider, error) {
+	return nil, nil
 }
 
 func (f *fakeGateways) List(context.Context) ([]appgateway.GatewayInfo, error) {
@@ -96,8 +110,8 @@ func (f *fakeSettings) Show() ([]byte, error) { return f.raw, nil }
 
 func newTestHandler(t *testing.T, d Deps) *stdhttp.Handler {
 	t.Helper()
-	if d.Authority == "" {
-		d.Authority = testAuthority
+	if len(d.Authorities) == 0 {
+		d.Authorities = []string{testAuthority}
 	}
 	h := stdhttp.Handler(NewHandler(d))
 	return &h
@@ -274,11 +288,30 @@ func mkMessages(t *testing.T) []entity.Message {
 		t.Fatal(err)
 	}
 	assistant.SetFinishReason(enum.FinishReasonToolCalls)
+	assistant.SetParts([]entity.MessagePart{
+		{Kind: entity.MessagePartText, Text: "found it"},
+		{Kind: entity.MessagePartReasoning, Text: "PRIVATE-REASONING"},
+		{Kind: entity.MessagePartToolCall, ToolCallID: "call_1"},
+		{Kind: entity.MessagePartToolCall, ToolCallID: "call_2"},
+	})
 	tc, err := entity.NewToolCall("call_1", "read_file", `{"path":"/etc/passwd"}`, enum.TooltypeOrigin)
 	if err != nil {
 		t.Fatal(err)
 	}
 	assistant.AddToolCall(tc)
+	tc2, err := entity.NewToolCall("call_2", "run_shell", `{"cmd":"ls -la"}`, enum.TooltypeOrigin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tc2.SetCallAt(time.Date(2026, 9, 28, 1, 2, 3, 0, time.UTC))
+	tc2.SetStoredOutput(`<untrusted_tool latency="12ms">` + "\ntotal 0\n</untrusted_tool>")
+	outAtt, err := valueobject.NewAttachment("file:///home/user/secret/out.png", "image/png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	outAtt.SetSHA256("cafebabe")
+	tc2.SetOutputAttachments([]valueobject.Attachment{outAtt})
+	assistant.AddToolCall(tc2)
 	return []entity.Message{user, assistant}
 }
 
@@ -304,21 +337,68 @@ func TestMessagesWindowAndSanitization(t *testing.T) {
 	if len(msgs) != 1 || msgs[0].(map[string]any)["role"] != "assistant" {
 		t.Fatalf("unexpected messages: %v", msgs)
 	}
-	call := msgs[0].(map[string]any)["toolCalls"].([]any)[0].(map[string]any)
-	if call["id"] != "call_1" || call["name"] != "read_file" || call["status"] != "pending" {
-		t.Fatalf("tool call not sanitized to id/name/status: %v", call)
+	calls := msgs[0].(map[string]any)["toolCalls"].([]any)
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 tool calls: %v", msgs[0])
+	}
+	parts := msgs[0].(map[string]any)["parts"].([]any)
+	if len(parts) != 4 || parts[0].(map[string]any)["text"] != "found it" ||
+		parts[1].(map[string]any)["kind"] != "reasoning" ||
+		parts[1].(map[string]any)["text"] != "PRIVATE-REASONING" ||
+		parts[2].(map[string]any)["toolCallId"] != "call_1" ||
+		parts[3].(map[string]any)["toolCallId"] != "call_2" {
+		t.Fatalf("ordered message parts projection wrong: %v", parts)
+	}
+	pending := calls[0].(map[string]any)
+	if pending["id"] != "call_1" || pending["name"] != "read_file" ||
+		pending["status"] != "pending" ||
+		pending["input"] != `{"path":"/etc/passwd"}` {
+		t.Fatalf("pending tool call projection wrong: %v", pending)
+	}
+	if _, ok := pending["output"]; ok {
+		t.Fatalf("pending call must omit output: %v", pending)
+	}
+	done := calls[1].(map[string]any)
+	if done["id"] != "call_2" || done["name"] != "run_shell" ||
+		done["status"] != "completed" ||
+		done["input"] != `{"cmd":"ls -la"}` ||
+		done["output"] != `<untrusted_tool latency="12ms">`+"\ntotal 0\n</untrusted_tool>" ||
+		done["calledAt"] != "2026-09-28T01:02:03Z" {
+		t.Fatalf("completed tool call projection wrong: %v", done)
+	}
+	outAtts := done["attachments"].([]any)
+	if len(outAtts) != 1 {
+		t.Fatalf("tool output attachment missing: %v", done)
+	}
+	oa := outAtts[0].(map[string]any)
+	if oa["uri"] != "file:///home/user/secret/out.png" || oa["mediaType"] != "image/png" ||
+		oa["modality"] != "image" || len(oa) != 3 {
+		t.Fatalf("tool output attachment projection wrong: %v", oa)
 	}
 
-	// Sanitization sweep over the whole body: attachment name/URI, tool
-	// input, optionalContent, sha256 pin must never appear.
+	// Provider replay artifacts and sha256 content pins remain internal;
+	// normalized reasoning parts and tool I/O cross to the owner UI.
 	rec = do(t, h, "GET", "/api/conversations/c_1/messages?start=0&limit=50", "", "")
 	body := rec.Body.String()
 	for _, leak := range []string{
-		"keys.png", "file://", "/etc/passwd", "SHOULD-NOT-SERIALIZE", "deadbeef",
-		"input", "output", "optionalContent", "sha256", "uri",
+		"SHOULD-NOT-SERIALIZE", "deadbeef", "cafebabe",
+		"optionalContent", "sha256",
 	} {
 		if strings.Contains(body, leak) {
 			t.Fatalf("response leaks %q: %s", leak, body)
+		}
+	}
+	if !strings.Contains(body, "PRIVATE-REASONING") {
+		t.Fatalf("provider reasoning part missing from history: %s", body)
+	}
+	for _, want := range []string{
+		`"calledAt"`, "/etc/passwd",
+		`"uri":"file:///home/user/secret/keys.png"`,
+		`"name":"../../secret/keys.png"`,
+		`"uri":"file:///home/user/secret/out.png"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected projection field missing %q: %s", want, body)
 		}
 	}
 	doc = decodeBody(t, rec)
@@ -331,8 +411,10 @@ func TestMessagesWindowAndSanitization(t *testing.T) {
 		t.Fatalf("attachments missing: %v", first)
 	}
 	att := atts[0].(map[string]any)
-	if att["mediaType"] != "image/png" || att["modality"] != "image" || len(att) != 2 {
-		t.Fatalf("attachment must be mediaType+modality only: %v", att)
+	if att["mediaType"] != "image/png" || att["modality"] != "image" ||
+		att["uri"] != "file:///home/user/secret/keys.png" ||
+		att["name"] != "../../secret/keys.png" || len(att) != 4 {
+		t.Fatalf("attachment projection wrong: %v", att)
 	}
 	if doc["hasMore"] != false || doc["effectiveStart"] != 0.0 {
 		t.Fatalf("window meta wrong: %v", doc)

@@ -90,7 +90,14 @@ concurrent update. Exposing the field on the API remains future work.
 ## Deployment and trust model
 
 - The server binds **`127.0.0.1` only** — loopback, one instance. The
-  listen port is fixed at build/config time; it is not API-settable.
+  port comes from `server.port` (default `10998`) and can be changed in
+  Settings; the change applies after restart. `--port` remains a
+  one-process CLI override.
+- `server.hosts` is the list of hostname/IP aliases accepted in `Host`
+  and `Origin` headers; defaults are `127.0.0.1` and `localhost`.
+  Entries omit the port, which is taken from `server.port`. The socket
+  still binds only to `127.0.0.1`, so configured hostnames must resolve
+  to that loopback listener.
 - The trust boundary is the machine: **any local process or OS user on
   the host can reach the socket.** "Single-user" here means one
   *intended* user — this contract provides no access control and does
@@ -99,19 +106,20 @@ concurrent update. Exposing the field on the API remains future work.
   relies on strict origin checks to keep *other websites* out:
 
   - **`Host` validation.** Every request must carry a `Host` header
-    equal to the server's listen authority (e.g. `127.0.0.1:PORT`).
-    Anything else is rejected `403`. This blocks DNS-rebinding style
-    access where a remote page targets the loopback server under its own
-    hostname.
+    matching one configured `server.hosts` entry with the configured
+    port (for example, `localhost:10998`). Anything else is rejected
+    `403`.
   - **`Origin` on unsafe HTTP.** `POST`, `PUT`, `PATCH`, `DELETE`
-    requests must carry an `Origin` header exactly equal to the server's
-    own origin — `http://<listen authority>`. Missing or mismatched
-    origins are rejected `403`. Non-browser callers (curl, scripts) must
-    supply `Origin` explicitly; there is no "CLI exemption" path.
+    requests must carry an `Origin` header matching the same configured
+    host and port, such as `http://localhost:10998`. Missing or
+    mismatched origins are rejected `403`. Non-browser callers (curl,
+    scripts) must supply `Origin` explicitly; there is no "CLI
+    exemption" path.
   - **`Origin` on the WebSocket handshake.** The upgrade request must
-    carry the same exact-match `Origin`; a missing or foreign origin is
-    rejected before the socket opens. This is the standard WebSocket
-    CSRF defense — browsers send `Origin` on every WS handshake.
+    carry an `Origin` matching one configured host and port; a missing
+    or foreign origin is rejected before the socket opens. This is the
+    standard WebSocket CSRF defense — browsers send `Origin` on every
+    WS handshake.
   - **Safe methods** (`GET`, `HEAD`) do not require `Origin` — they are
     reads, and the responses are ordinary JSON that a cross-origin page
     could not read anyway under CORS rules (the server sends no CORS
@@ -143,17 +151,25 @@ following never leave the server on any endpoint or frame:
   not accepted on write. On gateway `PUT` the application preserves it
   per surviving model `id` — see the
   [hidden-field rule](#scope-and-non-goals).
-- **Raw reasoning text.** Reasoning surfaces only as `turn.phase`
-  markers — a status, never the scratchpad content.
-- **Attachment references.** Message attachments project `mediaType`
-  and `modality` only — no URI, no bytes, no `name` (a stored name can
-  carry path-shaped data). Stored tool-output attachments project the
-  same way.
-- **Raw tool input and output.** History projects tool calls to
-  `id`/`name`/`status`; the wire never carries call arguments or
-  results. `turn.tool_output` is a progress marker carrying `callId`
-  only — tool output is arbitrary data and can legitimately contain
-  credentials or paths, so no preview is serialized.
+- **Normalized message parts.** Assistant history exposes ordered
+  `parts`: answer text, raw or summarized reasoning text, and tool-call
+  positions. Live reasoning crosses in order as `turn.reasoning` chunks.
+  Provider replay artifacts in `optionalContent` remain internal.
+- **Attachment references, not bytes.** Message and tool-output
+  attachments project `mediaType`, `modality`, `uri`, and optional
+  `name` — the stored reference (including `file://` local paths)
+  serializes to the loopback owner by design, and a stored name can
+  carry path-shaped data, so clients render both as escaped text.
+  Attachment bytes are never served over the API, and the `sha256`
+  content pin stays internal.
+- **What intentionally crosses: tool I/O.** This is a single-user
+  loopback UI for its owner — tool `input` (exact argument string) and
+  `output` (live chunks over WS; the persisted evidence envelope over
+  HTTP) are part of the contract so the owner sees what the agent saw.
+  They are untrusted data — can contain paths, commands, secrets — and
+  must render as escaped text, never markup. Any loopback process can
+  reach the API; SOP/Host checks guard browsers, they are not OS-user
+  auth.
 - **Server internals.** No config file location, no `storage.dir`, no
   app metadata (see [settings](#settings-semantics)).
 
@@ -180,11 +196,15 @@ Full schemas, typed errors, and examples live in
 | `DELETE /api/conversations/{id}` | Delete the room and its storage; queued jobs on it die `410`. |
 | `POST /api/conversations/{id}/compactions` | Queue a manual compaction on the room's worker; `204` when it finishes. |
 | `GET /api/gateways?offset&limit` · `GET /api/gateways/{id}` | Sanitized gateway projections (paged list, sorted by id), including broken records. |
+| `GET /api/gateways/{id}/available-models` | Fetch all model IDs advertised by the configured provider endpoint; returns `{ "data": ["model-id", ...] }` without changing the gateway. The UI selects IDs and saves the merged catalog through `PUT`. |
+| `GET /api/gateways/{id}/providers?model={modelId}` | Upstream backends an aggregator route can serve the model through — `{ "data": [{ "name", "slug" }] }`, empty for direct providers. `model` is required (`400` without it). The picker echoes `slug` back as `payload.provider` on `turn.send`. |
 | `PUT /api/gateways/{id}` | Full-replace upsert — the path id is authoritative (a body `id` is `400`); `apiKey` is tri-state write-only. |
 | `DELETE /api/gateways/{id}` | Remove gateway + vaulted key; `404` when absent. |
 | `GET /api/settings` | Effective settings document (projected — see below). |
 | `PATCH /api/settings` | One leaf write — body `{key, value}`. |
 | `GET /api/tools` | Registered tool catalog: `name`, `description`, `parameters`, `enabled`, `permission`. |
+| `GET /api/fs/browse?path=` | Directory-only listing for the workspace picker — `{ "path", "parent", "roots": [{"name","path"}], "entries": [{"name","path","hidden"}] }`. Empty `path` defaults to the owner's home; `parent` ascends toward the filesystem root and `roots` jumps to `/` (or present drive letters on Windows). `path` must be absolute (`400`); missing directories are `404`, unreadable `403`. Listings cap at 1000 directories; file contents are never served. |
+| `GET /api/context?conversationId&route&modelId` | Composer-footer stats — `{ "estimate", "total" }`: estimated live input tokens and the bound model's input allowance. `conversationId` is optional — a fresh room still resolves `total` when `route`+`modelId` name a known model. |
 | `GET /api/ws` | WebSocket upgrade — `101`; frames defined in [`websocket.md`](./websocket.md). |
 
 There is intentionally **no `POST /api/conversations`** and **no
@@ -223,14 +243,16 @@ and stays unpaginated.
 `GET /api/settings` returns the **effective persisted** configuration —
 the JSON file as stored on disk, merged over `default` struct tags;
 what a restart would load, not a snapshot of the running process. It is
-projected to leaves that are safe to show a browser: `conversation.*`,
-`service.*`, and `log.*`. It excludes server internals (`App` metadata
-is never marshaled) and local paths (`storage.dir` — a filesystem
-location, not a UI concern).
+projected to leaves that are safe to show a browser: `server.*`,
+`conversation.*`, `service.*`, and `log.*`. `server.hosts` is a JSON
+array of host aliases without ports. It excludes server internals (`App`
+metadata is never marshaled) and local paths (`storage.dir` — a
+filesystem location, not a UI concern).
 
 `PATCH /api/settings` takes `{key, value}` where `key` is a dotted path
 to a **leaf inside the projected document** (e.g.
-`conversation.max_turn_steps`) and `value` is a JSON literal —
+`conversation.max_turn_steps`, `server.port`, or `server.hosts`) and
+`value` is a JSON literal —
 `null` is rejected. Writes go through `application/setting.Set`, which
 validates the whole resulting document before writing it atomically;
 keys outside the projected surface (`storage.dir`, section paths,
@@ -240,9 +262,9 @@ Timing nuance, documented because it is real behavior and not a promise
 to fix: config writes take effect **on next process start** for most
 sections, but `application/conversation` re-reads the conversation
 section on every job post (`reloadConfig`), so `conversation.*` changes
-apply to the *next submitted job* while `service.*`, `log.*`, and
-`storage.dir` wait for restart. The response to `PATCH` does not imply
-the running process has already applied the value.
+apply to the *next submitted job* while `server.*`, `service.*`,
+`log.*`, and `storage.dir` wait for restart. The response to `PATCH` does
+not imply the running process has already applied the value.
 
 ### Error model
 
@@ -293,8 +315,10 @@ shape in brief:
   asynchronous submission scheduled — journaled and written before any
   other turn frame; it is **not** a worker-acceptance, persistence, or
   provider-start signal. Then `turn.delta` / `turn.phase` /
-  `turn.tool_call` / `turn.tool_output` (a `callId` progress marker, no
-  text) / `turn.step_finished`, and exactly one terminal
+  `turn.reasoning` / `turn.tool_call` / `turn.tool_input` /
+  `turn.tool_output` (ordered live argument/output chunks — progress,
+  not completion; raw and summarized reasoning chunks in arrival order)
+  / `turn.step_finished`, and exactly one terminal
   `turn.completed` or `turn.failed` per turn. Every turn frame carries
   `conversationId`, `turnId`, and a per-turn strictly increasing `seq`.
 - Every terminal frame carries `resyncRequired: true` — stream frames
@@ -343,8 +367,8 @@ them honestly — none of these exist yet:
 - **Server-side turn ids.** Minted `t_<base32>` via the domain ID rule
   at accept time, before scheduling.
 - ~~**Projections.**~~ Done for reads in phase 1: message→DTO
-  sanitization (tool calls to id/name/status, attachments to
-  metadata-only, `optionalContent` dropped), the gateway `keyState`
+  projection (owner-visible tool call records, attachment
+  uri/name references, `optionalContent` dropped), the gateway `keyState`
   derivation, and the settings leaf-projection.
 - ~~**`optionalContent` preservation.**~~ Done in phase 2:
   `application/gateway.Upsert` inspects the stored record and carries
@@ -390,15 +414,15 @@ Acceptance checks (each maps to a contract clause):
 
 | # | Check | Passes when |
 |---|---|---|
-| A1 | `Host` validation | `Host: evil.example` → `403 forbidden_origin` on any path; exact listen authority passes. |
-| A2 | `Origin` on unsafe HTTP | `POST`/`PUT`/`PATCH`/`DELETE` with absent or foreign `Origin` → `403`; `Origin: http://127.0.0.1:PORT` passes. |
+| A1 | `Host` validation | `Host: evil.example` → `403 forbidden_origin` on any path; each configured `server.hosts` alias with the configured port passes. |
+| A2 | `Origin` on unsafe HTTP | `POST`/`PUT`/`PATCH`/`DELETE` with absent or unconfigured `Origin` → `403`; configured host origins pass. |
 | A3 | `Origin` on WS | Handshake without/with foreign `Origin` → rejected `403` before upgrade. |
-| A4 | Loopback bind | Server refuses connections on non-loopback interfaces; listen address is not API-settable. |
+| A4 | Loopback bind | Server refuses connections on non-loopback interfaces; `server.port` and `server.hosts` apply after restart. |
 | A5 | Conversation list paging | `offset`/`limit` honored, `limit` > 100 → `400`; page metadata `total`/`hasMore` correct. |
 | A6 | Message ranges | `start=-50` returns the last ≤50; `effectiveStart`/`nextStart`/`hasMore` consistent with `total`. |
 | A7 | Rename/delete/compaction | `PATCH` rename `200`; `DELETE` `204` then `404`; compaction `204` on success, `400` nothing-to-compact, `429` full mailbox. |
 | A8 | Gateway tri-state | `PUT` with absent `apiKey` keeps stored ref; `""` clears; literal vaults; `keyState`/`keySet` correct; no key material or raw ref in any response. |
-| A9 | Settings | `GET` has no `storage`/`App`/paths; `PATCH` leaf `200`, `null` → `400`, `storage.dir` → `400`; writes atomic and schema-ordered. |
+| A9 | Settings | `GET` exposes `server`, `conversation`, `service`, and `log` leaves without `storage`/`App`/paths; `PATCH` leaf `200`, invalid values → `400`; writes atomic and schema-ordered. |
 | A10 | Tools | Catalog exposes name/description/parameters/enabled/permission; nothing internal leaks. |
 | A11 | WS lifecycle | An accepted `turn.send` → exactly one `turn.opened` (`seq` 0, journaled and written before any other turn frame) → ordered stream → exactly one terminal frame; `seq` strictly increasing per turn. |
 | A12 | `opened` honesty | `turn.opened` = accepted + scheduled only: a full mailbox still ends the turn `turn.failed` `429` *after* `opened`, and a malformed command (bad JSON, unknown `type`, invalid fields) gets an `error` frame with no `turnId`/`seq` — never a `turn.failed` for a turn that never existed. |
@@ -407,7 +431,7 @@ Acceptance checks (each maps to a contract clause):
 | A15 | Edit preemption | `turn.edit` during a running turn: running turn ends `turn.failed` `408`, edit completes; both terminal frames carry `resyncRequired: true` and the client re-reads via HTTP. |
 | A16 | Delete race | `DELETE` a conversation with queued turns → queued turns end `turn.failed` `410`. |
 | A17 | Failed-send receipt | Provider failure after the user append → `turn.failed` with `userMessagePersisted: true`. |
-| A18 | Projection redaction | Inject a sentinel string into each server-held field — stored `apiKey` material, a raw `env:`/`secret:` ref, an error cause, a model's `optionalContent`, reasoning content, a tool call's arguments — and assert the sentinel appears in no projected *metadata field* of any response or frame (`keyState`, `code`/`detail`, tool call refs, `parameters`, …). The check targets projected fields only: untrusted *content* fields (`Message.content`, `turn.delta` text) may legitimately quote anything, including a key the user pasted — no grep-all-traffic claim is made. |
+| A18 | Projection redaction | Inject a sentinel string into each server-held field — stored `apiKey` material, a raw `env:`/`secret:` ref, an error cause, a model's `optionalContent`, and an attachment `sha256` pin — and assert it appears in no projected *metadata field* (`keyState`, `code`/`detail`, tool call refs, `parameters`, …). Provider reasoning is owner-visible content in ordered `Message.parts` and `turn.reasoning` frames; the check targets projected fields only, not all traffic. |
 | A19 | Problem+json | Every error body parses as problem+json with a `code` from the catalog table. |
 | A20 | Slow subscriber | A stalled WS client does not delay the provider read loop or other subscribers; overflow ends that subscriber's stream, not the turn. |
 | A21 | Gateway list paging | `GET /api/gateways` honors `offset`/`limit` with the same `data`/`page` envelope as conversations; `limit` > 100 → `400`; sorted by id including `broken` records. |

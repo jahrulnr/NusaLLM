@@ -36,3 +36,23 @@ type Tool interface {
 	Schema() valueobject.ToolSchema
 	Execute(ctx context.Context, call entity.ToolCall, emit ToolEmitter) (ToolResult, error)
 }
+
+// workspaceCtxKey scopes a turn's working directory to directory-aware
+// tools (file sandbox, shell cwd) without widening the Execute signature.
+type workspaceCtxKey struct{}
+
+// WithWorkspaceDir returns a ctx carrying the absolute directory the
+// turn's tools must work in. Empty dir leaves the ctx unchanged.
+func WithWorkspaceDir(ctx context.Context, dir string) context.Context {
+	if dir == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, workspaceCtxKey{}, dir)
+}
+
+// WorkspaceDir returns the turn-scoped working directory, "" when unset —
+// tools fall back to their own configured root.
+func WorkspaceDir(ctx context.Context) string {
+	dir, _ := ctx.Value(workspaceCtxKey{}).(string)
+	return dir
+}

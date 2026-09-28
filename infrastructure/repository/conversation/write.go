@@ -23,11 +23,12 @@ func (r *ConversationRepository) Save(ctx context.Context, conv *aggregate.Conve
 	}
 
 	m := metaRecord{
-		ID:      conv.ID(),
-		Title:   conv.Title(),
-		Route:   conv.Route(),
-		ModelID: conv.ModelID(),
-		Usage:   encodeUsage(conv.Usage()),
+		ID:        conv.ID(),
+		Title:     conv.Title(),
+		Route:     conv.Route(),
+		ModelID:   conv.ModelID(),
+		Workspace: conv.Workspace(),
+		Usage:     encodeUsage(conv.Usage()),
 		// SystemPrompt is deliberately absent: the prompt ships embedded
 		// in the binary, so it is applied in memory, never persisted.
 	}

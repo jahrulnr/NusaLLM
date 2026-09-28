@@ -17,11 +17,20 @@ func TestAssetsContainEverySurface(t *testing.T) {
 		"lib/socket-client.js",
 		"lib/dom.js",
 		"lib/icons.js",
+		"lib/markdown.js",
+		"lib/highlight.js",
+		"lib/turn-projection.js",
+		"lib/mermaid-runtime.js",
+		"vendor/mermaid/mermaid.min.js",
+		"vendor/mermaid/LICENSE",
+		"vendor/mermaid/README.md",
 	}
 	widgets := []string{
 		"app-shell", "nav-sidebar", "conversation-header", "message-thread",
-		"chat-composer", "model-picker", "context-panel", "provider-manager",
+		"chat-composer", "model-picker", "settings-page", "provider-manager",
 		"settings-editor", "tool-catalog", "toast-stack",
+		"markdown-view", "code-block", "thinking-block", "tool-activity",
+		"mermaid-diagram",
 	}
 	for _, w := range widgets {
 		required = append(required,
@@ -58,6 +67,13 @@ func TestIndexIsWrapperOnly(t *testing.T) {
 	if m := banned.FindString(html); m != "" {
 		t.Errorf("index.html carries application markup %q — widgets own that", m)
 	}
+	// The pinned vendor bundle is a classic script that must register
+	// globalThis.mermaid before the app module evaluates.
+	vendor := strings.Index(html, `src="/vendor/mermaid/mermaid.min.js"`)
+	app := strings.Index(html, `src="/app.js"`)
+	if vendor < 0 || app < 0 || vendor > app {
+		t.Errorf("index.html must load the vendored mermaid bundle before /app.js")
+	}
 }
 
 // app-shell upgrades <nusa-app> synchronously on definition; importing
@@ -75,14 +91,36 @@ func TestAppJSImportsShellLast(t *testing.T) {
 	}
 	for _, w := range []string{
 		"nav-sidebar", "conversation-header", "message-thread",
-		"chat-composer", "model-picker", "context-panel", "provider-manager",
+		"chat-composer", "model-picker", "settings-page", "provider-manager",
 		"settings-editor", "tool-catalog", "toast-stack",
+		"markdown-view", "code-block", "thinking-block", "tool-activity",
+		"mermaid-diagram",
 	} {
 		leaf := strings.Index(src, "widgets/"+w+"/"+w+".js")
 		if leaf < 0 {
 			t.Errorf("app.js does not import widget %s", w)
 		} else if leaf > shell {
 			t.Errorf("app.js imports %s after app-shell — upgrade order broken", w)
+		}
+	}
+	// code-block must define before markdown-view, which instantiates it;
+	// all four renderers define before message-thread, their consumer.
+	orders := [][2]string{
+		{"code-block", "markdown-view"},
+		{"mermaid-diagram", "markdown-view"},
+		{"mermaid-diagram", "message-thread"},
+		{"code-block", "message-thread"},
+		{"markdown-view", "message-thread"},
+		{"thinking-block", "message-thread"},
+		{"tool-activity", "message-thread"},
+	}
+	for _, pair := range orders {
+		a := strings.Index(src, "widgets/"+pair[0]+"/"+pair[0]+".js")
+		b := strings.Index(src, "widgets/"+pair[1]+"/"+pair[1]+".js")
+		if a < 0 || b < 0 {
+			t.Errorf("missing import for %s or %s", pair[0], pair[1])
+		} else if a > b {
+			t.Errorf("app.js imports %s after %s", pair[0], pair[1])
 		}
 	}
 }

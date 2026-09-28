@@ -86,6 +86,10 @@ func TestToolCallRoundtripAndPatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	m, _ := entity.NewMessage(enum.RoleAssistant, "")
+	m.SetParts([]entity.MessagePart{
+		{Kind: entity.MessagePartReasoning, Text: "provider reasoning"},
+		{Kind: entity.MessagePartToolCall, ToolCallID: "call-1"},
+	})
 	tc, _ := entity.NewToolCall("call-1", "search", `{"q":"x"}`, enum.TooltypeOrigin)
 	tc.SetOptionalContent("gemini.thought_signature", "sig123")
 	m.AddToolCall(tc)
@@ -107,6 +111,12 @@ func TestToolCallRoundtripAndPatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	stored := got.Messages()[0].ToolCalls()[0]
+	parts := got.Messages()[0].Parts()
+	if len(parts) != 2 || parts[0].Kind != entity.MessagePartReasoning ||
+		parts[0].Text != "provider reasoning" ||
+		parts[1].Kind != entity.MessagePartToolCall || parts[1].ToolCallID != "call-1" {
+		t.Fatalf("message parts lost across reload: %+v", parts)
+	}
 	if stored.Output() != "<env>wrapped</env>" {
 		t.Fatalf("patched output = %q", stored.Output())
 	}

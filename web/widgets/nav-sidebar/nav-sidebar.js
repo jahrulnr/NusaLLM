@@ -52,10 +52,6 @@ class NavSidebar extends Widget {
       el('div', { class: 'brand' }, [
         el('span', { class: 'brand-mark', text: 'N' }),
         el('span', { class: 'brand-name', text: 'NusaLLM' }),
-        el('button', {
-          class: 'icon-btn', type: 'button', 'aria-label': 'Toggle context panel',
-          onclick: () => emit(this, 'context-open'),
-        }, [icon('panel', 15)]),
       ]),
       el('button', {
         class: 'new-btn', type: 'button',
@@ -112,7 +108,7 @@ class NavSidebar extends Widget {
       el('span', { class: 'conn-label', text: label }),
       el('button', {
         class: 'icon-btn', type: 'button', 'aria-label': 'Workspace settings',
-        onclick: () => emit(this, 'context-open'),
+        onclick: () => emit(this, 'settings-open'),
       }, [icon('gear', 14)]),
     );
   }

@@ -5,6 +5,19 @@ import { icon } from '../../lib/icons.js';
 // busy swaps the send button for a cancel. The buffer is only cleared
 // by clear() — the shell calls it once turn.opened lands, so a
 // pre-open command error never eats the draft.
+// Decimal-K token abbreviation — mirrors Go's FormatScaledTokens so the
+// footer matches the TUI's rendering.
+function fmtTok(n) {
+  if (!n || n <= 0) return '0';
+  if (n >= 1e6) {
+    const whole = Math.floor(n / 1e6);
+    const frac = Math.floor(((n % 1e6) * 10) / 1e6);
+    return frac === 0 ? `${whole}M` : `${whole}.${frac}M`;
+  }
+  if (n >= 1e3) return `${n % 1e3 === 0 ? n / 1e3 : Math.round(n / 1e3)}K`;
+  return String(n);
+}
+
 class ChatComposer extends Widget {
   static stylesheet = new URL('./chat-composer.css', import.meta.url);
 
@@ -14,6 +27,7 @@ class ChatComposer extends Widget {
     this._connection = 'closed';
     this._selection = null;
     this._canSend = false;
+    this._context = null; // {estimate, total} token stats
     this._render();
   }
 
@@ -21,6 +35,7 @@ class ChatComposer extends Widget {
   set connection(state) { this._connection = state; this._syncButton(); }
   set selection(sel) { this._selection = sel; this._syncButton(); }
   set canSend(v) { this._canSend = !!v; this._syncButton(); }
+  set context(stats) { this._context = stats || null; this._syncButton(); }
 
   get value() { return this.input ? this.input.value : ''; }
   set value(v) { if (this.input) { this.input.value = v || ''; this._autosize(); } }
@@ -42,9 +57,10 @@ class ChatComposer extends Widget {
     });
     this.button = el('button', { class: 'send', type: 'button' });
     this.statusEl = el('div', { class: 'status' });
+    this.tokensEl = el('div', { class: 'tokens', 'aria-label': 'Context usage' });
     this.root.append(
       el('div', { class: 'row' }, [this.input, this.button]),
-      this.statusEl,
+      el('div', { class: 'footer' }, [this.statusEl, this.tokensEl]),
     );
     this._syncButton();
   }
@@ -81,6 +97,10 @@ class ChatComposer extends Widget {
       : !this._canSend ? 'select a model'
       : '';
     this.statusEl.textContent = reason;
+    const c = this._context;
+    this.tokensEl.textContent = c && c.total
+      ? `~${fmtTok(c.estimate)}/${fmtTok(c.total)} Tokens`
+      : '';
   }
 }
 

@@ -2,6 +2,7 @@ package appconversation
 
 import (
 	"context"
+	appjob "github.com/jahrulnr/nusallm/application/job"
 	"net/http"
 	"sync/atomic"
 	"testing"
@@ -23,10 +24,10 @@ import (
 // and regenerates — the room ends as [edited user, fresh assistant].
 func TestEditRegeneratesFromTarget(t *testing.T) {
 	app, _ := fixture(t, okHandler)
-	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "original", nil, nil); err != nil {
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "original", nil, appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.Send(t.Context(), "room", "", "", "second", nil, nil); err != nil {
+	if _, err := app.Send(t.Context(), "room", "", "", "second", nil, appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	conv, _ := app.deps.Convs.Load(t.Context(), "room")
@@ -50,7 +51,7 @@ func TestEditRegeneratesFromTarget(t *testing.T) {
 
 func TestEditRejectsNonUser(t *testing.T) {
 	app, _ := fixture(t, okHandler)
-	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "hi", nil, nil); err != nil {
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "hi", nil, appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	conv, _ := app.deps.Convs.Load(t.Context(), "room")
@@ -62,7 +63,7 @@ func TestEditRejectsNonUser(t *testing.T) {
 
 func TestEditNotFound(t *testing.T) {
 	app, _ := fixture(t, okHandler)
-	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "hi", nil, nil); err != nil {
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "hi", nil, appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := app.Edit(t.Context(), "room", "m_nope", "x", nil); apperror.As(err).StatusCode() != 404 {
@@ -78,7 +79,7 @@ func TestEditNotFound(t *testing.T) {
 // The worker repromotes its era and regenerates from there.
 func TestEditCompactedMessage(t *testing.T) {
 	app, _ := fixture(t, okHandler)
-	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "old question", nil, nil); err != nil {
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "old question", nil, appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	conv, _ := app.deps.Convs.Load(t.Context(), "room")
@@ -122,14 +123,17 @@ func TestEditPreemptsRunningSend(t *testing.T) {
 		okHandler(w, r)
 	})
 	// Seed the room so the edit has a target.
-	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "v1", nil, nil); err != nil {
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "v1", nil, appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	conv, _ := app.deps.Convs.Load(t.Context(), "room")
 	target := conv.Messages()[0].ID()
 
 	sent := make(chan error, 1)
-	go func() { _, err := app.Send(t.Context(), "room", "", "", "v2", nil, nil); sent <- err }()
+	go func() {
+		_, err := app.Send(t.Context(), "room", "", "", "v2", nil, appjob.SendOptions{}, nil)
+		sent <- err
+	}()
 	time.Sleep(50 * time.Millisecond) // send is holding the slot
 
 	if err := app.Edit(t.Context(), "room", target, "edited", nil); err != nil {
@@ -178,7 +182,10 @@ func TestEditPreemptsRunningTool(t *testing.T) {
 	}
 
 	sent := make(chan error, 1)
-	go func() { _, err := app.Send(t.Context(), "room", "gw1", "m1", "run it", nil, nil); sent <- err }()
+	go func() {
+		_, err := app.Send(t.Context(), "room", "gw1", "m1", "run it", nil, appjob.SendOptions{}, nil)
+		sent <- err
+	}()
 	<-entered // the tool call is mid-execution
 
 	conv, _ := convs.Load(t.Context(), "room")

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -11,7 +13,9 @@ import (
 	"github.com/gorilla/websocket"
 
 	appconversation "github.com/jahrulnr/nusallm/application/conversation"
+	appjob "github.com/jahrulnr/nusallm/application/job"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 )
@@ -41,6 +45,7 @@ const (
 type Sender interface {
 	Send(ctx context.Context, convID, route, modelID string,
 		message string, attachments []valueobject.Attachment,
+		opts appjob.SendOptions,
 		onEvent event.TurnEventHandler) (appconversation.SendResult, error)
 	Edit(ctx context.Context, convID, msgID, content string,
 		onEvent event.TurnEventHandler) error
@@ -73,6 +78,7 @@ type turn struct {
 	turnCancel     context.CancelFunc
 	// job arguments — convID already on the turn.
 	route, modelID, msgID, content string
+	opts                           appjob.SendOptions
 
 	seq          int
 	frames       []journaledFrame
@@ -82,10 +88,9 @@ type turn struct {
 	closedAt     time.Time
 	subscribed   map[*conn]struct{}
 
-	// marker coalescing — reasoning stretches and tool-output bursts
-	// emit one frame each, not one per provider chunk.
+	// reasoning stretches coalesce to one phase frame each; tool output
+	// is live content and streams uncoalesced.
 	inReasoning bool
-	seenToolOut map[string]struct{}
 	// overflowed marks a turn whose own stream frames exceeded the
 	// outbound bound — its context is canceled, further events are
 	// suppressed, and runTurn emits the sanitized 413 terminal carrying
@@ -231,8 +236,32 @@ func (h *Hub) turnSend(c *conn, cmd command) {
 			return
 		}
 	}
+	var opts appjob.SendOptions
+	if payload.Effort != "" {
+		effort, ok := enum.ParseEffort(payload.Effort)
+		if !ok {
+			c.push(errorFrame(cmd.RequestID, "invalid_argument", "turn.send payload.effort is not a known effort"))
+			return
+		}
+		opts.Effort = effort
+	}
+	opts.Upstream = strings.TrimSpace(payload.Provider)
+	if ws := strings.TrimSpace(payload.Workspace); ws != "" {
+		// The picker supplies absolute paths from fs browsing; a relative
+		// or non-directory value is a rejected override, not a fallback.
+		if !filepath.IsAbs(ws) {
+			c.push(errorFrame(cmd.RequestID, "invalid_argument", "turn.send payload.workspace must be an absolute path"))
+			return
+		}
+		info, err := os.Stat(ws)
+		if err != nil || !info.IsDir() {
+			c.push(errorFrame(cmd.RequestID, "invalid_argument", "turn.send payload.workspace is not an existing directory"))
+			return
+		}
+		opts.Workspace = ws
+	}
 	h.admitAndRun(c, cmd.RequestID, convID, turn{
-		kind: turnSend, route: payload.Route, modelID: payload.ModelID, content: payload.Content,
+		kind: turnSend, route: payload.Route, modelID: payload.ModelID, content: payload.Content, opts: opts,
 	})
 }
 
@@ -308,7 +337,6 @@ func (h *Hub) admitAndRun(c *conn, requestID, convID string, job turn) {
 	t.conversationID = convID
 	t.requestID = requestID
 	t.subscribed = map[*conn]struct{}{c: {}}
-	t.seenToolOut = make(map[string]struct{})
 	t.turnCtx, t.turnCancel = context.WithCancel(h.ctx)
 	h.turns[t.id] = t
 	// Accounted under the lock — Shutdown's Wait can't observe the
@@ -334,7 +362,7 @@ func (h *Hub) runTurn(t *turn) {
 	switch t.kind {
 	case turnSend:
 		var receipt appconversation.SendResult
-		receipt, err = h.sender.Send(t.turnCtx, t.conversationID, t.route, t.modelID, t.content, nil, onEvent)
+		receipt, err = h.sender.Send(t.turnCtx, t.conversationID, t.route, t.modelID, t.content, nil, t.opts, onEvent)
 		persisted = receipt.UserMessagePersisted
 	case turnEdit:
 		err = h.sender.Edit(t.turnCtx, t.conversationID, t.msgID, t.content, onEvent)

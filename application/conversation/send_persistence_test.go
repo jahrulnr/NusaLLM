@@ -3,6 +3,7 @@ package appconversation
 import (
 	"context"
 	"errors"
+	appjob "github.com/jahrulnr/nusallm/application/job"
 	"testing"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
@@ -15,7 +16,7 @@ func TestSendReportsUserLineCommittedWhenAppendReturnsMetadataError(t *testing.T
 	stored := app.deps.Convs
 	app.deps.Convs = committedAppendErrorRepository{Conversation: stored}
 
-	result, err := app.Send(t.Context(), "room", "gw1", "m1", "hello", nil, nil)
+	result, err := app.Send(t.Context(), "room", "gw1", "m1", "hello", nil, appjob.SendOptions{}, nil)
 	if err == nil {
 		t.Fatal("metadata failure should fail the turn")
 	}

@@ -10,11 +10,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
+	appgateway "github.com/jahrulnr/nusallm/application/gateway"
 	"github.com/jahrulnr/nusallm/application/setting"
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/admin"
 	httpdelivery "github.com/jahrulnr/nusallm/infrastructure/delivery/http"
@@ -24,15 +26,10 @@ import (
 )
 
 // serve hosts the WebUI — embedded browser UI, HTTP API, and the
-// WebSocket turn channel — on loopback under the security envelope of
-// docs/api/contract.md. The bind address is fixed to 127.0.0.1; only
-// the port is a flag, matching the contract's "no remotely configurable
-// listen" rule.
+// WebSocket turn channel — on 127.0.0.1. The port and accepted HTTP
+// hostnames come from server settings; --port can override the configured
+// port for one process invocation.
 func serve(args []string) (serveErr error) {
-	port, err := servePort(args)
-	if err != nil {
-		return err
-	}
 	b, err := admin.LoadBoot(true)
 	if err != nil {
 		return err
@@ -45,6 +42,10 @@ func serve(args []string) (serveErr error) {
 		}
 	}()
 	if err := admin.EnsureConfig(b.ConfigPath(), os.Stderr); err != nil {
+		return err
+	}
+	port, err := servePort(args, b.Config().Server.Port)
+	if err != nil {
 		return err
 	}
 	eng, err := compose(b.Config(), b.Secrets(), b.ConfigPath())
@@ -67,8 +68,21 @@ func serve(args []string) (serveErr error) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Model catalogs refresh on an hourly cadence, first pass at boot —
+	// newly advertised ids merge into gateway records so the WebUI picker
+	// sees them without a manual import. Outcomes land in the diagnostic
+	// log; the loop dies with the signal context on shutdown.
+	go b.Gateways().StartAutoImport(ctx, time.Hour, func(r appgateway.AutoImportResult) {
+		eng.logger.Append(context.Background(), "gateway.autoimport", r)
+	})
+
 	gin.SetMode(gin.ReleaseMode)
-	authority := fmt.Sprintf("127.0.0.1:%d", port)
+	portText := strconv.Itoa(port)
+	listenAuthority := net.JoinHostPort("127.0.0.1", portText)
+	authorities := make([]string, 0, len(b.Config().Server.Hosts))
+	for _, host := range b.Config().Server.Hosts {
+		authorities = append(authorities, net.JoinHostPort(host, portText))
+	}
 	// The hub's context ignores the signal — Hub.Shutdown owns turn
 	// cancellation so terminal frames land before teardown, never on
 	// signal arrival. Deferred so an early Serve failure still closes it.
@@ -86,22 +100,24 @@ func serve(args []string) (serveErr error) {
 		// Accepted delete/compaction jobs ride the server lifecycle —
 		// a client that abandons a request can't cancel them, but
 		// shutdown does.
-		Jobs:      ctx,
-		WS:        wsdelivery.NewHandler(hub, authority).Serve,
-		Authority: authority,
-		WebAssets: web.Assets,
+		Jobs:        ctx,
+		WS:          wsdelivery.NewHandler(hub, authorities).Serve,
+		Authorities: authorities,
+		WebAssets:   web.Assets,
 	})
-	// Loopback only by construction — net.Listen binds the address, and
-	// the handler's Host guard rejects anything else anyway.
-	ln, err := net.Listen("tcp", authority)
+	// Host aliases only affect request validation. The socket stays on the
+	// IPv4 loopback interface, independent of the configured host list.
+	ln, err := net.Listen("tcp", listenAuthority)
 	if err != nil {
-		return fmt.Errorf("listen on %s: %w", authority, err)
+		return fmt.Errorf("listen on %s: %w", listenAuthority, err)
 	}
 	srv := &http.Server{Handler: handler}
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- srv.Serve(ln) }()
 
-	fmt.Fprintf(os.Stderr, "%s: WebUI listening on http://%s (loopback only)\n", admin.CLIName, authority)
+	for _, authority := range authorities {
+		fmt.Fprintf(os.Stderr, "%s: WebUI available at http://%s (loopback only)\n", admin.CLIName, authority)
+	}
 	select {
 	case err := <-serveDone:
 		return err // Serve only returns early on a listener failure
@@ -123,11 +139,12 @@ func serve(args []string) (serveErr error) {
 	return nil
 }
 
-// servePort parses `serve`'s flags — currently just --port.
-func servePort(args []string) (int, error) {
+// servePort parses the optional one-process port override. With no flag,
+// the effective value comes from server.port in config.json.
+func servePort(args []string, configuredPort int) (int, error) {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	port := fs.Int("port", 8080, "loopback port to bind")
+	port := fs.Int("port", configuredPort, "loopback port to bind for this process")
 	if err := fs.Parse(args); err != nil {
 		return 0, err
 	}

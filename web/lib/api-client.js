@@ -69,6 +69,29 @@ export class APIClient {
     return request('GET', `/api/gateways/${encodeURIComponent(id)}`);
   }
 
+  discoverGatewayModels(id) {
+    return request('GET', `/api/gateways/${encodeURIComponent(id)}/available-models`);
+  }
+
+  discoverGatewayProviders(id, modelId) {
+    const q = new URLSearchParams({ model: modelId });
+    return request('GET', `/api/gateways/${encodeURIComponent(id)}/providers?${q}`);
+  }
+
+  // path '' asks the backend for its default (the owner's home).
+  browseFs(path = '') {
+    const q = path ? `?path=${encodeURIComponent(path)}` : '';
+    return request('GET', `/api/fs/browse${q}`);
+  }
+
+  contextStats({ conversationId = '', route = '', modelId = '' } = {}) {
+    const q = new URLSearchParams();
+    if (conversationId) q.set('conversationId', conversationId);
+    if (route) q.set('route', route);
+    if (modelId) q.set('modelId', modelId);
+    return request('GET', `/api/context?${q}`);
+  }
+
   saveGateway(id, body) {
     return request('PUT', `/api/gateways/${encodeURIComponent(id)}`, body);
   }

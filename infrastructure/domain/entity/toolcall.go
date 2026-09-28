@@ -116,7 +116,7 @@ func (t *ToolCall) SetOutput(output string) error {
 	output = strings.ReplaceAll(output, "<untrusted_tool", "<untrusted tool")
 	output = strings.ReplaceAll(output, "</untrusted_tool", "</untrusted tool")
 
-	t.output = `<untrusted_tool latency="` + latency + `">\n` + output + "\n</untrusted_tool>"
+	t.output = "<untrusted_tool latency=\"" + latency + "\">\n" + output + "\n</untrusted_tool>"
 
 	return nil
 }

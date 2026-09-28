@@ -37,6 +37,7 @@ type Model struct {
 
 	// effort uses the enum's IsUnset sentinel instead of a pointer.
 	effort          enum.Effort
+	upstream        string // upstream provider pin inside the route (e.g. an aggregator's backends); empty = the gateway decides
 	optionalContent map[string]string
 
 	// Catalog metadata, hydrated from the gateway's model list — descriptive,
@@ -91,6 +92,14 @@ func (m *Model) SetStopSequences(v []string)    { m.stopSequences = v }
 // SetEffort sets the reasoning effort for this request. EffortDefault and
 // unset mean the field is omitted from the wire.
 func (m *Model) SetEffort(v enum.Effort) { m.effort = v }
+
+func (m Model) Upstream() string { return m.upstream }
+
+// SetUpstream pins which upstream provider inside the route serves this
+// request — aggregator gateways (OpenRouter-style) fan a model id out to
+// several backends and the pin picks one; direct providers ignore it.
+// Empty restores the gateway's own routing.
+func (m *Model) SetUpstream(v string) { m.upstream = v }
 
 func (m Model) OptionalContent() map[string]string { return m.optionalContent }
 

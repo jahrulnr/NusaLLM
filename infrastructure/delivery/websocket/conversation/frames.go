@@ -3,9 +3,10 @@
 // docs/api/websocket.md. It serves `turn.send`/`turn.edit` plus
 // `turn.cancel`/`turn.watch` turn control.
 //
-// Secrets never cross: stream frames carry deltas, phase markers, tool
-// call ids/names, and sanitized usage — never reasoning text, tool
-// input/output, key material, or error causes.
+// Secrets never cross: stream frames carry deltas, phase markers, raw
+// and summarized reasoning chunks, tool call metadata + input/output
+// chunks, and sanitized usage — never key material, optionalContent, or
+// error causes. Provider text is untrusted display text, not markup.
 package wsconversation
 
 import (
@@ -53,10 +54,16 @@ func decodeStrict(raw []byte, v any) bool {
 	return dec.Decode(&extra) == io.EOF
 }
 
+// sendPayload carries the picker's per-turn selections beside the text:
+// effort is an enum word, provider an aggregator upstream name (empty =
+// the gateway routes), workspace an absolute directory the room binds.
 type sendPayload struct {
-	Route   string `json:"route"`
-	ModelID string `json:"modelId"`
-	Content string `json:"content"`
+	Route     string `json:"route"`
+	ModelID   string `json:"modelId"`
+	Content   string `json:"content"`
+	Effort    string `json:"effort,omitempty"`
+	Provider  string `json:"provider,omitempty"`
+	Workspace string `json:"workspace,omitempty"`
 }
 
 type editPayload struct {
@@ -110,13 +117,24 @@ type phasePayload struct {
 	Phase string `json:"phase"`
 }
 
+// reasoningPayload is one bounded chunk of provider reasoning text.
+type reasoningPayload struct {
+	Text string `json:"text"`
+}
+
 type toolCallPayload struct {
 	CallID string `json:"callId"`
 	Name   string `json:"name"`
 }
 
+type toolInputPayload struct {
+	CallID string `json:"callId"`
+	Text   string `json:"text"`
+}
+
 type toolOutputPayload struct {
 	CallID string `json:"callId"`
+	Text   string `json:"text"`
 }
 
 type stepFinishedPayload struct {

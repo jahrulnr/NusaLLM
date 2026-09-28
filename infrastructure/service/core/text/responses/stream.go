@@ -79,7 +79,12 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 			switch se.Type {
 			case "response.output_text.delta":
 				emit(onEvent, event.NewDeltaEvent(se.Delta))
-			case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
+			case "response.reasoning_summary_text.delta":
+				// Official summary text — published for display, it may
+				// cross to the owner.
+				emit(onEvent, event.NewReasoningSummaryEvent(se.Delta))
+			case "response.reasoning_text.delta":
+				// Raw reasoning remains a distinct ordered content event.
 				emit(onEvent, event.NewReasoningEvent(se.Delta))
 			case "response.output_item.done":
 				if len(se.Item) > 0 {

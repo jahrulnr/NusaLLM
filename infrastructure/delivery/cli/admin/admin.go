@@ -20,6 +20,7 @@ import (
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 	repogateway "github.com/jahrulnr/nusallm/infrastructure/repository/gateway"
 	reposecret "github.com/jahrulnr/nusallm/infrastructure/repository/secret"
+	"github.com/jahrulnr/nusallm/infrastructure/service/core/text/catalog"
 	"golang.org/x/term"
 )
 
@@ -112,7 +113,7 @@ func LoadBoot(strict bool) (*Boot, error) {
 		secrets:    secrets,
 		gateways: appgateway.New(
 			repogateway.NewGatewayRepository(filepath.Join(cfg.Storage.Dir, "gateways"), secrets),
-			secrets),
+			secrets, catalog.New(nil)),
 		settings: setting.New(configPath),
 	}, nil
 }

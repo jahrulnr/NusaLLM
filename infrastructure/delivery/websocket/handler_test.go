@@ -15,6 +15,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	appconversation "github.com/jahrulnr/nusallm/application/conversation"
+	appjob "github.com/jahrulnr/nusallm/application/job"
 	"github.com/jahrulnr/nusallm/infrastructure/config"
 	httpdelivery "github.com/jahrulnr/nusallm/infrastructure/delivery/http"
 	wsdelivery "github.com/jahrulnr/nusallm/infrastructure/delivery/websocket"
@@ -41,7 +42,7 @@ func TestMain(m *testing.M) {
 type stubSender struct{}
 
 func (stubSender) Send(_ context.Context, convID, _, _, _ string,
-	_ []valueobject.Attachment, _ event.TurnEventHandler) (appconversation.SendResult, error) {
+	_ []valueobject.Attachment, _ appjob.SendOptions, _ event.TurnEventHandler) (appconversation.SendResult, error) {
 	return appconversation.SendResult{ConversationID: convID, UserMessagePersisted: true}, nil
 }
 
@@ -59,8 +60,8 @@ func TestUpgradeHostRejected(t *testing.T) {
 	hub := wsconversation.NewHub(t.Context(), stubSender{})
 	defer hub.Shutdown()
 	srv := httptest.NewServer(httpdelivery.NewHandler(httpdelivery.Deps{
-		Authority: "127.0.0.1:1", // deliberately not the listener's addr
-		WS:        wsdelivery.NewHandler(hub, "127.0.0.1:1").Serve,
+		Authorities: []string{"127.0.0.1:1"}, // deliberately not the listener's addr
+		WS:          wsdelivery.NewHandler(hub, []string{"127.0.0.1:1"}).Serve,
 	}))
 	defer srv.Close()
 
@@ -155,8 +156,8 @@ func wsServer(t *testing.T, hub *wsconversation.Hub, deps httpdelivery.Deps) (*h
 		t.Fatal(err)
 	}
 	authority := ln.Addr().String()
-	deps.Authority = authority
-	deps.WS = wsdelivery.NewHandler(hub, authority).Serve
+	deps.Authorities = []string{authority}
+	deps.WS = wsdelivery.NewHandler(hub, []string{authority}).Serve
 	srv := httptest.NewUnstartedServer(httpdelivery.NewHandler(deps))
 	srv.Listener = ln
 	srv.Start()

@@ -98,7 +98,7 @@ func TestShutdownCancelsWaitsAndRejectsPosts(t *testing.T) {
 		t.Fatal("Shutdown completion channel was not initialized")
 	}
 
-	result, err := app.Send(t.Context(), "late-room", "gw1", "m1", "late", nil, nil)
+	result, err := app.Send(t.Context(), "late-room", "gw1", "m1", "late", nil, appjob.SendOptions{}, nil)
 	if apperror.As(err).StatusCode() != 503 {
 		t.Fatalf("post after shutdown → %v, want 503", err)
 	}

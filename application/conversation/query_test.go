@@ -1,6 +1,7 @@
 package appconversation
 
 import (
+	appjob "github.com/jahrulnr/nusallm/application/job"
 	"testing"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
@@ -9,7 +10,7 @@ import (
 
 func TestConversationQueries(t *testing.T) {
 	app, _ := fixture(t, okHandler)
-	result, err := app.Send(t.Context(), "query-room", "gw1", "m1", "hello", nil, nil)
+	result, err := app.Send(t.Context(), "query-room", "gw1", "m1", "hello", nil, appjob.SendOptions{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -121,6 +121,7 @@ A `message` line's `data` is a `messageRecord`:
 | `id`, `role`, `content`, `createdAt` | `role` is `system`/`user`/`developer`/`assistant` |
 | `userType` | `origin` (real user input) or `system` (harness-injected) |
 | `finishReason` | `stop`/`tool_calls`/`length`/`content_filter` |
+| `parts` | Ordered assistant text, reasoning, and tool-call positions |
 | `toolCalls` | each with `id`, `name`, `input`, `output`, `outputBudget`, `outputAttachments`, `type` (`origin`/`injection`), `callAt`, `optionalContent` |
 | `attachments` | `uri` + `mediaType`, optional `name` and `sha256` pin — stored references (`file://`, `https://`), materialized by adapters at send time |
 | `optionalContent` | adapter-namespaced extras like `completion.reasoning_content`; domain never interprets values |

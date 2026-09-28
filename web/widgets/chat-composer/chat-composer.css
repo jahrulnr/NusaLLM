@@ -40,9 +40,15 @@
 .send:disabled { background: var(--panel-2); color: var(--text-faint); cursor: not-allowed; }
 .send.cancel { background: var(--panel-2); color: var(--danger); border: 1px solid var(--hairline-strong); }
 
-.status {
+.footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
   margin-top: 6px;
   font-size: 10.5px;
   color: var(--text-faint);
   min-height: 14px;
 }
+
+.status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tokens { flex-shrink: 0; font-variant-numeric: tabular-nums; }

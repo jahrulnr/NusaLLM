@@ -64,7 +64,7 @@ func New(opts coretext.Options) *Service {
 // selected by gw; events reach onEvent uniformly either way.
 func (s *Service) Send(ctx context.Context, conv *aggregate.Conversation, gw *aggregate.Gateway, model entity.Model, onEvent event.TurnEventHandler) error {
 	stream := gw.StreamMode()
-	body, err := encodeRequest(conv, model, stream, s.fileRoot)
+	body, err := encodeRequest(conv, model, stream, coretext.FileRoot(conv, s.fileRoot))
 	if err != nil {
 		return err
 	}
@@ -150,7 +150,8 @@ func (s *Service) unaryResponse(ctx context.Context, resp *http.Response, conv *
 	conv.Append(msg)
 	conv.AddUsage(usage)
 	if meta.reasoning != "" {
-		emit(onEvent, event.NewReasoningEvent(meta.reasoning))
+		// decodeResponse collects summary_text parts from this response.
+		emit(onEvent, event.NewReasoningSummaryEvent(meta.reasoning))
 	}
 	emit(onEvent, event.NewDeltaEvent(msg.Content()))
 	for _, tc := range msg.ToolCalls() {

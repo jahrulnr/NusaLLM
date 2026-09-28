@@ -53,6 +53,10 @@ type server struct {
 // a path or secret can never cross by accident of projection.
 // storage.* (filesystem paths) and app.* (internal metadata) stay out.
 var leaves = map[string]map[string]bool{
+	"server": {
+		"port":  true,
+		"hosts": true,
+	},
 	"conversation": {
 		"mailbox_cap":        true,
 		"max_turn_steps":     true,

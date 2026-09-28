@@ -1,0 +1,66 @@
+:host { display: block; font-family: var(--font-ui); }
+
+.thinking { margin: 0 0 12px; }
+
+.details {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+.details[open] { border-color: var(--hairline-strong); }
+
+.summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 11px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  user-select: none;
+}
+.summary::-webkit-details-marker { display: none; }
+.summary:hover { color: var(--text); }
+
+/* The only restrained glow in the system — an active reasoning pulse. */
+.orb {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  flex-shrink: 0;
+}
+.orb.active {
+  background: var(--accent);
+  box-shadow: 0 0 8px rgba(200, 241, 105, 0.45);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+@keyframes pulse { 50% { opacity: 0.35; box-shadow: none; } }
+
+.label { flex: 1; }
+.chev { transition: transform 140ms ease; color: var(--text-faint); }
+.details[open] .chev { transform: rotate(90deg); }
+
+.body {
+  padding: 8px 12px 10px;
+  border-top: 1px dashed var(--hairline);
+  font-size: 11.5px;
+}
+
+/* Provider reasoning text — plain text, source line breaks kept. */
+.summary-text {
+  margin: 0 0 8px;
+  padding: 7px 9px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--text-dim);
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .orb.active { animation: none; box-shadow: 0 0 6px rgba(200, 241, 105, 0.3); }
+}

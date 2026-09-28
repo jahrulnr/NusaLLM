@@ -11,11 +11,14 @@ upgrade — it does not define frames.
 
 ## Connection
 
-- **Endpoint:** `GET /api/ws`, upgraded to `ws://127.0.0.1:<port>/api/ws`.
+- **Endpoint:** `GET /api/ws`, upgraded to
+  `ws://127.0.0.1:<port>/api/ws` or another configured `server.hosts`
+  alias. The default port is `10998`; default aliases are `127.0.0.1`
+  and `localhost`.
 - **Security:** the handshake must satisfy the same rules as unsafe HTTP
-  methods — `Host` equal to the listen authority, `Origin` present and
-  exactly `http://<listen authority>`. Violations are rejected `403`
-  *before* the socket opens; there is no in-band auth and no token.
+  methods — `Host` and `Origin` must match a configured host alias with
+  the configured port. Violations are rejected `403` *before* the socket
+  opens; there is no in-band auth and no token.
 - **One user, many tabs:** the server accepts multiple concurrent
   sockets (the browser may hold several tabs). Turn events are delivered
   to the socket that owns the turn plus any socket that has attached via
@@ -55,7 +58,10 @@ Common envelope fields:
   "payload": {
     "route": "openrouter",
     "modelId": "openai/gpt-5",
-    "content": "the cache test still flakes — look at invalidate()"
+    "content": "the cache test still flakes — look at invalidate()",
+    "effort": "high",
+    "provider": "DeepInfra",
+    "workspace": "/home/alice/project"
   }
 }
 ```
@@ -68,12 +74,23 @@ Common envelope fields:
   binding surfaces as `turn.failed` `400` when the job runs); on an
   existing one `""`/absent reuses the stored binding. A successful turn
   re-binds the overrides to the room.
+- `payload.effort` — optional reasoning-effort override for the turn:
+  `default`, `none`, `low`, `medium`, `high`, `xhigh`, `max`. Absent or
+  `default` leaves the model's configured effort alone.
+- `payload.provider` — optional upstream-backend pin for aggregator
+  routes (e.g. OpenRouter's `provider.order`). `""`/absent lets the
+  gateway route automatically.
+- `payload.workspace` — optional absolute directory the room's tools work
+  in; rejected when relative or not an existing directory. A successful
+  turn re-binds it to the room — per-conversation, like route/model.
 - `payload.content` — required non-empty text. **Text only**: no
   attachments, no `file://` or `data:` URIs. Attachment upload is future
   work, out of scope for this contract.
 - A command that fails **syntactic validation** — unparseable JSON,
   unknown `type`, missing or ill-typed required fields, a non-path-safe
-  `conversationId`, empty `content` — is rejected with an `error` frame
+  `conversationId`, empty `content`, an unknown `effort` word, or a
+  `workspace` that isn't an absolute existing directory — is rejected
+  with an `error` frame
   (`code: "invalid_argument"`). No `turnId` is allocated, nothing is
   scheduled, and no `turn.opened`/`turn.failed` exist for it — it never
   became a turn.
@@ -247,8 +264,11 @@ One turn's frames, in order. Every stream frame carries `conversationId`,
 ```
 
 `turn.phase` — a coarse status marker. `phase` is currently only
-`"reasoning"`: the model is producing hidden reasoning. **Reasoning
-content is never serialized** — this frame is the entire surface:
+`"reasoning"`: the model is producing reasoning. One marker is emitted
+per reasoning stretch, no matter how many chunks the provider streams.
+All provider reasoning text, including raw `reasoning_content` and
+`reasoning_text` as well as provider-supplied summaries, crosses as
+`turn.reasoning` chunks in the same order as other stream events:
 
 ```json
 {
@@ -260,8 +280,25 @@ content is never serialized** — this frame is the entire surface:
 }
 ```
 
-`turn.tool_call` — the model requested a tool. `callId` plus `name`
-only — raw tool input (paths, commands) is not exposed:
+`turn.reasoning` — one bounded chunk of provider reasoning text. Every
+nonempty provider chunk crosses **in order**; chunks
+larger than the 32 KiB outbound bound are split UTF-8-safely, so
+reassemble by concatenating `text` fields in `seq` order. The text is
+untrusted display content — render it escaped, never as markup:
+
+```json
+{
+  "type": "turn.reasoning",
+  "conversationId": "c_k4j9xm2p8q1vz7w0t6nb5r3yhd",
+  "turnId": "t_3kd9xm2p8q1vz7w0t6nb5r4yhf",
+  "seq": 3,
+  "payload": { "text": "I'll compare the two cache paths…" }
+}
+```
+
+`turn.tool_call` — the model requested a tool. This frame carries only
+call metadata, so oversized arguments can never turn the request itself
+into an oversized frame:
 
 ```json
 {
@@ -273,16 +310,36 @@ only — raw tool input (paths, commands) is not exposed:
 }
 ```
 
-`turn.tool_output` — a progress marker: the identified call is running
-and producing output. The payload deliberately carries **no text** —
-tool output is arbitrary data (it can legitimately contain credentials
-or paths), so no preview is serialized at all in the initial contract.
-The output itself persists internally in the tool call's record, but the
-HTTP history projection exposes only the call's sanitized
-`id`/`name`/`status` — tool output is **not retrievable over this API**.
-The server may coalesce or throttle these markers — a burst of output
-chunks does not produce a frame per chunk; the pacing is an
-implementation constant, not part of the contract.
+`turn.tool_input` — one bounded chunk of the exact `input` argument
+string the model produced. Chunks follow the owning `turn.tool_call`
+in order; concatenate `text` in `seq` order to reconstruct the argument
+before rendering or copying it:
+
+```json
+{
+  "type": "turn.tool_input",
+  "conversationId": "c_k4j9xm2p8q1vz7w0t6nb5r3yhd",
+  "turnId": "t_3kd9xm2p8q1vz7w0t6nb5r4yhf",
+  "seq": 4,
+  "payload": { "callId": "call_9f2a", "text": "{\"path\":\"README.md\"}" }
+}
+```
+
+`turn.tool_output` — a live output chunk for the identified call. Every
+nonempty provider chunk is delivered **in order**; chunks larger than
+the 32 KiB outbound bound are split UTF-8-safely into multiple frames,
+so a burst or a large output produces one frame per bounded chunk —
+reassemble by concatenating `text` fields in `seq` order. This is
+progress content, **not** proof the call finished: settlement is only
+ever implied by later model activity or the terminal.
+
+Tool input and output are arbitrary data — they can legitimately
+contain credentials, local paths, or commands. They cross because this
+is a single-user loopback UI for its owner; treat them as untrusted
+display text, never markup. The same data persists in the call's record
+and is retrievable over HTTP history (`input`/`output`/`calledAt`).
+Frames carry JSON strings, not binary: malformed UTF-8 emitted by a tool
+is normalized by JSON encoding and is not promised byte-exact.
 
 ```json
 {
@@ -290,7 +347,7 @@ implementation constant, not part of the contract.
   "conversationId": "c_k4j9xm2p8q1vz7w0t6nb5r3yhd",
   "turnId": "t_3kd9xm2p8q1vz7w0t6nb5r4yhf",
   "seq": 4,
-  "payload": { "callId": "call_9f2a" }
+  "payload": { "callId": "call_9f2a", "text": "partial output chunk" }
 }
 ```
 
@@ -429,10 +486,10 @@ allocation gets `error`, not this frame — there is no turn to fail.)
   buffers per subscriber with a bounded queue; on overflow it terminates
   *that subscriber's delivery* (close the socket, or drop it from the
   turn's fan-out), never the turn and never other subscribers.
-- **Stream frames are bounded too.** A single provider delta is split
-  into multiple `turn.delta` frames rather than allowed to dwarf the
-  journal or one subscriber's queue — chunks are cut on UTF-8
-  boundaries so reassembly is byte-exact.
+- **Stream frames are bounded too.** A single provider delta, tool
+  argument, or tool output burst is split into multiple frames rather
+  than allowed to dwarf the journal or one subscriber's queue — chunks
+  are cut on UTF-8 boundaries so reassembly is byte-exact.
 - **The journal is bounded.** Each turn keeps only a bounded tail of
   frames (frame count and byte caps, plus an age limit on finished
   turns) — enough for short-window `turn.watch` reattachment, never
@@ -447,7 +504,8 @@ frame (a frame that can't fit — e.g. oversized provider-originated
 metadata — terminates that turn with a sanitized `turn.failed` `413`),
 a journal of 512 frames / 4 MiB / 2 minutes post-terminal retention,
 pings every 25 s with a 60 s pong deadline, a 10 s write deadline, and
-`turn.delta` text chunks of at most 32 KiB.
+`turn.delta`, `turn.reasoning`, `turn.tool_input`, and
+`turn.tool_output` text chunks of at most 32 KiB.
 
 ## Lifecycle races, catalogued
 

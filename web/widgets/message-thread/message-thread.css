@@ -1,6 +1,7 @@
 :host { display: block; height: 100%; font-family: var(--font-ui); }
 
 .thread {
+  box-sizing: border-box;
   height: 100%;
   overflow-y: auto;
   padding: 18px 22px 28px;
@@ -48,7 +49,9 @@
 /* User turns: compact bordered blocks. */
 .user-msg {
   position: relative;
-  max-width: 68%;
+  box-sizing: border-box;
+  width: fit-content;
+  max-width: min(72ch, 100%);
   margin: 0 0 14px auto;
   padding: 8px 30px 8px 12px;
   background: var(--panel-2);
@@ -78,8 +81,9 @@
 }
 .edit-btn:hover { color: var(--accent); }
 
-.user-msg.editing { max-width: 82%; }
+.user-msg.editing { width: min(72ch, 100%); }
 .edit-input {
+  box-sizing: border-box;
   width: 100%;
   min-height: 64px;
   background: var(--bg);
@@ -113,60 +117,54 @@
   cursor: pointer;
 }
 
-/* Assistant turns: editorial, full width. */
+/* Assistant turns: editorial, full width; content is Markdown. */
 .assistant-msg {
   margin: 0 0 22px;
   padding: 0 0 18px;
   border-bottom: 1px solid var(--hairline);
 }
-.prose {
-  font-family: var(--font-prose);
-  font-size: 14.5px;
-  line-height: 1.68;
-  color: var(--text);
-}
-.prose p { margin: 0 0 0.85em; white-space: pre-wrap; word-break: break-word; }
-
-.tool-row {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  margin: 8px 8px 0 0;
-  padding: 4px 10px;
-  background: var(--panel);
-  border: 1px solid var(--hairline);
-  border-radius: 999px;
-  font-family: var(--font-ui);
-  font-size: 11px;
-  color: var(--text-dim);
-}
-.tool-row svg { color: var(--text-faint); }
-.tool-row.completed svg { color: var(--accent-dim); }
-.tool-status { color: var(--text-faint); }
-.tool-row.completed .tool-status { color: var(--accent-dim); }
+nusa-markdown-view { display: block; margin-bottom: 6px; }
+nusa-tool-activity, nusa-thinking-block { display: block; }
 
 .attachments { display: flex; gap: 6px; margin-top: 7px; flex-wrap: wrap; }
 .attachment {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  max-width: 380px;
   font-size: 10.5px;
   padding: 2px 8px;
   border: 1px solid var(--hairline);
   border-radius: 999px;
   color: var(--text-faint);
 }
+.att-kind { flex-shrink: 0; }
+/* Long URIs ellipsize — the tooltip (title) carries the full string. */
+.att-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+}
 
-.finish { margin-top: 8px; font-size: 10.5px; color: var(--text-faint); }
 
 /* Live stream */
 .stream { margin-bottom: 14px; }
-.phase {
-  display: inline-block;
-  padding: 3px 10px;
-  border: 1px dashed var(--hairline-strong);
-  border-radius: 999px;
-  font-size: 11px;
-  color: var(--text-faint);
-  font-style: italic;
-  margin-bottom: 6px;
+.streaming-md { border-left: 2px solid var(--accent-dim); padding-left: 12px; }
+
+/* Visually-hidden announcer — the live region for stream markers. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 .caret {
   display: inline-block;

@@ -6,8 +6,9 @@
 // mount here too so browser, API, and socket share one origin.
 //
 // The transport serializes projections, never domain entities: key
-// material, raw key refs, optionalContent, tool I/O, attachment
-// locations, and error causes stay server-side.
+// material, raw key refs, provider replay artifacts, attachment sha256
+// pins, and error causes stay server-side. Normalized message parts,
+// tool I/O, and attachment uri/name are owner-visible content.
 package http
 
 import (
@@ -17,6 +18,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/http/conversation"
+	fsboundary "github.com/jahrulnr/nusallm/infrastructure/delivery/http/fs"
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/http/gateway"
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/http/internal/transport"
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/http/setting"
@@ -25,7 +27,7 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/http/webui"
 )
 
-// Deps wires the boundary use cases plus the canonical listen authority
+// Deps wires the boundary use cases plus the accepted request authorities
 // (host:port) the security model validates against. Writer fields are
 // optional: a nil writer leaves its routes unregistered.
 type Deps struct {
@@ -40,10 +42,9 @@ type Deps struct {
 	// (delete, compact) — decoupled from any single request so a client
 	// disconnect can't cancel accepted work; nil means Background.
 	Jobs context.Context
-	// Authority is the exact Host clients must present — e.g.
-	// "127.0.0.1:8080". It comes from the bound listener, not from any
-	// configuration the API can change.
-	Authority string
+	// Authorities are configured host:port pairs accepted in Host and
+	// Origin headers. The listener address remains a separate loopback bind.
+	Authorities []string
 	// WS upgrades GET /api/ws into the conversation hub socket.
 	WS gin.HandlerFunc
 	// WebAssets is the embedded WebUI filesystem served on this origin;
@@ -63,7 +64,7 @@ func NewHandler(d Deps) *gin.Engine {
 	// send them through NoRoute instead, which the guard still covers.
 	r.RedirectTrailingSlash = false
 	r.RedirectFixedPath = false
-	r.Use(recoverProblem(), guard(d.Authority))
+	r.Use(recoverProblem(), guard(d.Authorities))
 
 	api := r.Group("/api")
 	system.Register(api)
@@ -75,10 +76,11 @@ func NewHandler(d Deps) *gin.Engine {
 	gateway.Register(api, gateway.Deps{Reads: d.Gateways, Writes: d.GatewayWrites})
 	setting.Register(api, setting.Deps{Reads: d.Settings, Writes: d.SettingsWriter})
 	tool.Register(api, tool.Deps{Tools: d.Tools})
+	fsboundary.Register(api)
 	if d.WS != nil {
 		api.GET("/ws", d.WS)
 	}
-	webui.Register(r, d.WebAssets, d.Authority)
+	webui.Register(r, d.WebAssets, d.Authorities)
 
 	r.NoRoute(notFound)
 	return r

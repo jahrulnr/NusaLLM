@@ -1,6 +1,9 @@
 import { Widget, el } from '../../lib/dom.js';
 import { APIClient } from '../../lib/api-client.js';
 import { TurnSocket } from '../../lib/socket-client.js';
+import {
+  createTurnProjection, applyTurnFrame, settleTurnProjection,
+} from '../../lib/turn-projection.js';
 
 // Orchestration only. The shell owns the API/socket instances, the
 // selection + command state, the URL hash, and the wiring between
@@ -10,7 +13,7 @@ import { TurnSocket } from '../../lib/socket-client.js';
 // Turn lifecycle lives in ONE object, `this.command`:
 //   {kind:'send'|'edit', requestId, turnId:null|string,
 //    conversationId:null|string, content, ephemeral:false,
-//    stream:{active,text,phase,tools}}
+//    stream: createTurnProjection(requestId) — ordered segments
 // Navigation changes only the *view* — the command survives switching
 // rooms and its stream re-projects only into its own room.
 class AppShell extends Widget {
@@ -29,10 +32,12 @@ class AppShell extends Widget {
     this.activeId = null;       // selected conversation id (the VIEW)
     this.conversation = null;   // its detail projection
     this.messages = [];         // its latest message window
-    this.selection = null;      // {route, modelId} next-send binding
+    this.selection = null;      // {route, modelId, effort, provider, workspace} next-send binding
     this.command = null;        // the one in-flight command (see above)
+    this.settledStream = null;  // keep the final live view through history refresh
     this.generation = 0;        // stale-response token
     this.sidebarOpen = matchMedia('(min-width: 761px)').matches;
+    this.settingsOpen = false;
 
     this.root.classList.add('shell');
     this._build();
@@ -40,7 +45,15 @@ class AppShell extends Widget {
     this.socket.connect();
     this._boot();
     addEventListener('hashchange', () => {
-      // Hash removal while a room is active falls back to onboarding.
+      if (location.hash === '#settings') {
+        this._showSettings();
+        return;
+      }
+      this._showChat();
+      // Only our own hash shape is meaningful — unrelated fragments
+      // (e.g. a stray '#x') must not bounce the view to onboarding.
+      const h = location.hash;
+      if (h && !h.startsWith('#conversation=')) return;
       if (!this._selectFromHash() && this.activeId) this.newConversation();
     });
   }
@@ -50,11 +63,13 @@ class AppShell extends Widget {
     this.header = el('nusa-conversation-header');
     this.thread = el('nusa-message-thread');
     this.composer = el('nusa-chat-composer');
-    this.panel = el('nusa-context-panel');
+    this.settingsPage = el('nusa-settings-page');
     this.toasts = el('nusa-toast-stack');
     this.main = el('main', { class: 'main' }, [this.header, this.thread, this.composer]);
+    this.workspace = el('div', { class: 'workspace' }, [this.main, this.settingsPage]);
+    this.settingsPage.hidden = true;
     this.root.append(
-      el('div', { class: 'grid' }, [this.sidebar, this.main, this.panel]),
+      el('div', { class: 'grid' }, [this.sidebar, this.workspace]),
       this.toasts,
     );
     this.sidebar.open = this.sidebarOpen;
@@ -66,11 +81,12 @@ class AppShell extends Widget {
     on(this.sidebar, 'conversation-select', ({ id }) => this.select(id));
     on(this.sidebar, 'conversation-new', () => this.newConversation());
     on(this.sidebar, 'conversation-search', ({ query }) => this._filter(query));
-    on(this.sidebar, 'context-open', () => { this.panel.open = true; });
+    on(this.sidebar, 'settings-open', () => this.openSettings());
 
     on(this.header, 'sidebar-toggle', () => { this.sidebarOpen = !this.sidebarOpen; this.sidebar.open = this.sidebarOpen; });
-    on(this.header, 'context-toggle', () => { this.panel.open = !this.panel.open; });
+    on(this.header, 'settings-open', () => this.openSettings());
     on(this.header, 'model-change', (d) => this._setSelection(d));
+    on(this.header, 'workspace-change', (d) => this._setWorkspace(d.workspace));
     on(this.header, 'conversation-rename', ({ title }) => this._rename(title));
     on(this.header, 'conversation-compact', () => this._compact());
     on(this.header, 'conversation-delete', () => this._delete());
@@ -94,10 +110,11 @@ class AppShell extends Widget {
       }
     });
 
-    on(this.panel, 'context-close', () => { this.panel.open = false; });
-    on(this.panel, 'gateway-save', ({ id, body }) => this._saveGateway(id, body));
-    on(this.panel, 'gateway-delete', ({ id }) => this._deleteGateway(id));
-    on(this.panel, 'setting-change', ({ key, value }) => this._patchSetting(key, value));
+    on(this.settingsPage, 'settings-close', () => this.closeSettings());
+    on(this.settingsPage, 'gateway-save', ({ id, body }) => this._saveGateway(id, body));
+    on(this.settingsPage, 'gateway-delete', ({ id }) => this._deleteGateway(id));
+    on(this.settingsPage, 'gateway-model-discover', ({ id }) => this._discoverGatewayModels(id));
+    on(this.settingsPage, 'setting-change', ({ key, value }) => this._patchSetting(key, value));
 
     this.socket.addEventListener('connection', (e) => this._onConnection(e.detail.state));
     this.socket.addEventListener('frame', (e) => this._onFrame(e.detail.frame));
@@ -117,21 +134,23 @@ class AppShell extends Widget {
     if (gws.status === 'fulfilled') {
       this.gateways = gws.value.data || [];
       this.header.gateways = this.gateways;
-      this.panel.gateways = this.gateways;
+      this.settingsPage.gateways = this.gateways;
       this._defaultSelection();
     } else this._toast('error', 'Gateways', this._errText(gws.reason));
     if (cfg.status === 'fulfilled') {
       this.settings = cfg.value;
-      this.panel.settings = this.settings;
+      this.settingsPage.settings = this.settings;
     } else this._toast('error', 'Settings', this._errText(cfg.reason));
     if (tools.status === 'fulfilled') {
       this.tools = tools.value.data || [];
-      this.panel.tools = this.tools;
+      this.settingsPage.tools = this.tools;
     } else this._toast('error', 'Tools', this._errText(tools.reason));
 
+    const settingsRoute = location.hash === '#settings';
     if (!this._selectFromHash() && this.allConversations.length) {
       this.select(this.allConversations[0].id);
     }
+    if (settingsRoute) this.openSettings();
   }
 
   // --- view selection (never touches this.command) ---------------------
@@ -155,6 +174,28 @@ class AppShell extends Widget {
   _setHash(id) {
     const hash = id ? `#conversation=${encodeURIComponent(id)}` : '';
     history.replaceState(null, '', location.pathname + hash);
+  }
+
+  _showSettings() {
+    this.settingsOpen = true;
+    this.main.hidden = true;
+    this.settingsPage.hidden = false;
+  }
+
+  _showChat() {
+    this.settingsOpen = false;
+    this.main.hidden = false;
+    this.settingsPage.hidden = true;
+  }
+
+  openSettings() {
+    this._showSettings();
+    if (location.hash !== '#settings') location.hash = 'settings';
+  }
+
+  closeSettings() {
+    this._showChat();
+    this._setHash(this.activeId);
   }
 
   _defaultSelection() {
@@ -195,12 +236,41 @@ class AppShell extends Widget {
   }
 
   _setSelection(sel) {
-    this.selection = sel;
-    this.header.selection = sel;
+    // model-change doesn't carry workspace — the separate workspace
+    // picker's binding survives a model swap; a room load passes
+    // conv.workspace explicitly.
+    const workspace = sel.workspace !== undefined ? sel.workspace
+      : (this.selection && this.selection.workspace) || '';
+    this.selection = { ...sel, workspace };
+    this.header.selection = this.selection;
+    this._syncComposer();
+    this._syncContext();
+  }
+
+  _setWorkspace(workspace) {
+    this.selection = { ...(this.selection || {}), workspace: workspace || '' };
+    this.header.selection = this.selection;
     this._syncComposer();
   }
 
+  // The composer footer reports "~used/total Tokens" from the backend —
+  // a fresh room still resolves the capacity half via route+modelId.
+  async _syncContext() {
+    const gen = this.generation;
+    try {
+      const stats = await this.api.contextStats({
+        conversationId: this.activeId || '',
+        route: this.selection ? this.selection.route : '',
+        modelId: this.selection ? this.selection.modelId : '',
+      });
+      if (gen === this.generation) this.composer.context = stats;
+    } catch {
+      if (gen === this.generation) this.composer.context = null;
+    }
+  }
+
   async select(id) {
+    this._showChat();
     const gen = ++this.generation;
     this.activeId = id;
     this.viewLoading = true; // blocks send until the room resolves
@@ -216,7 +286,6 @@ class AppShell extends Widget {
     // linger as if it described this id.
     this.conversation = { id };
     this.header.conversation = this.conversation;
-    this.panel.conversation = null;
     this.messages = [];
     this.thread.messages = this.messages;
     this._syncComposer();
@@ -228,11 +297,13 @@ class AppShell extends Widget {
       if (gen !== this.generation) return; // a newer selection won
       this.conversation = conv;
       this.header.conversation = conv;
-      this.panel.conversation = conv;
       this.messages = page.messages || [];
       this.thread.messages = this.messages;
       this.thread.historyNotice = page.effectiveStart > 0;
-      if (conv.modelId) this._setSelection({ route: conv.route, modelId: conv.modelId });
+      if (conv.modelId) this._setSelection({
+        route: conv.route, modelId: conv.modelId,
+        effort: '', provider: '', workspace: conv.workspace || '',
+      });
       this.sidebar.activeId = id;
     } catch (err) {
       if (gen !== this.generation) return;
@@ -247,9 +318,11 @@ class AppShell extends Widget {
     this.thread.loading = false;
     this._syncComposer();
     this._syncStream();
+    this._syncContext();
   }
 
   newConversation() {
+    this._showChat();
     this.generation++;
     this.activeId = null;
     this.viewLoading = false;
@@ -258,13 +331,13 @@ class AppShell extends Widget {
     this._setHash('');
     this.sidebar.activeId = null;
     this.header.conversation = null;
-    this.panel.conversation = null;
     this.thread.hasConversation = false;
     this.thread.messages = this.messages;
     this.thread.historyNotice = false;
     this._defaultSelection();
     this._syncComposer();
     this._syncStream();
+    this._syncContext();
     this.composer.clear();
   }
 
@@ -289,18 +362,24 @@ class AppShell extends Widget {
   // The live stream renders only in the room that owns the command.
   _syncStream() {
     const cmd = this.command;
-    this.thread.stream = (cmd && cmd.conversationId === this.activeId)
-      ? cmd.stream : null;
+    const visible = cmd && cmd.conversationId === this.activeId
+      ? cmd.stream : this.settledStream && this.settledStream.conversationId === this.activeId
+        ? this.settledStream.stream : null;
+    this.thread.stream = visible;
   }
 
   // --- commands ---------------------------------------------------------
 
   _send(content) {
+    const sel = this.selection || {};
     const requestId = this.socket.sendTurn({
       conversationId: this.activeId,
-      route: this.selection ? this.selection.route : '',
-      modelId: this.selection ? this.selection.modelId : '',
+      route: sel.route || '',
+      modelId: sel.modelId || '',
       content,
+      effort: sel.effort || '',
+      provider: sel.provider || '',
+      workspace: sel.workspace || '',
     });
     this.command = {
       kind: 'send', requestId, turnId: null,
@@ -310,7 +389,7 @@ class AppShell extends Widget {
       // minted room when it opens — never force a user who navigated
       // meanwhile back to it.
       claimFreshView: this.activeId === null,
-      stream: { active: true, text: '', phase: null, tools: [] },
+      stream: createTurnProjection(requestId),
     };
     this.composer.busy = true; // draft is NOT cleared until opened
     this._syncStream();
@@ -324,7 +403,7 @@ class AppShell extends Widget {
       kind: 'edit', requestId, turnId: null,
       conversationId: this.activeId, content, ephemeral: false,
       cancelRequested: false, claimFreshView: false,
-      stream: { active: true, text: '', phase: null, tools: [] },
+      stream: createTurnProjection(requestId),
     };
     this.composer.busy = true;
     this._syncStream();
@@ -372,30 +451,17 @@ class AppShell extends Widget {
         this._syncStream();
         break;
       }
-      case 'turn.delta':
-        if (cmd && cmd.turnId === f.turnId) {
-          cmd.stream.text += (f.payload && f.payload.text) || '';
-          this._syncStream();
-        }
-        break;
+      // All stream interpretation lives in the projection — the shell
+      // only correlates frames to the owning command.
       case 'turn.phase':
-        if (cmd && cmd.turnId === f.turnId) {
-          cmd.stream.phase = f.payload && f.payload.phase;
-          this._syncStream();
-        }
-        break;
+      case 'turn.reasoning':
+      case 'turn.delta':
       case 'turn.tool_call':
-        if (cmd && cmd.turnId === f.turnId) {
-          cmd.stream.tools.push({
-            callId: f.payload.callId, name: f.payload.name, output: false,
-          });
-          this._syncStream();
-        }
-        break;
+      case 'turn.tool_input':
       case 'turn.tool_output':
+      case 'turn.step_finished':
         if (cmd && cmd.turnId === f.turnId) {
-          const t = cmd.stream.tools.find((x) => x.callId === f.payload.callId);
-          if (t) t.output = true;
+          applyTurnFrame(cmd.stream, f);
           this._syncStream();
         }
         break;
@@ -416,6 +482,13 @@ class AppShell extends Widget {
   _onTerminal(f) {
     const cmd = this.command;
     if (cmd && f.turnId === cmd.turnId) {
+      // Settle the projection honestly before the authoritative refresh
+      // replaces it.
+      settleTurnProjection(cmd.stream);
+      this.settledStream = {
+        conversationId: cmd.conversationId,
+        stream: cmd.stream,
+      };
       this.command = null;
       if (f.type === 'turn.failed') {
         this._toast('error', 'Turn failed', (f.payload && f.payload.message) || f.code || 'error');
@@ -427,6 +500,7 @@ class AppShell extends Widget {
       else this._refreshList();
       this._syncComposer();
       this._syncStream();
+      this._syncContext(); // usage landed — the estimate moved
       return;
     }
     // A turn this tab didn't drive (watched, or another tab's): refresh
@@ -477,12 +551,17 @@ class AppShell extends Widget {
       if (convId === this.activeId && gen === this.generation) {
         this.conversation = conv;
         this.header.conversation = conv;
-        this.panel.conversation = conv;
+        // History adopts matching live widgets before the stream is
+        // retired, keeping their DOM, styles, and details state intact.
         this.messages = page.messages || [];
         this.thread.messages = this.messages;
         this.thread.historyNotice = page.effectiveStart > 0;
       }
     } catch { /* list refresh still runs */ }
+    if (this.settledStream?.conversationId === convId) {
+      this.settledStream = null;
+      this._syncStream();
+    }
     this._refreshList();
   }
 
@@ -537,8 +616,13 @@ class AppShell extends Widget {
     try {
       await this.api.saveGateway(id, body);
       await this._refreshGateways();
+      this.settingsPage.gatewaySaveResult = { id };
       this._toast('info', 'Gateway', `${id} saved.`);
-    } catch (err) { this._toast('error', 'Gateway', this._errText(err)); }
+    } catch (err) {
+      const message = this._errText(err);
+      this.settingsPage.gatewaySaveResult = { id, error: message };
+      this._toast('error', 'Gateway', message);
+    }
   }
 
   async _deleteGateway(id) {
@@ -549,23 +633,32 @@ class AppShell extends Widget {
     } catch (err) { this._toast('error', 'Gateway', this._errText(err)); }
   }
 
+  async _discoverGatewayModels(id) {
+    try {
+      const result = await this.api.discoverGatewayModels(id);
+      this.settingsPage.discoveredModels = { id, models: result.data || [] };
+    } catch (err) {
+      this.settingsPage.discoveredModels = { id, error: this._errText(err) };
+    }
+  }
+
   async _refreshGateways() {
     const page = await this.api.listGateways({ limit: 100 });
     this.gateways = page.data || [];
     this.header.gateways = this.gateways;
-    this.panel.gateways = this.gateways;
+    this.settingsPage.gateways = this.gateways;
     this._reconcileSelection();
   }
 
   async _patchSetting(key, value) {
     try {
       this.settings = await this.api.patchSetting(key, value);
-      this.panel.settings = this.settings;
+      this.settingsPage.settings = this.settings;
       this._toast('info', 'Settings', `${key} updated.`);
     } catch (err) {
       // Re-project the last good document so a failed input doesn't
       // masquerade as a saved value.
-      this.panel.settings = this.settings;
+      this.settingsPage.settings = this.settings;
       this._toast('error', 'Settings', this._errText(err));
     }
   }

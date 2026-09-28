@@ -103,6 +103,8 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 					emit(onEvent, event.NewDeltaEvent(t))
 				}
 				if ch.Delta.ReasoningContent != "" {
+					// Keep reasoning separate from answer deltas while
+					// preserving its original arrival order.
 					reasoning.WriteString(ch.Delta.ReasoningContent)
 					emit(onEvent, event.NewReasoningEvent(ch.Delta.ReasoningContent))
 				}

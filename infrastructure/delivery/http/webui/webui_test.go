@@ -15,19 +15,21 @@ const authority = "127.0.0.1:8080"
 
 func assets() fstest.MapFS {
 	return fstest.MapFS{
-		"index.html":       {Data: []byte("<nusa-app></nusa-app>")},
-		"app.js":           {Data: []byte("import './x.js';")},
-		"favicon.svg":      {Data: []byte("<svg/>")},
-		"styles/theme.css": {Data: []byte("body{}")},
-		"widgets/x/x.js":   {Data: []byte("export {};")},
-		"widgets/x/x.css":  {Data: []byte(":host{}")},
+		"index.html":                    {Data: []byte("<nusa-app></nusa-app>")},
+		"app.js":                        {Data: []byte("import './x.js';")},
+		"favicon.svg":                   {Data: []byte("<svg/>")},
+		"styles/theme.css":              {Data: []byte("body{}")},
+		"widgets/x/x.js":                {Data: []byte("export {};")},
+		"widgets/x/x.css":               {Data: []byte(":host{}")},
+		"vendor/mermaid/mermaid.min.js": {Data: []byte("globalThis.mermaid={};")},
+		"vendor/mermaid/LICENSE":        {Data: []byte("MIT")},
 	}
 }
 
 func router(t *testing.T) *gin.Engine {
 	t.Helper()
 	fsys := assets()
-	r := httpdelivery.NewHandler(httpdelivery.Deps{Authority: authority, WebAssets: fsys})
+	r := httpdelivery.NewHandler(httpdelivery.Deps{Authorities: []string{authority}, WebAssets: fsys})
 	return r
 }
 
@@ -69,7 +71,7 @@ func TestIndexServesWithSecurityHeaders(t *testing.T) {
 
 func TestWidgetAssetsServeAndHead(t *testing.T) {
 	r := router(t)
-	for _, p := range []string{"/app.js", "/favicon.svg", "/styles/theme.css", "/widgets/x/x.js", "/widgets/x/x.css"} {
+	for _, p := range []string{"/app.js", "/favicon.svg", "/styles/theme.css", "/widgets/x/x.js", "/widgets/x/x.css", "/vendor/mermaid/mermaid.min.js", "/vendor/mermaid/LICENSE"} {
 		w := request(r, "GET", p, authority)
 		if w.Code != 200 {
 			t.Errorf("GET %s = %d", p, w.Code)
@@ -81,6 +83,20 @@ func TestWidgetAssetsServeAndHead(t *testing.T) {
 	}
 	if ct := request(r, "GET", "/widgets/x/x.js", authority).Header().Get("Content-Type"); !strings.Contains(ct, "javascript") {
 		t.Errorf("js content-type %q", ct)
+	}
+	if ct := request(r, "GET", "/vendor/mermaid/mermaid.min.js", authority).Header().Get("Content-Type"); !strings.Contains(ct, "javascript") {
+		t.Errorf("vendored bundle content-type %q", ct)
+	}
+}
+
+func TestVendorRespectsGuardAndMissingIs404(t *testing.T) {
+	r := router(t)
+	if w := request(r, "GET", "/vendor/mermaid/mermaid.min.js", "evil.example"); w.Code != 403 {
+		t.Errorf("GET vendor bundle with foreign Host = %d, want 403", w.Code)
+	}
+	w := request(r, "GET", "/vendor/missing.js", authority)
+	if w.Code != 404 || !strings.Contains(w.Header().Get("Content-Type"), "problem+json") {
+		t.Errorf("missing vendor asset = %d %q, want 404 problem+json", w.Code, w.Header().Get("Content-Type"))
 	}
 }
 
@@ -106,7 +122,7 @@ func TestUnknownPathsAreProblem404(t *testing.T) {
 }
 
 func TestNilAssetsRegistersNothing(t *testing.T) {
-	r := httpdelivery.NewHandler(httpdelivery.Deps{Authority: authority})
+	r := httpdelivery.NewHandler(httpdelivery.Deps{Authorities: []string{authority}})
 	w := request(r, "GET", "/", authority)
 	if w.Code != 404 {
 		t.Fatalf("GET / without assets = %d", w.Code)

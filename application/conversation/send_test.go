@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	appjob "github.com/jahrulnr/nusallm/application/job"
 	"github.com/jahrulnr/nusallm/infrastructure/config"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
@@ -110,7 +111,7 @@ func TestSendRoundtrip(t *testing.T) {
 	app, _ := fixture(t, okHandler)
 
 	// FE-minted convID: send upserts the room and echoes the id back.
-	result, err := app.Send(t.Context(), "my-room", "gw1", "m1", "ping", nil, nil)
+	result, err := app.Send(t.Context(), "my-room", "gw1", "m1", "ping", nil, appjob.SendOptions{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +143,7 @@ func TestSendRoundtrip(t *testing.T) {
 
 	// Second send on stored bindings — empty route/modelID reuse them and
 	// must not replace the original title.
-	if _, err := app.Send(t.Context(), "my-room", "", "", "again", nil, nil); err != nil {
+	if _, err := app.Send(t.Context(), "my-room", "", "", "again", nil, appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	conv, err = app.deps.Convs.Load(t.Context(), "my-room")
@@ -173,7 +174,7 @@ func TestSendAppliesPromptWithoutPersisting(t *testing.T) {
 		okHandler(w, r)
 	}
 	app, _ := fixture(t, handler)
-	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "hi", nil, nil); err != nil {
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "hi", nil, appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !sawSystem.Load() {
@@ -192,7 +193,7 @@ func TestSendAppliesPromptWithoutPersisting(t *testing.T) {
 // the caller always learns which room received the message.
 func TestSendMintsConvID(t *testing.T) {
 	app, _ := fixture(t, okHandler)
-	result, err := app.Send(t.Context(), "", "gw1", "m1", "ping", nil, nil)
+	result, err := app.Send(t.Context(), "", "gw1", "m1", "ping", nil, appjob.SendOptions{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +215,7 @@ func TestSendFailedKeepsUserTurn(t *testing.T) {
 			t.Errorf("write provider error: %v", err)
 		}
 	})
-	result, err := app.Send(t.Context(), "c2", "gw1", "m1", "ping", nil, nil)
+	result, err := app.Send(t.Context(), "c2", "gw1", "m1", "ping", nil, appjob.SendOptions{}, nil)
 	if apperror.As(err).StatusCode() != 429 {
 		t.Fatalf("want 429, got %v", err)
 	}
@@ -237,7 +238,7 @@ func TestSendFailedKeepsUserTurn(t *testing.T) {
 // before any message is persisted.
 func TestSendUnknownRoute(t *testing.T) {
 	app, _ := fixture(t, okHandler)
-	_, err := app.Send(t.Context(), "c3", "missing", "m1", "hi", nil, nil)
+	_, err := app.Send(t.Context(), "c3", "missing", "m1", "hi", nil, appjob.SendOptions{}, nil)
 	if apperror.As(err).StatusCode() != 404 {
 		t.Fatalf("dangling route → %v, want 404", err)
 	}
@@ -261,7 +262,7 @@ func TestSendSerializesPerConv(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, _ = app.Send(t.Context(), "ser", "gw1", "m1", fmt.Sprintf("m%d", i), nil, nil)
+			_, _ = app.Send(t.Context(), "ser", "gw1", "m1", fmt.Sprintf("m%d", i), nil, appjob.SendOptions{}, nil)
 		}(i)
 	}
 	time.Sleep(100 * time.Millisecond)             // both queued/running
@@ -292,7 +293,7 @@ func TestQueuedSendCancelable(t *testing.T) {
 	})
 	firstDone := make(chan sendOutcome, 1)
 	go func() {
-		result, err := app.Send(t.Context(), "qc", "gw1", "m1", "first", nil, nil)
+		result, err := app.Send(t.Context(), "qc", "gw1", "m1", "first", nil, appjob.SendOptions{}, nil)
 		firstDone <- sendOutcome{result: result, err: err}
 	}()
 	select {
@@ -306,7 +307,7 @@ func TestQueuedSendCancelable(t *testing.T) {
 	queuedCtx := &signaledContext{Context: ctx, observed: make(chan struct{})}
 	queuedDone := make(chan sendOutcome, 1)
 	go func() {
-		result, err := app.Send(queuedCtx, "qc", "", "", "second", nil, nil)
+		result, err := app.Send(queuedCtx, "qc", "", "", "second", nil, appjob.SendOptions{}, nil)
 		queuedDone <- sendOutcome{result: result, err: err}
 	}()
 	<-queuedCtx.observed // Send calls Done only after the worker accepted the queued job.
@@ -348,7 +349,7 @@ func TestCancelRunningSend(t *testing.T) {
 	})
 	done := make(chan sendOutcome, 1)
 	go func() {
-		result, err := app.Send(t.Context(), "run", "gw1", "m1", "ping", nil, nil)
+		result, err := app.Send(t.Context(), "run", "gw1", "m1", "ping", nil, appjob.SendOptions{}, nil)
 		done <- sendOutcome{result: result, err: err}
 	}()
 	select {
@@ -395,7 +396,7 @@ func TestSendCancelRacingAppendReportsPersisted(t *testing.T) {
 	defer cancel()
 	done := make(chan sendOutcome, 1)
 	go func() {
-		result, err := app.Send(ctx, "append-race", "gw1", "m1", "ping", nil, nil)
+		result, err := app.Send(ctx, "append-race", "gw1", "m1", "ping", nil, appjob.SendOptions{}, nil)
 		done <- sendOutcome{result: result, err: err}
 	}()
 	select {
@@ -468,12 +469,15 @@ func TestCancelLeavesQueuedSend(t *testing.T) {
 	})
 	running := make(chan error, 1)
 	go func() {
-		_, err := app.Send(t.Context(), "q", "gw1", "m1", "first", nil, nil)
+		_, err := app.Send(t.Context(), "q", "gw1", "m1", "first", nil, appjob.SendOptions{}, nil)
 		running <- err
 	}()
 	time.Sleep(50 * time.Millisecond)
 	queued := make(chan error, 1)
-	go func() { _, err := app.Send(t.Context(), "q", "", "", "second", nil, nil); queued <- err }()
+	go func() {
+		_, err := app.Send(t.Context(), "q", "", "", "second", nil, appjob.SendOptions{}, nil)
+		queued <- err
+	}()
 	time.Sleep(50 * time.Millisecond) // second queued
 
 	if err := app.Cancel(t.Context(), "q"); err != nil {
@@ -497,7 +501,7 @@ func TestDeadCtxNoMutation(t *testing.T) {
 	app, _ := fixture(t, okHandler)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	result, err := app.Send(ctx, "dead", "gw1", "m1", "ping", nil, nil)
+	result, err := app.Send(ctx, "dead", "gw1", "m1", "ping", nil, appjob.SendOptions{}, nil)
 	if apperror.As(err).StatusCode() != 408 {
 		t.Fatalf("dead ctx → %v, want 408", err)
 	}
@@ -515,7 +519,7 @@ func TestDeadCtxNoMutation(t *testing.T) {
 func TestLockEvictedAfterSend(t *testing.T) {
 	app, _ := fixture(t, okHandler)
 	for i := 0; i < 3; i++ {
-		if _, err := app.Send(t.Context(), fmt.Sprintf("evict-%d", i), "gw1", "m1", "ping", nil, nil); err != nil {
+		if _, err := app.Send(t.Context(), fmt.Sprintf("evict-%d", i), "gw1", "m1", "ping", nil, appjob.SendOptions{}, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -533,10 +537,10 @@ func TestFailedFreshSendStaysRetryable(t *testing.T) {
 		}
 		okHandler(w, r)
 	})
-	if _, err := app.Send(t.Context(), "retry", "gw1", "m1", "ping", nil, nil); err == nil {
+	if _, err := app.Send(t.Context(), "retry", "gw1", "m1", "ping", nil, appjob.SendOptions{}, nil); err == nil {
 		t.Fatal("first send must fail")
 	}
-	if _, err := app.Send(t.Context(), "retry", "", "", "ping", nil, nil); err != nil {
+	if _, err := app.Send(t.Context(), "retry", "", "", "ping", nil, appjob.SendOptions{}, nil); err != nil {
 		t.Fatalf("retry on stored binding: %v", err)
 	}
 	if got := atomic.LoadInt32(&calls); got != 2 {
@@ -565,7 +569,7 @@ func TestAdapterNoAppendIsInternalError(t *testing.T) {
 		config.NewConfig(),
 		"",
 	)
-	result, err := app.Send(t.Context(), "badsvc", "gw1", "m1", "ping", nil, nil)
+	result, err := app.Send(t.Context(), "badsvc", "gw1", "m1", "ping", nil, appjob.SendOptions{}, nil)
 	if apperror.As(err).StatusCode() != 500 {
 		t.Fatalf("zero-append adapter → %v, want 500", err)
 	}
@@ -615,7 +619,7 @@ func TestSendToolLoop(t *testing.T) {
 	if err := convs.Save(t.Context(), seed); err != nil {
 		t.Fatal(err)
 	}
-	result, err := app.Send(t.Context(), "loop", "gw1", "m1", "go", nil, onEvent)
+	result, err := app.Send(t.Context(), "loop", "gw1", "m1", "go", nil, appjob.SendOptions{}, onEvent)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2,7 +2,7 @@ import { Widget, el, emit, clear } from '../../lib/dom.js';
 import { icon } from '../../lib/icons.js';
 
 // Thread chrome: title with inline rename, model picker, compaction,
-// in-row delete confirmation, and the sidebar/context toggles. It emits
+// in-row delete confirmation, and the sidebar/settings actions. It emits
 // intents only — the shell performs the API calls.
 class ConversationHeader extends Widget {
   static stylesheet = new URL('./conversation-header.css', import.meta.url);
@@ -19,8 +19,19 @@ class ConversationHeader extends Widget {
   }
 
   set conversation(c) { this._conversation = c; this._renaming = false; this._confirmingDelete = false; this._render(); }
-  set gateways(list) { this._gateways = list || []; this._render(); }
-  set selection(sel) { this._selection = sel; this._render(); }
+  // gateways/selection land mid-pick — forwarding to the live picker
+  // keeps its open menu alive; a full re-render would destroy it.
+  set gateways(list) {
+    this._gateways = list || [];
+    if (this.picker) this.picker.gateways = this._gateways;
+    else this._render();
+  }
+  set selection(sel) {
+    this._selection = sel;
+    if (this.picker) this.picker.selection = sel;
+    if (this.wsPicker) this.wsPicker.selection = sel;
+    if (!this.picker && !this.wsPicker) this._render();
+  }
   set connection(state) { this._connection = state; this._render(); }
 
   _render() {
@@ -74,12 +85,21 @@ class ConversationHeader extends Widget {
       ]));
     }
 
-    const picker = el('nusa-model-picker');
-    picker.gateways = this._gateways;
-    picker.selection = this._selection;
-    this.root.append(picker);
-
     this.root.append(el('div', { class: 'spacer' }));
+
+    // Reuse the picker element — re-append moves the node, preserving its
+    // shadow state (open menu, draft step) across header re-renders; the
+    // picker reinstalls its document dismiss listener on reconnect.
+    if (!this.picker) this.picker = el('nusa-model-picker');
+    this.picker.gateways = this._gateways;
+    this.picker.selection = this._selection;
+    this.root.append(this.picker);
+
+    // Workspace is a separate room-level boundary — its own picker, not a
+    // model-picker layer. Same reuse: re-append preserves popup state.
+    if (!this.wsPicker) this.wsPicker = el('nusa-workspace-picker');
+    this.wsPicker.selection = this._selection;
+    this.root.append(this.wsPicker);
 
     if (conv && this._confirmingDelete) {
       this.root.append(el('div', { class: 'confirm', role: 'alertdialog', 'aria-label': 'Confirm delete' }, [
@@ -107,9 +127,9 @@ class ConversationHeader extends Widget {
     }
 
     this.root.append(el('button', {
-      class: 'icon-btn', type: 'button', 'aria-label': 'Toggle context panel',
-      onclick: () => emit(this, 'context-toggle'),
-    }, [icon('panel', 15)]));
+      class: 'icon-btn', type: 'button', 'aria-label': 'Open settings',
+      onclick: () => emit(this, 'settings-open'),
+    }, [icon('gear', 15)]));
   }
 }
 

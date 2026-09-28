@@ -1,0 +1,41 @@
+:host { display: block; height: 100%; min-width: 0; font-family: var(--font-ui); }
+
+.page { height: 100%; overflow-y: auto; overflow-x: hidden; background: var(--bg); }
+.top {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  min-height: 65px;
+  padding: 12px clamp(18px, 4vw, 52px);
+  border-bottom: 1px solid var(--hairline);
+  background: var(--panel);
+}
+.top h1 { margin: 0; font-size: 17px; font-weight: 600; }
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  cursor: pointer;
+  padding: 6px;
+}
+.back:hover { color: var(--text); }
+.back svg { transform: rotate(180deg); }
+.content {
+  box-sizing: border-box;
+  width: min(100%, 960px);
+  margin: 0 auto;
+  padding: 28px clamp(18px, 4vw, 48px) 64px;
+  display: grid;
+  gap: 34px;
+}
+.section { min-width: 0; }
+.section + .section { border-top: 1px solid var(--hairline); padding-top: 28px; }
+.section h2 { margin: 0 0 16px; font-size: 14px; font-weight: 600; }
+nusa-provider-manager, nusa-settings-editor, nusa-tool-catalog { display: block; min-width: 0; }

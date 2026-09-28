@@ -11,16 +11,17 @@ import (
 )
 
 // The DTOs below are the contract's wire projections — every field is
-// explicitly chosen; no domain entity is marshaled. content fields pass
-// through raw (they are untrusted text the client renders escaped); the
-// guarantee covers server-held fields: no tool input/output, no
-// attachment URI or name, no optionalContent, no reasoning content.
+// explicitly chosen; no domain entity is marshaled. Message parts preserve
+// the assistant's text, reasoning, and tool-call order for the owner UI.
+// Provider replay artifacts, attachment sha256 pins, and error causes stay
+// internal. Tool input/output and attachment uri/name cross as inert text.
 
 type conversationDTO struct {
 	ID             string                 `json:"id"`
 	Title          string                 `json:"title,omitempty"`
 	Route          string                 `json:"route"`
 	ModelID        string                 `json:"modelId"`
+	Workspace      string                 `json:"workspace,omitempty"`
 	Usage          transport.UsagePayload `json:"usage"`
 	CreatedAt      time.Time              `json:"createdAt"`
 	UpdatedAt      time.Time              `json:"updatedAt"`
@@ -35,6 +36,7 @@ func toConversation(i drepo.ConversationInfo) conversationDTO {
 		Title:          i.Title,
 		Route:          i.Route,
 		ModelID:        i.ModelID,
+		Workspace:      i.Workspace,
 		Usage:          transport.MarshalUsage(i.Usage),
 		CreatedAt:      i.CreatedAt,
 		UpdatedAt:      i.UpdatedAt,
@@ -44,44 +46,81 @@ func toConversation(i drepo.ConversationInfo) conversationDTO {
 	}
 }
 
-// toolCallDTO is the sanitized call reference — id, name, and whether
-// output has been recorded. Inputs, outputs, and optionalContent never
-// serialize.
+// toolCallDTO is the owner-visible call record — id, name, lifecycle
+// status, the exact input string the model produced, when the call was
+// recorded, the persisted result envelope when one exists, and any
+// media the tool produced. Tool I/O intentionally crosses to the local
+// owner UI; optionalContent and key material never do. Output and
+// calledAt are pointers so absent facts omit the key rather than
+// inventing a result or the zero time.
 type toolCallDTO struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Status string `json:"status"` // "pending" | "completed"
+	ID          string          `json:"id"`
+	Name        string          `json:"name"`
+	Status      string          `json:"status"` // "pending" | "completed"
+	Input       string          `json:"input"`
+	CalledAt    *time.Time      `json:"calledAt,omitempty"`
+	Output      *string         `json:"output,omitempty"`
+	Attachments []attachmentDTO `json:"attachments,omitempty"`
 }
 
 func toToolCall(t entity.ToolCall) toolCallDTO {
-	status := "completed"
-	if t.Output() == "" {
-		status = "pending"
+	d := toolCallDTO{
+		ID:     t.ID(),
+		Name:   t.Name(),
+		Status: "completed",
+		Input:  t.Input(),
 	}
-	return toolCallDTO{ID: t.ID(), Name: t.Name(), Status: status}
+	if at := t.CallAt(); !at.IsZero() {
+		d.CalledAt = &at
+	}
+	if out := t.Output(); out != "" {
+		d.Output = &out
+	} else {
+		d.Status = "pending"
+	}
+	for _, a := range t.OutputAttachments() {
+		d.Attachments = append(d.Attachments, toAttachment(a))
+	}
+	return d
 }
 
-// attachmentDTO carries metadata only — never the URI (a local path or
-// data blob), never the name (stored names can carry path-shaped data),
-// never the sha256 pin.
+// attachmentDTO projects the stored reference — uri (a `file://` local
+// path or remote URL is owner-visible by design on this loopback UI)
+// and the optional display name (stored names can carry path-shaped
+// data; the client renders them as inert text). The sha256 content pin
+// stays internal — it is an adapter integrity check, not content.
 type attachmentDTO struct {
 	MediaType string `json:"mediaType"`
 	Modality  string `json:"modality"`
+	URI       string `json:"uri"`
+	Name      string `json:"name,omitempty"`
 }
 
 func toAttachment(a valueobject.Attachment) attachmentDTO {
-	return attachmentDTO{MediaType: a.MediaType(), Modality: a.Modality().String()}
+	return attachmentDTO{
+		MediaType: a.MediaType(),
+		Modality:  a.Modality().String(),
+		URI:       a.URI(),
+		Name:      a.Name(),
+	}
 }
 
 type messageDTO struct {
-	ID          string          `json:"id"`
-	Role        string          `json:"role"`
-	Content     string          `json:"content"`
-	UserType    string          `json:"userType,omitempty"`
-	Finish      string          `json:"finishReason,omitempty"`
-	ToolCalls   []toolCallDTO   `json:"toolCalls,omitempty"`
-	Attachments []attachmentDTO `json:"attachments,omitempty"`
-	CreatedAt   time.Time       `json:"createdAt"`
+	ID          string           `json:"id"`
+	Role        string           `json:"role"`
+	Content     string           `json:"content"`
+	Parts       []messagePartDTO `json:"parts,omitempty"`
+	UserType    string           `json:"userType,omitempty"`
+	Finish      string           `json:"finishReason,omitempty"`
+	ToolCalls   []toolCallDTO    `json:"toolCalls,omitempty"`
+	Attachments []attachmentDTO  `json:"attachments,omitempty"`
+	CreatedAt   time.Time        `json:"createdAt"`
+}
+
+type messagePartDTO struct {
+	Kind       string `json:"kind"`
+	Text       string `json:"text,omitempty"`
+	ToolCallID string `json:"toolCallId,omitempty"`
 }
 
 func toMessage(m entity.Message) messageDTO {
@@ -99,6 +138,13 @@ func toMessage(m entity.Message) messageDTO {
 	}
 	for _, t := range m.ToolCalls() {
 		out.ToolCalls = append(out.ToolCalls, toToolCall(t))
+	}
+	for _, part := range m.Parts() {
+		out.Parts = append(out.Parts, messagePartDTO{
+			Kind:       part.Kind,
+			Text:       part.Text,
+			ToolCallID: part.ToolCallID,
+		})
 	}
 	for _, a := range m.Attachments() {
 		out.Attachments = append(out.Attachments, toAttachment(a))

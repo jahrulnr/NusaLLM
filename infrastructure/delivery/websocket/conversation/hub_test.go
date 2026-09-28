@@ -15,6 +15,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	appconversation "github.com/jahrulnr/nusallm/application/conversation"
+	appjob "github.com/jahrulnr/nusallm/application/job"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
@@ -32,7 +33,7 @@ type stubSender struct {
 }
 
 func (s stubSender) Send(ctx context.Context, convID, route, modelID, message string,
-	_ []valueobject.Attachment, onEvent event.TurnEventHandler) (appconversation.SendResult, error) {
+	_ []valueobject.Attachment, _ appjob.SendOptions, onEvent event.TurnEventHandler) (appconversation.SendResult, error) {
 	return s.fn(ctx, convID, route, modelID, message, onEvent)
 }
 
@@ -118,6 +119,8 @@ func TestTurnSendHappyPath(t *testing.T) {
 		}
 		onEvent(event.NewDeltaEvent("hello"))
 		onEvent(event.NewReasoningEvent("PRIVATE-CHAIN-OF-THOUGHT"))
+		onEvent(event.NewReasoningSummaryEvent("OFFICIAL-SUMMARY-PART-1 "))
+		onEvent(event.NewReasoningSummaryEvent("OFFICIAL-SUMMARY-PART-2"))
 		onEvent(event.NewToolCallEvent(toolCall))
 		outCall, _ := entity.NewToolCall("call_1", "read_file", "{}", enum.TooltypeOrigin)
 		onEvent(event.NewToolOutputEvent(outCall, "SECRET-TOOL-OUTPUT"))
@@ -167,7 +170,7 @@ func TestTurnSendHappyPath(t *testing.T) {
 		}
 	}
 
-	want := []string{"turn.opened", "turn.delta", "turn.phase", "turn.tool_call", "turn.tool_output", "turn.step_finished", "turn.completed"}
+	want := []string{"turn.opened", "turn.delta", "turn.phase", "turn.reasoning", "turn.reasoning", "turn.reasoning", "turn.tool_call", "turn.tool_input", "turn.tool_output", "turn.step_finished", "turn.completed"}
 	if fmt.Sprint(types) != fmt.Sprint(want) {
 		t.Fatalf("frame types %v, want %v", types, want)
 	}
@@ -176,17 +179,28 @@ func TestTurnSendHappyPath(t *testing.T) {
 			t.Fatalf("seq %v — want strict 0..n", seqs)
 		}
 	}
-	// Payload spot checks: delta text only, reasoning/tool scrubbed.
+	// Provider content crosses exactly in arrival order; error causes do not.
 	if !strings.Contains(sawRaw.String(), `"text":"hello"`) {
 		t.Fatalf("delta text missing: %s", sawRaw.String())
 	}
-	for _, leak := range []string{"PRIVATE-CHAIN-OF-THOUGHT", "SECRET-TOOL-OUTPUT", "/secret/x", "transient retry"} {
+	if !strings.Contains(sawRaw.String(), `"text":"PRIVATE-CHAIN-OF-THOUGHT"`) {
+		t.Fatalf("raw reasoning missing: %s", sawRaw.String())
+	}
+	for _, leak := range []string{"transient retry"} {
 		if strings.Contains(sawRaw.String(), leak) {
 			t.Fatalf("frame leaked %q", leak)
 		}
 	}
+	p1 := strings.Index(sawRaw.String(), `"text":"OFFICIAL-SUMMARY-PART-1 "`)
+	p2 := strings.Index(sawRaw.String(), `"text":"OFFICIAL-SUMMARY-PART-2"`)
+	raw := strings.Index(sawRaw.String(), `"text":"PRIVATE-CHAIN-OF-THOUGHT"`)
+	if raw < 0 || p1 < 0 || p2 < 0 || !(raw < p1 && p1 < p2) {
+		t.Fatalf("reasoning chunks missing or out of order: %s", sawRaw.String())
+	}
 	if !strings.Contains(sawRaw.String(), `"callId":"call_1"`) ||
 		!strings.Contains(sawRaw.String(), `"name":"read_file"`) ||
+		!strings.Contains(sawRaw.String(), `"text":"{\"path\":\"/secret/x\"}"`) ||
+		!strings.Contains(sawRaw.String(), `"text":"SECRET-TOOL-OUTPUT"`) ||
 		!strings.Contains(sawRaw.String(), `"finishReason":"stop"`) ||
 		!strings.Contains(sawRaw.String(), `"totalTokens":15`) {
 		t.Fatalf("expected projection fields missing: %s", sawRaw.String())
@@ -534,6 +548,19 @@ func TestSplitDelta(t *testing.T) {
 	got := splitDelta("ab世界cd", 4)
 	if fmt.Sprint(got) != fmt.Sprint([]string{"ab", "世", "界c", "d"}) {
 		t.Fatalf("utf8 boundary split: %q", got)
+	}
+}
+
+func TestSplitDeltaMalformedBytesStayBounded(t *testing.T) {
+	// Tool output can be arbitrary bytes. Splitting must remain bounded
+	// and must not rescan the whole prefix for every invalid byte.
+	bad := string([]byte{0xff}) + strings.Repeat("a", outboundChunkBytes)
+	chunks := splitDelta(bad, outboundChunkBytes)
+	if len(chunks) != 2 || len(chunks[0]) != outboundChunkBytes {
+		t.Fatalf("malformed split: %d chunks, first=%d", len(chunks), len(chunks[0]))
+	}
+	if strings.Join(chunks, "") != bad {
+		t.Fatal("malformed split did not preserve content")
 	}
 }
 

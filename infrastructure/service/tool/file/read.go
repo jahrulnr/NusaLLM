@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
@@ -14,18 +13,20 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/service/wire"
 )
 
-// FileReadTool reads a text file under a fixed root — the constructor
-// carries the schema and validates the sandbox boundary; Execute resolves
-// the call input against an os.Root so symlink escapes fail too.
+// FileReadTool reads a text file under the turn's workspace — the
+// constructor carries the schema and validates the default sandbox
+// boundary; Execute resolves the call input against an os.Root opened
+// per call so symlink escapes fail too.
 type FileReadTool struct {
-	root   *os.Root
+	dir    string
 	schema valueobject.ToolSchema
 }
 
-// NewFileReadTool binds the tool to root: every requested path resolves
-// inside it — os.Root confines traversal and symlink escapes alike.
+// NewFileReadTool binds the tool's default root: every requested path
+// resolves inside it — os.Root confines traversal and symlink escapes
+// alike. A turn-scoped workspace dir overrides it per call.
 func NewFileReadTool(root string) (service.Tool, error) {
-	r, err := os.OpenRoot(root)
+	abs, err := checkDir(root)
 	if err != nil {
 		return nil, err
 	}
@@ -37,10 +38,9 @@ func NewFileReadTool(root string) (service.Tool, error) {
 		enum.ToolPermissionAgent,
 	)
 	if err != nil {
-		_ = r.Close()
 		return nil, err
 	}
-	return &FileReadTool{root: r, schema: schema}, nil
+	return &FileReadTool{dir: abs, schema: schema}, nil
 }
 
 func (tool *FileReadTool) Schema() valueobject.ToolSchema {
@@ -59,7 +59,16 @@ func (tool *FileReadTool) Execute(ctx context.Context, call entity.ToolCall, _ s
 	}
 	// Reject oversized files before reading — the call's output budget is
 	// the honest cap, enforced again by SetToolOutput on the way out.
-	f, info, err := wire.OpenRegularFile(tool.root, input.Path)
+	root, _, err := callRoot(ctx, tool.dir)
+	if err != nil {
+		return service.ToolResult{}, err
+	}
+	defer func() {
+		if closeErr := root.Close(); retErr == nil {
+			retErr = closeErr
+		}
+	}()
+	f, info, err := wire.OpenRegularFile(root, input.Path)
 	if err != nil {
 		return service.ToolResult{}, err
 	}

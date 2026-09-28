@@ -66,7 +66,7 @@ func New(opts coretext.Options) *Service {
 // selected by gw; events reach onEvent uniformly either way.
 func (s *Service) Send(ctx context.Context, conv *aggregate.Conversation, gw *aggregate.Gateway, model entity.Model, onEvent event.TurnEventHandler) error {
 	stream := gw.StreamMode()
-	body, err := encodeRequest(conv, model, stream, s.fileRoot)
+	body, err := encodeRequest(conv, model, stream, coretext.FileRoot(conv, s.fileRoot), gw.Endpoint())
 	if err != nil {
 		return err
 	}
@@ -149,6 +149,8 @@ func (s *Service) unaryResponse(ctx context.Context, resp *http.Response, conv *
 	conv.Append(msg)
 	conv.AddUsage(usage)
 	if r := msg.OptionalContent()["completion.reasoning_content"]; r != "" {
+		// Preserve reasoning separately so the application can store it
+		// in the message timeline and the delivery layer can render it.
 		emit(onEvent, event.NewReasoningEvent(r))
 	}
 	emit(onEvent, event.NewDeltaEvent(msg.Content()))

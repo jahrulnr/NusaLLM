@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -19,33 +18,30 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/service/wire"
 )
 
-// ReadMediaTool attaches a non-text file under a fixed root to the call
-// result — the constructor carries the schema and validates the sandbox
-// boundary; Execute resolves the call input against an os.Root so `..`
-// traversal and symlink escapes fail alike. Payload bytes never enter the
+// ReadMediaTool attaches a non-text file under the turn's workspace to
+// the call result — the constructor carries the schema and validates the
+// default sandbox boundary; Execute resolves the call input against an
+// os.Root opened per call so `..` traversal and symlink escapes fail
+// alike. Payload bytes never enter the
 // tool: the result carries a file:// reference adapters resolve at send
 // time, so size caps are enforced here from the stat, not the read. The
 // reference outlives the check, so the content itself is pinned: the
 // sha256 recorded here is hashed through this same confined handle, and
 // send-time resolution verifies it. The completion adapter reopens files
-// under its configured FileRoot; swapped or escaped paths degrade to a
+// under the same workspace root; swapped or escaped paths degrade to a
 // placeholder instead of sending unchecked bytes.
 type ReadMediaTool struct {
-	root     *os.Root
-	rootPath string // absolute root — os.Root does not expose it
-	schema   valueobject.ToolSchema
+	dir    string
+	schema valueobject.ToolSchema
 }
 
-// NewReadMediaTool binds the tool to root: every requested path resolves
-// inside it — os.Root confines traversal and symlink escapes alike. The
-// absolute path is kept alongside because file:// attachment URIs need it
-// and the root cannot hand it back.
+// NewReadMediaTool binds the tool's default root: every requested path
+// resolves inside it — os.Root confines traversal and symlink escapes
+// alike. A turn-scoped workspace dir overrides it per call; the absolute
+// path is kept alongside because file:// attachment URIs need it and the
+// root cannot hand it back.
 func NewReadMediaTool(root string) (service.Tool, error) {
-	abs, err := filepath.Abs(root)
-	if err != nil {
-		return nil, err
-	}
-	r, err := os.OpenRoot(abs)
+	abs, err := checkDir(root)
 	if err != nil {
 		return nil, err
 	}
@@ -57,10 +53,9 @@ func NewReadMediaTool(root string) (service.Tool, error) {
 		enum.ToolPermissionAgent,
 	)
 	if err != nil {
-		_ = r.Close()
 		return nil, err
 	}
-	return &ReadMediaTool{root: r, rootPath: abs, schema: schema}, nil
+	return &ReadMediaTool{dir: abs, schema: schema}, nil
 }
 
 func (tool *ReadMediaTool) Schema() valueobject.ToolSchema {
@@ -80,7 +75,16 @@ func (tool *ReadMediaTool) Execute(ctx context.Context, call entity.ToolCall, _ 
 	if strings.TrimSpace(input.Path) == "" {
 		return service.ToolResult{}, fmt.Errorf("path is required")
 	}
-	f, info, err := wire.OpenRegularFile(tool.root, input.Path)
+	root, rootPath, err := callRoot(ctx, tool.dir)
+	if err != nil {
+		return service.ToolResult{}, err
+	}
+	defer func() {
+		if closeErr := root.Close(); retErr == nil {
+			retErr = closeErr
+		}
+	}()
+	f, info, err := wire.OpenRegularFile(root, input.Path)
 	if err != nil {
 		return service.ToolResult{}, fmt.Errorf("%q is not a readable regular file: %w", input.Path, err)
 	}
@@ -98,7 +102,7 @@ func (tool *ReadMediaTool) Execute(ctx context.Context, call entity.ToolCall, _ 
 	}
 	prefix = prefix[:n]
 	mediaType := http.DetectContentType(prefix)
-	att, err := valueobject.NewAttachment("file://"+filepath.Join(tool.rootPath, input.Path), mediaType)
+	att, err := valueobject.NewAttachment("file://"+filepath.Join(rootPath, input.Path), mediaType)
 	if err != nil {
 		return service.ToolResult{}, err
 	}

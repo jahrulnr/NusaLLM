@@ -17,12 +17,35 @@ class ProviderManager extends Widget {
     this._editing = null;   // existing gateway object being edited
     this._creating = false;
     this._confirmId = null; // gateway id awaiting delete confirmation
+    this._discovery = null;
+    this._saving = false;
+    this._pendingSaveId = null;
     this._render();
   }
 
   set gateways(list) {
     this._gateways = list || [];
     if (!this._editing && !this._creating) this._render();
+  }
+
+  set discoveredModels(result) {
+    if (!result || result.id !== this._editing?.id) return;
+    this._discovery = result;
+    this._renderDiscovery();
+  }
+
+  set gatewaySaveResult(result) {
+    if (!result || result.id !== this._pendingSaveId) return;
+    this._saving = false;
+    this._pendingSaveId = null;
+    if (result.error) {
+      if (this._formError) this._formError.textContent = result.error;
+      return;
+    }
+    this._editing = null;
+    this._creating = false;
+    this._discovery = null;
+    this._render();
   }
 
   _render() {
@@ -75,7 +98,7 @@ class ProviderManager extends Widget {
         el('div', { class: 'row-actions' }, [
           el('button', {
             class: 'icon-btn', type: 'button', 'aria-label': `Edit ${g.id}`,
-            onclick: () => { this._editing = g; this._render(); },
+            onclick: () => { this._editing = g; this._discovery = null; this._render(); },
           }, [icon('pencil', 12)]),
           el('button', {
             class: 'icon-btn danger', type: 'button', 'aria-label': `Delete ${g.id}`,
@@ -122,10 +145,11 @@ class ProviderManager extends Widget {
     const error = el('div', { class: 'form-error' });
 
     const save = () => {
+      if (this._saving) return;
       const gid = g ? g.id : id.value.trim();
       const modelIds = models.value.split('\n').map((s) => s.trim()).filter(Boolean);
-      if (!gid || !modelIds.length) {
-        error.textContent = 'id and at least one model id are required';
+      if (!gid) {
+        error.textContent = 'gateway id is required';
         return;
       }
       // Preserve every advanced field for surviving ids; defaults for new.
@@ -150,10 +174,10 @@ class ProviderManager extends Widget {
         body.apiKey = keyValue.value;
       }
       if (keyMode.value === 'clear') body.apiKey = '';
+      this._saving = true;
+      this._pendingSaveId = gid;
+      error.textContent = 'Saving…';
       emit(this, 'gateway-save', { id: gid, body });
-      this._editing = null;
-      this._creating = false;
-      this._render();
     };
 
     this.root.append(
@@ -164,6 +188,14 @@ class ProviderManager extends Widget {
       field('endpoint', endpoint),
       field('stream', el('span', { class: 'check' }, [stream])),
       field('models', models),
+      el('div', { class: 'import-actions' }, [
+        el('button', {
+          class: 'btn', type: 'button', disabled: !g,
+          onclick: () => this._fetchModels(g.id),
+        }, [el('span', { text: 'Fetch models from provider' })]),
+        !g ? el('span', { class: 'hint', text: 'Save the gateway first to use its endpoint and key.' }) : null,
+      ]),
+      this.discoveryHost = el('div', { class: 'discovery' }),
       field('api key', keyMode),
       field('', keyValue),
       error,
@@ -171,9 +203,67 @@ class ProviderManager extends Widget {
         el('button', { class: 'btn accent', type: 'button', onclick: save }, [el('span', { text: 'Save' })]),
         el('button', {
           class: 'btn', type: 'button',
-          onclick: () => { this._editing = null; this._creating = false; this._render(); },
+          onclick: () => {
+            if (this._saving) return;
+            this._editing = null;
+            this._creating = false;
+            this._discovery = null;
+            this._render();
+          },
         }, [el('span', { text: 'Cancel' })]),
       ]),
+    );
+    this._modelsInput = models;
+    this._formError = error;
+    this._renderDiscovery();
+  }
+
+  _fetchModels(id) {
+    this._discovery = { id, loading: true };
+    this._renderDiscovery();
+    emit(this, 'gateway-model-discover', { id });
+  }
+
+  _renderDiscovery() {
+    if (!this.discoveryHost) return;
+    clear(this.discoveryHost);
+    const result = this._discovery;
+    if (!result || result.id !== this._editing?.id) return;
+    if (result.loading) {
+      this.discoveryHost.append(el('p', { class: 'hint', text: 'Fetching provider models…' }));
+      return;
+    }
+    if (result.error) {
+      this.discoveryHost.append(el('p', { class: 'form-error', text: result.error }));
+      return;
+    }
+    const existing = new Set(this._modelsInput.value.split('\n').map((s) => s.trim()).filter(Boolean));
+    const available = (result.models || []).filter((id) => !existing.has(id));
+    if (!available.length) {
+      this.discoveryHost.append(el('p', { class: 'hint', text: 'No new models found.' }));
+      return;
+    }
+    const search = el('input', { class: 'in', type: 'search', placeholder: 'Filter models', 'aria-label': 'Filter discovered models' });
+    const select = el('select', { class: 'in discovered-list', multiple: true, size: '10', 'aria-label': 'Discovered models' },
+      available.map((id) => el('option', { value: id, text: id })));
+    search.addEventListener('input', () => {
+      const q = search.value.toLowerCase();
+      for (const option of select.options) option.hidden = !option.value.toLowerCase().includes(q);
+    });
+    this.discoveryHost.append(
+      el('div', { class: 'discovery-head', text: `${available.length} new models available` }),
+      search,
+      select,
+      el('button', {
+        class: 'btn accent', type: 'button',
+        onclick: () => {
+          const chosen = [...select.selectedOptions].map((option) => option.value);
+          const ids = new Set(this._modelsInput.value.split('\n').map((s) => s.trim()).filter(Boolean));
+          for (const id of chosen) ids.add(id);
+          this._modelsInput.value = [...ids].join('\n');
+          this._renderDiscovery();
+        },
+      }, [el('span', { text: 'Add selected to gateway' })]),
     );
   }
 }

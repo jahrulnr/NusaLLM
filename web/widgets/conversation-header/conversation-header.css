@@ -1,6 +1,7 @@
 :host { display: block; font-family: var(--font-ui); }
 
 .header {
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -61,7 +62,7 @@
 
 .spacer { flex: 1 1 0; min-width: 0; }
 
-nusa-model-picker { flex: 0 1 auto; min-width: 0; }
+nusa-model-picker { flex: 0 1 auto; min-width: 0; max-width: min(300px, 40vw); }
 
 @media (max-width: 520px) {
   .header { padding: 8px 8px; gap: 4px; }

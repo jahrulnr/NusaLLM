@@ -22,6 +22,8 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 	// Hand-built Deps may carry a zero or invalid config — normalize
 	// clamps and tag defaults fill it.
 	ccfg := d.Config
+	// Directory-aware tools work under the room's bound workspace.
+	ctx = dservice.WithWorkspaceDir(ctx, conv.Workspace())
 	ccfg.Normalize()
 	wireModel := model.ApplyUnknownContextDefaults()
 	// The call surface is live config: a stored conversation can predate
@@ -45,7 +47,31 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 			didCompact = shrank
 		}
 		before := len(conv.Messages())
-		err := svc.Send(ctx, conv, gw, wireModel, onEvent)
+		var parts []entity.MessagePart
+		captureEvent := func(ev event.TurnEvent) {
+			switch ev.Kind() {
+			case enum.TurnEventDelta, enum.TurnEventReasoning, enum.TurnEventReasoningSummary:
+				kind := entity.MessagePartText
+				if ev.Kind() == enum.TurnEventReasoning || ev.Kind() == enum.TurnEventReasoningSummary {
+					kind = entity.MessagePartReasoning
+				}
+				if text := ev.Delta(); text != "" {
+					if len(parts) > 0 && parts[len(parts)-1].Kind == kind {
+						parts[len(parts)-1].Text += text
+					} else {
+						parts = append(parts, entity.MessagePart{Kind: kind, Text: text})
+					}
+				}
+			case enum.TurnEventToolCall:
+				parts = append(parts, entity.MessagePart{
+					Kind: entity.MessagePartToolCall, ToolCallID: ev.ToolCall().ID(),
+				})
+			}
+			if onEvent != nil {
+				onEvent(ev)
+			}
+		}
+		err := svc.Send(ctx, conv, gw, wireModel, captureEvent)
 		if err != nil && apperror.As(err).StatusCode() == 413 && !didCompact && len(conv.Messages()) > ccfg.CompactKeepTail {
 			// The provider says overflow even though our estimate
 			// disagreed — believe the provider once: compact and retry.
@@ -69,6 +95,9 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 		added := conv.Messages()[before:]
 		if len(added) == 0 {
 			return apperror.New(500, "adapter produced no message", fmt.Errorf("service appended 0 messages"))
+		}
+		if len(parts) > 0 {
+			conv.Last().SetParts(parts)
 		}
 		for _, m := range added {
 			if _, err := d.Convs.AppendMessage(ctx, convID, m); err != nil {

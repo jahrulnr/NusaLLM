@@ -17,6 +17,7 @@ type ConversationInfo struct {
 	Title     string
 	Route     string
 	ModelID   string
+	Workspace string
 	Usage     valueobject.Usage
 	CreatedAt time.Time
 	UpdatedAt time.Time

@@ -159,6 +159,7 @@ indexes.
 | `content` | Text body |
 | `userType` | `enum.LLMUserType` — provenance of user-role messages |
 | `finishReason` | `enum.FinishReason` — normalized stop reason for assistant turns |
+| `parts` | Ordered assistant response text, reasoning, and tool-call positions |
 | `toolCalls` | Tool invocations this message produced (`[]ToolCall`) |
 | `attachments` | Non-text content references (`[]valueobject.Attachment`) |
 | `optionalContent` | Provider replay artifacts, namespaced by adapter (`map[string]string`) |
@@ -180,6 +181,11 @@ encode time so reasoning state survives a reload. Test fixtures exercise
 stores the strings opaquely and never interprets them; a dedicated field
 for one provider's artifact is exactly what this mechanism exists to
 prevent.
+
+`SetParts` stores the provider-independent assistant response order used
+by history: exact text and reasoning parts plus references to tool calls.
+Provider replay continues to use `optionalContent`; the history timeline
+does not replace or rewrite those adapter-owned values.
 
 Tool results attach to the calls on the message: `AddToolCall` records an
 invocation, and `SetToolOutput(id, output)`,

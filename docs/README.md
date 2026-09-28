@@ -32,8 +32,10 @@ New to the codebase? Start at the top and stop when you've had enough:
 
 The `api/` directory holds the **contract** for the browser WebUI — a
 local, single-user surface over Gin HTTP plus one multiplexed
-WebSocket. Phases 1–4 are live: `nusallm serve` binds `127.0.0.1` and
-serves every `GET` route, the mutations (`PATCH`/`PUT`/`DELETE`/`POST`),
+WebSocket. Phases 1–4 are live: `nusallm serve` binds `127.0.0.1` on
+the configured `server.port` (default `10998`) and accepts the configured
+`server.hosts` aliases (default `127.0.0.1` and `localhost`). It serves
+every `GET` route, the mutations (`PATCH`/`PUT`/`DELETE`/`POST`),
 and the WebSocket turn commands (`turn.send`/`turn.edit`/`turn.cancel`/
 `turn.watch` with bounded-journal replay) under the security envelope.
 The Swagger UI is still a design document only.

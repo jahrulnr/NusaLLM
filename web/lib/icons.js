@@ -18,6 +18,7 @@ const PATHS = {
   plug: 'M9 3v5m6-5v5M7 8h10v4a5 5 0 01-5 5 5 5 0 01-5-5V8zm5 9v4',
   tool: 'M14.5 6.5a4 4 0 00-5.6 5L4 16.4V20h3.6l4.9-4.9a4 4 0 005-5.6l-2.8 2.8-2.6-2.6 2.4-3.2z',
   panel: 'M4 5h16v14H4zM15 5v14',
+  folder: 'M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z',
 };
 
 export function icon(name, size = 14) {

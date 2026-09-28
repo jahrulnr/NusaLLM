@@ -1,9 +1,7 @@
 import { Widget, el, emit, clear } from '../../lib/dom.js';
 
-// Settings leaf editor: renders every projected leaf
-// ("section.leaf" -> value), commits on change, and emits
-// setting-change {key,value}. Durations render as text; booleans as
-// checkboxes; numbers as number inputs.
+// Settings editor: groups projected values by section and emits the
+// existing dotted key when a field changes.
 class SettingsEditor extends Widget {
   static stylesheet = new URL('./settings-editor.css', import.meta.url);
 
@@ -15,34 +13,46 @@ class SettingsEditor extends Widget {
 
   set settings(doc) { this._settings = doc || {}; this._render(); }
 
-  _leaves() {
-    const out = [];
-    for (const [section, obj] of Object.entries(this._settings || {})) {
-      if (!obj || typeof obj !== 'object') continue;
-      for (const [leaf, value] of Object.entries(obj)) {
-        out.push({ key: `${section}.${leaf}`, value });
-      }
-    }
-    return out;
-  }
-
   _render() {
     clear(this.root);
     this.root.classList.add('settings');
-    const leaves = this._leaves();
-    if (!leaves.length) {
+    const sections = Object.entries(this._settings || {}).filter(([, value]) => value && typeof value === 'object');
+    if (!sections.length) {
       this.root.append(el('div', { class: 'hint', text: 'No settings exposed.' }));
       return;
     }
-    for (const { key, value } of leaves) {
-      this.root.append(el('div', { class: 'setting' }, [
-        el('label', { class: 'setting-key', text: key, 'for': `s-${key}` }),
-        this._input(key, value),
-      ]));
+    for (const [section, values] of sections) {
+      const group = el('section', { class: 'group' }, [
+        el('h3', { text: section[0].toUpperCase() + section.slice(1) }),
+      ]);
+      if (section === 'server') {
+        group.append(el('p', { class: 'hint', text: 'Port and host changes take effect after restart.' }));
+      }
+      const fields = el('div', { class: 'fields' });
+      for (const [leaf, value] of Object.entries(values)) {
+        const key = `${section}.${leaf}`;
+        fields.append(el('div', { class: 'setting' }, [
+          el('label', { class: 'setting-key', text: leaf.replaceAll('_', ' '), 'for': `s-${key}`, title: key }),
+          this._input(key, value),
+        ]));
+      }
+      group.append(fields);
+      this.root.append(group);
     }
   }
 
   _input(key, value) {
+    if (Array.isArray(value)) {
+      const input = el('textarea', {
+        class: 'in list-input', id: `s-${key}`, rows: 2,
+        'aria-label': key, spellcheck: 'false',
+      });
+      input.value = value.join('\n');
+      input.addEventListener('change', () => {
+        emit(this, 'setting-change', { key, value: input.value.split('\n').map((item) => item.trim()).filter(Boolean) });
+      });
+      return input;
+    }
     if (typeof value === 'boolean') {
       const input = el('input', { type: 'checkbox', id: `s-${key}`, checked: value });
       input.addEventListener('change', () =>

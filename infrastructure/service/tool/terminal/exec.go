@@ -92,6 +92,11 @@ func (tool *ExecTool) Execute(ctx context.Context, call entity.ToolCall, emit se
 
 	cmd := shellCommand(ctx, input.Command)
 	cmd.WaitDelay = waitDelay
+	if dir := service.WorkspaceDir(ctx); dir != "" {
+		// The turn's workspace is the shell's working directory — the
+		// room binds it, the delivery defaults it to the owner's home.
+		cmd.Dir = dir
+	}
 	// stdout and stderr share one writer: os/exec then wires both child
 	// fds to a single pipe, so the merged stream keeps arrival order and
 	// each Write below is one preview chunk.

@@ -20,6 +20,7 @@ func (r *ConversationRepository) Info(ctx context.Context, convID string) (drepo
 		Title:          meta.Title,
 		Route:          meta.Route,
 		ModelID:        meta.ModelID,
+		Workspace:      meta.Workspace,
 		Usage:          mustUsage(meta.Usage),
 		MessageCount:   meta.MessageCount,
 		ActiveCount:    meta.ActiveCount,

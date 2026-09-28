@@ -1,7 +1,9 @@
 // Package conversation is the WebUI conversation boundary — the HTTP
 // surface over the appconversation use cases: list/detail/history reads,
 // rename/delete/compact mutations, and the message DTO projections that
-// keep tool I/O, attachment locations, and optionalContent off the wire.
+// keep provider replay artifacts and attachment sha256 pins off the wire
+// while ordered message parts, tool I/O, and attachment uri/name cross
+// to the local owner.
 package conversation
 
 import (
@@ -9,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	appconversation "github.com/jahrulnr/nusallm/application/conversation"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 )
@@ -20,6 +23,7 @@ type Reader interface {
 	Info(ctx context.Context, id string) (drepo.ConversationInfo, error)
 	List(ctx context.Context) ([]drepo.ConversationInfo, error)
 	History(ctx context.Context, id string, start, end int) ([]entity.Message, error)
+	ContextFooterStats(ctx context.Context, convID, route, modelID string) (appconversation.ContextFooterStats, error)
 }
 
 // Writer is the mutation surface: Rename is synchronous; Delete and
@@ -55,6 +59,7 @@ func Register(api *gin.RouterGroup, d Deps) {
 	api.GET("/conversations", s.list)
 	api.GET("/conversations/:id", s.get)
 	api.GET("/conversations/:id/messages", s.messages)
+	api.GET("/context", s.context)
 	if d.Writes != nil {
 		api.PATCH("/conversations/:id", s.rename)
 		api.DELETE("/conversations/:id", s.delete)

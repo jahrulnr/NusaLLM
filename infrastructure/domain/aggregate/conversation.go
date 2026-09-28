@@ -25,6 +25,7 @@ type Conversation struct {
 	modelID      string // bound model id on that route — Send may still override per request
 	systemPrompt string
 	title        string // optional display title for conversation lists
+	workspace    string // absolute directory the room's tools work in; empty = the delivery's default
 	messages     []entity.Message
 	tools        []valueobject.ToolSchema
 	usage        valueobject.Usage
@@ -129,6 +130,14 @@ func (c *Conversation) SetModelID(modelID string) {
 	c.modelID = modelID
 }
 
+// SetWorkspace binds the conversation to the absolute directory its tools
+// work in — file tools confine to it, exec runs there. Like the route
+// binding it persists with the room so a later session resumes in the
+// same tree; empty defers to the delivery's default workspace.
+func (c *Conversation) SetWorkspace(dir string) {
+	c.workspace = dir
+}
+
 // AddUsage accumulates the token accounting reported for one request —
 // providers report per call, the conversation tracks the running total.
 func (c *Conversation) AddUsage(u valueobject.Usage) {
@@ -184,6 +193,7 @@ func (c *Conversation) NeedCompaction(budget int) bool {
 func (c Conversation) ID() string                      { return c.id }
 func (c Conversation) Route() string                   { return c.route }
 func (c Conversation) ModelID() string                 { return c.modelID }
+func (c Conversation) Workspace() string               { return c.workspace }
 func (c Conversation) SystemPrompt() string            { return c.systemPrompt }
 func (c Conversation) Title() string                   { return c.title }
 func (c Conversation) Messages() []entity.Message      { return c.messages }

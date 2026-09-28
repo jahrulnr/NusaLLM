@@ -335,7 +335,7 @@ func TestStreamRoundtrip(t *testing.T) {
 	for _, e := range *ev {
 		kinds = append(kinds, e.Kind())
 	}
-	if kinds[0] != enum.TurnEventReasoning || kinds[1] != enum.TurnEventReasoning {
+	if kinds[0] != enum.TurnEventReasoningSummary || kinds[1] != enum.TurnEventReasoningSummary {
 		t.Fatalf("reasoning events: %+v", kinds)
 	}
 	if kinds[len(kinds)-1] != enum.TurnEventFinished {

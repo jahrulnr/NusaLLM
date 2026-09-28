@@ -14,6 +14,7 @@ import (
 
 	appconversation "github.com/jahrulnr/nusallm/application/conversation"
 	appgateway "github.com/jahrulnr/nusallm/application/gateway"
+	appjob "github.com/jahrulnr/nusallm/application/job"
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/term"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
@@ -206,7 +207,7 @@ func (s *Session) Send(ctx context.Context, text, route, modelID string, onEvent
 		}
 		break
 	}
-	return s.Conversations.Send(ctx, s.ConversationID, route, modelID, text, s.Attachments, onEvent)
+	return s.Conversations.Send(ctx, s.ConversationID, route, modelID, text, s.Attachments, appjob.SendOptions{}, onEvent)
 }
 
 // Edit regenerates a conversation from a user message — a turn just like

@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	appgateway "github.com/jahrulnr/nusallm/application/gateway"
+	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 )
 
 // Reader is the read surface — the sanitized GatewayInfo projection,
@@ -16,6 +17,8 @@ import (
 type Reader interface {
 	Get(ctx context.Context, id string) (appgateway.GatewayInfo, error)
 	List(ctx context.Context) ([]appgateway.GatewayInfo, error)
+	DiscoverModels(ctx context.Context, id string) ([]string, error)
+	DiscoverProviders(ctx context.Context, id, modelID string) ([]dservice.UpstreamProvider, error)
 }
 
 // Writer is the mutation surface — full-document upsert and removal.
@@ -37,6 +40,8 @@ func Register(api *gin.RouterGroup, d Deps) {
 	s := &server{reads: d.Reads, writes: d.Writes}
 	api.GET("/gateways", s.list)
 	api.GET("/gateways/:id", s.get)
+	api.GET("/gateways/:id/available-models", s.availableModels)
+	api.GET("/gateways/:id/providers", s.providers)
 	if d.Writes != nil {
 		api.PUT("/gateways/:id", s.put)
 		api.DELETE("/gateways/:id", s.delete)
