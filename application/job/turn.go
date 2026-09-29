@@ -3,8 +3,6 @@ package job
 import (
 	"context"
 	"fmt"
-	"slices"
-	"strings"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
@@ -18,19 +16,20 @@ import (
 // runTurn is the agent loop shared by send and edit: provider call →
 // persist → execute pending tool calls → provider call — until the model
 // stops requesting tools or the step cap is hit.
-func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conversation, gw *aggregate.Gateway, model entity.Model, svc dservice.TextModelService, onEvent event.TurnEventHandler) error {
+func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conversation, driver EnvironmentDriver, gw *aggregate.Gateway, model entity.Model, svc dservice.TextModelService, onEvent event.TurnEventHandler) error {
 	// Hand-built Deps may carry a zero or invalid config — normalize
 	// clamps and tag defaults fill it.
 	ccfg := d.Config
 	// Directory-aware tools work under the room's bound workspace.
 	ctx = dservice.WithWorkspaceDir(ctx, conv.Workspace())
+	ctx = dservice.WithConversationID(ctx, convID)
 	ccfg.Normalize()
 	wireModel := model.ApplyUnknownContextDefaults()
 	// The call surface is live config: a stored conversation can predate
 	// the catalog, so apply the current set every turn — never trust what
 	// the record hydrated. Without this the wire carries no tools and the
 	// model invents names it was never offered.
-	conv.SetTools(d.ToolSchemas())
+	conv.SetTools(driver.ToolSchemas())
 	didCompact := false
 	for step := 0; step < ccfg.MaxTurnStep; step++ {
 		if err := ctx.Err(); err != nil {
@@ -78,9 +77,12 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 		// finished. Persist that partial message and mark those calls
 		// interrupted instead of dropping the turn from history.
 		canceled := err != nil && (ctx.Err() != nil || apperror.As(err).StatusCode() == 408)
-		if err != nil && !canceled && apperror.As(err).StatusCode() == 413 && !didCompact && len(conv.Messages()) > ccfg.CompactKeepTail {
+		if err != nil && !canceled && apperror.As(err).StatusCode() == 413 && !didCompact && len(added) == 0 && len(conv.Messages()) > ccfg.CompactKeepTail {
 			// The provider says overflow even though our estimate
 			// disagreed — believe the provider once: compact and retry.
+			// Retrying needs a clean call: with a partial message
+			// already appended, the error propagates instead — the
+			// in-memory entry was never persisted.
 			if err := d.compact(ctx, convID, conv, gw, wireModel, svc, ccfg.CompactKeepTail); err != nil {
 				return err
 			}
@@ -152,7 +154,7 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 				}
 				return apperror.New(408, "turn canceled", err)
 			}
-			if err := d.execTool(ctx, convID, onEvent, conv, last, call); err != nil {
+			if err := d.execTool(ctx, convID, driver, onEvent, conv, last, call); err != nil {
 				if ctx.Err() != nil {
 					if stampErr := d.persistInterrupted(ctx, convID, last); stampErr != nil {
 						return stampErr
@@ -169,7 +171,7 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 // resolveRoute picks the effective route/model — job overrides win, then
 // the stored binding — and resolves them to live objects: the Gateway
 // aggregate, the catalog Model, and the wire adapter for the style.
-func (d Deps) resolveRoute(ctx context.Context, convID string, conv *aggregate.Conversation, route, modelID string) (
+func (d Deps) resolveRoute(ctx context.Context, convID string, conv *aggregate.Conversation, driver EnvironmentDriver, route, modelID string) (
 	gw *aggregate.Gateway, model entity.Model, svc dservice.TextModelService, err error,
 ) {
 	if route == "" {
@@ -192,26 +194,13 @@ func (d Deps) resolveRoute(ctx context.Context, convID string, conv *aggregate.C
 	if !ok {
 		return nil, model, nil, apperror.NewNotFoundError("model "+modelID, fmt.Errorf("route %s catalog has no such model", route))
 	}
-	svc, ok = d.Services[gw.Style()]
+	svc, ok = driver.TextService(gw.Style())
 	if !ok {
 		// The gateway config is fine; the server simply wired no adapter
 		// for this style — that's a deployment defect, not a user error.
 		return nil, model, nil, apperror.New(500, "no adapter for gateway style", fmt.Errorf("style %s unregistered", gw.Style()))
 	}
 	return gw, m, svc, nil
-}
-
-// ToolSchemas returns the registered catalog sorted by name — the
-// deterministic order the provider sees every turn.
-func (d Deps) ToolSchemas() []valueobject.ToolSchema {
-	schemas := make([]valueobject.ToolSchema, 0, len(d.Tools))
-	for _, tool := range d.Tools {
-		schemas = append(schemas, tool.Schema())
-	}
-	slices.SortFunc(schemas, func(a, b valueobject.ToolSchema) int {
-		return strings.Compare(a.Name(), b.Name())
-	})
-	return schemas
 }
 
 // stampInterrupted records "interrupted by user" on origin calls that
@@ -222,7 +211,7 @@ func stampInterrupted(msg *entity.Message) error {
 		return nil
 	}
 	for _, tc := range msg.ToolCalls() {
-		if tc.Type() != enum.TooltypeOrigin || tc.Output() != "" {
+		if tc.Type() != enum.TooltypeOrigin || tc.HasOutput() {
 			continue
 		}
 		if err := msg.SetToolOutput(tc.ID(), "interrupted by user"); err != nil {
@@ -239,21 +228,19 @@ func (d Deps) persistInterrupted(ctx context.Context, convID string, msg *entity
 		return nil
 	}
 	for _, tc := range msg.ToolCalls() {
-		if tc.Type() != enum.TooltypeOrigin || tc.Output() != "" {
+		if tc.Type() != enum.TooltypeOrigin || tc.HasOutput() {
 			continue
 		}
 		if err := msg.SetToolOutput(tc.ID(), "interrupted by user"); err != nil {
 			return err
 		}
-		updated := ""
 		for _, cur := range msg.ToolCalls() {
 			if cur.ID() == tc.ID() {
-				updated = cur.Output()
+				if err := d.Convs.UpdateToolCallOutput(ctx, convID, cur); err != nil {
+					return err
+				}
 				break
 			}
-		}
-		if err := d.Convs.UpdateToolCallOutput(ctx, convID, tc.ID(), updated, nil); err != nil {
-			return err
 		}
 	}
 	return nil
@@ -264,7 +251,7 @@ func (d Deps) persistInterrupted(ctx context.Context, convID string, msg *entity
 func pendingCalls(m entity.Message) []entity.ToolCall {
 	var out []entity.ToolCall
 	for _, tc := range m.ToolCalls() {
-		if tc.Type() == enum.TooltypeOrigin && tc.Output() == "" {
+		if tc.Type() == enum.TooltypeOrigin && !tc.HasOutput() {
 			out = append(out, tc)
 		}
 	}
@@ -276,7 +263,7 @@ func pendingCalls(m entity.Message) []entity.ToolCall {
 // record in the repository (so a reload restores it). Executor failures
 // become tool output — the model deserves honest results — while context
 // cancellation aborts the whole turn.
-func (d Deps) execTool(ctx context.Context, convID string, onEvent event.TurnEventHandler, conv *aggregate.Conversation, msg *entity.Message, call entity.ToolCall) error {
+func (d Deps) execTool(ctx context.Context, convID string, driver EnvironmentDriver, onEvent event.TurnEventHandler, conv *aggregate.Conversation, msg *entity.Message, call entity.ToolCall) error {
 	out := ""
 	var outAtts []valueobject.Attachment
 	permitted := false
@@ -293,7 +280,8 @@ func (d Deps) execTool(ctx context.Context, convID string, onEvent event.TurnEve
 			onEvent(event.NewToolOutputEvent(call, chunk))
 		}
 	}
-	switch tool, registered := d.Tools[call.Name()]; {
+	tool, registered := driver.Tool(call.Name())
+	switch {
 	case !permitted:
 		out = "error: tool not permitted"
 	case !registered:
@@ -310,20 +298,15 @@ func (d Deps) execTool(ctx context.Context, convID string, onEvent event.TurnEve
 		}
 	}
 	if err := msg.SetToolOutput(call.ID(), out); err != nil {
-		// Over-budget output records the failure instead of aborting the turn.
-		if err := msg.SetToolOutput(call.ID(), "error: "+err.Error()); err != nil {
-			return apperror.New(500, "tool output rejected", err)
-		}
+		return apperror.New(500, "tool output lost", err)
 	}
-	// Attachments land even when the text output was rejected above and
-	// replaced by an error — the media is produced work, and the model
-	// still deserves to see it.
+	// Attachments land alongside the recorded result.
 	if err := msg.SetToolOutputAttachments(call.ID(), outAtts); err != nil {
 		return apperror.New(500, "tool output lost", err)
 	}
 	for _, tc := range msg.ToolCalls() {
 		if tc.ID() == call.ID() {
-			return d.Convs.UpdateToolCallOutput(ctx, convID, call.ID(), tc.Output(), tc.OutputAttachments())
+			return d.Convs.UpdateToolCallOutput(ctx, convID, tc)
 		}
 	}
 	return apperror.New(500, "tool output lost", fmt.Errorf("call %s vanished after update", call.ID()))

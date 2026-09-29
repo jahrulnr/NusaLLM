@@ -5,6 +5,7 @@ import (
 
 	appjob "github.com/jahrulnr/nusallm/application/job"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
@@ -38,10 +39,24 @@ func (app *ConversationApp) History(ctx context.Context, id string, start, end i
 	return deps.Convs.LoadAt(ctx, id, start, end)
 }
 
-// ToolSchemas returns the registered tool catalog, sorted by name — the
-// same set the agent may call this turn.
-func (app *ConversationApp) ToolSchemas() []valueobject.ToolSchema {
-	return app.depsSnapshot().ToolSchemas()
+// ToolSchemas resolves the catalog for a persisted room. An empty or
+// not-yet-persisted room uses the local environment's starting catalog.
+func (app *ConversationApp) ToolSchemas(ctx context.Context, convID string) ([]valueobject.ToolSchema, error) {
+	deps := app.depsSnapshot()
+	kind := enum.EnvironmentLocal
+	if convID != "" {
+		conv, err := deps.Convs.Load(ctx, convID)
+		if err == nil {
+			kind = conv.Environment()
+		} else if apperror.As(err).StatusCode() != apperror.StatusNotFound {
+			return nil, err
+		}
+	}
+	driver := deps.Environments[kind]
+	if driver == nil {
+		return nil, apperror.New(400, "conversation environment unavailable", nil)
+	}
+	return driver.ToolSchemas(), nil
 }
 
 // Compact folds the live tail into a checkpoint on the room's worker —

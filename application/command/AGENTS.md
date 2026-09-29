@@ -14,7 +14,7 @@ repository implementations to command handlers.
 |--------------|-------------------|
 | What a command session may ask for in one place (list, resume, edit, attach, export, …) | Parsing input lines, palettes, and TUI state — delivery |
 | Facade wiring over existing conversation/gateway use cases | Per-command behavior and registry dispatch — infrastructure service command |
-| Port types for bindings, workspace, and output | List-title and message editability rules — domain aggregate and entities |
+| Port types for bindings, workspace, and output | List-title display/filtering — command service; message editability — domain entity |
 
 When adding a capability commands need, extend the session port and facade
 here first. Implement the slash command in a dedicated service package and
@@ -25,8 +25,8 @@ wire it from the CLI composition root.
 **Must**
 
 - Keep handlers depending only on the session port defined in this package.
-- Reuse domain decisions (titles, editability, tool permission) instead of
-  re-stating them in command code.
+- Reuse domain decisions (editability, tool permission) instead of
+  re-stating them in command code; keep list-title presentation in the command service.
 - Treat this layer as coordination and delegation — not a second home for
   provider or filesystem details.
 

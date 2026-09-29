@@ -28,13 +28,38 @@ import (
 type stubSender struct {
 	fn func(ctx context.Context, convID, route, modelID, message string,
 		onEvent event.TurnEventHandler) (appconversation.SendResult, error)
-	efn func(ctx context.Context, convID, msgID, content string,
+	optsFn func(appjob.SendOptions)
+	efn    func(ctx context.Context, convID, msgID, content string,
 		onEvent event.TurnEventHandler) error
 }
 
 func (s stubSender) Send(ctx context.Context, convID, route, modelID, message string,
-	_ []valueobject.Attachment, _ appjob.SendOptions, onEvent event.TurnEventHandler) (appconversation.SendResult, error) {
+	_ []valueobject.Attachment, opts appjob.SendOptions, onEvent event.TurnEventHandler) (appconversation.SendResult, error) {
+	if s.optsFn != nil {
+		s.optsFn(opts)
+	}
 	return s.fn(ctx, convID, route, modelID, message, onEvent)
+}
+
+func TestTurnSendPassesEnvironmentSelection(t *testing.T) {
+	selected := make(chan appjob.SendOptions, 1)
+	h := newHub(t, stubSender{
+		fn: func(_ context.Context, id, _, _, _ string, _ event.TurnEventHandler) (appconversation.SendResult, error) {
+			return appconversation.SendResult{ConversationID: id, UserMessagePersisted: true}, nil
+		},
+		optsFn: func(opts appjob.SendOptions) { selected <- opts },
+	})
+	ws := dial(t, h)
+	sendCommand(t, ws, `{"type":"turn.send","requestId":"r","payload":{"content":"x","environment":"docker","workspace":"/remote/project"}}`)
+	for f := readFrame(t, ws); f.Type != "turn.completed"; f = readFrame(t, ws) {
+		if f.Type == "error" || f.Type == "turn.failed" {
+			t.Fatalf("turn rejected: %+v", f)
+		}
+	}
+	opts := <-selected
+	if opts.Environment != enum.EnvironmentDocker || opts.Workspace != "/remote/project" {
+		t.Fatalf("forwarded opts = %+v", opts)
+	}
 }
 
 func (s stubSender) Edit(ctx context.Context, convID, msgID, content string,
@@ -237,6 +262,7 @@ func TestTurnSendValidation(t *testing.T) {
 		{"missing payload", `{"type":"turn.send","requestId":"r"}`, "invalid_argument", "r"},
 		{"payload unknown field", `{"type":"turn.send","requestId":"r","payload":{"content":"x","extra":1}}`, "invalid_argument", "r"},
 		{"empty content", `{"type":"turn.send","requestId":"r","payload":{"content":"  "}}`, "invalid_argument", "r"},
+		{"unknown environment", `{"type":"turn.send","requestId":"r","payload":{"content":"x","environment":"cloud"}}`, "invalid_argument", "r"},
 		{"bad conversationId", `{"type":"turn.send","requestId":"r","conversationId":"a/b","payload":{"content":"x"}}`, "invalid_argument", "r"},
 		{"dotdot conversationId", `{"type":"turn.send","requestId":"r","conversationId":"..","payload":{"content":"x"}}`, "invalid_argument", "r"},
 		{"unknown command", `{"type":"convo.list","requestId":"r"}`, "invalid_argument", "r"},

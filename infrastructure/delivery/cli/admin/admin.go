@@ -5,6 +5,7 @@
 package admin
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"github.com/jahrulnr/nusallm/application/setup"
 	"github.com/jahrulnr/nusallm/infrastructure/config"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
+	repoconfig "github.com/jahrulnr/nusallm/infrastructure/repository/config"
 	repogateway "github.com/jahrulnr/nusallm/infrastructure/repository/gateway"
 	reposecret "github.com/jahrulnr/nusallm/infrastructure/repository/secret"
 	"github.com/jahrulnr/nusallm/infrastructure/service/core/text/catalog"
@@ -48,44 +50,60 @@ func (b *Boot) Close() error {
 
 // LoadConfig resolves the config path and loads the file. A missing file
 // is NOT created here — read commands must not mutate the filesystem —
-// the process falls back to defaults. With strict=false (admin commands)
-// an invalid file is decoded leniently so storage.dir still resolves —
-// `config validate`/`unset` must work on a file that fails strict checks
-// or the repair path would wedge. With strict=true (the REPL) an invalid
-// file fails loudly.
+// the process falls back to defaults. With strict=false (store-backed admin
+// commands), invalid fields outside storage.dir use defaults while storage.dir
+// must still resolve unambiguously. File-only config commands resolve the
+// path separately so validate/unset can repair even a broken storage.dir.
+// With strict=true (the REPL) an invalid file fails loudly.
 func LoadConfig(strict bool) (config.Config, string, error) {
-	loadEnvFile(".env")
-	configPath := os.Getenv("CONFIG_PATH")
+	configPath := resolveConfigPath()
 	cfg := config.NewConfig()
 	if configPath == "" {
 		return cfg, configPath, nil
 	}
-	raw, err := os.ReadFile(configPath)
+	raw, err := repoconfig.NewLocal().Read(configPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return cfg, configPath, nil
 	}
 	if err != nil {
 		return config.Config{}, "", apperror.NewInternalError("config load failed", err)
 	}
-	if fresh, err := config.Validate(raw); err == nil {
+	fresh, validationErr := config.Validate(raw)
+	if validationErr == nil {
 		return fresh, configPath, nil
-	} else if strict {
-		return config.Config{}, "", err
 	}
-	// Lenient: parse what can be parsed (storage.dir for the stores),
-	// leave the rest at defaults.
-	var fresh config.Config
-	if err := json.Unmarshal(raw, &fresh); err != nil {
-		return config.NewConfig(), configPath, nil
+	if strict {
+		return config.Config{}, "", validationErr
 	}
-	fresh.Normalize()
-	return fresh, configPath, nil
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return config.Config{}, "", validationErr
+	}
+	// Store-backed admin commands need only storage.dir from an invalid
+	// document. Decode it independently: a custom decoder for another field
+	// must not stop before the store path, and no partially decoded values
+	// should leak into the effective admin config.
+	var location struct {
+		Storage config.StorageConfig `json:"storage"`
+	}
+	if err := json.Unmarshal(raw, &location); err != nil {
+		return config.Config{}, "", apperror.NewInternalError("config load failed", err)
+	}
+	if location.Storage.Dir != "" {
+		cfg.Storage.Dir = location.Storage.Dir
+	}
+	return cfg, configPath, nil
+}
+
+func resolveConfigPath() string {
+	loadEnvFile(".env")
+	return os.Getenv("CONFIG_PATH")
 }
 
 // EnsureConfig generates the config file when missing — a write command
 // or the REPL, never a read.
 func EnsureConfig(path string, stderr io.Writer) error {
-	created, err := setup.EnsureConfig(path)
+	created, err := setup.EnsureConfig(repoconfig.NewLocal(), path)
 	if err != nil {
 		return err
 	}
@@ -114,7 +132,7 @@ func LoadBoot(strict bool) (*Boot, error) {
 		gateways: appgateway.New(
 			repogateway.NewGatewayRepository(filepath.Join(cfg.Storage.Dir, "gateways"), secrets),
 			secrets, catalog.New(nil)),
-		settings: setting.New(configPath),
+		settings: setting.New(repoconfig.NewLocal(), configPath),
 	}, nil
 }
 
@@ -123,7 +141,7 @@ func LoadBoot(strict bool) (*Boot, error) {
 // and config cannot load a file it has not found. Real env vars win — a
 // key already exported is never overwritten.
 func loadEnvFile(path string) {
-	raw, err := os.ReadFile(path)
+	raw, err := repoconfig.NewLocal().Read(path)
 	if err != nil {
 		return // a missing .env means "no overrides", not a failure
 	}

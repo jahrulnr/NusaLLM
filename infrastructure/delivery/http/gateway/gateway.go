@@ -28,8 +28,8 @@ type Writer interface {
 	Delete(ctx context.Context, id string) error
 }
 
-// Deps wires the use cases; Writes is optional — nil leaves the mutation
-// routes unregistered.
+// Deps wires the use cases; Reads and Writes are optional — nil leaves
+// the corresponding routes unregistered.
 type Deps struct {
 	Reads  Reader
 	Writes Writer
@@ -38,10 +38,12 @@ type Deps struct {
 // Register mounts this boundary's routes under /api.
 func Register(api *gin.RouterGroup, d Deps) {
 	s := &server{reads: d.Reads, writes: d.Writes}
-	api.GET("/gateways", s.list)
-	api.GET("/gateways/:id", s.get)
-	api.GET("/gateways/:id/available-models", s.availableModels)
-	api.GET("/gateways/:id/providers", s.providers)
+	if d.Reads != nil {
+		api.GET("/gateways", s.list)
+		api.GET("/gateways/:id", s.get)
+		api.GET("/gateways/:id/available-models", s.availableModels)
+		api.GET("/gateways/:id/providers", s.providers)
+	}
 	if d.Writes != nil {
 		api.PUT("/gateways/:id", s.put)
 		api.DELETE("/gateways/:id", s.delete)

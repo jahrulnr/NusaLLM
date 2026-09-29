@@ -8,7 +8,7 @@ func TestServeHelpRequested(t *testing.T) {
 			t.Fatalf("serveHelpRequested(%v) = false, want true", args)
 		}
 	}
-	for _, args := range [][]string{nil, {"--port", "1"}} {
+	for _, args := range [][]string{nil, {"--port", "1"}, {"--port", "help"}, {"--port=help"}, {"-port", "-h"}} {
 		if serveHelpRequested(args) {
 			t.Fatalf("serveHelpRequested(%v) = true, want false", args)
 		}
@@ -31,6 +31,8 @@ func TestServePort(t *testing.T) {
 		{"negative", []string{"--port", "-1"}, 0, true},
 		{"too high", []string{"--port", "65536"}, 0, true},
 		{"not a number", []string{"--port", "abc"}, 0, true},
+		{"help as port value", []string{"--port", "help"}, 0, true},
+		{"help as port equals", []string{"--port=help"}, 0, true},
 		{"positional", []string{"extra"}, 0, true},
 	}
 	for _, tc := range cases {

@@ -22,6 +22,8 @@ import (
 	httpdelivery "github.com/jahrulnr/nusallm/infrastructure/delivery/http"
 	wsdelivery "github.com/jahrulnr/nusallm/infrastructure/delivery/websocket"
 	wsconversation "github.com/jahrulnr/nusallm/infrastructure/delivery/websocket/conversation"
+	repoconfig "github.com/jahrulnr/nusallm/infrastructure/repository/config"
+	repofiletree "github.com/jahrulnr/nusallm/infrastructure/repository/filetree"
 	"github.com/jahrulnr/nusallm/web"
 )
 
@@ -101,7 +103,7 @@ func serve(args []string) (serveErr error) {
 	// signal arrival. Deferred so an early Serve failure still closes it.
 	hub := wsconversation.NewHub(context.WithoutCancel(ctx), eng.conversations)
 	defer hub.Shutdown()
-	settings := setting.New(b.ConfigPath())
+	settings := setting.New(repoconfig.NewLocal(), b.ConfigPath())
 	handler := httpdelivery.NewHandler(httpdelivery.Deps{
 		Conversations:      eng.conversations,
 		ConversationWrites: eng.conversations,
@@ -110,6 +112,7 @@ func serve(args []string) (serveErr error) {
 		Settings:           settings,
 		SettingsWriter:     settings,
 		Tools:              eng.conversations,
+		FileTree:           repofiletree.NewLocal(),
 		// Accepted delete/compaction jobs ride the server lifecycle —
 		// a client that abandons a request can't cancel them, but
 		// shutdown does.
@@ -170,8 +173,14 @@ func servePort(args []string, configuredPort int) (int, error) {
 	return *port, nil
 }
 
+// serveHelpRequested detects a bareword/flag help request. A token
+// consumed as a flag value — the arg after --port/-port — is not a help
+// token (`--port=help` already fails in flag.Int).
 func serveHelpRequested(args []string) bool {
-	for _, a := range args {
+	for i, a := range args {
+		if i > 0 && (args[i-1] == "--port" || args[i-1] == "-port") {
+			continue
+		}
 		switch a {
 		case "-h", "--help", "help":
 			return true

@@ -16,7 +16,9 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
+	repoworkspace "github.com/jahrulnr/nusallm/infrastructure/repository/workspace"
 	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
+	"github.com/jahrulnr/nusallm/infrastructure/service/wire"
 )
 
 // newService spins an httptest server and a fake gateway pointing at it.
@@ -34,7 +36,7 @@ func newService(t *testing.T, stream bool, handler http.HandlerFunc) (*Service, 
 	} else {
 		gw.DisableStream()
 	}
-	return New(coretext.Options{}), &gw, srv
+	return New(coretext.Options{FileStore: repoworkspace.NewLocal()}), &gw, srv
 }
 
 func newConv(t *testing.T) *aggregate.Conversation {
@@ -217,7 +219,10 @@ func TestToolCallRoundtrip(t *testing.T) {
 	if fc == nil || fc["call_id"] != "call_1" || fc["name"] != "get_time" || fc["arguments"] != `{"tz":"UTC"}` {
 		t.Fatalf("function_call replay: %+v", fc)
 	}
-	if fco == nil || fco["call_id"] != "call_1" || !strings.Contains(fco["output"].(string), "12:00") {
+	if fco == nil || fco["call_id"] != "call_1" ||
+		!strings.HasPrefix(fco["output"].(string), `<untrusted_tool latency="`) ||
+		!strings.Contains(fco["output"].(string), "12:00") ||
+		!strings.HasSuffix(fco["output"].(string), "</untrusted_tool>") {
 		t.Fatalf("function_call_output: %+v", fco)
 	}
 }
@@ -487,7 +492,7 @@ func TestStreamMidError(t *testing.T) {
 func TestEncodeAttachmentRejectsPinnedRemoteFileURL(t *testing.T) {
 	a, _ := valueobject.NewAttachment("https://example.com/doc.pdf", "application/pdf")
 	a.SetSHA256(strings.Repeat("a", 64))
-	if _, err := encodeAttachment(a, ""); err == nil {
+	if _, err := encodeAttachment(a, wire.MediaRoot{}); err == nil {
 		t.Fatal("pinned remote https file attachment must fail")
 	}
 }

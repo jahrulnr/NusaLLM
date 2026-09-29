@@ -1,4 +1,4 @@
-package aggregate
+package commandinternal
 
 import (
 	"strings"
@@ -8,17 +8,13 @@ import (
 
 const listTitleFallback = "untitled"
 
-// TitleUnset reports whether a stored conversation title is absent for list
-// display — empty and the literal "untitled" both mean unset.
+// TitleUnset reports whether a stored title needs a history-derived label.
 func TitleUnset(title string) bool {
 	title = strings.TrimSpace(title)
 	return title == "" || strings.EqualFold(title, listTitleFallback)
 }
 
-// ListDisplayTitle resolves the label shown in conversation lists. When the
-// stored title is unset, the first editable (user) message supplies the
-// text; otherwise the stored title is normalized. Sanitization for a
-// specific UI belongs in that transport.
+// ListDisplayTitle resolves the label shown in conversation command lists.
 func ListDisplayTitle(storedTitle string, messages []entity.Message) string {
 	title := strings.TrimSpace(storedTitle)
 	if TitleUnset(title) {
@@ -35,9 +31,7 @@ func ListDisplayTitle(storedTitle string, messages []entity.Message) string {
 	return strings.Join(strings.Fields(title), " ")
 }
 
-// ListDisplayTitleMatchesPrefix reports whether a conversation list row
-// matches a case-insensitive id or title prefix — used by pickers that
-// filter on conversation id, stored title, or resolved display title.
+// ListDisplayTitleMatchesPrefix filters command choices by id or title.
 func ListDisplayTitleMatchesPrefix(convID, storedTitle, displayTitle, prefix string) bool {
 	prefix = strings.ToLower(strings.TrimSpace(prefix))
 	if prefix == "" {

@@ -297,8 +297,8 @@ class MessageThread extends Widget {
     return null;
   }
 
-  // Persisted calls carry the exact input string and the stored evidence
-  // envelope (when completed) — the owner sees what the agent saw.
+  // Persisted calls carry the exact input string and plain result text
+  // (when completed); the provider-only evidence envelope stays internal.
   _persistedTool(tc, existing = null) {
     const settled = tc.status === 'completed';
     const w = existing || document.createElement('nusa-tool-activity');

@@ -25,11 +25,12 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/http/system"
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/http/tool"
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/http/webui"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 )
 
 // Deps wires the boundary use cases plus the accepted request authorities
-// (host:port) the security model validates against. Writer fields are
-// optional: a nil writer leaves its routes unregistered.
+// (host:port) the security model validates against. Reader and writer
+// fields are optional: a nil surface leaves its routes unregistered.
 type Deps struct {
 	Conversations      conversation.Reader
 	ConversationWrites conversation.Writer
@@ -38,6 +39,7 @@ type Deps struct {
 	Settings           setting.Reader
 	SettingsWriter     setting.Writer
 	Tools              tool.Catalog
+	FileTree           drepo.FileTree
 	// Jobs is the server-lifecycle context for accepted background work
 	// (delete, compact) — decoupled from any single request so a client
 	// disconnect can't cancel accepted work; nil means Background.
@@ -76,7 +78,9 @@ func NewHandler(d Deps) *gin.Engine {
 	gateway.Register(api, gateway.Deps{Reads: d.Gateways, Writes: d.GatewayWrites})
 	setting.Register(api, setting.Deps{Reads: d.Settings, Writes: d.SettingsWriter})
 	tool.Register(api, tool.Deps{Tools: d.Tools})
-	fsboundary.Register(api)
+	if d.FileTree != nil {
+		fsboundary.Register(api, d.FileTree)
+	}
 	if d.WS != nil {
 		api.GET("/ws", d.WS)
 	}

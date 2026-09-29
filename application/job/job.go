@@ -15,7 +15,6 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/config"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
-	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 	"github.com/jahrulnr/nusallm/infrastructure/worker"
 )
@@ -24,11 +23,10 @@ import (
 // conversation config, injected at construction. Jobs never see the app
 // or the worker.
 type Deps struct {
-	Convs    drepo.Conversation
-	Gateways drepo.Gateway
-	Services map[enum.Style]dservice.TextModelService
-	Tools    map[string]dservice.Tool
-	Config   config.ConversationConfig
+	Convs        drepo.Conversation
+	Gateways     drepo.Gateway
+	Environments map[enum.Environment]EnvironmentDriver
+	Config       config.ConversationConfig
 }
 
 // Base is the shared machinery for room jobs: the bound conversation id,

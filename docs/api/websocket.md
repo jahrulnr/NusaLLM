@@ -61,6 +61,7 @@ Common envelope fields:
     "content": "the cache test still flakes — look at invalidate()",
     "effort": "high",
     "provider": "DeepInfra",
+    "environment": "local",
     "workspace": "/home/alice/project"
   }
 }
@@ -81,15 +82,23 @@ Common envelope fields:
   routes (e.g. OpenRouter's `provider.order`). `""`/absent lets the
   gateway route automatically.
 - `payload.workspace` — optional absolute directory the room's tools work
-  in; rejected when relative or not an existing directory. A successful
-  turn re-binds it to the room — per-conversation, like route/model.
+  in. The selected environment's workspace repository validates it when the
+  turn runs; an invalid path ends in `turn.failed` `400`. A successful turn
+  re-binds it to the room — per-conversation, like route/model.
+- `payload.environment` — optional `local`, `ssh`, or `docker`; absent keeps
+  the room's binding (`local` for a new room). An unknown word is rejected
+  at command validation. A known but unregistered driver ends in
+  `turn.failed` `400` before a user message is persisted. Changing the
+  environment without a workspace override clears the previous driver's
+  workspace path so the new driver's default applies. Only `local` is
+  registered by the current binary.
 - `payload.content` — required non-empty text. **Text only**: no
   attachments, no `file://` or `data:` URIs. Attachment upload is future
   work, out of scope for this contract.
 - A command that fails **syntactic validation** — unparseable JSON,
   unknown `type`, missing or ill-typed required fields, a non-path-safe
-  `conversationId`, empty `content`, an unknown `effort` word, or a
-  `workspace` that isn't an absolute existing directory — is rejected
+  `conversationId`, empty `content`, or an unknown `effort` or `environment`
+  word — is rejected
   with an `error` frame
   (`code: "invalid_argument"`). No `turnId` is allocated, nothing is
   scheduled, and no `turn.opened`/`turn.failed` exist for it — it never

@@ -46,7 +46,7 @@ func Onboard(stdin *os.File, stdout, stderr io.Writer) int {
 	if err != nil {
 		return promptAborted(out, err)
 	}
-	fmt.Fprintln(out, "  style     1) completion  2) responses  3) messages")
+	fmt.Fprintln(out, "  style     1) completion  2) responses  3) messages  4) generatecontent")
 	stylePick, err := promptField(in, out, "  style     ", "1")
 	if err != nil {
 		return promptAborted(out, err)
@@ -58,6 +58,8 @@ func Onboard(stdin *os.File, stdout, stderr io.Writer) int {
 		style = enum.StyleResponses
 	case "3", "messages":
 		style = enum.StyleMessages
+	case "4", "generatecontent":
+		style = enum.StyleGenerateContent
 	default:
 		fmt.Fprintf(out, "  unknown style %q\n", stylePick)
 		return 2

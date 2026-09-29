@@ -1,6 +1,7 @@
 package tui
 
 import (
+	repohistory "github.com/jahrulnr/nusallm/infrastructure/repository/history"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,14 +13,14 @@ func TestPrivateHistoryFilePreservesContentsAndPermissions(t *testing.T) {
 		t.Skip("unix permission bits are not enforced on Windows")
 	}
 	dir := filepath.Join(t.TempDir(), "cli")
-	path, err := privateHistoryFile(dir)
+	path, err := repohistory.NewLocal().Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte("previous prompt\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := privateHistoryFile(dir); err != nil {
+	if _, err := repohistory.NewLocal().Open(dir); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(path)
@@ -51,7 +52,7 @@ func TestPrivateHistoryFileRejectsSymlink(t *testing.T) {
 	if err := os.Symlink(external, filepath.Join(dir, "history")); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
-	if _, err := privateHistoryFile(dir); err == nil {
+	if _, err := repohistory.NewLocal().Open(dir); err == nil {
 		t.Fatal("symlink history path should be rejected")
 	}
 	got, err := os.ReadFile(external)

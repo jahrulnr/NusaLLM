@@ -67,7 +67,7 @@ flowchart TB
 
 | Package | Role |
 |---|---|
-| `cmd/nusallm` | Composition root: argv mux, then wires repositories, adapters, tools, and apps in `main.go` |
+| `cmd/nusallm` | Composition root: argv mux, then wires repositories, adapters, tools, and apps in `wire.go` |
 | `infrastructure/delivery/cli` | Terminal boundary — `tui/` bubbletea model, `session/` per-terminal state, `commands/` registry wiring, `admin/` operator subcommands, `term/` ANSI safety |
 | `infrastructure/delivery/http`, `infrastructure/delivery/websocket` | WebUI transport — Gin REST (`nusallm serve`), embedded assets, loopback `Host`/`Origin` guards, and the multiplexed turn WebSocket |
 | `application/conversation` | Broker: maps conversation ids to per-room `worker.Worker`s, owns queue order, preemption, eviction, shutdown |
@@ -76,8 +76,8 @@ flowchart TB
 | `application/command` | `SlashSession` port + `Facade` — the surface slash-command handlers see |
 | `application/setting`, `application/setup` | Operator view/mutation of the JSON config file; first-run config provisioning |
 | `infrastructure/domain` | Pure domain: `aggregate/`, `entity/`, `enum/`, `valueobject/`, `event/`, plus ports in `repository/` and `service/` |
-| `infrastructure/repository` | Port implementations: `conversation/` JSONL store, `gateway/` JSON records, `secret/` sqlite vault, `log/` JSONL diagnostics |
-| `infrastructure/service` | Outbound adapters: four `core/text/*` wire adapters (completion, responses, messages, generatecontent), `tool/` implementations, `command/` slash-command handlers, `workspace/` sandbox, `wire/` shared encoding helpers |
+| `infrastructure/repository` | Storage adapters: conversation JSONL and tool output, gateway JSON, sqlite secrets, logs, config documents, workspace files, CLI history, and directory metadata |
+| `infrastructure/service` | Outbound adapters: four `core/text/*` wire adapters (completion, responses, messages, generatecontent), `tool/` implementations, `command/` slash-command handlers, workspace attachment logic, and `wire/` encoding helpers; storage goes through injected repository ports |
 | `infrastructure/config`, `worker`, `prompt`, `error`, `redact` | Mechanisms: settings parsing, the serial job executor, embedded prompts, the error contract, credential scrubbing |
 
 ## The dependency rule
@@ -88,13 +88,15 @@ outside the standard library and itself: the ports for persistence
 (`infrastructure/domain/service`), and streaming (`infrastructure/domain/event`)
 live inside the domain as interfaces, and every implementation lives
 outside it. `TextModelService.Send` in `infrastructure/domain/service/text.go`
-is the canonical example — the application holds a `map[enum.Style]dservice.TextModelService`,
-never an `*http.Client`.
+is the canonical example — each registered execution-environment driver owns
+its `map[enum.Style]dservice.TextModelService`, never an `*http.Client` in the
+application.
 
 The application layer speaks almost only to those ports.
 `application/job.Deps` (`application/job/job.go`) is the whole reach of a
-use case: two repository ports, the service map, the tool map, and
-normalized config. The single concrete inbound dependency is deliberate
+use case: two repository ports, a map of environment drivers, and
+normalized config. Each driver bundles its workspace repository, provider
+adapters, and tool executors. The single concrete inbound dependency is deliberate
 and covered by the layer's own rules — `application/job/compact.go`
 imports `infrastructure/service/tool/summary` because compaction's
 scratch dialogue is itself the use case, and "explicit use-case
@@ -102,15 +104,31 @@ collaborators" are allowed where a port would be indirection for its own
 sake. Everything else in `application/` is port-shaped: nothing there
 knows what JSONL is or what SSE stands for.
 
-Everything concrete meets in `cmd/nusallm/main.go`. The function `run`
-loads config, opens the sqlite secret store, constructs the filesystem
-repositories, builds the four `enum.Style` text adapters (completion,
-responses, messages, generatecontent), constructs the five agent tools,
-and hands all of it to `appconversation.New` and either `tui.NewREPL` or
-the `serve` HTTP/WebSocket stack. The file's own comment sets the tone:
+Everything concrete meets in `cmd/nusallm`. `run` and `serve` load
+config and open the sqlite secret store through `admin.LoadBoot`;
+`compose` (`wire.go`) constructs the local filesystem repositories, builds the
+four `enum.Style` text adapters (completion, responses, messages,
+generatecontent), constructs the five agent tools, and registers them as the
+`local` environment driver for `appconversation.New`. Each room persists its
+environment identity; Send/Edit/Compact select the corresponding bundle for
+that room. An unavailable driver fails explicitly instead of falling back.
+The result is surfaced through either `tui.NewREPL` or the
+`serve` HTTP/WebSocket stack. `main.go`'s own comment sets the tone:
 for admin subcommands "this file is the mux, not the handler" — routing
 to `infrastructure/delivery/cli/admin` functions that return exit codes,
 keeping even argv dispatch a delivery concern.
+
+Storage access is injected by capability: file tools, CLI attachment handling,
+and provider-time media resolution use `repository.Workspace`; terminal spill
+output uses a conversation-owned `repository.ToolOutput`; settings and setup
+use `config.Store`; REPL history and directory browsing use their own stores.
+The process runner and HTTP/WebSocket transports remain separate from storage.
+`ExecTool` receives a `terminal.Runner` alongside its output repository.
+Registering a new environment means composing its workspace repository,
+runner-backed tools, and media-aware provider adapters as one bundle; tool
+and provider code need no per-backend branches. The current filesystem picker
+and CLI attachment session remain local-only delivery features until a remote
+driver and its browsing/attachment UX are implemented.
 
 A consequence worth internalizing: `application/conversation` could host
 a CLI, an HTTP handler, or a test harness with identical results — the
@@ -265,7 +283,7 @@ is reused. Each iteration:
   model switch applies immediately. At most one compaction per turn; a
   tail that still overflows after folding is "the provider's call."
 - **Call the provider.** `svc.Send(ctx, conv, gw, wireModel, onEvent)` —
-  one attempt. Before the loop, `conv.SetTools(d.ToolSchemas())` reapplies
+  one attempt. Before the loop, `conv.SetTools(driver.ToolSchemas())` reapplies
   the live tool catalog every turn because a stored conversation can
   predate the catalog; without it "the model invents names it was never
   offered."
@@ -287,9 +305,8 @@ is reused. Each iteration:
   `ToolSchema` value object and fails closed — then runs
   `tool.Execute(ctx, call, emit)`. Executor failures become the tool's
   output ("the model deserves honest results"); only cancellation aborts
-  the turn. `msg.SetToolOutput` wraps the text in the untrusted-evidence
-  envelope (delimiter strings inside the output are neutralized so the
-  envelope can't be spoofed) and `UpdateToolCallOutput` persists a patch
+  the turn. `msg.SetToolOutput` records raw text and fixed latency;
+  `UpdateToolCallOutput` persists a patch
   record keyed by call id — resolvable globally, so a call sealed into an
   archive segment before its output arrived still patches correctly.
 - **Loop or stop.** No pending calls ends the turn. Hitting
@@ -352,6 +369,13 @@ transcript, tool calls and output render as activity, and `Finished`
 seals the block with a usage line. `finishTurn`
 flushes the live block to scrollback and drains the input queue.
 
+The product exposes reasoning and tool activity received from providers as
+transcript data. The system prompt does not ask the model to suppress that
+data. The example about hiding private chain-of-thought in
+`infrastructure/prompt/system/conversation.md` is an instruction for the
+assistant implementing this product, not a restriction on the product's
+event stream.
+
 On disk the whole time: `data/conversations/<id>/` holds `meta.json`,
 `active.jsonl` (the live tail), and numbered sealed segments. Messages
 and `tool_output` patch records share one append-only line stream; writes
@@ -401,12 +425,11 @@ mark credentials dead or fall over to another gateway; the current engine
 binds one route per turn, so 429s and 401s reach the operator rather than
 a fallback path that does not yet exist.
 
-**Tool output is untrusted evidence.** `ToolCall.SetOutput` wraps every
-runtime result in an `<untrusted_tool>` envelope with call latency and
-neutralizes embedded delimiter strings (`entity/toolcall.go`). Hydration
-uses `SetStoredOutput` verbatim — the envelope is a storage fact, not
-something to re-derive. This is why a `tool_output` patch line replays
-straight into the envelope on load.
+**Tool output is untrusted evidence.** `ToolCall.SetOutput` retains raw text
+and fixes latency. Provider getters apply the domain's context budget,
+neutralize embedded delimiter strings, and wrap the chosen view in an
+`<untrusted_tool>` envelope (`entity/toolcall.go`). Hydration restores raw
+text and latency; the envelope is derived at provider replay, not stored.
 
 **Unset is not zero.** Generation params are pointers; `enum.Effort`
 carries an `IsUnset()` sentinel. "Absent" means "don't send," so provider
@@ -438,15 +461,18 @@ is embedded, a room file is fully user-owned data.
 
 ## Composition root specifics
 
-`main` does two things before the REPL exists. First it strips argv[0]
-noise — people retype the binary name, and `go run ./cmd/nusallm/main.go`
-leaks the build target into argv (a token that exists on disk is dropped;
-one merely ending in `.go` is an argument). Then it routes admin verbs —
+`main` does two things before the REPL exists. First it strips leading
+argv noise — people retype the binary name or a `go run` source path as
+an argument, and `go run ./cmd/nusallm` substitutes a temp binary for
+argv[0], so the invoked name is matched rather than assumed (a token
+that exists on disk is dropped; one merely ending in `.go` is an
+argument). Then it routes admin verbs —
 `onboard`, `gateway`, `config` — to `delivery/cli/admin` handlers and
-exits with their code. These handlers share `LoadBoot(false)`: config,
-secret store, gateway app — and nothing conversation-shaped. Lenient mode
-matters: `config validate` must still run on a file that fails strict
-checks, or the repair path wedges.
+exits with their code. `onboard` and `gateway` use `LoadBoot(false)` for
+config, the secret store, and the gateway app — and nothing
+conversation-shaped. The `config` handler resolves the file path directly
+with `resolveConfigPath()`, so `validate` and `unset` can inspect or repair
+a file that fails strict validation, including a malformed `storage.dir`.
 
 The REPL path (`run`) boots strict, generates a missing config once via
 `application/setup.EnsureConfig`, and wires: `repogateway` +
@@ -487,8 +513,8 @@ flow; this document is the map, but the `AGENTS.md` chain (root →
 `application/` → `infrastructure/` → `domain` / `service` /
 `repository`) carries the constitution.
 
-The verify loop, per `infrastructure/domain/AGENTS.md`:
+The read-only verification loop:
 
 ```sh
-gofmt -w . && go build ./... && go vet ./... && go test ./...
+make fmt-check && make test && make test-web
 ```

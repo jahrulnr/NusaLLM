@@ -6,11 +6,12 @@ import (
 	"testing"
 
 	"github.com/jahrulnr/nusallm/infrastructure/config"
+	repoconfig "github.com/jahrulnr/nusallm/infrastructure/repository/config"
 )
 
 func TestEnsureConfigGeneratesLoadableFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "data", "config.json")
-	created, err := EnsureConfig(path)
+	created, err := EnsureConfig(repoconfig.NewLocal(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -18,7 +19,7 @@ func TestEnsureConfigGeneratesLoadableFile(t *testing.T) {
 		t.Fatal("missing file must be created")
 	}
 	var c config.Config
-	if err := c.Load(path); err != nil {
+	if err := c.Load(repoconfig.NewLocal(), path); err != nil {
 		t.Fatalf("generated file must load: %v", err)
 	}
 	if c.Storage.Dir != "./data" || c.Conversation.MailboxCap != 128 {
@@ -32,7 +33,7 @@ func TestEnsureConfigLeavesExistingFile(t *testing.T) {
 	if err := os.WriteFile(path, body, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	created, err := EnsureConfig(path)
+	created, err := EnsureConfig(repoconfig.NewLocal(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +50,7 @@ func TestEnsureConfigLeavesExistingFile(t *testing.T) {
 }
 
 func TestEnsureConfigEmptyPath(t *testing.T) {
-	created, err := EnsureConfig("")
+	created, err := EnsureConfig(repoconfig.NewLocal(), "")
 	if err != nil || created {
 		t.Fatal("empty path must be a no-op")
 	}
@@ -59,7 +60,7 @@ func TestEnsureConfigRejectsExistingDirectory(t *testing.T) {
 	// A directory at the config path is not a missing file — creating a
 	// config inside it would silently change the operator's intent.
 	path := t.TempDir()
-	created, err := EnsureConfig(path)
+	created, err := EnsureConfig(repoconfig.NewLocal(), path)
 	if err != nil {
 		t.Fatal(err)
 	}

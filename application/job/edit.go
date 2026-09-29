@@ -59,7 +59,11 @@ func (j *Edit) Execute(execCtx context.Context) (err error) {
 		if conv.SystemPrompt() == "" {
 			conv.SetSystemPrompt(prompt.SystemPrompt("conversation"))
 		}
-		gw, model, svc, err := d.resolveRoute(ctx, convID, conv, "", "")
+		driver, err := d.environment(conv)
+		if err != nil {
+			return err
+		}
+		gw, model, svc, err := d.resolveRoute(ctx, convID, conv, driver, "", "")
 		if err != nil {
 			return err
 		}
@@ -75,7 +79,7 @@ func (j *Edit) Execute(execCtx context.Context) (err error) {
 				conv.SetSystemPrompt(prompt.SystemPrompt("conversation"))
 			}
 		}
-		return d.runTurn(ctx, convID, conv, gw, model, svc, j.OnEvent)
+		return d.runTurn(ctx, convID, conv, driver, gw, model, svc, j.OnEvent)
 	}()
 	return err
 }

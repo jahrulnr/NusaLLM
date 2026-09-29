@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	repoworkspace "github.com/jahrulnr/nusallm/infrastructure/repository/workspace"
 )
 
 var cliPNGFixture = []byte{
@@ -23,7 +24,7 @@ func TestResolveAttachmentPinsConfinedMedia(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(rootPath, "shot.png"), cliPNGFixture, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	w, err := Open(rootPath)
+	w, err := Open(repoworkspace.NewLocal(), rootPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +47,7 @@ func TestResolveAttachmentDoesNotTrustImageExtension(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(rootPath, "not-really.png"), unknown, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	w, err := Open(rootPath)
+	w, err := Open(repoworkspace.NewLocal(), rootPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +76,7 @@ func TestResolveAttachmentRejectsUnsafeOrUnsupportedPaths(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(rootPath, "escape.png")); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
-	w, err := Open(rootPath)
+	w, err := Open(repoworkspace.NewLocal(), rootPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +106,7 @@ func TestResolveAttachmentEnforcesMediaSizeLimit(t *testing.T) {
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
-	w, err := Open(rootPath)
+	w, err := Open(repoworkspace.NewLocal(), rootPath)
 	if err != nil {
 		t.Fatal(err)
 	}

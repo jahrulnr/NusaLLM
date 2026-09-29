@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -246,18 +244,17 @@ func (h *Hub) turnSend(c *conn, cmd command) {
 		opts.Effort = effort
 	}
 	opts.Upstream = strings.TrimSpace(payload.Provider)
+	if payload.Environment != "" {
+		environment, ok := enum.ParseEnvironment(strings.TrimSpace(payload.Environment))
+		if !ok {
+			c.push(errorFrame(cmd.RequestID, "invalid_argument", "turn.send payload.environment is not a known environment"))
+			return
+		}
+		opts.Environment = environment
+	}
 	if ws := strings.TrimSpace(payload.Workspace); ws != "" {
-		// The picker supplies absolute paths from fs browsing; a relative
-		// or non-directory value is a rejected override, not a fallback.
-		if !filepath.IsAbs(ws) {
-			c.push(errorFrame(cmd.RequestID, "invalid_argument", "turn.send payload.workspace must be an absolute path"))
-			return
-		}
-		info, err := os.Stat(ws)
-		if err != nil || !info.IsDir() {
-			c.push(errorFrame(cmd.RequestID, "invalid_argument", "turn.send payload.workspace is not an existing directory"))
-			return
-		}
+		// The selected environment validates the path in the use case; a
+		// host filesystem check here would reject remote workspaces.
 		opts.Workspace = ws
 	}
 	h.admitAndRun(c, cmd.RequestID, convID, turn{

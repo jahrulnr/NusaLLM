@@ -4,19 +4,23 @@
 package tool
 
 import (
+	"context"
 	"encoding/json"
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/jahrulnr/nusallm/infrastructure/delivery/http/internal/transport"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 )
 
 // Catalog is the read surface — the registered tool schemas.
 // *appconversation.ConversationApp satisfies it.
 type Catalog interface {
-	ToolSchemas() []valueobject.ToolSchema
+	ToolSchemas(context.Context, string) ([]valueobject.ToolSchema, error)
 }
 
+// Deps wires the use case; Tools is optional — nil leaves the route
+// unregistered.
 type Deps struct {
 	Tools Catalog
 }
@@ -24,7 +28,9 @@ type Deps struct {
 // Register mounts this boundary's routes under /api.
 func Register(api *gin.RouterGroup, d Deps) {
 	s := &server{tools: d.Tools}
-	api.GET("/tools", s.list)
+	if d.Tools != nil {
+		api.GET("/tools", s.list)
+	}
 }
 
 type server struct {
@@ -54,10 +60,13 @@ func toTool(s valueobject.ToolSchema) toolDTO {
 
 func (s *server) list(c *gin.Context) {
 	out := make([]toolDTO, 0)
-	if s.tools != nil {
-		for _, sc := range s.tools.ToolSchemas() {
-			out = append(out, toTool(sc))
-		}
+	schemas, err := s.tools.ToolSchemas(c.Request.Context(), c.Query("conversationId"))
+	if err != nil {
+		transport.RespondError(c, err)
+		return
+	}
+	for _, sc := range schemas {
+		out = append(out, toTool(sc))
 	}
 	c.JSON(200, struct {
 		Data []toolDTO `json:"data"`

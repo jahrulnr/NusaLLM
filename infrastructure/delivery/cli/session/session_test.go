@@ -42,7 +42,7 @@ func TestEffectiveRouteModelUsesConversationBinding(t *testing.T) {
 	}
 
 	s := &Session{
-		Conversations:  appconversation.New(convs, gateways, nil, nil, config.NewConfig(), ""),
+		Conversations:  appconversation.New(convs, gateways, nil, config.NewConfig(), nil, ""),
 		ConversationID: "room",
 	}
 

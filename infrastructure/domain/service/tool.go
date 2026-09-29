@@ -13,8 +13,9 @@ import (
 // the caller isn't streaming; the tool may ignore it.
 type ToolEmitter func(chunk string)
 
-// ToolResult is the canonical output of one call: Text is the evidence
-// the caller wraps in the untrusted-tool envelope via ToolCall.SetOutput;
+// ToolResult is the canonical output of one call: Text is raw evidence
+// the caller records via ToolCall.SetOutput; provider adapters obtain the
+// bounded untrusted-tool envelope from the entity getter.
 // Attachments are stored media references (file://, https://, data:) the
 // wire resolves at send time — the same rules as Message attachments.
 // Attachments never consume the text output budget; whether they reach
@@ -26,8 +27,8 @@ type ToolResult struct {
 
 // Tool is one callable capability: its constructor builds and validates
 // the ToolSchema it advertises, and Execute runs a model-originated call
-// returning the canonical result — the caller wraps Text in the
-// untrusted-tool envelope via ToolCall.SetOutput, while emit delivers
+// returning the canonical result — the caller stores Text raw via
+// ToolCall.SetOutput, while emit delivers
 // progressive previews. Execute failures are recorded AS the tool output
 // so the model can see and react to them; only context cancellation
 // aborts the surrounding turn. Tool selection (call name → tool) is
@@ -40,6 +41,18 @@ type Tool interface {
 // workspaceCtxKey scopes a turn's working directory to directory-aware
 // tools (file sandbox, shell cwd) without widening the Execute signature.
 type workspaceCtxKey struct{}
+type conversationCtxKey struct{}
+
+// WithConversationID identifies the owner of tool-produced files for this turn.
+func WithConversationID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, conversationCtxKey{}, id)
+}
+
+// ConversationID returns the owner of tool-produced files, if bound.
+func ConversationID(ctx context.Context) string {
+	id, _ := ctx.Value(conversationCtxKey{}).(string)
+	return id
+}
 
 // WithWorkspaceDir returns a ctx carrying the absolute directory the
 // turn's tools must work in. Empty dir leaves the ctx unchanged.

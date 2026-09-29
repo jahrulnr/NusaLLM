@@ -32,7 +32,7 @@ const callIDKey = "generatecontent.call_id"
 // role-alternated user/model turns — same-role neighbours merge (parallel
 // tool results legally share one user turn, and mid-list system/developer
 // notes fold into user text).
-func encodeRequest(conv *aggregate.Conversation, model entity.Model, fileRoot string) (*RequestBody, error) {
+func encodeRequest(conv *aggregate.Conversation, model entity.Model, fileRoot wire.MediaRoot) (*RequestBody, error) {
 	body := &RequestBody{}
 	if sp := conv.SystemPrompt(); sp != "" {
 		body.SystemInstruction = &ContentBody{Parts: []any{PartBody{Text: sp}}}
@@ -120,7 +120,7 @@ func thinkingConfig(model entity.Model) *ThinkingConfigBody {
 // Injection calls hydrate as trailing text on the model turn. A call's
 // output attachments ride inlineData parts in the same user turn — this
 // wire carries media there natively.
-func encodeMessage(m entity.Message, model entity.Model, fileRoot string) []ContentBody {
+func encodeMessage(m entity.Message, model entity.Model, fileRoot wire.MediaRoot) []ContentBody {
 	var origin, injected []entity.ToolCall
 	for _, tc := range m.ToolCalls() {
 		if tc.Type() == enum.TooltypeInjection {
@@ -133,8 +133,8 @@ func encodeMessage(m entity.Message, model entity.Model, fileRoot string) []Cont
 	text := m.Content()
 	var injectedText string
 	for _, tc := range injected {
-		if tc.Output() != "" {
-			injectedText += "\n" + tc.Output() // untrusted-evidence envelope
+		if tc.HasOutput() {
+			injectedText += "\n" + tc.OutputWithUntrustedTag() // untrusted-evidence envelope
 		}
 	}
 
@@ -148,6 +148,7 @@ func encodeMessage(m entity.Message, model entity.Model, fileRoot string) []Cont
 	}
 
 	// user + homeless roles ride the user turn.
+	text += injectedText
 	var parts []any
 	if text != "" {
 		parts = append(parts, PartBody{Text: text})
@@ -247,13 +248,10 @@ func modelParts(m entity.Message, text, injectedText string, origin []entity.Too
 // toolResultContents emits one user turn carrying a functionResponse part
 // per origin call plus any output-media parts after them — parallel calls
 // legally share the turn by the same-role merge rule.
-func toolResultContents(origin []entity.ToolCall, model entity.Model, fileRoot string) ContentBody {
+func toolResultContents(origin []entity.ToolCall, model entity.Model, fileRoot wire.MediaRoot) ContentBody {
 	var parts []any
 	for _, tc := range origin {
-		content := tc.Output()
-		if content == "" {
-			content = "(interrupted — no result was recorded)"
-		}
+		content := tc.OutputWithUntrustedTagOrInterrupted()
 		resp, _ := json.Marshal(map[string]string{"result": content})
 		fr := &FunctionRespBody{Name: tc.Name(), Response: resp}
 		if id := tc.OptionalContent()[callIDKey]; id != "" {
@@ -379,7 +377,7 @@ func sanitizeNode(node any) any {
 // attachmentPart maps a stored reference to an inlineData/fileData part,
 // degrading in place — a missing file must not wedge the whole request.
 // This wire carries every modality inline, so nothing is dropped.
-func attachmentPart(a valueobject.Attachment, model entity.Model, fileRoot string) any {
+func attachmentPart(a valueobject.Attachment, model entity.Model, fileRoot wire.MediaRoot) any {
 	if !model.AcceptsInput(a.Modality()) {
 		return PartBody{Text: "(" + a.Modality().String() + " attachment omitted: model does not accept it)"}
 	}
@@ -397,7 +395,7 @@ func attachmentPart(a valueobject.Attachment, model entity.Model, fileRoot strin
 // encodeAttachment resolves a reference — remote URLs ride as fileData
 // (the provider fetches them); local and inline payloads go inlineData
 // base64.
-func encodeAttachment(a valueobject.Attachment, fileRoot string) (PartBody, error) {
+func encodeAttachment(a valueobject.Attachment, fileRoot wire.MediaRoot) (PartBody, error) {
 	uri := a.URI()
 	if strings.HasPrefix(uri, "https://") || strings.HasPrefix(uri, "http://") {
 		if _, err := wire.ResolveURI(a, fileRoot); err != nil {

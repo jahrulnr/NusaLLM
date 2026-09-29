@@ -1,8 +1,8 @@
-package valueobject
+package term
 
 import "strconv"
 
-// FormatScaledTokens abbreviates token counts for budgets and UI (~200K/1M).
+// FormatScaledTokens abbreviates counts for the terminal context footer.
 func FormatScaledTokens(n int) string {
 	if n <= 0 {
 		return "0"

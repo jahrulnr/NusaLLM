@@ -45,6 +45,10 @@ func (d Deps) compact(ctx context.Context, convID string, conv *aggregate.Conver
 		return err
 	}
 	scratch.SetSystemPrompt(conv.SystemPrompt())
+	scratch.SetWorkspace(conv.Workspace())
+	if err := scratch.SetEnvironment(conv.Environment()); err != nil {
+		return err
+	}
 	for _, m := range conv.Messages() {
 		scratch.Append(m)
 	}

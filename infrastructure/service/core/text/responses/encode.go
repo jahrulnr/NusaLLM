@@ -25,16 +25,14 @@ var errUnsupported = errPlain("modality has no carrier on this wire")
 // repository is the record and edits would break previous_response_id
 // chains anyway. include: reasoning.encrypted_content opts into replayable
 // reasoning so stateless turns keep their chain of thought.
-func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool, fileRoot string) (*RequestBody, error) {
+func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool, fileRoot wire.MediaRoot) (*RequestBody, error) {
 	body := &RequestBody{
 		Model:   model.ID(),
 		Store:   false,
 		Include: []string{"reasoning.encrypted_content"},
 		Stream:  stream,
 	}
-	if id := conv.ID(); id != "" {
-		body.PromptCacheKey = id
-	}
+	body.PromptCacheKey = conv.ID()
 	if sp := conv.SystemPrompt(); sp != "" {
 		body.Instructions = sp
 	}
@@ -99,7 +97,7 @@ func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool
 // a user message after the whole output block: function_call_output
 // carries only a string on this surface, so media follows the same
 // convention the completion wire uses.
-func encodeMessage(m entity.Message, model entity.Model, fileRoot string) ([]json.RawMessage, error) {
+func encodeMessage(m entity.Message, model entity.Model, fileRoot wire.MediaRoot) ([]json.RawMessage, error) {
 	var origin, injected []entity.ToolCall
 	for _, tc := range m.ToolCalls() {
 		if tc.Type() == enum.TooltypeInjection {
@@ -111,8 +109,8 @@ func encodeMessage(m entity.Message, model entity.Model, fileRoot string) ([]jso
 
 	text := m.Content()
 	for _, tc := range injected {
-		if tc.Output() != "" {
-			text += "\n" + tc.Output() // already an untrusted-evidence envelope
+		if tc.HasOutput() {
+			text += "\n" + tc.OutputWithUntrustedTag() // already an untrusted-evidence envelope
 		}
 	}
 
@@ -209,16 +207,13 @@ func assistantItems(m entity.Message, text string, origin []entity.ToolCall) []j
 // toolResultItems emits one function_call_output per origin call, then —
 // after the whole block — a user message carrying each call's media
 // attachments, mirroring the completion wire's convention.
-func toolResultItems(origin []entity.ToolCall, model entity.Model, fileRoot string) []json.RawMessage {
+func toolResultItems(origin []entity.ToolCall, model entity.Model, fileRoot wire.MediaRoot) []json.RawMessage {
 	if len(origin) == 0 {
 		return nil
 	}
 	var items, media []json.RawMessage
 	for _, tc := range origin {
-		content := tc.Output()
-		if content == "" {
-			content = "(interrupted — no result was recorded)"
-		}
+		content := tc.OutputWithUntrustedTagOrInterrupted()
 		out, _ := marshalItem(ItemBody{Type: "function_call_output", CallID: tc.ID(), Output: content})
 		items = append(items, out...)
 		if atts := tc.OutputAttachments(); len(atts) > 0 {
@@ -247,7 +242,7 @@ func marshalItem(it ItemBody) ([]json.RawMessage, error) {
 // attachmentPart maps a stored reference to an input part, degrading in
 // place — a missing file or an uncarriable modality must not wedge the
 // whole request.
-func attachmentPart(a valueobject.Attachment, model entity.Model, fileRoot string) any {
+func attachmentPart(a valueobject.Attachment, model entity.Model, fileRoot wire.MediaRoot) any {
 	if !model.AcceptsInput(a.Modality()) {
 		return PartBody{Type: "input_text", Text: "(" + a.Modality().String() + " attachment omitted: model does not accept it)"}
 	}
@@ -267,7 +262,7 @@ func attachmentPart(a valueobject.Attachment, model entity.Model, fileRoot strin
 // encodeAttachment resolves a reference into an input_image or input_file
 // part — URLs pass through (image_url/file_url), local and inline payloads
 // materialize as data: URIs (image_url/file_data).
-func encodeAttachment(a valueobject.Attachment, fileRoot string) (PartBody, error) {
+func encodeAttachment(a valueobject.Attachment, fileRoot wire.MediaRoot) (PartBody, error) {
 	uri := a.URI()
 	remote := strings.HasPrefix(uri, "https://") || strings.HasPrefix(uri, "http://")
 	switch a.Modality() {

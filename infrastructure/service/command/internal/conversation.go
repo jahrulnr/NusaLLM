@@ -7,7 +7,6 @@ import (
 	"unicode"
 
 	appcommand "github.com/jahrulnr/nusallm/application/command"
-	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
 )
 
@@ -24,7 +23,7 @@ func Conversations(h appcommand.SlashSession, cmd string) func(context.Context, 
 		var rows []service.CommandCompletion
 		for _, conv := range conversations {
 			displayTitle := titles[conv.ID]
-			if !aggregate.ListDisplayTitleMatchesPrefix(conv.ID, conv.Title, displayTitle, arg) {
+			if !ListDisplayTitleMatchesPrefix(conv.ID, conv.Title, displayTitle, arg) {
 				continue
 			}
 			title := displayTitle

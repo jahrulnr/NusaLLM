@@ -79,13 +79,12 @@ destroy each stored model's hidden provider params (e.g. a
 requires the application layer to **preserve** it: on upsert, each model
 in the replacement catalog that shares an `id` with a stored model keeps
 that stored model's `optionalContent`; a model dropped from the catalog
-loses it with the record. This preservation rule does not exist today —
-`application/gateway` upsert must read the existing snapshot and carry
-matching models' hidden field forward. It is application-layer work (not
-a transport merge — the wire never carries the field), and it must be
-atomic against the stored record: gateway writes are not serialized
-through a room worker, so a read-modify-write race could lose a
-concurrent update. Exposing the field on the API remains future work.
+loses it with the record. `application/gateway.Upsert` implements this:
+it reads the stored snapshot under its mutex and carries matching
+models' hidden field forward — application-layer work, not a transport
+merge (the wire never carries the field), serialized against the stored
+record because gateway writes do not pass through a room worker.
+Exposing the field on the API remains future work.
 
 ## Deployment and trust model
 
@@ -164,8 +163,9 @@ following never leave the server on any endpoint or frame:
   content pin stays internal.
 - **What intentionally crosses: tool I/O.** This is a single-user
   loopback UI for its owner — tool `input` (exact argument string) and
-  `output` (live chunks over WS; the persisted evidence envelope over
-  HTTP) are part of the contract so the owner sees what the agent saw.
+  `output` (live chunks over WS; plain result text over HTTP) are part of
+  the contract. The provider still receives the stored untrusted-evidence
+  envelope; its delimiter and latency tag are not sent to the UI.
   They are untrusted data — can contain paths, commands, secrets — and
   must render as escaped text, never markup. Any loopback process can
   reach the API; SOP/Host checks guard browsers, they are not OS-user
@@ -202,7 +202,7 @@ Full schemas, typed errors, and examples live in
 | `DELETE /api/gateways/{id}` | Remove gateway + vaulted key; `404` when absent. |
 | `GET /api/settings` | Effective settings document (projected — see below). |
 | `PATCH /api/settings` | One leaf write — body `{key, value}`. |
-| `GET /api/tools` | Registered tool catalog: `name`, `description`, `parameters`, `enabled`, `permission`. |
+| `GET /api/tools?conversationId=<id>` | Registered tool catalog for that room: `name`, `description`, `parameters`, `enabled`, `permission`. Without `conversationId`, uses the local starting catalog. Returns `404` when no tool catalog is wired. |
 | `GET /api/fs/browse?path=` | Directory-only listing for the workspace picker — `{ "path", "parent", "roots": [{"name","path"}], "entries": [{"name","path","hidden"}], "truncated"?: true }`. Empty `path` defaults to the owner's home; `parent` ascends toward the filesystem root and `roots` jumps to `/` (or present drive letters on Windows). `path` must be absolute (`400`); missing directories are `404`, unreadable `403`. Listings cap at 1000 directories (`truncated: true` when more remain); file contents are never served. |
 | `GET /api/context?conversationId&route&modelId` | Composer-footer stats — `{ "estimate", "total" }`: estimated live input tokens and the bound model's input allowance. `conversationId` is optional — a fresh room still resolves `total` when `route`+`modelId` name a known model. |
 | `GET /api/ws` | WebSocket upgrade — `101`; frames defined in [`websocket.md`](./websocket.md). |
@@ -235,8 +235,8 @@ client should re-fetch rather than merge.
 `GET /api/gateways` uses the same offset/limit envelope — the transport
 slices the application's `InspectList` result (sorted by id). Gateway
 writes are rare, so offset drift is mostly theoretical, but the same
-best-effort rule applies. `GET /api/tools` is a small static catalog
-and stays unpaginated.
+best-effort rule applies. `GET /api/tools` resolves the selected room's
+registered catalog when `conversationId` is present and stays unpaginated.
 
 ### Settings semantics
 

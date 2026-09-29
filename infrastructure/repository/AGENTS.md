@@ -6,6 +6,13 @@ atomic writes, and recovery from partial writes. They do not decide what a
 valid conversation or gateway means; use domain constructors and methods
 for that.
 
+Storage I/O is centralized here, including workspace-scoped file access,
+conversation-owned spill output, config documents, CLI input history, and
+directory metadata for workspace selection. These capabilities are injected
+into their consumers; repository implementations may be swapped without
+changing tool or use-case logic. Network transports and command execution are
+not storage and remain outside this tree.
+
 - `conversation/` stores metadata and JSONL history. `Compact` and
   `RewriteFrom` perform segment surgery while preserving the domain's
   message semantics. `rewriteCut` currently repeats the editability check
@@ -15,6 +22,9 @@ for that.
   loads, and offers raw-ref inspection for management. Keep key material out
   of read projections.
 - `secret/` and `log/` are storage implementations, not policy owners.
+- `config/`, `history/`, and `filetree/` implement config documents, CLI
+  input history, and directory metadata access.
+- `workspace/` owns workspace-scoped file access and path confinement.
 
 Boundary validation may protect a filesystem path or storage format (for
 example, rechecking an ID before joining a path). Do not turn that check

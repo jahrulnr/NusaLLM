@@ -393,10 +393,15 @@ func TestWatchSuffixAndResync(t *testing.T) {
 func TestWatchGapResyncThenLive(t *testing.T) {
 	b := newBlockedTurn()
 	emitDone := make(chan struct{})
+	flood := make(chan struct{})
 	h := newHub(t, stubSender{fn: func(ctx context.Context, convID, _, _, _ string,
 		onEvent event.TurnEventHandler) (appconversation.SendResult, error) {
 		b.started <- convID
-		// Overflow the journal so early seqs are truncated.
+		// Hold the flood until the test has the opened frame in hand —
+		// the burst kills the owner socket's bounded queue, so nothing
+		// may read that socket afterward. Then overflow the journal so
+		// early seqs are truncated.
+		<-flood
 		for i := 0; i < journalMaxFrames+50; i++ {
 			onEvent(event.NewDeltaEvent("x"))
 		}
@@ -406,9 +411,15 @@ func TestWatchGapResyncThenLive(t *testing.T) {
 	}})
 	ws := dial(t, h)
 	sendCommand(t, ws, `{"type":"turn.send","requestId":"s1","payload":{"content":"x"}}`)
+	// turn.opened is the only frame queued before the flood gate opens —
+	// the read is deterministic, and convID/turnID never ride the doomed
+	// socket past this point.
 	f := readFrame(t, ws)
+	if f.Type != "turn.opened" {
+		t.Fatalf("%+v", f)
+	}
 	convID, turnID := f.ConversationID, f.TurnID
-	<-b.started
+	close(flood)
 	<-emitDone
 	// The burst drowned the owner socket's bounded queue — it was
 	// killed (slow consumers never stall the turn). The watcher is a
@@ -466,8 +477,15 @@ func TestSocketAdmissionBound(t *testing.T) {
 		}
 		socks = append(socks, ws)
 	}
-	if !h.SocketFull() {
-		t.Fatal("hub at capacity must report full")
+	// Dial returns at handshake completion; the server registers the
+	// socket in Attach right after. Wait for the bound instead of
+	// assuming the last attach already landed.
+	deadline := time.Now().Add(5 * time.Second)
+	for !h.SocketFull() {
+		if time.Now().After(deadline) {
+			t.Fatal("hub at capacity must report full")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	// The next upgrade still completes the HTTP handshake — Attach
 	// closes it politely server-side.

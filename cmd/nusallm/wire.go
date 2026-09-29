@@ -7,14 +7,17 @@ import (
 	"time"
 
 	appconversation "github.com/jahrulnr/nusallm/application/conversation"
+	appjob "github.com/jahrulnr/nusallm/application/job"
 	"github.com/jahrulnr/nusallm/infrastructure/config"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	"github.com/jahrulnr/nusallm/infrastructure/redact"
+	repoconfig "github.com/jahrulnr/nusallm/infrastructure/repository/config"
 	repoconversation "github.com/jahrulnr/nusallm/infrastructure/repository/conversation"
 	repogateway "github.com/jahrulnr/nusallm/infrastructure/repository/gateway"
 	repolog "github.com/jahrulnr/nusallm/infrastructure/repository/log"
 	reposecret "github.com/jahrulnr/nusallm/infrastructure/repository/secret"
+	repoworkspace "github.com/jahrulnr/nusallm/infrastructure/repository/workspace"
 	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
 	textcompletion "github.com/jahrulnr/nusallm/infrastructure/service/core/text/completion"
 	textgeneratecontent "github.com/jahrulnr/nusallm/infrastructure/service/core/text/generatecontent"
@@ -47,23 +50,28 @@ func compose(cfg config.Config, secrets *reposecret.Store, configPath string) (*
 		return nil, err
 	}
 	tools := map[string]dservice.Tool{}
-	readFile, err := toolfile.NewFileReadTool(wd) // workspace root = cwd
+	workspaceStore := repoworkspace.NewLocal()
+	readFile, err := toolfile.NewFileReadTool(workspaceStore, wd) // workspace root = cwd
 	if err != nil {
 		return nil, err
 	}
-	writeFile, err := toolfile.NewFileWriteTool(wd)
+	writeFile, err := toolfile.NewFileWriteTool(workspaceStore, wd)
 	if err != nil {
 		return nil, err
 	}
-	patchFile, err := toolfile.NewFilePatchTool(wd)
+	patchFile, err := toolfile.NewFilePatchTool(workspaceStore, wd)
 	if err != nil {
 		return nil, err
 	}
-	readMedia, err := toolfile.NewReadMediaTool(wd)
+	readMedia, err := toolfile.NewReadMediaTool(workspaceStore, wd)
 	if err != nil {
 		return nil, err
 	}
-	execTool, err := toolexec.NewExecTool()
+	toolOutputs, err := repoconversation.NewToolOutputRepository(filepath.Join(dir, "conversations"))
+	if err != nil {
+		return nil, err
+	}
+	execTool, err := toolexec.NewExecTool(toolOutputs, toolexec.NewLocalRunner())
 	if err != nil {
 		return nil, err
 	}
@@ -89,6 +97,7 @@ func compose(cfg config.Config, secrets *reposecret.Store, configPath string) (*
 		HeaderTimeout: time.Duration(cfg.Service.HeaderTimeout),
 		IdleTimeout:   time.Duration(cfg.Service.IdleTimeout),
 		FileRoot:      wd,
+		FileStore:     workspaceStore,
 	}
 	services := map[enum.Style]dservice.TextModelService{
 		enum.StyleCompletion:      textcompletion.New(textOpts),
@@ -96,9 +105,16 @@ func compose(cfg config.Config, secrets *reposecret.Store, configPath string) (*
 		enum.StyleMessages:        textmessages.New(textOpts),
 		enum.StyleGenerateContent: textgeneratecontent.New(textOpts),
 	}
+	environments := map[enum.Environment]appjob.EnvironmentDriver{
+		enum.EnvironmentLocal: appjob.EnvironmentBundle{
+			WorkspaceStore: workspaceStore,
+			Services:       services,
+			Tools:          tools,
+		},
+	}
 
 	return &engine{
-		conversations: appconversation.New(convs, gateways, services, tools, cfg, configPath),
+		conversations: appconversation.New(convs, gateways, environments, cfg, repoconfig.NewLocal(), configPath),
 		logger:        logger,
 	}, nil
 }

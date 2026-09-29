@@ -8,7 +8,8 @@ import (
 )
 
 // Delete removes the conversation and everything it stored — meta, the
-// live tail, every sealed segment. A running job is interrupted before
+// live tail, every sealed segment, and conversation-owned tool output.
+// A running job is interrupted before
 // the repository call, so an in-flight tool or provider request dies with
 // the room; queued jobs get 410. Afterwards the worker retires and the id
 // is free again — a new Send with the same id mints a fresh room.

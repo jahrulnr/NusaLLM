@@ -21,18 +21,20 @@ import (
 	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
+	"github.com/jahrulnr/nusallm/infrastructure/service/wire"
 )
 
 // Service is the stateless translator for this wire — endpoint,
 // credentials, and stream preference are read from the gateway argument
 // of every Send, so one instance serves every completion-style gateway.
 type Service struct {
-	client   *http.Client
-	log      drepo.Logger
-	referer  string
-	title    string
-	fileRoot string
-	idle     time.Duration
+	client    *http.Client
+	log       drepo.Logger
+	referer   string
+	title     string
+	fileRoot  string
+	fileStore drepo.Workspace
+	idle      time.Duration
 }
 
 // New builds the service — Options only; gateways arrive per Send.
@@ -52,12 +54,13 @@ func New(opts coretext.Options) *Service {
 	}
 	idle := time.Duration(svcCfg.IdleTimeout)
 	return &Service{
-		client:   client,
-		log:      opts.Logger,
-		referer:  opts.Referer,
-		title:    opts.Title,
-		fileRoot: opts.FileRoot,
-		idle:     idle,
+		client:    client,
+		log:       opts.Logger,
+		referer:   opts.Referer,
+		title:     opts.Title,
+		fileRoot:  opts.FileRoot,
+		fileStore: opts.FileStore,
+		idle:      idle,
 	}
 }
 
@@ -66,7 +69,7 @@ func New(opts coretext.Options) *Service {
 // selected by gw; events reach onEvent uniformly either way.
 func (s *Service) Send(ctx context.Context, conv *aggregate.Conversation, gw *aggregate.Gateway, model entity.Model, onEvent event.TurnEventHandler) error {
 	stream := gw.StreamMode()
-	body, err := encodeRequest(conv, model, stream, coretext.FileRoot(conv, s.fileRoot), gw.Endpoint())
+	body, err := encodeRequest(conv, model, stream, wire.MediaRoot{Dir: coretext.FileRoot(conv, s.fileRoot), Store: s.fileStore}, gw.Endpoint())
 	if err != nil {
 		return err
 	}

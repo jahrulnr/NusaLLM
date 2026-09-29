@@ -2,11 +2,11 @@ package appconversation
 
 import (
 	"context"
-	appjob "github.com/jahrulnr/nusallm/application/job"
 	"strings"
 	"sync/atomic"
 	"testing"
 
+	appjob "github.com/jahrulnr/nusallm/application/job"
 	"github.com/jahrulnr/nusallm/infrastructure/config"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
@@ -24,6 +24,55 @@ import (
 // compactSvc answers the scratch dialogue (the conv carrying the summary
 // tool) with the checkpoint call, and any other conversation normally.
 type compactSvc struct{ calls atomic.Int32 }
+
+type environmentCompactSvc struct {
+	compactSvc
+	scratchEnvironment enum.Environment
+	scratchWorkspace   string
+}
+
+func (s *environmentCompactSvc) Send(ctx context.Context, conv *aggregate.Conversation, gw *aggregate.Gateway, model entity.Model, onEvent event.TurnEventHandler) error {
+	for _, tool := range conv.Tools() {
+		if tool.Name() == toolsummary.Name {
+			s.scratchEnvironment = conv.Environment()
+			s.scratchWorkspace = conv.Workspace()
+		}
+	}
+	return s.compactSvc.Send(ctx, conv, gw, model, onEvent)
+}
+
+func TestManualCompactKeepsEnvironmentAndWorkspace(t *testing.T) {
+	local := &compactSvc{}
+	app, convs := compactApp(t, local, 0)
+	remote := &environmentCompactSvc{}
+	app.deps.Environments[enum.EnvironmentDocker] = appjob.EnvironmentBundle{
+		Services:       map[enum.Style]dservice.TextModelService{enum.StyleCompletion: remote},
+		WorkspaceStore: virtualWorkspace{},
+	}
+	for _, content := range []string{"first", "second"} {
+		opts := appjob.SendOptions{}
+		if content == "first" {
+			opts.Environment = enum.EnvironmentDocker
+			opts.Workspace = "/remote/project"
+		}
+		if _, err := app.Send(t.Context(), "remote-room", "gw1", "m1", content, nil, opts, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := app.Compact(t.Context(), "remote-room"); err != nil {
+		t.Fatal(err)
+	}
+	if local.calls.Load() != 0 || remote.scratchEnvironment != enum.EnvironmentDocker || remote.scratchWorkspace != "/remote/project" {
+		t.Fatalf("compaction crossed drivers: local=%d scratch=%q %q", local.calls.Load(), remote.scratchEnvironment, remote.scratchWorkspace)
+	}
+	loaded, err := convs.Load(t.Context(), "remote-room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Environment() != enum.EnvironmentDocker || loaded.Workspace() != "/remote/project" {
+		t.Fatalf("compacted binding = %q %q", loaded.Environment(), loaded.Workspace())
+	}
+}
 
 func (s *compactSvc) Send(_ context.Context, conv *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, _ event.TurnEventHandler) error {
 	s.calls.Add(1)
@@ -91,8 +140,9 @@ func compactApp(t *testing.T, svc dservice.TextModelService, contextWindow int) 
 	cfg := config.NewConfig()
 	cfg.Conversation.CompactKeepTail = 2 // small tail keeps the test history tiny
 	return New(convs, gateways,
-		map[enum.Style]dservice.TextModelService{enum.StyleCompletion: svc},
-		nil, cfg, ""), convs
+		map[enum.Environment]appjob.EnvironmentDriver{enum.EnvironmentLocal: appjob.EnvironmentBundle{
+			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: svc},
+		}}, cfg, nil, ""), convs
 }
 
 func TestManualCompactAllowsAnotherFoldWhileTailExceedsKeep(t *testing.T) {

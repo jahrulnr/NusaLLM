@@ -1,6 +1,7 @@
 package appconversation
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 
 	appjob "github.com/jahrulnr/nusallm/application/job"
 	"github.com/jahrulnr/nusallm/infrastructure/config"
+	repoconfig "github.com/jahrulnr/nusallm/infrastructure/repository/config"
 )
 
 func writeConversationConfig(t *testing.T, path string, mailboxCap int) {
@@ -24,6 +26,7 @@ func fixtureWithConfig(t *testing.T, configPath string) *ConversationApp {
 	t.Helper()
 	app, _ := fixture(t, okHandler)
 	app.configPath = configPath
+	app.configStore = repoconfig.NewLocal()
 	return app
 }
 
@@ -74,7 +77,7 @@ func TestReloadConfigConcurrentWithSend(t *testing.T) {
 				}
 				_, _ = app.Send(t.Context(), "race-room", "gw1", "m1", "ping", nil, appjob.SendOptions{}, nil)
 				_, _ = app.CanCompact(t.Context(), "race-room")
-				_ = app.ToolSchemas()
+				_, _ = app.ToolSchemas(context.Background(), "")
 			}
 		}()
 	}
@@ -82,8 +85,15 @@ func TestReloadConfigConcurrentWithSend(t *testing.T) {
 	wg.Wait()
 	close(stop)
 
+	// app.cfg reflects the reload of the last post — that may lag the
+	// writer's final write. One more post forces a reload after all
+	// writes, so the compare below is against the file's final state.
+	if _, err := app.Send(t.Context(), "race-room", "gw1", "m1", "final", nil, appjob.SendOptions{}, nil); err != nil {
+		t.Fatal(err)
+	}
+
 	var c config.Config
-	if err := c.Load(cfgPath); err != nil {
+	if err := c.Load(repoconfig.NewLocal(), cfgPath); err != nil {
 		t.Fatal(err)
 	}
 	app.mu.Lock()

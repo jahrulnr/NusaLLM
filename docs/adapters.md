@@ -1,7 +1,7 @@
 # Service adapters
 
 `infrastructure/service/` holds NusaLLM's **outbound adapters**: the code that
-translates domain ports into provider wire protocols, local file I/O, process
+translates domain ports into provider wire protocols, repository-backed storage, process
 execution, and terminal-facing command mechanics. The ports themselves live in
 `infrastructure/domain/service/` — `TextModelService`, `Tool`, `SlashCommand` —
 and the domain never imports this tree. The boundary exists so that everything
@@ -24,7 +24,8 @@ property of a `Gateway` — the same model id can be spoken through different
 paradigms depending on the route — and `nusallm gateway add --style` accepts
 all four values (`infrastructure/delivery/cli/admin/gateway.go`).
 
-All four are wired in `cmd/nusallm/main.go`, which builds the service map as
+All four are wired in `cmd/nusallm/wire.go` for the local environment, which
+builds its service map as
 
 ```go
 services := map[enum.Style]dservice.TextModelService{
@@ -34,6 +35,11 @@ services := map[enum.Style]dservice.TextModelService{
     enum.StyleGenerateContent: textgeneratecontent.New(textOpts),
 }
 ```
+
+The map is registered together with the local workspace repository and tools
+as one `EnvironmentDriver`. The conversation's stored environment chooses
+the entire bundle for a turn; a future remote bundle must provide media-aware
+adapters for its own workspace repository.
 
 Every adapter shares the same skeleton: a stateless `Service` built once from
 `coretext.Options` (`service/core/text/options.go`) that reads endpoint,
@@ -53,7 +59,7 @@ The shared rules all four honor: tools reach the wire only when
 "provider default"; adapter-namespaced escape keys (`<style>.<param>` on
 `model.OptionalContent()`) flatten verbatim into the request body;
 attachments degrade in place (placeholder text, never a failed request) and
-local references resolve through `wire` beneath `FileRoot`; errors map to
+local references resolve through `wire` and the injected `FileStore` beneath `FileRoot`; errors map to
 the `apperror` status contract (413 → compact, 429 → fallback, 401/403 →
 dead credential); and provider quirks — the `x-opencode-session` header on
 `opencode.ai` endpoints, `HTTP-Referer`/`X-Title` attribution — live inside
@@ -87,8 +93,10 @@ immediately and one instance serves all routes (`completion.go`).
   as `max_completion_tokens`; `top_k` is an OpenRouter extension that the
   compatible wire tolerates.
 - `prompt_cache_key` is pinned to the conversation ID so providers can bucket
-  cache state per dialogue; `stream_options.include_usage` always rides with
-  `stream: true` because providers omit the final usage chunk otherwise.
+  cache state per dialogue, and `prompt_cache_options.ttl` rides with it
+  unconditionally as `"30m"` — prompt caching is always requested, not
+  opt-in. `stream_options.include_usage` always rides with `stream: true`
+  because providers omit the final usage chunk otherwise.
 - Adapter-namespaced escape hatch: any `model.OptionalContent()` key of the
   form `completion.<param>` lands verbatim as a top-level request field —
   `RequestBody.Extra` is flattened into the body by a custom `MarshalJSON`.
@@ -182,7 +190,7 @@ is the whole configuration surface:
 | `FileRoot` | Root for local `file://` attachment resolution; empty disables local refs |
 | `Logger` | `drepo.Logger` sink for `provider.request` / `provider.response` / `provider.error` / `provider.stream` entries; logging failures never break a send |
 
-`main.go` feeds `cfg.Service.HeaderTimeout`/`IdleTimeout`, `cfg.App.Name` as
+`cmd/nusallm/wire.go` feeds `cfg.Service.HeaderTimeout`/`IdleTimeout`, `cfg.App.Name` as
 `Title`, `cfg.App.Source` as `Referer`, the process cwd as `FileRoot`, and the
 redacted repository logger. Response bodies are read under a 32 MiB cap
 (`readAll` in `stream.go`).
@@ -222,7 +230,7 @@ decoder is why the DTO's `Content` is `[]json.RawMessage`.
 Tool results ride `tool_result` blocks inside the next user turn (the wire
 has no tool role); a call's output attachments nest inside its own
 `tool_result` block natively, and an interrupted call yields an
-`(interrupted — no result was recorded)` marker so strict validation still
+`<untrusted_tool>`-wrapped `(interrupted — no result was recorded)` marker so strict validation still
 sees a result per `tool_use`. Streaming is named SSE: blocks accumulate by
 `content_block_*` index, `message_delta` carries the terminal `stop_reason`
 and cumulative usage, and `message_stop` is the only commit point. Usage is
@@ -293,6 +301,8 @@ The wire is role-alternated `contents` of typed parts (`user`/`model` only —
   `generatecontent.parts` — stores signed and thought parts verbatim with
   `{"refill":"text"}`/`{"refill":"functionCall"}` placeholders; a verbatim
   signed call still consumes its domain call slot so refills stay aligned.
+- **Injected evidence.** Output from injection calls joins both model and
+  user turns as bounded untrusted text; it is never dropped on the user path.
 - **Family-aware thinking.** `generationConfig.thinkingConfig` maps effort
   by model family: `gemini-3` ids take `thinkingLevel` (clamped to `high`),
   `gemini-2.5` takes `includeThoughts` alone (invented budgets get
@@ -320,14 +330,15 @@ part assembly stays inside each adapter.
   modality (10 MiB image, 50 MiB audio, 100 MiB video, 20 MiB otherwise).
   `ResolveURI` turns a stored reference into a sendable URL: `data:` passes
   through (size-checked, pin-verified when pinned), `file://` is reopened
-  beneath `fileRoot` via `os.Root` plus a `filepath.Rel` confinement check and
+  beneath `MediaRoot.Dir` via the injected `repository.Workspace` plus a
+  `filepath.Rel` confinement check and
   base64-inlined, and `http(s)://` passes through unfetched — adapters do not
   fetch arbitrary URLs. A `sha256` pin is enforced on resolved bytes and is
   rejected outright on remote references. `ResolveBase64` additionally splits
   a `data:` URI into payload + `FormatName` (e.g. `audio/mpeg` → `mp3`) for
-  wires like `input_audio`. `OpenRegularFile` opens beneath an `os.Root` with
-  `O_NONBLOCK` and rejects non-regular files, so FIFOs and device nodes can't
-  stall or confuse readers.
+  wires like `input_audio`. The local workspace repository's `OpenRegular`
+  uses `O_NONBLOCK` and rejects non-regular files, so FIFOs and device nodes
+  cannot stall or confuse readers.
 - `error.go`: `StatusError`, the shared status→`apperror` convention above,
   and `UpstreamError` for keeping raw bodies in `Cause`.
 
@@ -338,7 +349,7 @@ part assembly stays inside each adapter.
 | Directory | Status |
 |---|---|
 | `core/text/completion` | **Implemented** — the adapter above |
-| `core/text/messages`, `core/text/responses`, `core/text/generatecontent` | **Implemented** — Anthropic Messages, OpenAI Responses, and Gemini generateContent surfaces; all four styles are wired in `main.go` |
+| `core/text/messages`, `core/text/responses`, `core/text/generatecontent` | **Implemented** — Anthropic Messages, OpenAI Responses, and Gemini generateContent surfaces; all four styles are wired in `cmd/nusallm/wire.go` |
 | `core/audio`, `core/decision`, `core/embedding`, `core/image`, `core/rerank`, `core/speech`, `core/transcription`, `core/video` | Scaffolded (`.gitkeep` only) — no port or adapter exists yet |
 
 Modality *input* (images, audio, video, files attached to a conversation) is
@@ -351,8 +362,9 @@ should their ports ever be added to domain.
 Tools implement the `service.Tool` port (`domain/service/tool.go`): the
 constructor builds and validates the `ToolSchema` it advertises, and `Execute`
 runs one model-originated call returning `ToolResult{Text, Attachments}`.
-`Text` is untrusted evidence — the application turn wraps it via
-`ToolCall.SetOutput` into the `<untrusted_tool latency="…">` envelope — while
+`Text` is untrusted evidence — the application turn stores it raw via
+`ToolCall.SetOutput`, and provider adapters request the bounded
+`<untrusted_tool latency="…">` envelope — while
 `Attachments` are stored media references that resolve at send time by the
 same rules as message attachments, never consuming the text budget. Execution
 failures are recorded *as the tool output* so the model can react; only
@@ -371,8 +383,9 @@ backpressure the tool, and chunks are never persisted.
 | `exec` | `tool/terminal` (`exec.go`) | Shell command, merged output — see below |
 | `summary` | `tool/summary` (`summary.go`) | Compaction checkpoint contract — not in the agent-facing catalog |
 
-The three file tools bind an `os.Root` at construction — `main.go` passes the
-process cwd — so every requested path resolves inside the workspace,
+The four file tools receive the same `repository.Workspace` at construction;
+`cmd/nusallm/wire.go` also passes the process cwd as their fallback root.
+The local repository opens `os.Root` per call so every requested path resolves inside the workspace,
 traversal (`..`) and symlink escapes included. `read_media` and
 `/attach`-style resolution share the same discipline: sniff the first 512
 bytes for `http.DetectContentType` (a `.csv` *is* text and is refused — use
@@ -386,7 +399,8 @@ block — is covered in the completion adapter section.
 
 ### `exec` — terminal execution
 
-`tool/terminal` runs `sh -c` on Linux (own process group via `Setpgid`, group
+`tool/terminal` receives a `Runner` port and conversation-owned output
+repository. Its local runner uses `sh -c` on Linux (own process group via `Setpgid`, group
 SIGKILL on cancel — `exec_linux.go`) and `cmd /C` on Windows (`exec_windows.go`,
 which can orphan grandchildren since Windows has no portable group kill). It
 is inherently unsandboxed — there is no root to confine it to — so the schema
@@ -397,15 +411,24 @@ blocks on pipes inherited by stray grandchildren.
 stdout and stderr share one `outputSink`, so the merged stream keeps arrival
 order and every `Write` is also a preview chunk to `emit`. Memory stays
 bounded by the call's `OutputBudget`: while output fits, it buffers outright;
-the first write past budget opens a spill file at
-`os.TempDir()/nusallm-exec-<sanitized call id>.log` (chosen before start), freezes
-the buffer as the head region, and keeps a rolling tail while the full stream
-continues to disk. The returned text is a head (~60%) + tail excerpt joined by
-a `[... N bytes omitted — full output: <path> ...]` marker, cut on rune
-boundaries; the exit status (`(exit 3)`, `(killed: …)`, signal deaths) is
-appended as a suffix so it lands inside the tail and at the end of the spill
-file. A spill-write failure degrades to head+tail with the error in the
-marker.
+the first write past budget asks the injected conversation-owned
+`repository.ToolOutput` spill reservation to open a file at
+`<storage.dir>/conversations/<id>/tool-output/nusallm-exec-<random>-<sanitized call id>.log` (chosen before
+start — the random name gives a reused call ID a distinct file; exclusive
+creation fails on collision rather than overwriting a live marker), freezes
+the buffer as the head region, and keeps a rolling tail while the stream
+continues to disk — capped at 32 MiB. The returned text is a head (~60%) +
+tail excerpt joined by a `[... N bytes omitted — full output: <path> ...]`
+marker — `spilled output (truncated at 32 MiB): <path>` when the file hit the
+cap, `spill to <path> failed: <err>` when the write itself failed — cut on
+rune boundaries by `ToolCall.OutputWithMiddleTruncateWindow`; the adapter
+supplies bounded stream samples and the spill reference. The exit status (`(exit 3)`, `(killed: …)`,
+signal deaths) is appended as a suffix so it lands inside the tail and at the
+end of the spill file. A spill-write failure degrades to head+tail with the
+error in the marker. The spill file remains available until the user deletes
+its conversation; repository deletion removes the whole conversation directory,
+including tool output. No age- or process-based sweep removes live history's
+referenced files.
 
 ### `summary` — the compaction contract
 
@@ -414,22 +437,23 @@ field *is* the result, and `Execute` merely extracts it. The compaction job
 (`application/job/compact.go`) builds a scratch conversation containing only
 this tool's schema and drives `Send` until the model answers through it,
 accepting plain text as a fallback. It is never registered in the `tools` map
-in `main.go`.
+in `cmd/nusallm/wire.go`.
 
 ## `service/workspace` — the sandbox
 
-`workspace.Root` wraps `os.OpenRoot` on one directory (`root.go`): `Open`
-(defaults `"."`), `Path`, `FS` (for listing/completion), `CreateFile`,
-`OSRoot` for callers that still need the raw root, and `Close`. `FromRoot`
-adopts an existing pair.
+`workspace.Root` holds an injected `repository.WorkspaceSession` (`root.go`):
+`Open` validates the configured root through the repository, while `Path`,
+`FS` (for listing/completion), `CreateFile`, and `Close` delegate to that
+session. The local repository owns `os.OpenRoot` and regular-file checks.
 
 `ResolveAttachment` (`attachment.go`) is the attachment path: validate the
 requested path via `valueobject.NewWorkspace` (clean, reject absolute paths
-and `..`), open beneath the root with `wire.OpenRegularFile`, sniff the media
+and `..`), open through `WorkspaceSession.OpenRegular`, sniff the media
 type, reject text modalities, enforce the modality size limit, and pin the
 bytes by sha256 so the later wire-time read resolves only what the user
 selected. Materialization at send time — `file://` reopen + base64, `data:`
-passthrough, `https://` passthrough — is `wire.ResolveURI`'s job, documented
+passthrough, `https://` passthrough — is `wire.ResolveURI`'s job through an
+injected `wire.MediaRoot`, documented
 above; this package produces the pinned references, adapters resolve them.
 
 Delivery consumes it through `application/command.WorkspacePort` (`application/command/ports.go`)
@@ -480,13 +504,13 @@ The invariants to preserve, distilled from `infrastructure/service/AGENTS.md`:
 
 - A new provider paradigm gets a new adapter under `core/text/<family>` (or a
   new capability dir), implements `TextModelService`, and is registered in the
-  `services` map at the composition root — `main.go` today. Reuse
+  `services` map at the composition root — `cmd/nusallm/wire.go` today. Reuse
   `service/wire` for SSE framing, media resolution, and status mapping; keep
   provider quirks behind `completion.*`-style adapter-namespaced
   `optionalContent` keys, never new domain fields.
 - A new tool is a package under `tool/` whose constructor validates its
-  `ToolSchema` (and binds its `os.Root`, if file-bound); wire it into the
-  `tools` map in `main.go`. Permission is declared on the schema and enforced
+  `ToolSchema` and receives an injected storage port if file-bound; wire it into the
+  `tools` map in `cmd/nusallm/wire.go`. Permission is declared on the schema and enforced
   by the turn — never inside `Execute`.
 - A new slash command is `command/<name>` implementing `SlashCommand` (plus
   `SlashCommandCompleter` if arguments complete), wired in

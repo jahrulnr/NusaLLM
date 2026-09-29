@@ -2,39 +2,29 @@ package toolfile
 
 import (
 	"context"
-	"fmt"
-	"os"
-	"path/filepath"
+	"errors"
 
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
 )
 
 // checkDir validates the tool's configured sandbox directory at
 // construction — the root itself opens per call.
-func checkDir(root string) (string, error) {
-	abs, err := filepath.Abs(root)
-	if err != nil {
-		return "", err
+func checkDir(store drepo.Workspace, root string) (string, error) {
+	if store == nil {
+		return "", errors.New("workspace repository is required")
 	}
-	r, err := os.OpenRoot(abs)
-	if err != nil {
-		return "", err
-	}
-	return abs, r.Close()
+	return store.CheckRoot(root)
 }
 
-// callRoot opens the os.Root sandbox for one call: the turn-scoped
+// callRoot opens a repository workspace session for one call: the turn-scoped
 // workspace dir (the ctx value the application sets) wins over the
 // tool's configured directory, so a conversation can retarget its file
 // tree. The caller owns Close.
-func callRoot(ctx context.Context, fallback string) (root *os.Root, dir string, err error) {
-	dir = service.WorkspaceDir(ctx)
+func callRoot(ctx context.Context, store drepo.Workspace, fallback string) (drepo.WorkspaceSession, error) {
+	dir := service.WorkspaceDir(ctx)
 	if dir == "" {
 		dir = fallback
 	}
-	root, err = os.OpenRoot(dir)
-	if err != nil {
-		return nil, "", fmt.Errorf("workspace %q: %w", dir, err)
-	}
-	return root, dir, nil
+	return store.Open(ctx, dir)
 }

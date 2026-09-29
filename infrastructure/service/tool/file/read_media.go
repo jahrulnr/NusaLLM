@@ -13,6 +13,7 @@ import (
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 	"github.com/jahrulnr/nusallm/infrastructure/service/wire"
@@ -21,7 +22,7 @@ import (
 // ReadMediaTool attaches a non-text file under the turn's workspace to
 // the call result — the constructor carries the schema and validates the
 // default sandbox boundary; Execute resolves the call input against an
-// os.Root opened per call so `..` traversal and symlink escapes fail
+// repository workspace session so `..` traversal and symlink escapes fail
 // alike. Payload bytes never enter the
 // tool: the result carries a file:// reference adapters resolve at send
 // time, so size caps are enforced here from the stat, not the read. The
@@ -32,16 +33,15 @@ import (
 // placeholder instead of sending unchecked bytes.
 type ReadMediaTool struct {
 	dir    string
+	store  drepo.Workspace
 	schema valueobject.ToolSchema
 }
 
 // NewReadMediaTool binds the tool's default root: every requested path
-// resolves inside it — os.Root confines traversal and symlink escapes
-// alike. A turn-scoped workspace dir overrides it per call; the absolute
-// path is kept alongside because file:// attachment URIs need it and the
-// root cannot hand it back.
-func NewReadMediaTool(root string) (service.Tool, error) {
-	abs, err := checkDir(root)
+// resolves inside it. A turn-scoped workspace dir overrides it per call;
+// the repository creates attachment URIs for provider-time resolution.
+func NewReadMediaTool(store drepo.Workspace, root string) (service.Tool, error) {
+	abs, err := checkDir(store, root)
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +55,7 @@ func NewReadMediaTool(root string) (service.Tool, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &ReadMediaTool{dir: abs, schema: schema}, nil
+	return &ReadMediaTool{dir: abs, store: store, schema: schema}, nil
 }
 
 func (tool *ReadMediaTool) Schema() valueobject.ToolSchema {
@@ -75,7 +75,7 @@ func (tool *ReadMediaTool) Execute(ctx context.Context, call entity.ToolCall, _ 
 	if strings.TrimSpace(input.Path) == "" {
 		return service.ToolResult{}, fmt.Errorf("path is required")
 	}
-	root, rootPath, err := callRoot(ctx, tool.dir)
+	root, err := callRoot(ctx, tool.store, tool.dir)
 	if err != nil {
 		return service.ToolResult{}, err
 	}
@@ -84,7 +84,7 @@ func (tool *ReadMediaTool) Execute(ctx context.Context, call entity.ToolCall, _ 
 			retErr = closeErr
 		}
 	}()
-	f, info, err := wire.OpenRegularFile(root, input.Path)
+	f, info, err := root.OpenRegular(input.Path)
 	if err != nil {
 		return service.ToolResult{}, fmt.Errorf("%q is not a readable regular file: %w", input.Path, err)
 	}
@@ -102,7 +102,7 @@ func (tool *ReadMediaTool) Execute(ctx context.Context, call entity.ToolCall, _ 
 	}
 	prefix = prefix[:n]
 	mediaType := http.DetectContentType(prefix)
-	att, err := valueobject.NewAttachment("file://"+filepath.Join(rootPath, input.Path), mediaType)
+	att, err := valueobject.NewAttachment(root.AttachmentURI(input.Path), mediaType)
 	if err != nil {
 		return service.ToolResult{}, err
 	}

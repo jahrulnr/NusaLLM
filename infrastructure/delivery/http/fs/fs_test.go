@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	repofiletree "github.com/jahrulnr/nusallm/infrastructure/repository/filetree"
 )
 
 func TestBrowseTruncated(t *testing.T) {
@@ -21,7 +22,7 @@ func TestBrowseTruncated(t *testing.T) {
 	}
 
 	r := gin.New()
-	Register(r.Group("/api"))
+	Register(r.Group("/api"), repofiletree.NewLocal())
 
 	req := httptest.NewRequest("GET", "/api/fs/browse?path="+root, nil)
 	rec := httptest.NewRecorder()

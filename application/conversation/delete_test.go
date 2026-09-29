@@ -1,11 +1,13 @@
 package appconversation
 
 import (
-	appjob "github.com/jahrulnr/nusallm/application/job"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	appjob "github.com/jahrulnr/nusallm/application/job"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
@@ -41,7 +43,10 @@ func TestDeleteAbsentRoom(t *testing.T) {
 func TestDeleteWhileLive(t *testing.T) {
 	release := make(chan struct{})
 	defer close(release)
+	entered := make(chan struct{})
+	var enteredOnce sync.Once
 	app, _ := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		enteredOnce.Do(func() { close(entered) })
 		<-release
 		okHandler(w, r)
 	})
@@ -50,7 +55,11 @@ func TestDeleteWhileLive(t *testing.T) {
 		_, err := app.Send(t.Context(), "room", "gw1", "m1", "ping", nil, appjob.SendOptions{}, nil)
 		sent <- err
 	}()
-	time.Sleep(50 * time.Millisecond) // send is holding the slot
+	select {
+	case <-entered: // the send is provably holding the slot
+	case <-time.After(2 * time.Second):
+		t.Fatal("send did not reach the upstream")
+	}
 
 	if err := app.Delete(t.Context(), "room"); err != nil {
 		t.Fatal(err)
@@ -75,19 +84,31 @@ func TestDeleteFlushesPending(t *testing.T) {
 	release := make(chan struct{})
 	defer close(release)
 	var calls int32
+	entered := make(chan struct{})
+	var enteredOnce sync.Once
 	app, _ := fixture(t, func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&calls, 1)
+		enteredOnce.Do(func() { close(entered) })
 		<-release
 		okHandler(w, r)
 	})
 	go app.Send(t.Context(), "room", "gw1", "m1", "first", nil, appjob.SendOptions{}, nil)
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first send did not reach the upstream")
+	}
+	queuedCtx := &signaledContext{Context: t.Context(), observed: make(chan struct{})}
 	queued := make(chan error, 1)
 	go func() {
-		_, err := app.Send(t.Context(), "room", "", "", "second", nil, appjob.SendOptions{}, nil)
+		_, err := app.Send(queuedCtx, "room", "", "", "second", nil, appjob.SendOptions{}, nil)
 		queued <- err
 	}()
-	time.Sleep(50 * time.Millisecond) // second is queued
+	select {
+	case <-queuedCtx.observed: // second is queued behind the first
+	case <-time.After(2 * time.Second):
+		t.Fatal("second send never queued")
+	}
 
 	if err := app.Delete(t.Context(), "room"); err != nil {
 		t.Fatal(err)

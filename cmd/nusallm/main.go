@@ -14,19 +14,25 @@ import (
 
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/admin"
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/tui"
+	repofiletree "github.com/jahrulnr/nusallm/infrastructure/repository/filetree"
+	repohistory "github.com/jahrulnr/nusallm/infrastructure/repository/history"
+	repoworkspace "github.com/jahrulnr/nusallm/infrastructure/repository/workspace"
 )
 
 func main() {
+	fileTree := repofiletree.NewLocal()
 	args := os.Args[1:]
-	// People repeat the invocation target via habit, argv[0]'s name, or
-	// `go run ./cmd/nusallm/main.go` leaking the file into argv. Strip a
-	// leading token while it is the program name or a file that exists on
-	// disk (the `go run` build target); a token that merely ends in .go is
-	// an argument, not noise. "core" is still stripped for old scripts.
+	// People repeat the invocation target via habit — the binary name, or
+	// a `go run` source path typed at the built binary — and `go run
+	// ./cmd/nusallm` itself substitutes a temp binary for argv[0], so the
+	// invoked name is matched rather than assumed. Strip a leading token
+	// while it is the program name or a file that exists on disk; a token
+	// that merely ends in .go is an argument, not noise. "core" is still
+	// stripped for old scripts.
 	for len(args) > 0 {
 		tok := args[0]
 		isFile := false
-		if fi, err := os.Stat(tok); err == nil && !fi.IsDir() {
+		if fi, err := fileTree.Stat(tok); err == nil && !fi.IsDir() {
 			isFile = true
 		}
 		if tok != admin.CLIName && tok != "core" && tok != filepath.Base(os.Args[0]) && !isFile {
@@ -45,6 +51,12 @@ func main() {
 			os.Exit(admin.Gateway(args[1:], os.Stdin, os.Stdout, os.Stderr))
 		case "config":
 			os.Exit(admin.Config(args[1:], os.Stdout, os.Stderr))
+		case "conversation":
+			if len(args) > 1 && args[1] == "repair" {
+				os.Exit(admin.ConversationRepair(args[2:], os.Stdout, os.Stderr))
+			}
+			fmt.Fprintln(os.Stderr, "usage: nusallm conversation repair <id> --discard-duplicate|--commit")
+			os.Exit(2)
 		case "serve":
 			if err := serve(args[1:]); err != nil {
 				fmt.Fprintln(os.Stderr, admin.CLIName+":", err)
@@ -71,6 +83,7 @@ Usage:
   ` + admin.CLIName + ` onboard          guided provider setup wizard
   ` + admin.CLIName + ` gateway <...>    manage provider routes — list/show/add/set/delete
   ` + admin.CLIName + ` config <...>     inspect and patch the config file — show/path/set/unset/validate
+  ` + admin.CLIName + ` conversation repair <id> --discard-duplicate|--commit (offline recovery)
   ` + admin.CLIName + ` serve [--port N] local WebUI — loopback only (default port 10998 from server.port)
   ` + admin.CLIName + ` --help           this text
 
@@ -126,12 +139,16 @@ func run(ctx context.Context) (runErr error) {
 	if err != nil {
 		return err
 	}
+	homeDir, _ := repofiletree.NewLocal().HomeDir()
 
 	repl, err := tui.NewREPL(tui.Options{
-		Conversations: conversationApp,
-		Gateways:      b.Gateways(),
-		Workspace:     wd,
-		HistoryDir:    filepath.Join(dir, "cli"),
+		Conversations:  conversationApp,
+		Gateways:       b.Gateways(),
+		Workspace:      wd,
+		WorkspaceStore: repoworkspace.NewLocal(),
+		HistoryDir:     filepath.Join(dir, "cli"),
+		HistoryStore:   repohistory.NewLocal(),
+		HomeDir:        homeDir,
 	})
 	if err != nil {
 		return err

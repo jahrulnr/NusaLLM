@@ -233,7 +233,7 @@ func gatewayWrite(b *Boot, edit bool, args []string, stdout, stderr io.Writer, s
 	// must not have already consumed stdin.
 	if !edit && in.Style == "" {
 		if !isTTY(stdin) {
-			fmt.Fprintln(stderr, "nusallm: --style is required — completion | responses | messages (or run: nusallm onboard)")
+			fmt.Fprintln(stderr, "nusallm: --style is required — completion | responses | messages | generatecontent (or run: nusallm onboard)")
 			return 2
 		}
 	}
@@ -275,7 +275,7 @@ func gatewayWrite(b *Boot, edit bool, args []string, stdout, stderr io.Writer, s
 	if f, tty := stdin.(*os.File); !edit && tty && term.IsTerminal(int(f.Fd())) {
 		prompt := bufio.NewReader(f)
 		if in.Style == "" {
-			fmt.Fprintln(stderr, "  style  1) completion  2) responses  3) messages")
+			fmt.Fprintln(stderr, "  style  1) completion  2) responses  3) messages  4) generatecontent")
 			pick, err := promptField(prompt, bufio.NewWriter(stderr), "  style", "1")
 			if err != nil {
 				fmt.Fprintln(stderr, "cancelled.")
@@ -288,6 +288,8 @@ func gatewayWrite(b *Boot, edit bool, args []string, stdout, stderr io.Writer, s
 				in.Style = enum.StyleResponses
 			case "3", "messages":
 				in.Style = enum.StyleMessages
+			case "4", "generatecontent":
+				in.Style = enum.StyleGenerateContent
 			default:
 				fmt.Fprintf(stderr, "nusallm: unknown style %q\n", pick)
 				return 2

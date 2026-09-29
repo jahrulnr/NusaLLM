@@ -19,7 +19,7 @@ func (c *ToolsCommand) Name() string        { return "tools" }
 func (c *ToolsCommand) Usage() string       { return "/tools" }
 func (c *ToolsCommand) Description() string { return "list the agent's tools" }
 
-func (c *ToolsCommand) Execute(_ context.Context, _ string, emitter dservice.CommandEmitter, args ...string) error {
+func (c *ToolsCommand) Execute(ctx context.Context, _ string, emitter dservice.CommandEmitter, args ...string) error {
 	raw := ""
 	if len(args) > 0 {
 		raw = args[0]
@@ -27,7 +27,10 @@ func (c *ToolsCommand) Execute(_ context.Context, _ string, emitter dservice.Com
 	if strings.TrimSpace(raw) != "" {
 		return errors.New("usage: /tools")
 	}
-	schemas := c.h.ToolSchemas()
+	schemas, err := c.h.ToolSchemas(ctx, c.h.ConversationID())
+	if err != nil {
+		return err
+	}
 	if len(schemas) == 0 {
 		c.h.Write(emitter, "no tools registered\n")
 		return nil

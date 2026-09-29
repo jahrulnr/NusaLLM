@@ -13,14 +13,17 @@ import (
 
 	appconversation "github.com/jahrulnr/nusallm/application/conversation"
 	appgateway "github.com/jahrulnr/nusallm/application/gateway"
+	appjob "github.com/jahrulnr/nusallm/application/job"
 	"github.com/jahrulnr/nusallm/infrastructure/config"
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/session"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	repoconversation "github.com/jahrulnr/nusallm/infrastructure/repository/conversation"
 	repogateway "github.com/jahrulnr/nusallm/infrastructure/repository/gateway"
 	reposecret "github.com/jahrulnr/nusallm/infrastructure/repository/secret"
+	repoworkspace "github.com/jahrulnr/nusallm/infrastructure/repository/workspace"
 	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
 	textcompletion "github.com/jahrulnr/nusallm/infrastructure/service/core/text/completion"
 	toolsummary "github.com/jahrulnr/nusallm/infrastructure/service/tool/summary"
@@ -80,19 +83,21 @@ func newCommandFixture(t *testing.T) *commandFixture {
 	conversationApplication := appconversation.New(
 		conversationRepository,
 		gatewayRepository,
-		map[enum.Style]dservice.TextModelService{
-			enum.StyleCompletion: textcompletion.New(coretext.Options{FileRoot: workspace}),
-		},
-		map[string]dservice.Tool{toolsummary.Name: toolsummary.NewSummaryTool()},
+		map[enum.Environment]appjob.EnvironmentDriver{enum.EnvironmentLocal: appjob.EnvironmentBundle{
+			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: textcompletion.New(coretext.Options{FileRoot: workspace, FileStore: repoworkspace.NewLocal()})},
+			Tools:    map[string]dservice.Tool{toolsummary.Name: toolsummary.NewSummaryTool()},
+		}},
 		config.NewConfig(),
+		nil,
 		"",
 	)
 	t.Cleanup(func() { _ = conversationApplication.Shutdown(context.Background()) })
 	sess, err := session.New(session.Options{
-		Conversations: conversationApplication,
-		Gateways:      gatewayApplication,
-		Workspace:     workspace,
-		Stderr:        io.Discard,
+		Conversations:  conversationApplication,
+		Gateways:       gatewayApplication,
+		Workspace:      workspace,
+		WorkspaceStore: repoworkspace.NewLocal(),
+		Stderr:         io.Discard,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -205,6 +210,34 @@ func TestExportAndTitleAndDeleteLifecycle(t *testing.T) {
 	}
 	if _, err := f.convs.Info(t.Context(), convID); err == nil {
 		t.Fatal("deleted conversation still readable")
+	}
+}
+
+func TestExportUsesPlainToolOutput(t *testing.T) {
+	f := newCommandFixture(t)
+	f.send(t, "hello")
+	msg, err := entity.NewMessage(enum.RoleAssistant, "tool result")
+	if err != nil {
+		t.Fatal(err)
+	}
+	call, err := entity.NewToolCall("call_1", "echo", `{}`, enum.TooltypeOrigin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call.SetOutput("line one\nline two")
+	msg.AddToolCall(call)
+	if _, err := f.convs.AppendMessage(t.Context(), f.sess.ConversationID, msg); err != nil {
+		t.Fatal(err)
+	}
+	if out := f.run(t, "/export plain.md"); !strings.Contains(out, "exported") {
+		t.Fatalf("export = %q", out)
+	}
+	raw, err := os.ReadFile(filepath.Join(f.workspace, "plain.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "[tool result call_1] line one\nline two") || strings.Contains(string(raw), "<untrusted_tool") {
+		t.Fatalf("exported tool output = %q", raw)
 	}
 }
 

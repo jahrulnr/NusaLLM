@@ -19,7 +19,7 @@ in the code that enforces it.
 
 | Package | Contents |
 |---|---|
-| `aggregate/` | `Conversation` (dialogue state + route/modelID references), `Gateway` (endpoint surface), conversation-list title helpers |
+| `aggregate/` | `Conversation` (dialogue state + route/modelID references), `Gateway` (endpoint surface) |
 | `entity/` | `Message`, `ToolCall`, `Model` |
 | `enum/` | Closed string sets, each with `String()` and a `Parse*()` |
 | `event/` | `TurnEvent` + `TurnEventHandler` — the per-turn streaming sink for `TextModelService.Send` |
@@ -124,10 +124,11 @@ budgeting concern, never a hard gate.
 **Style lives on the gateway, not the model**, because one model id can be
 spoken through multiple paradigms depending on the route — OpenRouter, for
 example, accepts an OpenAI-style request and routes it to a messages-style
-backend. The application layer keeps a `map[enum.Style]TextModelService`
-(`application/job/job.go`) and selects the adapter by `gw.Style()` at send
-time, so a conversation switching gateways switches wire formats without
-touching history.
+backend. Each registered execution-environment driver keeps a
+`map[enum.Style]TextModelService` (`application/job/environment.go`). The
+application first selects the conversation's persisted environment, then
+chooses that driver's adapter by `gw.Style()` at send time. A conversation
+switching gateways changes wire formats without touching history.
 
 `Gateway.Model(id)` resolves a catalog entry — the resume path resolves
 `Conversation.ModelID()` through it. `ApiKey()` returns whatever is stored:
@@ -135,13 +136,10 @@ the persisted form is a reference (`"env:NAME"` or `"secret:<key>"`), which
 the repository resolves via `SecretStore` when `Load` hydrates the
 aggregate — the gateway file itself stays credential-free.
 
-### Listing helpers — `aggregate/list_title.go`
-
-Three free functions serve conversation lists: `TitleUnset` treats empty
-and the literal `"untitled"` as unset; `ListDisplayTitle` falls back to the
-first *editable* message's content when no title is stored (so a compaction
-checkpoint never becomes a title); `ListDisplayTitleMatchesPrefix` backs
-id/title prefix filtering in pickers.
+Conversation list labels and prefix filtering belong to
+`infrastructure/service/command/internal/list_title.go`. That command view
+uses `Message.Editable()` to avoid deriving a title from a synthetic user
+message.
 
 ## Entities
 
@@ -189,14 +187,15 @@ does not replace or rewrite those adapter-owned values.
 
 Tool results attach to the calls on the message: `AddToolCall` records an
 invocation, and `SetToolOutput(id, output)`,
-`SetToolOutputAttachments(id, atts)`, and `SetStoredToolOutput(id, output)`
+`SetToolOutputAttachments(id, atts)`, and `SetStoredToolOutput(id, output, latency)`
 all match by the provider-issued call id. `SetStoredToolOutput` exists for
-hydration and patch application — stored output is already enveloped and
-must not be re-wrapped.
+hydration and patch application — stored output is raw and its latency
+must remain fixed across replay.
 
 ### ToolCall — `entity/toolcall.go`
 
-`ToolCall` records one tool invocation: `id`, `name`, `input`, `output`,
+`ToolCall` records one tool invocation: `id`, `name`, `input`, raw `output`,
+completion state, fixed output latency,
 `outputBudget`, `outputAttachments`, provenance `ttype`, `callAt`, and its
 own `optionalContent` map (for per-call artifacts such as a thought
 signature bound to one function call).
@@ -209,12 +208,13 @@ adapter encodes origin calls as real `tool_calls` while injection calls
 hydrate as inline text precisely so app-originated context cannot pose as
 provider tool calls.
 
-`SetOutput` enforces the layer's "tool output is untrusted evidence" rule.
-It rejects output over `outputBudget` (default 32000, tunable via
-`SetOutputBudget`), neutralizes any literal `<untrusted_tool` /
-`</untrusted_tool` sequences inside the payload — including
-attribute-bearing variants that could spoof a boundary — then wraps the
-result in an envelope carrying call latency:
+`SetOutput` retains raw output even when it exceeds `outputBudget` (default
+32000, tunable via `SetOutputBudget`) and fixes the call latency at completion.
+`HasOutput` distinguishes a completed empty result from a pending call.
+`NeedTruncate`, `OutputHead`, `OutputTail`, and `OutputWithMiddleTruncate`
+provide provider-context views without changing the stored result. The
+provider getter limits the body to the budget, neutralizes literal
+`<untrusted_tool` / `</untrusted_tool` delimiter text, then wraps it:
 
 ```
 <untrusted_tool latency="12ms">
@@ -222,8 +222,12 @@ result in an envelope carrying call latency:
 </untrusted_tool>
 ```
 
-Runtime output always goes through `SetOutput`; `SetStoredOutput` restores
-the enveloped form verbatim on hydration. `callAt` stamps `time.Now()` at
+Runtime output goes through `SetOutput`; `SetStoredOutput` restores raw text
+and latency on hydration. `OutputWithUntrustedTag()` returns the bounded
+envelope for provider replay; `Output()` returns the exact stored text for
+owner-facing history and exports. For streamed terminal output, the domain's
+windowed middle-truncation method works from bounded head/tail samples while
+the adapter handles process I/O and the spill file. `callAt` stamps `time.Now()` at
 construction and is restored by `SetCallAt` on load, which is also what
 makes the latency field meaningful.
 
@@ -275,7 +279,7 @@ windows assume 256K total minus the reply reserve, declared windows below
 `CompactionInputAllowance` exposes the same number for the UI's
 `~estimate/total` footer.
 
-`entity/model_catalog.go` adds picker helpers: `MinListedContextWindow`
+`application/gateway/catalog.go` owns model selection helpers: `MinListedContextWindow`
 (126K) hides tiny-window entries from `/model` listings while unknown
 windows stay visible, `ModelListedInPicker` applies the rule, and
 `ListedModels` filters a catalog in gateway order.
@@ -375,8 +379,8 @@ workspace-relative path that rejects `..` escapes and absolute paths with
 `ErrPathTraversal` — the sandbox rule behind file tools; `ParseWorkspacePath`
 accepts optionally double-quoted input. `Command` (`command.go`) wraps raw
 command text and `SplitFirst` separates a leading token from its tail.
-`FormatScaledTokens` (`token.go`) renders counts like `200K`/`1.2M` for
-budgets and the UI.
+The terminal formatter `infrastructure/delivery/cli/term/token.go` renders
+counts like `200K`/`1.2M` for the UI.
 
 ## Ports
 
@@ -402,7 +406,7 @@ projections and ranged history for UIs: `ConversationInfo` carries counts
 history — sealed segments first, then the tail — with clamped indexes,
 negative-from-end `start`, and `end <= 0` meaning "through the latest".
 
-`UpdateToolCallOutput` patches a stored call's enveloped output and media
+`UpdateToolCallOutput` patches a stored call's raw output, fixed latency, and media
 references by call id — calls persist pending execution and their results
 arrive later. Each patch is an independent appended record, so concurrent
 completions of parallel tool calls are safe and a crash mid-batch leaves
@@ -470,8 +474,9 @@ back, 429 means try another route, 401/403 marks a gateway dead.
 **`Tool`** (`tool.go`) is one callable capability: `Schema()` advertises
 the `ToolSchema` its constructor validated, `Execute(ctx, call, emit)`
 runs a model-originated call and returns a `ToolResult{Text,
-Attachments}`. The caller wraps `Text` in the untrusted-tool envelope via
-`ToolCall.SetOutput`; `emit` (`ToolEmitter`) streams live preview chunks
+Attachments}`. The caller records `Text` via `ToolCall.SetOutput`; provider
+adapters obtain the bounded untrusted envelope from the getter. `emit`
+(`ToolEmitter`) streams live preview chunks
 that are *not* the persisted result. Execute failures are recorded *as*
 tool output so the model can see and react to them — only context
 cancellation aborts the surrounding turn.
@@ -529,9 +534,10 @@ that enforces it.
    double-counts in `TotalInput()`.
 
 5. **Tool outputs are untrusted evidence.** Runtime output goes through
-   `ToolCall.SetOutput`, which enforces `outputBudget`, neutralizes
-   embedded envelope delimiters, and wraps the payload
-   (`entity/toolcall.go`). Hydration uses `SetStoredOutput` verbatim via
+   `ToolCall.SetOutput`, which retains the raw result and fixed latency.
+   Provider getters apply the context budget and neutralize embedded
+   envelope delimiters (`entity/toolcall.go`). Hydration restores raw
+   text and latency via `SetStoredOutput` and
    `Message.SetStoredToolOutput`. Tool-produced media ride as
    `outputAttachments` — references resolved at send time and gated
    per-request by the bound model's `AcceptsInput`.

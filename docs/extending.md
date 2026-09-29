@@ -34,10 +34,10 @@ domain ports never import their implementations.
   handled. It *calls* domain decisions; it must not re-derive them with a
   second condition. See `application/AGENTS.md`.
 - **`infrastructure/repository`** owns storage: records, serialization,
-  hydration, atomic writes, projections. It validates filesystem boundaries,
+  hydration, atomic writes, projections, workspace files, and spill output. It validates filesystem boundaries,
   never business meaning. See [./persistence.md](./persistence.md).
 - **`infrastructure/service`** owns translation and side effects: provider
-  wire protocols, local I/O, tool execution, slash-command handlers.
+  wire protocols, repository-backed file access, tool execution, slash-command handlers.
   Provider quirks stay inside their adapter.
 - **`infrastructure/config`, `infrastructure/worker`,
   `infrastructure/prompt`, `infrastructure/error`, `infrastructure/redact`,
@@ -65,7 +65,7 @@ self-contained, testable algorithm with its own edge cases.
 
 `enum.Style` (`infrastructure/domain/enum/style.go`) defines four paradigms —
 `completion`, `responses`, `messages`, `generatecontent` — and all four have
-adapters wired in `cmd/nusallm/main.go`. Adding a fifth is: extend the enum,
+adapters wired in `cmd/nusallm/wire.go`. Adding a fifth is: extend the enum,
 write one `TextModelService`, register it, done. The gateway admin, the
 persistence layer, and the application turn need no changes —
 `application/job/turn.go` resolves the adapter with
@@ -182,7 +182,7 @@ verbatim).
    `infrastructure/redact` before they reach disk; logging must never break
    a send, so `logAppend` swallows the error deliberately.
 
-9. **Register it.** In `cmd/nusallm/main.go`, add your adapter to the
+9. **Register it.** In `cmd/nusallm/wire.go`, add your adapter to the
    `services` map keyed by its `enum.Style` — all four adapters share the
    same `coretext.Options` (`service/core/text/options.go`), which maps onto
    `config.ServiceConfig` timeouts and carries the `Logger`, `FileRoot`, and
@@ -206,10 +206,10 @@ attachment output and `terminal/exec.go` shows a long-running, unsandboxed
 tool.
 
 1. **Create the package** under `infrastructure/service/tool/<family>/`.
-   Constructor shape: `NewXTool(...) (service.Tool, error)` — it opens any
-   sandbox it needs *and* builds the schema, failing on either, e.g.
-   `NewFileReadTool(root)` calls `os.OpenRoot` then
-   `valueobject.NewToolSchema` and closes the root on schema failure.
+   Constructor shape: `NewXTool(...) (service.Tool, error)` — it validates
+   injected storage capabilities and builds the schema, failing on either.
+   `NewFileReadTool(store, root)` asks `repository.Workspace.CheckRoot`
+   to validate its fallback root; the local repository owns `os.OpenRoot`.
 
 2. **Write the schema with honest permissions.**
    `NewToolSchema(name, description, parametersJSON, enabled, permission)`
@@ -227,16 +227,17 @@ tool.
 3. **Treat `call.Input()` as untrusted JSON.** Unmarshal it into a local
    struct, validate the fields (`exec.go` rejects an empty command even
    though the schema marks it required — the model wrote it, not you), and
-   respect `call.OutputBudget()` — `read.go` stats before reading and reads
-   through `io.LimitReader` so a huge file can't overshoot. The default
-   budget is 32000 bytes (`entity.NewToolCall`), and
-   `ToolCall.SetOutput` re-enforces it on the way out: over-budget output is
-   replaced by the error, not silently truncated.
+   avoid unbounded I/O. `read.go` currently uses `call.OutputBudget()` as its
+   own preflight read cap and `io.LimitReader` as a second bound; this is a
+   tool-specific read policy, not a global rejection rule. Other tools may
+   return over-budget raw text: `ToolCall.SetOutput` retains it and provider
+   getters apply the default 32000-byte context budget without changing
+   owner-visible output.
 
 4. **Return `ToolResult{Text, Attachments}` — failures included.**
    `Execute` errors are recorded as the call's output (`"error: …"`) so the
    model sees an honest result; only `ctx.Err()` aborts the turn. `Text` is
-   wrapped in the untrusted-evidence envelope by `ToolCall.SetOutput`
+   wrapped in the untrusted-evidence envelope by the provider getter
    (`infrastructure/domain/entity/toolcall.go`) — confirm, don't echo
    (`write.go` returns a byte count, not the content). `Attachments` carry
    *references*, never bytes: `read_media.go` emits a `file://` URI under
@@ -246,10 +247,11 @@ tool.
    attachments reach the model is decided per-request by the bound model's
    `AcceptsInput`.
 
-5. **Confine file access to the workspace.** File-touching tools take a root
-   and open it with `os.OpenRoot` — traversal and symlink escapes both fail
-   inside it — then use `wire.OpenRegularFile` so FIFOs and other special
-   files can't block the call. `exec.go` is the deliberate counterexample:
+5. **Confine file access through the injected workspace repository.** File-touching
+   tools receive `repository.Workspace` and a fallback root; the local
+   implementation uses `os.OpenRoot` and `OpenRegular` so traversal,
+   symlink escapes, and special files are rejected at the storage boundary.
+   `exec.go` is the deliberate counterexample:
    there is no root for a shell, and the doc comment says so — its
    permission bit is the entire gate. Don't build an unsandboxed tool
    without naming the trade-off.
@@ -258,18 +260,31 @@ tool.
    `ToolEmitter` is synchronous and may be nil; it's a live preview for the
    frontend (`event.NewToolOutputEvent` in the turn), never persisted
    history. `exec.go`'s `outputSink` forwards each `Write` as a chunk while
-   bounding memory — past the budget it spills the full stream to a temp
-   file and returns a head+tail excerpt naming where the rest went. Copy
+   bounding memory — past the budget it spills the full stream under the
+   conversation directory and returns a head+tail excerpt naming where the rest went. Copy
    that approach for any tool whose output is unbounded.
 
 7. **Register it — or don't.** Agent-facing tools go in the `tools` map in
-   `cmd/nusallm/main.go`, keyed by `tool.Schema().Name()` in the existing
-   loop. The catalog the model sees is `Deps.ToolSchemas()`, sorted by name
+   `cmd/nusallm/wire.go`, keyed by `tool.Schema().Name()` in the existing
+   loop. The selected `EnvironmentDriver.ToolSchemas()` catalog is sorted by name
    every turn. The counterexample is `tool/summary/summary.go`: the
    compaction job constructs it directly (`application/job/compact.go`) and
    binds only its schema to the scratch conversation, so it's never in the
    main map and never offered in ordinary turns. If your capability exists
    for one use case's private dialogue, that is the pattern.
+
+## Recipe: a new execution environment
+
+Implement `repository.Workspace` for that environment and a
+`service.CommandRunner` for its processes. Construct the file and exec tools
+with those ports, then register their catalog and provider adapters together
+as one `job.EnvironmentDriver` under a new `enum.Environment` key in
+`cmd/nusallm/wire.go`. Provider adapters must resolve media through the
+same workspace repository as the tools. The conversation stores the selected
+environment and workspace path; Send, Edit, and Compact resolve the bundle
+again for each room. A missing bundle returns an error instead of selecting
+local. Keep conversation metadata and config storage in the application's
+own repositories; these are distinct from the agent's workspace.
 
 ## Recipe: a new slash command
 
@@ -302,8 +317,8 @@ instances.
    for `id + tail` shapes. Emit output through `h.Write(emitter, format, args...)`
    so the transport can sanitize; read session state through the bindings
    (`h.ConversationID()`, `h.Route()`, `h.SetModelID`, …). Reuse domain
-   decisions — `commandinternal.DisplayTitles` applies the aggregate's
-   list-title rule rather than re-stating it; shared helpers used by several
+   decisions — `commandinternal.DisplayTitles` applies the command service's
+   list-title rule; shared helpers used by several
    commands live in `infrastructure/service/command/internal/`.
 
 3. **Optionally complete arguments.** Implement
@@ -314,7 +329,7 @@ instances.
 4. **Wire it.** Commands are registered in
    `infrastructure/delivery/cli/commands/wire.go` — `commands.New` builds the
    session facade via `appcommand.NewFacade` and constructs every command
-   explicitly, the same spirit as tool wiring in `main.go`. Add yours to the
+   explicitly, the same spirit as tool wiring in `cmd/nusallm/wire.go`. Add yours to the
    `base` slice; `NewRegistry` indexes by `Name()` (lowercased) and `/help`
    enumerates the wired set through `svccommand.Describe`, so help text is
    free once you're registered.
@@ -347,7 +362,7 @@ instances.
 - **Diagnostics**: the `drepo.Logger` port is a write-only JSONL sink;
   every entry passes through `infrastructure/redact` before disk, and
   request/response bodies are stripped entirely unless `log.bodies` is on
-  (see the `Redact` hook in `cmd/nusallm/main.go`).
+  (see the `Redact` hook in `cmd/nusallm/wire.go`).
 - **Secrets**: persisted values are `"env:NAME"` or `"secret:<key>"`
   references resolved through the `SecretStore` port — never plaintext.
 - **Language**: English for code, comments, and docs.
@@ -365,14 +380,17 @@ obsolete. Tests assert current intended behavior, not historical behavior.
 ## The verify loop
 
 ```sh
-gofmt -w . && go build ./... && go vet ./... && go test ./...
+make fmt-check && make test && make test-web
 ```
 
 Run the whole chain — it's the bar each `AGENTS.md` sets, and it's fast in
-this module. The `Makefile` has three targets: `make build` produces
-`bin/nusallm`, `make cli` builds and launches the REPL, and `make
-gateway-add` is a convenience recipe for one provider's route; there is no
-test target — use `go test ./...` directly. Media fixtures for end-to-end
+this module. The `Makefile` mirrors it: `make build` produces
+`bin/nusallm`, `make cli` builds and launches the REPL, `make serve`
+launches the WebUI, and `make gateway-add` is a convenience recipe for one
+provider's route. `make fmt-check` fails on unformatted files instead of
+rewriting them, `make test` builds `bin/nusallm` before vet + test, and
+`make test-web` runs the `node --test`
+suite under `web/test/`. Media fixtures for end-to-end
 attachment paths live in `test/media/` and are pinned by
 `TestMediaFixtures` in `infrastructure/domain/valueobject/attachment_test.go`
 — if an adapter change touches attachment serialization, that test is the

@@ -76,7 +76,9 @@ func (f *fakeConversations) History(_ context.Context, id string, start, end int
 	return f.history[start:end], nil
 }
 
-func (f *fakeConversations) ToolSchemas() []valueobject.ToolSchema { return f.tools }
+func (f *fakeConversations) ToolSchemas(context.Context, string) ([]valueobject.ToolSchema, error) {
+	return f.tools, nil
+}
 
 func (f *fakeConversations) ContextFooterStats(context.Context, string, string, string) (appconversation.ContextFooterStats, error) {
 	return appconversation.ContextFooterStats{}, nil
@@ -309,7 +311,7 @@ func mkMessages(t *testing.T) []entity.Message {
 		t.Fatal(err)
 	}
 	tc2.SetCallAt(time.Date(2026, 9, 28, 1, 2, 3, 0, time.UTC))
-	tc2.SetStoredOutput(`<untrusted_tool latency="12ms">` + "\ntotal 0\n</untrusted_tool>")
+	tc2.SetStoredOutput("total 0", "12ms")
 	outAtt, err := valueobject.NewAttachment("file:///home/user/secret/out.png", "image/png")
 	if err != nil {
 		t.Fatal(err)
@@ -367,7 +369,7 @@ func TestMessagesWindowAndSanitization(t *testing.T) {
 	if done["id"] != "call_2" || done["name"] != "run_shell" ||
 		done["status"] != "completed" ||
 		done["input"] != `{"cmd":"ls -la"}` ||
-		done["output"] != `<untrusted_tool latency="12ms">`+"\ntotal 0\n</untrusted_tool>" ||
+		done["output"] != "total 0" ||
 		done["calledAt"] != "2026-09-28T01:02:03Z" {
 		t.Fatalf("completed tool call projection wrong: %v", done)
 	}
@@ -423,6 +425,26 @@ func TestMessagesWindowAndSanitization(t *testing.T) {
 	}
 	if doc["hasMore"] != false || doc["effectiveStart"] != 0.0 {
 		t.Fatalf("window meta wrong: %v", doc)
+	}
+}
+
+func TestMessagesCompletedEmptyToolOutput(t *testing.T) {
+	msg, _ := entity.NewMessage(enum.RoleAssistant, "")
+	call, _ := entity.NewToolCall("call-empty", "exec", "{}", enum.TooltypeOrigin)
+	call.SetOutput("")
+	msg.AddToolCall(call)
+	h := newTestHandler(t, Deps{Conversations: &fakeConversations{
+		infos:   []drepo.ConversationInfo{{ID: "c_1", MessageCount: 1}},
+		history: []entity.Message{msg},
+	}})
+	rec := do(t, h, "GET", "/api/conversations/c_1/messages", "", "")
+	if rec.Code != 200 {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	msgs := decodeBody(t, rec)["messages"].([]any)
+	result := msgs[0].(map[string]any)["toolCalls"].([]any)[0].(map[string]any)
+	if result["status"] != "completed" || result["output"] != "" {
+		t.Fatalf("empty completed tool output misclassified: %v", result)
 	}
 }
 

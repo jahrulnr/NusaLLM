@@ -28,7 +28,7 @@ type SlashSession interface {
 	RenameConversation(ctx context.Context, id, title string) error
 	CompactConversation(ctx context.Context, id string) error
 	EditConversation(ctx context.Context, convID, messageID, content string, onEvent event.TurnEventHandler) error
-	ToolSchemas() []valueobject.ToolSchema
+	ToolSchemas(ctx context.Context, convID string) ([]valueobject.ToolSchema, error)
 
 	ListGateways(ctx context.Context) ([]appgateway.GatewayInfo, error)
 	GetGateway(ctx context.Context, id string) (appgateway.GatewayInfo, error)
@@ -51,7 +51,7 @@ type conversationAPI interface {
 	Rename(ctx context.Context, id, title string) error
 	Compact(ctx context.Context, id string) error
 	Edit(ctx context.Context, convID, messageID, content string, onEvent event.TurnEventHandler) error
-	ToolSchemas() []valueobject.ToolSchema
+	ToolSchemas(ctx context.Context, convID string) ([]valueobject.ToolSchema, error)
 }
 
 type gatewayAPI interface {
@@ -118,7 +118,9 @@ func (f *Facade) CompactConversation(ctx context.Context, id string) error {
 func (f *Facade) EditConversation(ctx context.Context, convID, messageID, content string, onEvent event.TurnEventHandler) error {
 	return f.convs.Edit(ctx, convID, messageID, content, onEvent)
 }
-func (f *Facade) ToolSchemas() []valueobject.ToolSchema { return f.convs.ToolSchemas() }
+func (f *Facade) ToolSchemas(ctx context.Context, convID string) ([]valueobject.ToolSchema, error) {
+	return f.convs.ToolSchemas(ctx, convID)
+}
 
 func (f *Facade) ListGateways(ctx context.Context) ([]appgateway.GatewayInfo, error) {
 	return f.gateways.List(ctx)

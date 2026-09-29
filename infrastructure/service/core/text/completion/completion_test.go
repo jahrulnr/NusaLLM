@@ -18,6 +18,7 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
+	repoworkspace "github.com/jahrulnr/nusallm/infrastructure/repository/workspace"
 	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
 )
 
@@ -36,7 +37,7 @@ func newService(t *testing.T, stream bool, handler http.HandlerFunc) (*Service, 
 	} else {
 		gw.DisableStream()
 	}
-	return New(coretext.Options{}), &gw, srv
+	return New(coretext.Options{FileStore: repoworkspace.NewLocal()}), &gw, srv
 }
 
 func newConv(t *testing.T) *aggregate.Conversation {
@@ -91,6 +92,9 @@ func TestUnaryRoundtrip(t *testing.T) {
 	// Wire request shape.
 	if captured.Model != "m" || captured.Temperature == nil || *captured.Temperature != 0.5 {
 		t.Fatalf("params: %+v", captured)
+	}
+	if captured.PromptCacheKey != conv.ID() || captured.PromptCacheOption.TTL != "30m" {
+		t.Fatalf("prompt cache params: %+v", captured)
 	}
 	if captured.Messages[0].Role != "system" || captured.Messages[1].Role != "user" {
 		t.Fatalf("message order: %+v", captured.Messages)
@@ -188,6 +192,10 @@ func TestToolCallsRoundtrip(t *testing.T) {
 		}
 		if m.Role == "tool" && m.ToolCallID == "call_1" {
 			sawTool = true
+			content, ok := m.Content.(string)
+			if !ok || !strings.Contains(content, `<untrusted_tool latency="`) || !strings.Contains(content, "12:00") || !strings.HasSuffix(content, "</untrusted_tool>") {
+				t.Fatalf("provider tool output lost evidence envelope: %#v", m.Content)
+			}
 		}
 	}
 	if !sawAssistant || !sawTool {

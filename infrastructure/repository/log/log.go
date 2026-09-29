@@ -155,10 +155,12 @@ func validLogLine(line []byte) bool {
 	return json.Unmarshal(bytes.TrimSpace(line), &probe) == nil && probe.Kind != ""
 }
 
-// prepareActive counts records in active.jsonl and truncates a torn or
-// invalid final line so O_APPEND cannot glue the next write to partial
-// bytes. ReadString keeps huge single-line records from hitting scanner
-// caps. Missing or empty files yield 0.
+// prepareActive counts records in active.jsonl and truncates at the
+// first torn or invalid line — keep is the byte offset where that line
+// starts, so the corrupt record and everything after it are dropped and
+// O_APPEND cannot glue the next write to partial bytes. ReadString keeps
+// huge single-line records from hitting scanner caps. Missing or empty
+// files yield 0.
 func prepareActive(path string) (int, error) {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
@@ -181,18 +183,16 @@ func prepareActive(path string) (int, error) {
 	)
 	for {
 		part, err := br.ReadString('\n')
-		keep += int64(len(part))
 		if err == nil {
-			if validLogLine([]byte(part[:len(part)-1])) {
-				lines++
-			} else {
-				keep -= int64(len(part))
+			if !validLogLine([]byte(part[:len(part)-1])) {
+				break // fail-stop: drop the bad line and its tail
 			}
+			keep += int64(len(part))
+			lines++
 			continue
 		}
 		if errors.Is(err, io.EOF) {
-			keep -= int64(len(part)) // partial tail without newline
-			break
+			break // partial tail without newline — keep excludes it
 		}
 		return 0, err
 	}

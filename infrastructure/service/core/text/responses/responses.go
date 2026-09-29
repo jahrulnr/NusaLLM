@@ -28,12 +28,13 @@ import (
 // credentials, and stream preference are read from the gateway argument
 // of every Send, so one instance serves every responses-style gateway.
 type Service struct {
-	client   *http.Client
-	log      drepo.Logger
-	referer  string
-	title    string
-	fileRoot string
-	idle     time.Duration
+	client    *http.Client
+	log       drepo.Logger
+	referer   string
+	title     string
+	fileRoot  string
+	fileStore drepo.Workspace
+	idle      time.Duration
 }
 
 // New builds the service — Options only; gateways arrive per Send.
@@ -50,12 +51,13 @@ func New(opts coretext.Options) *Service {
 		}}
 	}
 	return &Service{
-		client:   client,
-		log:      opts.Logger,
-		referer:  opts.Referer,
-		title:    opts.Title,
-		fileRoot: opts.FileRoot,
-		idle:     time.Duration(svcCfg.IdleTimeout),
+		client:    client,
+		log:       opts.Logger,
+		referer:   opts.Referer,
+		title:     opts.Title,
+		fileRoot:  opts.FileRoot,
+		fileStore: opts.FileStore,
+		idle:      time.Duration(svcCfg.IdleTimeout),
 	}
 }
 
@@ -64,7 +66,7 @@ func New(opts coretext.Options) *Service {
 // selected by gw; events reach onEvent uniformly either way.
 func (s *Service) Send(ctx context.Context, conv *aggregate.Conversation, gw *aggregate.Gateway, model entity.Model, onEvent event.TurnEventHandler) error {
 	stream := gw.StreamMode()
-	body, err := encodeRequest(conv, model, stream, coretext.FileRoot(conv, s.fileRoot))
+	body, err := encodeRequest(conv, model, stream, wire.MediaRoot{Dir: coretext.FileRoot(conv, s.fileRoot), Store: s.fileStore})
 	if err != nil {
 		return err
 	}

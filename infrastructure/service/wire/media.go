@@ -5,17 +5,17 @@
 package wire
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
@@ -35,29 +35,17 @@ func MaxAttachmentBytes(modality enum.Modality) int64 {
 	}
 }
 
-// OpenRegularFile opens a path beneath root without blocking on special
-// files such as FIFOs and rejects every non-regular file descriptor.
-func OpenRegularFile(root *os.Root, name string) (*os.File, os.FileInfo, error) {
-	f, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return nil, nil, err
-	}
-	info, err := f.Stat()
-	if err != nil {
-		_ = f.Close()
-		return nil, nil, err
-	}
-	if !info.Mode().IsRegular() {
-		_ = f.Close()
-		return nil, nil, fmt.Errorf("path is not a regular file")
-	}
-	return f, info, nil
+// MediaRoot binds a provider send to the workspace repository chosen at
+// composition time. Empty Dir disables local file references.
+type MediaRoot struct {
+	Dir   string
+	Store drepo.Workspace
 }
 
 // ResolveURI materializes an attachment reference into a sendable URL. Local
 // file references require fileRoot and are reopened beneath it at send time;
 // reads are bounded before allocation and a sha256 pin must still match.
-func ResolveURI(a valueobject.Attachment, fileRoot string) (string, error) {
+func ResolveURI(a valueobject.Attachment, fileRoot MediaRoot) (string, error) {
 	uri, mt := a.URI(), a.MediaType()
 	if strings.HasPrefix(uri, "file://") {
 		raw, err := readLocal(a, fileRoot)
@@ -92,11 +80,11 @@ func ResolveURI(a valueobject.Attachment, fileRoot string) (string, error) {
 	return uri, nil
 }
 
-func readLocal(a valueobject.Attachment, fileRoot string) (raw []byte, err error) {
-	if fileRoot == "" {
+func readLocal(a valueobject.Attachment, fileRoot MediaRoot) (raw []byte, err error) {
+	if fileRoot.Dir == "" || fileRoot.Store == nil {
 		return nil, apperror.New(400, "local attachment root is not configured", nil)
 	}
-	absRoot, err := filepath.Abs(fileRoot)
+	absRoot, err := filepath.Abs(fileRoot.Dir)
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +100,7 @@ func readLocal(a valueobject.Attachment, fileRoot string) (raw []byte, err error
 	if err != nil {
 		return nil, apperror.New(400, "attachment outside workspace", err)
 	}
-	root, err := os.OpenRoot(absRoot)
+	root, err := fileRoot.Store.Open(context.Background(), absRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +109,7 @@ func readLocal(a valueobject.Attachment, fileRoot string) (raw []byte, err error
 			err = closeErr
 		}
 	}()
-	f, info, err := OpenRegularFile(root, workspace.Path())
+	f, info, err := root.OpenRegular(workspace.Path())
 	if err != nil {
 		return nil, apperror.New(400, "attachment unreadable", err)
 	}
@@ -185,7 +173,7 @@ func DataURI(mediaType string, raw []byte) string {
 // base64 payload + format name — what wires like input_audio expect
 // instead of a URL. Audio over plain http(s) is rejected: nothing to
 // embed without fetching, and adapters do not fetch arbitrary URLs.
-func ResolveBase64(a valueobject.Attachment, fileRoot string) (data, format string, err error) {
+func ResolveBase64(a valueobject.Attachment, fileRoot MediaRoot) (data, format string, err error) {
 	uri, mt := a.URI(), a.MediaType()
 	if !strings.HasPrefix(uri, "data:") && !strings.HasPrefix(uri, "file://") {
 		return "", "", apperror.New(400, "attachment must be a data: or file:// URI",

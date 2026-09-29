@@ -25,6 +25,7 @@ import (
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 )
@@ -96,6 +97,20 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 // --- meta -----------------------------------------------------------------
 
 func (r *ConversationRepository) readMeta(id string) (metaRecord, error) {
+	m, err := r.readMetaUnvalidated(id)
+	if err != nil {
+		return metaRecord{}, err
+	}
+	if err := validateSealedArchive(r.convDir(id), m.SealedSegments); err != nil {
+		return metaRecord{}, err
+	}
+	return m, nil
+}
+
+// readMetaUnvalidated is used by readMeta before its archive check and by
+// recountMeta while segment surgery has intentionally changed the archive
+// but not yet published the new counters.
+func (r *ConversationRepository) readMetaUnvalidated(id string) (metaRecord, error) {
 	raw, err := os.ReadFile(filepath.Join(r.convDir(id), metaFile))
 	if errors.Is(err, os.ErrNotExist) {
 		return metaRecord{}, apperror.NewNotFoundError("conversation "+id, err)
@@ -106,6 +121,9 @@ func (r *ConversationRepository) readMeta(id string) (metaRecord, error) {
 	var m metaRecord
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return metaRecord{}, fmt.Errorf("meta corrupt: %w", err)
+	}
+	if _, ok := enum.ParseEnvironment(m.Environment); !ok {
+		return metaRecord{}, fmt.Errorf("meta corrupt: invalid environment %q", m.Environment)
 	}
 	return m, nil
 }
@@ -175,9 +193,10 @@ func appendLine(path string, v any) error {
 // segment.
 func messagesFromLines(lines [][]byte) ([]entity.Message, error) {
 	var msgs []entity.Message
+	callMessage := make(map[string]int)
 	type patch struct {
-		callID, output string
-		atts           []valueobject.Attachment
+		callID, output, latency string
+		atts                    []valueobject.Attachment
 	}
 	var patches []patch
 	for _, l := range lines {
@@ -191,6 +210,11 @@ func messagesFromLines(lines [][]byte) ([]entity.Message, error) {
 			if err != nil {
 				return nil, err
 			}
+			for _, call := range m.ToolCalls() {
+				if _, exists := callMessage[call.ID()]; !exists {
+					callMessage[call.ID()] = len(msgs)
+				}
+			}
 			msgs = append(msgs, m)
 		case lineToolOutput:
 			var atts []valueobject.Attachment
@@ -203,18 +227,20 @@ func messagesFromLines(lines [][]byte) ([]entity.Message, error) {
 				att.SetSHA256(a.SHA256)
 				atts = append(atts, att)
 			}
-			patches = append(patches, patch{lr.CallID, lr.Output, atts})
+			patches = append(patches, patch{lr.CallID, lr.Output, lr.OutputLatency, atts})
 		}
 	}
 	for _, p := range patches {
-		for i := range msgs {
-			if msgs[i].SetStoredToolOutput(p.callID, p.output) == nil {
-				if p.atts != nil {
-					// Cannot fail — SetStoredToolOutput just matched this
-					// callID, which is the only lookup the setter repeats.
-					_ = msgs[i].SetToolOutputAttachments(p.callID, p.atts)
-				}
-				break
+		i, exists := callMessage[p.callID]
+		if !exists { // patches for calls discarded by an edit stay inert
+			continue
+		}
+		if err := msgs[i].SetStoredToolOutput(p.callID, p.output, p.latency); err != nil {
+			return nil, err // index was built from these messages
+		}
+		if p.atts != nil {
+			if err := msgs[i].SetToolOutputAttachments(p.callID, p.atts); err != nil {
+				return nil, err
 			}
 		}
 	}
@@ -243,35 +269,65 @@ func sealedSegments(dir string) ([]string, error) {
 	return segs, nil
 }
 
-// loadMessages reads the live tail, optionally prefixed by the sealed
-// segments in numeric order — the global logical history. Only segments
-// meta counts as sealed qualify: Compact writes the file before bumping
-// the count, so a crash mid-write leaves an orphan glob would count —
+// validateSealedArchive checks that the files and metadata describe the
+// same eras before an operation rewrites or deletes any of them. A failed
+// metadata write after Compact's active rewrite leaves an extra segment;
+// continuing would overwrite it or discard patches for calls inside it.
+func validateSealedArchive(dir string, committed int) error {
+	segs, err := sealedSegments(dir)
+	if err != nil {
+		return err
+	}
+	id := filepath.Base(dir)
+	if committed < 0 {
+		return fmt.Errorf("conversation %s: invalid metadata sealedSegments=%d; stop the app, inspect meta.json, and restore from backup", id, committed)
+	}
+	for i := 0; i < committed; i++ {
+		if i >= len(segs) {
+			return fmt.Errorf("conversation %s: sealed segment %d.jsonl missing; restore it from backup", id, i)
+		}
+		seg := segs[i]
+		n, _ := strconv.Atoi(strings.TrimSuffix(filepath.Base(seg), ".jsonl"))
+		if n != i {
+			return fmt.Errorf("conversation %s: sealed segment %d.jsonl missing; restore it from backup", id, i)
+		}
+	}
+	if len(segs) != committed {
+		if len(segs) == committed+1 && filepath.Base(segs[committed]) == fmt.Sprintf("%d.jsonl", committed) {
+			return fmt.Errorf("conversation %s: one uncommitted sealed segment; stop the app and see docs/persistence.md for offline repair; if neither action applies, restore from backup", id)
+		}
+		return fmt.Errorf("conversation %s: %d sealed segment files, metadata records %d; stop the app, inspect metadata and segments, and restore from backup", id, len(segs), committed)
+	}
+	return nil
+}
+
+// loadMessages reads the live tail, optionally prefixed by the first
+// sealedCount archive segments in numeric order — the global logical
+// history. The caller supplies the count (usually meta's) so surgery can
+// recount against the files it just wrote rather than stale meta. Only
+// committed segments qualify: Compact writes the file before bumping the
+// count, so a crash mid-write leaves an orphan a glob would count —
 // replaying a prefix the intact active copy still holds.
-func (r *ConversationRepository) loadMessages(convID string, includeSealed bool) ([]entity.Message, error) {
+func (r *ConversationRepository) loadMessages(convID string, sealedCount int) ([]entity.Message, error) {
 	dir := r.convDir(convID)
 	var files []string
-	if includeSealed {
-		meta, err := r.readMeta(convID)
-		if err != nil {
-			return nil, err
-		}
+	if sealedCount > 0 {
 		segs, err := sealedSegments(dir)
 		if err != nil {
 			return nil, err
 		}
-		present := make(map[int]struct{}, meta.SealedSegments)
+		present := make(map[int]struct{}, sealedCount)
 		for _, f := range segs {
 			n, _ := strconv.Atoi(strings.TrimSuffix(filepath.Base(f), ".jsonl"))
-			if n < meta.SealedSegments { // committed segments only
+			if n < sealedCount { // committed segments only
 				files = append(files, f)
 				present[n] = struct{}{}
 			}
 		}
-		for i := 0; i < meta.SealedSegments; i++ {
+		for i := 0; i < sealedCount; i++ {
 			if _, ok := present[i]; !ok {
-				return nil, fmt.Errorf("conversation %s: sealed segment %d.jsonl missing (meta sealedSegments=%d)",
-					convID, i, meta.SealedSegments)
+				return nil, fmt.Errorf("conversation %s: sealed segment %d.jsonl missing (sealedSegments=%d)",
+					convID, i, sealedCount)
 			}
 		}
 	}

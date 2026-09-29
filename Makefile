@@ -1,4 +1,4 @@
-.PHONY: build cli serve test gateway-add
+.PHONY: build cli serve test fmt-check test-web gateway-add
 
 build:
 	mkdir -p ./bin
@@ -13,7 +13,13 @@ serve: build
 test: build
 	go vet ./...
 	go test ./...
-	gofmt -w $$(go list -f '{{.Dir}}' ./... | grep -v /vendor/)
+
+fmt-check:
+	@files=$$(gofmt -l $$(go list -f '{{.Dir}}' ./... | grep -v /vendor/)); \
+	if [ -n "$$files" ]; then echo "$$files"; exit 1; fi
+
+test-web:
+	node --test web/test/*.test.mjs
 
 gateway-add: build
 	./bin/nusallm gateway add \

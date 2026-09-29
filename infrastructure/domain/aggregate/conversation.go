@@ -2,8 +2,10 @@ package aggregate
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 )
 
@@ -26,6 +28,7 @@ type Conversation struct {
 	systemPrompt string
 	title        string // optional display title for conversation lists
 	workspace    string // absolute directory the room's tools work in; empty = the delivery's default
+	environment  enum.Environment
 	messages     []entity.Message
 	tools        []valueobject.ToolSchema
 	usage        valueobject.Usage
@@ -38,7 +41,7 @@ func NewConversation(id string) (*Conversation, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Conversation{id: vo.String()}, nil
+	return &Conversation{id: vo.String(), environment: enum.EnvironmentLocal}, nil
 }
 
 // Append adds a message to the conversation history.
@@ -141,12 +144,23 @@ func (c *Conversation) SetModelID(modelID string) {
 	c.modelID = modelID
 }
 
-// SetWorkspace binds the conversation to the absolute directory its tools
-// work in — file tools confine to it, exec runs there. Like the route
-// binding it persists with the room so a later session resumes in the
-// same tree; empty defers to the delivery's default workspace.
+// SetWorkspace binds the conversation to the path its tools work in within
+// the selected environment — file tools confine to it, exec runs there.
+// Like the route binding it persists with the room; empty defers to the
+// selected driver's default workspace.
 func (c *Conversation) SetWorkspace(dir string) {
 	c.workspace = dir
+}
+
+// SetEnvironment binds this room to one execution environment. A registered
+// driver is checked by the application before work starts; the domain only
+// validates the known identity.
+func (c *Conversation) SetEnvironment(environment enum.Environment) error {
+	if _, ok := enum.ParseEnvironment(environment.String()); !ok {
+		return fmt.Errorf("unknown environment %q", environment)
+	}
+	c.environment = environment
+	return nil
 }
 
 // AddUsage accumulates the token accounting reported for one request —
@@ -185,7 +199,7 @@ func (c *Conversation) EstimatedTokens() int {
 			chars += len(v)
 		}
 		for _, tc := range m.ToolCalls() {
-			chars += len(tc.Input()) + len(tc.Output())
+			chars += len(tc.Input()) + len(tc.OutputWithUntrustedTag())
 			flat += len(tc.OutputAttachments()) * attachmentTokenEstimate
 		}
 	}
@@ -205,6 +219,7 @@ func (c Conversation) ID() string                      { return c.id }
 func (c Conversation) Route() string                   { return c.route }
 func (c Conversation) ModelID() string                 { return c.modelID }
 func (c Conversation) Workspace() string               { return c.workspace }
+func (c Conversation) Environment() enum.Environment   { return c.environment }
 func (c Conversation) SystemPrompt() string            { return c.systemPrompt }
 func (c Conversation) Title() string                   { return c.title }
 func (c Conversation) Messages() []entity.Message      { return c.messages }

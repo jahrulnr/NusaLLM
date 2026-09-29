@@ -16,7 +16,9 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
+	repoworkspace "github.com/jahrulnr/nusallm/infrastructure/repository/workspace"
 	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
+	"github.com/jahrulnr/nusallm/infrastructure/service/wire"
 )
 
 // newService spins an httptest server and a fake gateway pointing at it.
@@ -34,7 +36,7 @@ func newService(t *testing.T, stream bool, handler http.HandlerFunc) (*Service, 
 	} else {
 		gw.DisableStream()
 	}
-	return New(coretext.Options{}), &gw, srv
+	return New(coretext.Options{FileStore: repoworkspace.NewLocal()}), &gw, srv
 }
 
 func newConv(t *testing.T) *aggregate.Conversation {
@@ -250,7 +252,10 @@ func TestToolUseRoundtrip(t *testing.T) {
 		t.Fatal("tool_result user turn missing")
 	}
 	tr := toolResultTurn["content"].([]any)[0].(map[string]any)
-	if tr["tool_use_id"] != "toolu_1" || !strings.Contains(tr["content"].(string), "12:00") {
+	if tr["tool_use_id"] != "toolu_1" ||
+		!strings.HasPrefix(tr["content"].(string), `<untrusted_tool latency="`) ||
+		!strings.Contains(tr["content"].(string), "12:00") ||
+		!strings.HasSuffix(tr["content"].(string), "</untrusted_tool>") {
 		t.Fatalf("tool_result: %+v", tr)
 	}
 }
@@ -281,7 +286,9 @@ func TestInterruptedToolResult(t *testing.T) {
 		blocks, _ := raw.(map[string]any)["content"].([]any)
 		for _, b := range blocks {
 			bb := b.(map[string]any)
-			if bb["type"] == "tool_result" && strings.Contains(bb["content"].(string), "interrupted") {
+			if bb["type"] == "tool_result" &&
+				strings.HasPrefix(bb["content"].(string), "<untrusted_tool>\n(interrupted") &&
+				strings.HasSuffix(bb["content"].(string), "</untrusted_tool>") {
 				found = true
 			}
 		}
@@ -546,7 +553,7 @@ func TestStreamMidError(t *testing.T) {
 func TestEncodeAttachmentRejectsPinnedRemoteURL(t *testing.T) {
 	a, _ := valueobject.NewAttachment("https://example.com/x.png", "image/png")
 	a.SetSHA256(strings.Repeat("a", 64))
-	if _, err := encodeAttachment(a, ""); err == nil {
+	if _, err := encodeAttachment(a, wire.MediaRoot{}); err == nil {
 		t.Fatal("pinned remote https attachment must fail")
 	}
 }
@@ -643,5 +650,66 @@ func TestEffortAndEscapeHatch(t *testing.T) {
 	}
 	if _, leaked := captured["reasoning_effort"]; leaked {
 		t.Fatal("completion.-prefixed param leaked onto messages wire")
+	}
+}
+
+func TestConsecutiveUserTurnsMerge(t *testing.T) {
+	// An assistant turn with calls emits a tool_result user turn; a
+	// following user message must fold into it — Anthropic rejects two
+	// consecutive same-role turns.
+	var captured map[string]any
+	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+		captured = decodeReq(t, r)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": "m", "role": "assistant", "content": []any{map[string]any{"type": "text", "text": "ok"}},
+			"stop_reason": "end_turn",
+		})
+	})
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleUser, "what time")
+	conv.Append(m)
+	asst, _ := entity.NewMessage(enum.RoleAssistant, "checking")
+	tc, _ := entity.NewToolCall("toolu_1", "get_time", `{"tz":"UTC"}`, enum.TooltypeOrigin)
+	asst.AddToolCall(tc)
+	if err := asst.SetToolOutput("toolu_1", "12:00"); err != nil {
+		t.Fatal(err)
+	}
+	conv.Append(asst)
+	follow, _ := entity.NewMessage(enum.RoleUser, "thanks")
+	conv.Append(follow)
+	model, _ := entity.NewModel("claude-x", "test")
+	if err := svc.Send(context.Background(), conv, gw, model, nil); err != nil {
+		t.Fatal(err)
+	}
+	msgs, _ := captured["messages"].([]any)
+	if len(msgs) != 3 {
+		t.Fatalf("want user, assistant, one merged user turn — got %+v", msgs)
+	}
+	merged := msgs[2].(map[string]any)
+	if merged["role"] != "user" {
+		t.Fatalf("merged turn role: %+v", merged)
+	}
+	blocks, _ := merged["content"].([]any)
+	if len(blocks) != 2 {
+		t.Fatalf("want tool_result + text blocks, got %+v", blocks)
+	}
+	if b := blocks[0].(map[string]any); b["type"] != "tool_result" || b["tool_use_id"] != "toolu_1" {
+		t.Fatalf("tool_result block: %+v", b)
+	}
+	if b := blocks[1].(map[string]any); b["type"] != "text" || b["text"] != "thanks" {
+		t.Fatalf("user text block: %+v", b)
+	}
+}
+
+func TestContentBlocksKeepsUnknownContent(t *testing.T) {
+	// A content shape the switch predates must survive the merge as its
+	// own block — returning nil would drop the turn's content silently.
+	unknown := map[string]any{"type": "future_block", "data": "x"}
+	got := contentBlocks(unknown)
+	if len(got) != 1 || got[0].(map[string]any)["type"] != "future_block" {
+		t.Fatalf("unknown content must ride as a block: %+v", got)
+	}
+	if got := contentBlocks(nil); got != nil {
+		t.Fatalf("nil content has nothing to merge: %+v", got)
 	}
 }

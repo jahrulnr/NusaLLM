@@ -37,14 +37,18 @@ func TestMessageSetToolOutput(t *testing.T) {
 	}
 }
 
-// SetToolOutput must propagate the budget error, not swallow it.
-func TestMessageSetToolOutputPropagatesBudgetError(t *testing.T) {
+// SetToolOutput retains raw results; the budget applies to provider context.
+func TestMessageSetToolOutputKeepsOverBudgetRawResult(t *testing.T) {
 	m, _ := NewMessage(enum.RoleAssistant, "")
 	tc, _ := NewToolCall("c", "n", "{}", enum.TooltypeOrigin)
 	tc.SetOutputBudget(1)
 	m.AddToolCall(tc)
-	if err := m.SetToolOutput("c", "too long"); err == nil {
-		t.Fatal("expected budget error to propagate")
+	if err := m.SetToolOutput("c", "too long"); err != nil {
+		t.Fatal(err)
+	}
+	got := m.ToolCalls()[0]
+	if !got.NeedTruncate() || got.Output() != "too long" {
+		t.Fatalf("raw output was rejected: %q", got.Output())
 	}
 }
 

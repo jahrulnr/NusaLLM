@@ -31,6 +31,11 @@ format out of this layer. Dependencies should be domain ports or explicit
 use-case collaborators; do not add interfaces just to enable a one-use
 helper.
 
+The execution environment is bound per conversation. `job.Deps.Environments`
+selects one driver bundle for its workspace, tool executors, and text adapters
+on every Send/Edit/Compact; never combine components from different entries
+or fall back to local when the room's selected driver is unavailable.
+
 ## Method shape
 
 Preserve the readable sequence in `Execute`, `runTurn`, and management

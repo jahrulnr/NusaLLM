@@ -32,7 +32,7 @@ var errUnsupported = errPlain("modality has no carrier on this wire")
 // encodeRequest maps domain state onto the wire body. Attachments resolve
 // to sendable form here (url/base64/text sources) — the domain stores
 // references only.
-func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool, fileRoot string) (*RequestBody, error) {
+func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool, fileRoot wire.MediaRoot) (*RequestBody, error) {
 	body := &RequestBody{
 		Model:     model.ID(),
 		MaxTokens: defaultMaxTokens,
@@ -50,7 +50,19 @@ func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool
 		if err != nil {
 			return nil, err
 		}
-		body.Messages = append(body.Messages, msgs...)
+		for _, msg := range msgs {
+			// Roles must alternate — an assistant turn with calls
+			// already emits a tool_result user turn, so a following
+			// user message folds into it (the same merge rule the
+			// generatecontent adapter applies). String content
+			// normalizes to a text block so turns merge as one array.
+			if n := len(body.Messages); n > 0 && body.Messages[n-1].Role == msg.Role {
+				body.Messages[n-1].Content = append(
+					contentBlocks(body.Messages[n-1].Content), contentBlocks(msg.Content)...)
+			} else {
+				body.Messages = append(body.Messages, msg)
+			}
+		}
 	}
 	for _, t := range conv.Tools() {
 		if !t.CallableByAgent() {
@@ -91,6 +103,24 @@ func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool
 	return body, nil
 }
 
+// contentBlocks normalizes a turn's content to a block array — bare
+// strings become a single text block — so same-role turns merge into
+// one content array.
+func contentBlocks(content any) []any {
+	switch c := content.(type) {
+	case string:
+		return []any{ContentBlock{Type: "text", Text: c}}
+	case []any:
+		return c
+	case nil:
+		return nil // no content to merge
+	default:
+		// A shape this switch predates still rides the merge as its own
+		// block — dropping it would silently lose the turn's content.
+		return []any{content}
+	}
+}
+
 // encodeMessage emits one wire turn for plain messages, or an assistant
 // turn followed by a user turn of tool_result blocks when the domain
 // message carries executed calls — Anthropic has no tool role, results
@@ -99,7 +129,7 @@ func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool
 // encoded). A call's own output attachments ride inside its tool_result
 // block — this wire carries media there natively, no synthetic user
 // message needed.
-func encodeMessage(m entity.Message, model entity.Model, fileRoot string) ([]MessageBody, error) {
+func encodeMessage(m entity.Message, model entity.Model, fileRoot wire.MediaRoot) ([]MessageBody, error) {
 	role := "user"
 	if m.Role() == enum.RoleAssistant {
 		role = "assistant"
@@ -119,8 +149,8 @@ func encodeMessage(m entity.Message, model entity.Model, fileRoot string) ([]Mes
 
 	text := m.Content()
 	for _, tc := range injected {
-		if tc.Output() != "" {
-			text += "\n" + tc.Output() // already an untrusted-evidence envelope
+		if tc.HasOutput() {
+			text += "\n" + tc.OutputWithUntrustedTag() // already an untrusted-evidence envelope
 		}
 	}
 
@@ -145,10 +175,7 @@ func encodeMessage(m entity.Message, model entity.Model, fileRoot string) ([]Mes
 	if len(origin) > 0 {
 		var results []any
 		for _, tc := range origin {
-			content := tc.Output()
-			if content == "" {
-				content = "(interrupted — no result was recorded)"
-			}
+			content := tc.OutputWithUntrustedTagOrInterrupted()
 			if atts := tc.OutputAttachments(); len(atts) > 0 {
 				parts := []any{ContentBlock{Type: "text", Text: content}}
 				for _, a := range atts {
@@ -225,7 +252,7 @@ func toolUseBlock(tc entity.ToolCall) ContentBlock {
 // attachmentBlock maps a stored reference to its wire block, degrading in
 // place when the model can't take the modality or the wire can't carry it
 // — a missing file must not wedge the whole request.
-func attachmentBlock(a valueobject.Attachment, model entity.Model, fileRoot string) any {
+func attachmentBlock(a valueobject.Attachment, model entity.Model, fileRoot wire.MediaRoot) any {
 	if !model.AcceptsInput(a.Modality()) {
 		return ContentBlock{Type: "text", Text: "(" + a.Modality().String() + " attachment omitted: model does not accept it)"}
 	}
@@ -246,7 +273,7 @@ func attachmentBlock(a valueobject.Attachment, model entity.Model, fileRoot stri
 // Remote URLs ride as url sources (the provider fetches them); local and
 // inline payloads go base64 — or as a text document source when the media
 // is already plain text.
-func encodeAttachment(a valueobject.Attachment, fileRoot string) (ContentBlock, error) {
+func encodeAttachment(a valueobject.Attachment, fileRoot wire.MediaRoot) (ContentBlock, error) {
 	switch a.Modality() {
 	case enum.ModalityImage:
 		src, err := source(a, fileRoot)
@@ -274,7 +301,7 @@ func encodeAttachment(a valueobject.Attachment, fileRoot string) (ContentBlock, 
 
 // source picks url vs base64 by scheme — remote references pass through,
 // local/inline materialize.
-func source(a valueobject.Attachment, fileRoot string) (*SourceBody, error) {
+func source(a valueobject.Attachment, fileRoot wire.MediaRoot) (*SourceBody, error) {
 	uri := a.URI()
 	if strings.HasPrefix(uri, "https://") || strings.HasPrefix(uri, "http://") {
 		if _, err := wire.ResolveURI(a, fileRoot); err != nil {
@@ -291,7 +318,7 @@ func source(a valueobject.Attachment, fileRoot string) (*SourceBody, error) {
 
 // textSource materializes a text/* attachment as a document text source —
 // the wire wants the content itself, not an encoding of it.
-func textSource(a valueobject.Attachment, fileRoot string) (*SourceBody, error) {
+func textSource(a valueobject.Attachment, fileRoot wire.MediaRoot) (*SourceBody, error) {
 	uri := a.URI()
 	if strings.HasPrefix(uri, "https://") || strings.HasPrefix(uri, "http://") {
 		if _, err := wire.ResolveURI(a, fileRoot); err != nil {

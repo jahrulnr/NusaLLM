@@ -56,14 +56,16 @@ func decodeStrict(raw []byte, v any) bool {
 
 // sendPayload carries the picker's per-turn selections beside the text:
 // effort is an enum word, provider an aggregator upstream name (empty =
-// the gateway routes), workspace an absolute directory the room binds.
+// the gateway routes), and environment/workspace bind the room's execution
+// target. The selected driver validates the workspace path when the job runs.
 type sendPayload struct {
-	Route     string `json:"route"`
-	ModelID   string `json:"modelId"`
-	Content   string `json:"content"`
-	Effort    string `json:"effort,omitempty"`
-	Provider  string `json:"provider,omitempty"`
-	Workspace string `json:"workspace,omitempty"`
+	Route       string `json:"route"`
+	ModelID     string `json:"modelId"`
+	Content     string `json:"content"`
+	Effort      string `json:"effort,omitempty"`
+	Provider    string `json:"provider,omitempty"`
+	Workspace   string `json:"workspace,omitempty"`
+	Environment string `json:"environment,omitempty"`
 }
 
 type editPayload struct {

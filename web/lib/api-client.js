@@ -108,8 +108,9 @@ export class APIClient {
     return request('PATCH', '/api/settings', { key, value });
   }
 
-  listTools() {
-    return request('GET', '/api/tools');
+  listTools(conversationId = '') {
+    const query = conversationId ? `?conversationId=${encodeURIComponent(conversationId)}` : '';
+    return request('GET', `/api/tools${query}`);
   }
 
   health() {

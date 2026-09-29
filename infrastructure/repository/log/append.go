@@ -3,6 +3,8 @@ package repolog
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 	"time"
 )
 
@@ -19,6 +21,9 @@ type record struct {
 // through JSON before scrubbing, so RawMessage/struct payloads can't
 // bypass the redactor.
 func (l *Logger) Append(ctx context.Context, kind string, entry any) error {
+	if strings.TrimSpace(kind) == "" {
+		return errors.New("log kind is required")
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 

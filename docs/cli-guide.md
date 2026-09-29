@@ -2,8 +2,8 @@
 
 `nusallm` is the terminal client for NusaLLM, a provider-agnostic LLM
 conversation engine. One binary gives you an interactive REPL, a loopback
-WebUI (`nusallm serve`), a small set of admin subcommands for providers
-and configuration, and nothing else — no account system and no telemetry.
+WebUI (`nusallm serve`), and admin subcommands for providers,
+configuration, and offline conversation repair — no account system or telemetry.
 The REPL and the WebUI are two transports over the same engine; the
 subcommands exist to feed both providers and settings.
 
@@ -67,8 +67,9 @@ project directory keeps that project's state together.
   no file exists to edit (`nusallm config path` prints `(no config file —
   running on defaults)`). If it is set and the file is missing, the REPL
   writes a fully-default document there on first start and tells you:
-  `nusallm: no config found; wrote defaults to <path>`. Admin subcommands
-  never create it — only the REPL and `config set` write the file.
+  `nusallm: no config found; wrote defaults to <path>`. The REPL and
+  `serve` write defaults on start (`admin.EnsureConfig`); `config set`
+  writes the file too — other admin subcommands never create it.
 - **`.env`** — before reading `CONFIG_PATH`, the process loads
   `KEY=VALUE` pairs from a `.env` file in the launch directory (comments
   with `#` allowed, quotes stripped). Real environment variables win over
@@ -208,7 +209,7 @@ variable exists.
 `--style` accepts `completion`, `responses`, `messages`, and
 `generatecontent` — the enum values in
 `infrastructure/domain/enum/style.go`, and all four have adapters wired in
-`cmd/nusallm/main.go`. Pick the wire your endpoint speaks:
+`cmd/nusallm/wire.go`. Pick the wire your endpoint speaks:
 
 - `completion` — OpenAI-shaped `POST <endpoint>/chat/completions`; covers
   OpenAI, OpenRouter, DeepSeek, Groq, xAI, Mistral, and the compatible
@@ -248,16 +249,18 @@ Subcommands:
 nusallm config show                 effective config — file values over defaults
 nusallm config path                 resolved config file path (or "(no config file…)")
 nusallm config set <key> <value>    patch one dotted leaf
-nusallm config unset <key>          remove a key — the repair path for bad files
+nusallm config unset <key>          remove an override; defaulted keys reset to their default
 nusallm config validate             strict-decode check on the file
 ```
 
 `set` takes a dotted leaf (`service.idle_timeout`), decodes the value as
 a JSON literal (`5`, `true`, `"2m"`), and falls back to a plain string
 for bare text — so `nusallm config set service.idle_timeout 2m` stores
-`"2m"`. `null` is refused; `unset` is the removal path. The key must be a
-real leaf in the schema — typos fail instead of planting dead keys — and
-the file is rewritten atomically as the full normalized document, so what
+`"2m"`. `null` is refused. `set` requires a real leaf in the schema —
+typos fail instead of planting dead keys. `unset` removes an existing key
+from the input document, including an unknown key that prevents validation;
+normalization restores its default when one exists. The file is rewritten
+atomically as the full normalized document, so what
 lands on disk is exactly what the loader computes (durations come back
 canonical: `2m` becomes `"2m0s"`). Both `set` and `unset` print
 "takes effect on next start"; in practice the REPL re-reads the
@@ -266,8 +269,9 @@ canonical: `2m` becomes `"2m0s"`). Both `set` and `unset` print
 
 Strictness is split deliberately: the REPL refuses to boot on a file that
 fails strict decode — unknown keys or trailing garbage are errors, not
-warnings — while the admin commands decode leniently so
-`config unset` can still repair the file that strict mode rejects.
+warnings. Gateway and onboarding commands use lenient boot loading;
+`config` commands open the file directly so `config unset` can repair a
+document that strict mode rejects.
 
 ## Inside the REPL
 
@@ -429,10 +433,18 @@ removes it entirely, `/title` names it, `/export` dumps it as markdown.
 not on exit. See [Persistence](./persistence.md) for the segment format
 compaction produces.
 
+If an interrupted compaction leaves one extra sealed segment, stop the app,
+back up the affected conversation directory, then use
+`nusallm conversation repair <id> --discard-duplicate` when its messages
+still lead `active.jsonl`, or `--commit` when the active rewrite removed
+them. The command checks the chosen case and recalculates counters when
+committing. A missing segment needs restoration from backup; see the
+[recovery procedure](./persistence.md#compact--sealing-history).
+
 ### Tools the model can call
 
 `/tools` lists what the model may invoke; the current wiring
-(`cmd/nusallm/main.go`) registers five, all at `agent` permission —
+(`cmd/nusallm/wire.go`) registers five, all at `agent` permission —
 meaning they run without asking you first:
 
 | Tool | Scope |
@@ -446,7 +458,10 @@ meaning they run without asking you first:
 The file tools are confined to the workspace; `exec` is not — it runs in
 the launch environment with a default 120 s timeout (the model may ask
 for up to 600 s) and spills oversized output to
-`$TMPDIR/nusallm-exec-*.log`. `/help` says it plainly: *exec is
+`<storage.dir>/conversations/<id>/tool-output/`. Spill files remain available
+until the user deletes the conversation; deleting the conversation removes
+them together with its history.
+`/help` says it plainly: *exec is
 unsandboxed — review command activity.* Watch the `exec <tool>` phase in
 the status line.
 

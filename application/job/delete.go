@@ -6,7 +6,7 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/worker"
 )
 
-// Delete removes the room — meta, live tail, every sealed segment — and
+// Delete removes the room — meta, live tail, sealed segments, tool output — and
 // retires the worker: returning worker.ErrTerminate after a successful
 // delete makes the worker drain its queue (410 for everything queued)
 // and exit. It preempts: a running job is interrupted first.

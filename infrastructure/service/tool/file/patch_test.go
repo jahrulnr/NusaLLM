@@ -10,6 +10,7 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
+	repoworkspace "github.com/jahrulnr/nusallm/infrastructure/repository/workspace"
 )
 
 func TestFilePatchToolPatches(t *testing.T) {
@@ -97,7 +98,7 @@ func TestFilePatchToolRejects(t *testing.T) {
 
 func mustPatchTool(t *testing.T, root string) service.Tool {
 	t.Helper()
-	tool, err := NewFilePatchTool(root)
+	tool, err := NewFilePatchTool(repoworkspace.NewLocal(), root)
 	if err != nil {
 		t.Fatal(err)
 	}

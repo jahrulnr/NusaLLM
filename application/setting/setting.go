@@ -16,17 +16,17 @@ import (
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
-// SettingApp fronts the config file path. There is no repository — the
-// file is the store and config.Load is its reader.
+// SettingApp validates and mutates settings through an injected config store.
 type SettingApp struct {
-	path string
+	path  string
+	store config.Store
 }
 
 // New binds the app to the resolved config path. An empty path means the
 // process runs on tag defaults: Show still works, Set reports it has
 // nowhere to write.
-func New(path string) *SettingApp {
-	return &SettingApp{path: path}
+func New(store config.Store, path string) *SettingApp {
+	return &SettingApp{path: path, store: store}
 }
 
 // Path reports the file the app edits — "" when running on defaults.
@@ -36,7 +36,7 @@ func (a *SettingApp) Path() string { return a.path }
 // `default` tags — as indented JSON. A missing file shows defaults.
 func (a *SettingApp) Show() ([]byte, error) {
 	cfg := config.NewConfig()
-	if err := cfg.Load(a.path); err != nil {
+	if err := cfg.Load(a.store, a.path); err != nil {
 		if a.path != "" && errors.Is(err, os.ErrNotExist) {
 			return json.MarshalIndent(config.NewConfig(), "", "  ")
 		}
@@ -50,7 +50,7 @@ func (a *SettingApp) Validate() error {
 	if a.path == "" {
 		return errors.New("no config file configured (CONFIG_PATH unset)")
 	}
-	raw, err := os.ReadFile(a.path)
+	raw, err := a.store.Read(a.path)
 	if errors.Is(err, os.ErrNotExist) {
 		return apperror.New(400, "no config file",
 			fmt.Errorf("%s does not exist — run `config set` to create it", a.path))
@@ -113,8 +113,8 @@ func (a *SettingApp) Set(key, rawValue string) ([]byte, error) {
 	}
 	cfg, err := config.Validate(out)
 	if err != nil {
-		return nil, apperror.New(400, "invalid value",
-			fmt.Errorf("config key %q: %v", key, causeOf(err)))
+		return nil, apperror.New(400, "config still invalid",
+			fmt.Errorf("after setting %q: %v", key, causeOf(err)))
 	}
 	return a.write(cfg)
 }
@@ -132,6 +132,10 @@ func (a *SettingApp) Unset(key string) ([]byte, error) {
 	for _, seg := range segments[:len(segments)-1] {
 		next, ok := node[seg].(map[string]any)
 		if !ok {
+			if _, present := node[seg]; present {
+				return nil, apperror.New(400, "invalid config file",
+					fmt.Errorf("config file has a non-section value at %q — use `config unset %s` to remove it", seg, seg))
+			}
 			return nil, apperror.New(400, "unknown setting",
 				fmt.Errorf("config key %q: %q is not a section", key, seg))
 		}
@@ -162,7 +166,7 @@ func (a *SettingApp) doc(create bool) (map[string]any, error) {
 	if a.path == "" {
 		return nil, errors.New("no config file configured (CONFIG_PATH unset)")
 	}
-	raw, err := os.ReadFile(a.path)
+	raw, err := a.store.Read(a.path)
 	if errors.Is(err, os.ErrNotExist) {
 		if create {
 			return map[string]any{}, nil
@@ -176,7 +180,7 @@ func (a *SettingApp) doc(create bool) (map[string]any, error) {
 	var doc map[string]any
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return nil, apperror.New(400, "invalid config file",
-			fmt.Errorf("%s does not decode: %w — fix it or start over", a.path, err))
+			fmt.Errorf("%s does not decode: %w — fix or replace the file manually", a.path, err))
 	}
 	if doc == nil {
 		return nil, apperror.New(400, "invalid config file",
@@ -193,7 +197,7 @@ func (a *SettingApp) write(cfg config.Config) ([]byte, error) {
 		return nil, err
 	}
 	raw = append(raw, '\n')
-	if err := config.WriteFileAtomic(a.path, raw); err != nil {
+	if err := a.store.WriteAtomic(a.path, raw); err != nil {
 		return nil, err
 	}
 	return raw, nil

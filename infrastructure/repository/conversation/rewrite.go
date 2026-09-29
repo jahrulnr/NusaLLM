@@ -92,18 +92,6 @@ func (r *ConversationRepository) RewriteFrom(ctx context.Context, convID, msgID,
 				tailPatches = append(tailPatches, l)
 			}
 		}
-		live, err := toolCallIDsFromMessageLines(merged)
-		if err != nil {
-			return err
-		}
-		merged, err = dropDeadToolOutputPatches(merged, live)
-		if err != nil {
-			return err
-		}
-		tailPatches, err = dropDeadToolOutputPatches(tailPatches, live)
-		if err != nil {
-			return err
-		}
 		merged = append(merged, tailPatches...)
 		// Drop sealed segments before the new tail lands — if active
 		// were published first, a crash could reload merged history
@@ -124,7 +112,8 @@ func (r *ConversationRepository) RewriteFrom(ctx context.Context, convID, msgID,
 // rewriteCut finds msgID among message lines and returns the stream cut
 // right after it, with the target's content patched in place. Non-message
 // lines keep their position — a tool_output patch preceding the cut still
-// applies. found=false means the id isn't in this stream at all.
+// applies. found=false means the id isn't in this stream at all. A patch
+// without a retained call is ignored when the stream is read.
 func rewriteCut(lines [][]byte, msgID, content string) (cut [][]byte, found bool, err error) {
 	for i, l := range lines {
 		var lr lineRecord
@@ -151,14 +140,6 @@ func rewriteCut(lines [][]byte, msgID, content string) (cut [][]byte, found bool
 				cut = append(cut, l)
 			}
 		}
-		live, err := toolCallIDsFromMessageLines(cut)
-		if err != nil {
-			return nil, false, err
-		}
-		cut, err = dropDeadToolOutputPatches(cut, live)
-		if err != nil {
-			return nil, false, err
-		}
 		return cut, true, nil
 	}
 	return nil, false, nil
@@ -176,7 +157,7 @@ func joinLines(lines [][]byte) []byte {
 // recountMeta resyncs the derived counters with the stream after surgery
 // — sealed count is re-globbed so it doubles as the next segment index.
 func (r *ConversationRepository) recountMeta(convID string) error {
-	meta, err := r.readMeta(convID)
+	meta, err := r.readMetaUnvalidated(convID)
 	if err != nil {
 		return err
 	}
@@ -185,14 +166,11 @@ func (r *ConversationRepository) recountMeta(convID string) error {
 		return err
 	}
 	meta.SealedSegments = len(segs)
-	if err := r.writeMeta(convID, meta); err != nil {
-		return err
-	}
-	active, err := r.loadMessages(convID, false)
+	active, err := r.loadMessages(convID, 0)
 	if err != nil {
 		return err
 	}
-	all, err := r.loadMessages(convID, true)
+	all, err := r.loadMessages(convID, meta.SealedSegments)
 	if err != nil {
 		return err
 	}

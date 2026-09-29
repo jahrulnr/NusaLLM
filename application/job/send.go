@@ -47,9 +47,10 @@ func (r *PersistenceReceipt) appendUserMessage(appendMessage func() (bool, error
 // an aggregator upstream pin, and the workspace the room's tools work
 // in. Zero values keep the conversation's stored binding.
 type SendOptions struct {
-	Effort    enum.Effort // unset/default = the model's configured effort
-	Upstream  string      // aggregator backend name; "" = the gateway decides
-	Workspace string      // absolute dir; "" = keep the room's binding
+	Effort      enum.Effort      // unset/default = the model's configured effort
+	Upstream    string           // aggregator backend name; "" = the gateway decides
+	Workspace   string           // absolute dir; "" = keep the room's binding
+	Environment enum.Environment // "" = keep the room's binding (local for a new room)
 }
 
 // Send is one user turn as a queued command: it validates routing,
@@ -94,7 +95,20 @@ func (j *Send) Execute(execCtx context.Context) (err error) {
 			fresh = true
 		}
 
-		gw, model, svc, err := d.resolveRoute(ctx, convID, conv, j.Route, j.ModelID)
+		if j.Opts.Environment != "" {
+			previous := conv.Environment()
+			if err := conv.SetEnvironment(j.Opts.Environment); err != nil {
+				return apperror.New(400, "unknown conversation environment", err)
+			}
+			if !fresh && previous != j.Opts.Environment {
+				conv.SetWorkspace("")
+			}
+		}
+		driver, err := d.environment(conv)
+		if err != nil {
+			return err
+		}
+		gw, model, svc, err := d.resolveRoute(ctx, convID, conv, driver, j.Route, j.ModelID)
 		if err != nil {
 			return err
 		}
@@ -106,7 +120,14 @@ func (j *Send) Execute(execCtx context.Context) (err error) {
 		}
 		model.SetUpstream(j.Opts.Upstream)
 		if j.Opts.Workspace != "" {
-			conv.SetWorkspace(j.Opts.Workspace)
+			if driver.Workspace() == nil {
+				return apperror.New(500, "environment workspace unavailable", nil)
+			}
+			root, err := driver.Workspace().CheckRoot(j.Opts.Workspace)
+			if err != nil {
+				return apperror.New(400, "invalid conversation workspace", err)
+			}
+			conv.SetWorkspace(root)
 		}
 
 		user, err := entity.NewMessage(enum.RoleUser, j.Message)
@@ -150,7 +171,7 @@ func (j *Send) Execute(execCtx context.Context) (err error) {
 			return err
 		}
 
-		if err := d.runTurn(ctx, convID, conv, gw, model, svc, j.OnEvent); err != nil {
+		if err := d.runTurn(ctx, convID, conv, driver, gw, model, svc, j.OnEvent); err != nil {
 			return err
 		}
 		conv.SetRoute(route)     // existing rooms re-bind only on success —

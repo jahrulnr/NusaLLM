@@ -198,9 +198,11 @@ func TestTurnSendEndToEnd(t *testing.T) {
 	app := appconversation.New(
 		convs,
 		gateways,
-		map[enum.Style]dservice.TextModelService{enum.StyleCompletion: textcompletion.New(coretext.Options{})},
-		nil,
+		map[enum.Environment]appjob.EnvironmentDriver{enum.EnvironmentLocal: appjob.EnvironmentBundle{
+			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: textcompletion.New(coretext.Options{})},
+		}},
 		config.NewConfig(),
+		nil,
 		"",
 	)
 	defer func() { _ = app.Shutdown(context.Background()) }()

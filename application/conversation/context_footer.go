@@ -35,7 +35,11 @@ func (app *ConversationApp) ContextFooterStats(ctx context.Context, convID, rout
 			if conv.SystemPrompt() == "" {
 				conv.SetSystemPrompt(prompt.SystemPrompt("conversation"))
 			}
-			conv.SetTools(app.ToolSchemas())
+			driver := deps.Environments[conv.Environment()]
+			if driver == nil {
+				return stats, apperror.New(400, "conversation environment unavailable", nil)
+			}
+			conv.SetTools(driver.ToolSchemas())
 			stats.Estimate = conv.EstimatedTokens()
 			if route == "" {
 				route = conv.Route()

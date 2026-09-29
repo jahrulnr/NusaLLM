@@ -27,6 +27,7 @@ import (
 	reposecret "github.com/jahrulnr/nusallm/infrastructure/repository/secret"
 	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
 	textcompletion "github.com/jahrulnr/nusallm/infrastructure/service/core/text/completion"
+	toolsummary "github.com/jahrulnr/nusallm/infrastructure/service/tool/summary"
 )
 
 type sendOutcome struct {
@@ -87,9 +88,11 @@ func fixture(t *testing.T, handler http.HandlerFunc) (*ConversationApp, *aggrega
 	app := New(
 		repoconversation.NewConversationRepository(t.TempDir()),
 		gateways,
-		map[enum.Style]dservice.TextModelService{enum.StyleCompletion: textcompletion.New(coretext.Options{})},
-		nil, // no tool executors
+		map[enum.Environment]appjob.EnvironmentDriver{enum.EnvironmentLocal: appjob.EnvironmentBundle{
+			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: textcompletion.New(coretext.Options{})},
+		}},
 		config.NewConfig(),
+		nil,
 		"",
 	)
 	return app, &gw
@@ -258,14 +261,31 @@ func TestSendSerializesPerConv(t *testing.T) {
 		okHandler(w, r)
 	})
 	var wg sync.WaitGroup
+	posted := [2]chan struct{}{make(chan struct{}), make(chan struct{})}
 	for i := 0; i < 2; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, _ = app.Send(t.Context(), "ser", "gw1", "m1", fmt.Sprintf("m%d", i), nil, appjob.SendOptions{}, nil)
+			ctx := &signaledContext{Context: t.Context(), observed: posted[i]}
+			_, _ = app.Send(ctx, "ser", "gw1", "m1", fmt.Sprintf("m%d", i), nil, appjob.SendOptions{}, nil)
 		}(i)
 	}
-	time.Sleep(100 * time.Millisecond)             // both queued/running
+	// Both submissions must be posted, then exactly one may be running
+	// upstream — goroutine scheduling is not a synchronization point.
+	for i := range posted {
+		select {
+		case <-posted[i]:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("send %d was never posted", i)
+		}
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for atomic.LoadInt32(&calls) != 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("first send did not reach the upstream: %d calls", calls)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	if got := atomic.LoadInt32(&calls); got != 1 { // second must be queued
 		t.Fatalf("sends overlapped: %d upstream calls", got)
 	}
@@ -338,11 +358,15 @@ func TestQueuedSendCancelable(t *testing.T) {
 // user message has committed.
 func TestCancelPersistsArrivedDeltasAndCompleteTools(t *testing.T) {
 	started := make(chan struct{})
+	arrived := make(chan struct{})
+	var arrivedOnce sync.Once
 	app, gw := fixture(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"think\",\"content\":\"hello\"}}]}\n\n"))
+		// Tool-call deltas first, the text block last — its DeltaEvent
+		// proves every earlier block was already parsed by the client.
 		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"exec\",\"arguments\":\"{\\\"command\\\":\\\"somecode.sh\\\"}\"}}]}}]}\n\n"))
 		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"c2\",\"type\":\"function\",\"function\":{\"name\":\"exec\",\"arguments\":\"{\\\"command\\\":\\\"tail\"}}]}}]}\n\n"))
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"think\",\"content\":\"hello\"}}]}\n\n"))
 		w.(http.Flusher).Flush()
 		close(started)
 		<-r.Context().Done()
@@ -353,7 +377,11 @@ func TestCancelPersistsArrivedDeltasAndCompleteTools(t *testing.T) {
 	}
 	done := make(chan sendOutcome, 1)
 	go func() {
-		result, err := app.Send(t.Context(), "partial", "gw1", "m1", "ping", nil, appjob.SendOptions{}, nil)
+		result, err := app.Send(t.Context(), "partial", "gw1", "m1", "ping", nil, appjob.SendOptions{}, func(e event.TurnEvent) {
+			if e.Kind() == enum.TurnEventDelta && e.Delta() == "hello" {
+				arrivedOnce.Do(func() { close(arrived) })
+			}
+		})
 		done <- sendOutcome{result: result, err: err}
 	}()
 	select {
@@ -361,7 +389,13 @@ func TestCancelPersistsArrivedDeltasAndCompleteTools(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("stream did not start")
 	}
-	time.Sleep(50 * time.Millisecond)
+	// Cancel only once the client consumed every flushed block — the
+	// delta on the final block implies the tool-call blocks already ran.
+	select {
+	case <-arrived:
+	case <-time.After(2 * time.Second):
+		t.Fatal("streamed delta never arrived")
+	}
 	if err := app.Cancel(t.Context(), "partial"); err != nil {
 		t.Fatal(err)
 	}
@@ -527,7 +561,10 @@ func waitWorkers(t *testing.T, app *ConversationApp, n int) {
 // proceeds once the slot frees.
 func TestCancelLeavesQueuedSend(t *testing.T) {
 	release := make(chan struct{})
+	entered := make(chan struct{})
+	var enteredOnce sync.Once
 	app, _ := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		enteredOnce.Do(func() { close(entered) })
 		<-release
 		okHandler(w, r)
 	})
@@ -536,23 +573,45 @@ func TestCancelLeavesQueuedSend(t *testing.T) {
 		_, err := app.Send(t.Context(), "q", "gw1", "m1", "first", nil, appjob.SendOptions{}, nil)
 		running <- err
 	}()
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first send did not reach the upstream")
+	}
+	queuedCtx := &signaledContext{Context: t.Context(), observed: make(chan struct{})}
 	queued := make(chan error, 1)
 	go func() {
-		_, err := app.Send(t.Context(), "q", "", "", "second", nil, appjob.SendOptions{}, nil)
+		_, err := app.Send(queuedCtx, "q", "", "", "second", nil, appjob.SendOptions{}, nil)
 		queued <- err
 	}()
-	time.Sleep(50 * time.Millisecond) // second queued
+	select {
+	case <-queuedCtx.observed: // second is queued while the first holds the slot
+	case <-time.After(2 * time.Second):
+		t.Fatal("second send never queued")
+	}
 
 	if err := app.Cancel(t.Context(), "q"); err != nil {
 		t.Fatalf("Cancel running: %v", err)
 	}
-	close(release)
-	if err := <-running; apperror.As(err).StatusCode() != 408 {
-		t.Fatalf("running send after Cancel = %v, want 408", err)
+	// The canceled send must fully unwind before the upstream opens: a
+	// response landing inside the cancel window is still persisted —
+	// partial replies are honest history — and would inflate the count.
+	select {
+	case err := <-running:
+		if apperror.As(err).StatusCode() != 408 {
+			t.Fatalf("running send after Cancel = %v, want 408", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Cancel did not reach the running send")
 	}
-	if err := <-queued; err != nil {
-		t.Fatalf("queued send must proceed after the running one dies: %v", err)
+	close(release)
+	select {
+	case err := <-queued:
+		if err != nil {
+			t.Fatalf("queued send must proceed after the running one dies: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued send never ran after the cancel")
 	}
 	conv, _ := app.deps.Convs.Load(t.Context(), "q")
 	if len(conv.Messages()) != 3 { // user1 + user2 + assistant2 — no assistant1
@@ -628,9 +687,11 @@ func TestAdapterNoAppendIsInternalError(t *testing.T) {
 	app := New(
 		repoconversation.NewConversationRepository(t.TempDir()),
 		gateways,
-		map[enum.Style]dservice.TextModelService{enum.StyleCompletion: noAppendSvc{}},
-		nil,
+		map[enum.Environment]appjob.EnvironmentDriver{enum.EnvironmentLocal: appjob.EnvironmentBundle{
+			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: noAppendSvc{}},
+		}},
 		config.NewConfig(),
+		nil,
 		"",
 	)
 	result, err := app.Send(t.Context(), "badsvc", "gw1", "m1", "ping", nil, appjob.SendOptions{}, nil)
@@ -666,12 +727,16 @@ func TestSendToolLoop(t *testing.T) {
 	}
 	svc := &scriptSvc{}
 	convs := repoconversation.NewConversationRepository(t.TempDir())
+	ownerTool := &conversationOwnerTool{}
 	app := New(
 		convs,
 		gateways,
-		map[enum.Style]dservice.TextModelService{enum.StyleCompletion: svc},
-		map[string]dservice.Tool{"echo": echoTool{}},
+		map[enum.Environment]appjob.EnvironmentDriver{enum.EnvironmentLocal: appjob.EnvironmentBundle{
+			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: svc},
+			Tools:    map[string]dservice.Tool{"echo": ownerTool},
+		}},
 		config.NewConfig(),
+		nil,
 		"",
 	)
 	var evs []event.TurnEvent
@@ -689,6 +754,9 @@ func TestSendToolLoop(t *testing.T) {
 	}
 	if result.ConversationID != "loop" {
 		t.Fatalf("convID: %q", result.ConversationID)
+	}
+	if ownerTool.conversationID != "loop" {
+		t.Fatalf("tool output owner = %q, want loop", ownerTool.conversationID)
 	}
 	if !result.UserMessagePersisted {
 		t.Fatal("successful send must report its user message as persisted")
@@ -747,6 +815,171 @@ func (s *scriptSvc) Send(_ context.Context, conv *aggregate.Conversation, _ *agg
 }
 
 type echoTool struct{}
+
+type environmentService struct{ label string }
+
+func (s environmentService) Send(_ context.Context, conv *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, _ event.TurnEventHandler) error {
+	last := conv.Last()
+	if last.Role() == enum.RoleUser {
+		m, _ := entity.NewMessage(enum.RoleAssistant, "")
+		call, _ := entity.NewToolCall("call_1", "echo", `{}`, enum.TooltypeOrigin)
+		m.AddToolCall(call)
+		m.SetFinishReason(enum.FinishReasonToolCalls)
+		conv.Append(m)
+		return nil
+	}
+	m, _ := entity.NewMessage(enum.RoleAssistant, s.label+":"+last.ToolCalls()[0].Output())
+	m.SetFinishReason(enum.FinishReasonStop)
+	conv.Append(m)
+	return nil
+}
+
+type environmentTool struct {
+	echoTool
+	label string
+}
+
+type virtualWorkspace struct{}
+
+func (virtualWorkspace) CheckRoot(dir string) (string, error) {
+	if dir == "/remote/project" {
+		return dir, nil
+	}
+	return "", fmt.Errorf("unknown virtual workspace %q", dir)
+}
+
+func (virtualWorkspace) Open(context.Context, string) (drepo.WorkspaceSession, error) {
+	return nil, fmt.Errorf("unused by scripted service")
+}
+
+func (t environmentTool) Execute(context.Context, entity.ToolCall, dservice.ToolEmitter) (dservice.ToolResult, error) {
+	return dservice.ToolResult{Text: t.label}, nil
+}
+
+func TestSendSelectsEnvironmentPerConversationAndResume(t *testing.T) {
+	gw, _ := aggregate.NewGateway("gw1", "stub", "http://unused", enum.StyleCompletion)
+	m, _ := entity.NewModel("m1", "gw1")
+	gw.SetModels([]entity.Model{m})
+	gateways := repogateway.NewGatewayRepository(t.TempDir(), nil)
+	if err := gateways.Save(t.Context(), &gw); err != nil {
+		t.Fatal(err)
+	}
+	convs := repoconversation.NewConversationRepository(t.TempDir())
+	app := New(convs, gateways, map[enum.Environment]appjob.EnvironmentDriver{
+		enum.EnvironmentLocal: appjob.EnvironmentBundle{
+			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: environmentService{label: "local"}},
+			Tools:    map[string]dservice.Tool{"echo": environmentTool{label: "local"}},
+		},
+		enum.EnvironmentDocker: appjob.EnvironmentBundle{
+			WorkspaceStore: virtualWorkspace{},
+			Services:       map[enum.Style]dservice.TextModelService{enum.StyleCompletion: environmentService{label: "docker"}},
+			Tools:          map[string]dservice.Tool{"echo": environmentTool{label: "docker"}, "summary": toolsummary.NewSummaryTool()},
+		},
+	}, config.NewConfig(), nil, "")
+	t.Cleanup(func() { _ = app.Shutdown(context.Background()) })
+
+	for _, tc := range []struct {
+		id   string
+		opts appjob.SendOptions
+		want string
+	}{
+		{"local-room", appjob.SendOptions{}, "local:local"},
+		{"docker-room", appjob.SendOptions{Environment: enum.EnvironmentDocker, Workspace: "/remote/project"}, "docker:docker"},
+		{"docker-room", appjob.SendOptions{}, "docker:docker"},
+		{"local-room", appjob.SendOptions{}, "local:local"},
+	} {
+		if _, err := app.Send(t.Context(), tc.id, "gw1", "m1", "hi", nil, tc.opts, nil); err != nil {
+			t.Fatalf("send %s: %v", tc.id, err)
+		}
+		conv, err := convs.Load(t.Context(), tc.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := conv.Last().Content(); got != tc.want {
+			t.Fatalf("%s answer = %q, want %q", tc.id, got, tc.want)
+		}
+		if tc.id == "docker-room" && conv.Workspace() != "/remote/project" {
+			t.Fatalf("docker workspace = %q", conv.Workspace())
+		}
+	}
+	localSchemas, err := app.ToolSchemas(t.Context(), "local-room")
+	if err != nil || len(localSchemas) != 1 {
+		t.Fatalf("local tool catalog = %v, %v", localSchemas, err)
+	}
+	dockerSchemas, err := app.ToolSchemas(t.Context(), "docker-room")
+	if err != nil || len(dockerSchemas) != 2 || dockerSchemas[1].Name() != "summary" {
+		t.Fatalf("docker tool catalog = %v, %v", dockerSchemas, err)
+	}
+	if _, err := app.Send(t.Context(), "bad-workspace", "gw1", "m1", "hi", nil,
+		appjob.SendOptions{Environment: enum.EnvironmentDocker, Workspace: "/unknown"}, nil); apperror.As(err).StatusCode() != 400 {
+		t.Fatalf("driver must reject an unknown workspace before persistence: %v", err)
+	}
+	if _, err := convs.Load(t.Context(), "bad-workspace"); apperror.As(err).StatusCode() != 404 {
+		t.Fatalf("invalid workspace persisted a room: %v", err)
+	}
+	beforeEdit, err := convs.Load(t.Context(), "docker-room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lastUser := beforeEdit.Messages()[len(beforeEdit.Messages())-3]
+	if err := app.Edit(t.Context(), "docker-room", lastUser.ID(), "edited", nil); err != nil {
+		t.Fatal(err)
+	}
+	afterEdit, err := convs.Load(t.Context(), "docker-room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterEdit.Last().Content() != "docker:docker" || afterEdit.Environment() != enum.EnvironmentDocker {
+		t.Fatalf("edit used wrong driver: %q %q", afterEdit.Last().Content(), afterEdit.Environment())
+	}
+	if _, err := app.Send(t.Context(), "docker-room", "", "", "switch", nil,
+		appjob.SendOptions{Environment: enum.EnvironmentLocal}, nil); err != nil {
+		t.Fatal(err)
+	}
+	switched, err := convs.Load(t.Context(), "docker-room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if switched.Environment() != enum.EnvironmentLocal || switched.Workspace() != "" || switched.Last().Content() != "local:local" {
+		t.Fatalf("switched binding/result = %q %q %q", switched.Environment(), switched.Workspace(), switched.Last().Content())
+	}
+	if _, err := app.Send(t.Context(), "missing-driver", "gw1", "m1", "hi", nil,
+		appjob.SendOptions{Environment: enum.EnvironmentSSH}, nil); apperror.As(err).StatusCode() != 400 {
+		t.Fatalf("unregistered driver must fail before writing, got %v", err)
+	}
+	if _, err := convs.Load(t.Context(), "missing-driver"); apperror.As(err).StatusCode() != 404 {
+		t.Fatalf("unregistered driver persisted a room: %v", err)
+	}
+	orphan, _ := aggregate.NewConversation("unavailable-room")
+	orphan.SetRoute("gw1")
+	orphan.SetModelID("m1")
+	if err := orphan.SetEnvironment(enum.EnvironmentSSH); err != nil {
+		t.Fatal(err)
+	}
+	if err := convs.Save(t.Context(), orphan); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.Send(t.Context(), orphan.ID(), "", "", "hi", nil, appjob.SendOptions{}, nil); apperror.As(err).StatusCode() != 400 {
+		t.Fatalf("resumed unavailable driver must fail, got %v", err)
+	}
+	unchanged, err := convs.Load(t.Context(), orphan.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unchanged.Messages()) != 0 {
+		t.Fatalf("failed resume changed history: messages=%d", len(unchanged.Messages()))
+	}
+}
+
+type conversationOwnerTool struct {
+	echoTool
+	conversationID string
+}
+
+func (tool *conversationOwnerTool) Execute(ctx context.Context, call entity.ToolCall, emit dservice.ToolEmitter) (dservice.ToolResult, error) {
+	tool.conversationID = dservice.ConversationID(ctx)
+	return tool.echoTool.Execute(ctx, call, emit)
+}
 
 func (echoTool) Schema() valueobject.ToolSchema {
 	s, _ := valueobject.NewToolSchema("echo", "echo input", nil, true, enum.ToolPermissionAgent)

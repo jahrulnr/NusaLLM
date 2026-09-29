@@ -284,7 +284,7 @@ paths:
                         name: "read_file"
                         status: "completed"
                         input: "{\"path\":\"README.md\"}"
-                        output: "<untrusted_tool latency=\"12ms\">\n…\n</untrusted_tool>"
+                        output: "…"
                         calledAt: "2026-01-12T09:29:29Z"
                     createdAt: "2026-01-12T09:29:31Z"
         "400": { $ref: "#/components/responses/BadRequest" }
@@ -621,7 +621,12 @@ paths:
     get:
       operationId: listTools
       tags: [tools]
-      summary: Tool catalog
+      summary: Tool catalog for a conversation
+      parameters:
+        - in: query
+          name: conversationId
+          schema: { type: string }
+          description: Persisted conversation ID. Omit for the local starting catalog.
       description: |
         The registered tool schemas, sorted by name — the catalog the turn
         loop re-applies each turn. Note this is the *registered* set, not
@@ -664,6 +669,7 @@ paths:
                         path: { type: "string", description: "Path relative to the workspace root" }
                       required: ["path"]
         "403": { $ref: "#/components/responses/ForbiddenOrigin" }
+        "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/Internal" }
         "503": { $ref: "#/components/responses/Unavailable" }
 
@@ -856,7 +862,7 @@ components:
 
     Conversation:
       type: object
-      required: [id, route, modelId, usage, createdAt, updatedAt, messageCount, activeCount, sealedSegments]
+      required: [id, route, modelId, environment, usage, createdAt, updatedAt, messageCount, activeCount, sealedSegments]
       properties:
         id: { type: string, example: "c_k4j9xm2p8q1vz7w0t6nb5r3yhd" }
         title:
@@ -870,7 +876,11 @@ components:
           description: Model id within the route's catalog; empty when unbound.
         workspace:
           type: string
-          description: Absolute directory the room's tools work in; empty defers to the server's default workspace.
+          description: Directory the room's tools work in according to its selected environment; empty defers to that driver's default workspace.
+        environment:
+          type: string
+          enum: [local, ssh, docker]
+          description: Persisted execution environment binding. Only registered drivers are available; currently local is registered.
         usage: { $ref: "#/components/schemas/Usage" }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
@@ -978,7 +988,7 @@ components:
         status:
           type: string
           enum: [pending, completed]
-          description: "`pending` = no output recorded yet; `completed` = output stored. Failure details ride inside the output envelope."
+          description: "`pending` = no output recorded yet; `completed` = output stored. Failure details appear in the plain output text."
         input:
           type: string
           description: Exact argument string the model produced (usually JSON). Owner-visible untrusted text — render escaped, never as markup.
@@ -989,7 +999,7 @@ components:
           description: When the call was recorded. Omitted when a hydrated record has no timestamp rather than reporting the zero time.
         output:
           type: string
-          description: "Exact persisted evidence envelope sent back to the model — present only when status is `completed`. Omitted for `pending`."
+          description: "Plain tool result text without the provider's untrusted-evidence envelope — present only when status is `completed`. Omitted for `pending`."
         attachments:
           type: array
           items: { $ref: "#/components/schemas/AttachmentRef" }

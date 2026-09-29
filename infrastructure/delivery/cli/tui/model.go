@@ -102,7 +102,7 @@ func newModel(r *REPL, interactive bool) replModel {
 		textarea:    ta,
 		spin:        spin,
 		palette:     slashPalette{describe: registry.Describe, complete: registry.Complete},
-		history:     loadHistory(r.historyFile),
+		history:     r.historyStore.Load(r.historyFile),
 		historyIdx:  -1,
 		live:        &strings.Builder{},
 		interactive: interactive,
@@ -718,7 +718,7 @@ func (m replModel) historyNext() (tea.Model, tea.Cmd) {
 func (m *replModel) pushHistory(text string) {
 	m.history = append(m.history, text)
 	m.historyIdx = -1
-	_ = appendHistory(m.repl.historyFile, text)
+	_ = m.repl.historyStore.Append(m.repl.historyFile, text)
 }
 
 // editComposer forwards an edit to the textarea at full height, then fits

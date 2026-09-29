@@ -9,6 +9,7 @@ import (
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 )
@@ -20,14 +21,15 @@ import (
 // alike.
 type FileWriteTool struct {
 	dir    string
+	store  drepo.Workspace
 	schema valueobject.ToolSchema
 }
 
 // NewFileWriteTool binds the tool's default root: every requested path
 // resolves inside it — os.Root confines traversal and symlink escapes
 // alike. A turn-scoped workspace dir overrides it per call.
-func NewFileWriteTool(root string) (service.Tool, error) {
-	abs, err := checkDir(root)
+func NewFileWriteTool(store drepo.Workspace, root string) (service.Tool, error) {
+	abs, err := checkDir(store, root)
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +43,7 @@ func NewFileWriteTool(root string) (service.Tool, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &FileWriteTool{dir: abs, schema: schema}, nil
+	return &FileWriteTool{dir: abs, store: store, schema: schema}, nil
 }
 
 func (tool *FileWriteTool) Schema() valueobject.ToolSchema {
@@ -62,7 +64,7 @@ func (tool *FileWriteTool) Execute(ctx context.Context, call entity.ToolCall, _ 
 	if strings.TrimSpace(input.Path) == "" {
 		return service.ToolResult{}, fmt.Errorf("path is required")
 	}
-	root, _, err := callRoot(ctx, tool.dir)
+	root, err := callRoot(ctx, tool.store, tool.dir)
 	if err != nil {
 		return service.ToolResult{}, err
 	}

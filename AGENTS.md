@@ -14,8 +14,8 @@ Before changing behavior, identify the rule's owner and inspect that layer's
   of them.
 - `infrastructure/repository`: storage format, hydration, atomic writes,
   projections, and other persistence mechanics.
-- `infrastructure/service`: provider protocol translation, I/O, and tool
-  execution. Provider-specific behavior stays with its adapter.
+- `infrastructure/service`: provider protocol translation, network/process
+  I/O, and tool execution. Storage I/O goes through repository ports.
 - `infrastructure/config`, `infrastructure/worker`, `infrastructure/prompt`,
   `infrastructure/error`, `infrastructure/redact`, `cmd`: supporting mechanisms
   and composition, not homes for conversation or gateway policy.
@@ -66,3 +66,10 @@ When changing an existing implementation:
 > Break old contracts when necessary. Update consumers to the new contract. Do not preserve the old contract for compatibility.
 
 Unless explicitly instructed otherwise, assume that backward compatibility is not a requirement.
+
+For bugs and other issues, identify the root cause before choosing a fix. If
+the cause is a flawed design, contract, or ownership boundary, prefer a clean
+breaking refactor and update its consumers over adding a patch that merely
+hides the symptom. If the design is sound and the issue is genuinely missing
+handling (for example, an unhandled error), add the necessary targeted handling
+without forcing a broader refactor.

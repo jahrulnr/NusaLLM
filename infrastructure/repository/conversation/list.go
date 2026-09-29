@@ -3,6 +3,7 @@ package repoconversation
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"sort"
 
@@ -10,7 +11,8 @@ import (
 )
 
 // List reads every conversation's meta and returns infos newest activity
-// first. Directories without a readable meta are skipped.
+// first. Directories without a meta are skipped; corrupt records surface an
+// error so callers do not mistake missing rooms for an empty store.
 func (r *ConversationRepository) List(ctx context.Context) ([]drepo.ConversationInfo, error) {
 	entries, err := os.ReadDir(r.path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -26,7 +28,10 @@ func (r *ConversationRepository) List(ctx context.Context) ([]drepo.Conversation
 		}
 		info, err := r.Info(ctx, e.Name())
 		if err != nil {
-			continue // skip dirs without a readable meta
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("conversation %q: %w", e.Name(), err)
 		}
 		out = append(out, info)
 	}

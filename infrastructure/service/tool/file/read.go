@@ -8,25 +8,25 @@ import (
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
-	"github.com/jahrulnr/nusallm/infrastructure/service/wire"
 )
 
 // FileReadTool reads a text file under the turn's workspace — the
 // constructor carries the schema and validates the default sandbox
-// boundary; Execute resolves the call input against an os.Root opened
-// per call so symlink escapes fail too.
+// boundary; Execute resolves the call input through the injected workspace
+// repository, whose local implementation confines symlink traversal.
 type FileReadTool struct {
 	dir    string
+	store  drepo.Workspace
 	schema valueobject.ToolSchema
 }
 
 // NewFileReadTool binds the tool's default root: every requested path
-// resolves inside it — os.Root confines traversal and symlink escapes
-// alike. A turn-scoped workspace dir overrides it per call.
-func NewFileReadTool(root string) (service.Tool, error) {
-	abs, err := checkDir(root)
+// resolves inside it. A turn-scoped workspace dir overrides it per call.
+func NewFileReadTool(store drepo.Workspace, root string) (service.Tool, error) {
+	abs, err := checkDir(store, root)
 	if err != nil {
 		return nil, err
 	}
@@ -40,7 +40,7 @@ func NewFileReadTool(root string) (service.Tool, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &FileReadTool{dir: abs, schema: schema}, nil
+	return &FileReadTool{dir: abs, store: store, schema: schema}, nil
 }
 
 func (tool *FileReadTool) Schema() valueobject.ToolSchema {
@@ -59,7 +59,7 @@ func (tool *FileReadTool) Execute(ctx context.Context, call entity.ToolCall, _ s
 	}
 	// Reject oversized files before reading — the call's output budget is
 	// the honest cap, enforced again by SetToolOutput on the way out.
-	root, _, err := callRoot(ctx, tool.dir)
+	root, err := callRoot(ctx, tool.store, tool.dir)
 	if err != nil {
 		return service.ToolResult{}, err
 	}
@@ -68,7 +68,7 @@ func (tool *FileReadTool) Execute(ctx context.Context, call entity.ToolCall, _ s
 			retErr = closeErr
 		}
 	}()
-	f, info, err := wire.OpenRegularFile(root, input.Path)
+	f, info, err := root.OpenRegular(input.Path)
 	if err != nil {
 		return service.ToolResult{}, err
 	}

@@ -6,14 +6,6 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
 )
 
-// GatewaySecretKey is the canonical SecretStore key a gateway's apiKey
-// vaults under — records carry only its "secret:"+key reference. The
-// repository and the management plane share the name so both write the
-// same vault entry.
-func GatewaySecretKey(gatewayID string) string {
-	return "gateway/" + gatewayID + "/api_key"
-}
-
 // GatewaySnapshot is the management-plane read of one record: the
 // gateway hydrated WITHOUT resolving its apiKey — Gateway is nil when
 // the file can't decode at all, so broken records still enumerate

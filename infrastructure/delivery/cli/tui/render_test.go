@@ -15,13 +15,15 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
+	repohistory "github.com/jahrulnr/nusallm/infrastructure/repository/history"
+	repoworkspace "github.com/jahrulnr/nusallm/infrastructure/repository/workspace"
 	"github.com/jahrulnr/nusallm/infrastructure/service/workspace"
 	"github.com/muesli/termenv"
 )
 
 func testModel(t *testing.T) *replModel {
 	t.Helper()
-	r := &REPL{Session: &session.Session{}} // render tests never reach command dispatch
+	r := &REPL{Session: &session.Session{}, historyStore: repohistory.NewLocal()} // render tests never reach command dispatch
 	m := newModel(r, false)
 	return &m
 }
@@ -98,7 +100,7 @@ func TestViewPlacesFooterBadgesUnderComposer(t *testing.T) {
 
 func TestFooterShowsWorkspaceAndActivePhase(t *testing.T) {
 	m := testModel(t)
-	root, err := workspace.Open(t.TempDir())
+	root, err := workspace.Open(repoworkspace.NewLocal(), t.TempDir())
 	if err != nil {
 		t.Fatalf("workspace: %v", err)
 	}

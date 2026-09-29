@@ -2,6 +2,12 @@ package repository
 
 import "context"
 
+// GatewaySecretKey names the vault entry shared by gateway management and
+// persistence. Both use this contract when writing a "secret:" reference.
+func GatewaySecretKey(gatewayID string) string {
+	return "gateway/" + gatewayID + "/api_key"
+}
+
 // SecretStore is a key-value port for credential material — api keys,
 // passwords, tokens. Records elsewhere carry a "secret:<key>" reference
 // instead of plaintext; the value resolves through this port at load.

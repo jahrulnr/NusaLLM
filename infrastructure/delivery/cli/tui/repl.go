@@ -16,17 +16,21 @@ import (
 	appgateway "github.com/jahrulnr/nusallm/application/gateway"
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/session"
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/term"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 )
 
 // Options wires the REPL to the use cases, its workspace, and the terminal.
 type Options struct {
-	Conversations *appconversation.ConversationApp
-	Gateways      *appgateway.GatewayApp
-	Workspace     string
-	HistoryDir    string
-	Stdin         io.ReadCloser
-	Stdout        io.Writer
-	Stderr        io.Writer
+	Conversations  *appconversation.ConversationApp
+	Gateways       *appgateway.GatewayApp
+	Workspace      string
+	WorkspaceStore drepo.Workspace
+	HistoryDir     string
+	HistoryStore   HistoryStore
+	HomeDir        string
+	Stdin          io.ReadCloser
+	Stdout         io.Writer
+	Stderr         io.Writer
 }
 
 // REPL composes the session state with the terminal handles the update
@@ -34,9 +38,11 @@ type Options struct {
 // so the model and tests reach session fields directly.
 type REPL struct {
 	*session.Session
-	historyFile string
-	stdin       io.ReadCloser
-	stdout      io.Writer
+	historyFile  string
+	historyStore HistoryStore
+	homeDir      string
+	stdin        io.ReadCloser
+	stdout       io.Writer
 }
 
 // NewREPL binds a REPL to the use cases, workspace root, and private
@@ -45,16 +51,20 @@ func NewREPL(opts Options) (*REPL, error) {
 	if opts.HistoryDir == "" {
 		return nil, errors.New("history directory is required")
 	}
+	if opts.HistoryStore == nil {
+		return nil, errors.New("history repository is required")
+	}
 	sess, err := session.New(session.Options{
-		Conversations: opts.Conversations,
-		Gateways:      opts.Gateways,
-		Workspace:     opts.Workspace,
-		Stderr:        opts.Stderr,
+		Conversations:  opts.Conversations,
+		Gateways:       opts.Gateways,
+		Workspace:      opts.Workspace,
+		WorkspaceStore: opts.WorkspaceStore,
+		Stderr:         opts.Stderr,
 	})
 	if err != nil {
 		return nil, err
 	}
-	historyFile, err := privateHistoryFile(opts.HistoryDir)
+	historyFile, err := opts.HistoryStore.Open(opts.HistoryDir)
 	if err != nil {
 		_ = sess.Close()
 		return nil, err
@@ -66,10 +76,12 @@ func NewREPL(opts Options) (*REPL, error) {
 		opts.Stdout = os.Stdout
 	}
 	return &REPL{
-		Session:     sess,
-		historyFile: historyFile,
-		stdin:       opts.Stdin,
-		stdout:      opts.Stdout,
+		Session:      sess,
+		historyFile:  historyFile,
+		historyStore: opts.HistoryStore,
+		homeDir:      opts.HomeDir,
+		stdin:        opts.Stdin,
+		stdout:       opts.Stdout,
 	}, nil
 }
 

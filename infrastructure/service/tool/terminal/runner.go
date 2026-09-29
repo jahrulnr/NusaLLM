@@ -1,0 +1,35 @@
+package toolexec
+
+import (
+	"context"
+	"errors"
+	"io"
+	"os/exec"
+
+	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
+)
+
+type LocalRunner struct{}
+
+func NewLocalRunner() dservice.CommandRunner { return LocalRunner{} }
+
+func (LocalRunner) Run(ctx context.Context, command, workspace string, output io.Writer) (dservice.ProcessExit, error) {
+	cmd := shellCommand(ctx, command)
+	cmd.WaitDelay = waitDelay
+	cmd.Dir = workspace
+	// Sharing the writer makes os/exec merge stdout and stderr in arrival order.
+	cmd.Stdout = output
+	cmd.Stderr = output
+	if err := cmd.Start(); err != nil {
+		return dservice.ProcessExit{}, err
+	}
+	err := cmd.Wait()
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		if code := exitErr.ExitCode(); code > 0 {
+			return dservice.ProcessExit{Code: code}, nil
+		}
+		return dservice.ProcessExit{Signal: exitErr.Error()}, nil
+	}
+	return dservice.ProcessExit{Err: err}, nil
+}

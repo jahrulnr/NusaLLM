@@ -22,6 +22,7 @@ type conversationDTO struct {
 	Route          string                 `json:"route"`
 	ModelID        string                 `json:"modelId"`
 	Workspace      string                 `json:"workspace,omitempty"`
+	Environment    enum.Environment       `json:"environment"`
 	Usage          transport.UsagePayload `json:"usage"`
 	CreatedAt      time.Time              `json:"createdAt"`
 	UpdatedAt      time.Time              `json:"updatedAt"`
@@ -38,6 +39,7 @@ func toConversation(i drepo.ConversationInfo) conversationDTO {
 		Route:          i.Route,
 		ModelID:        i.ModelID,
 		Workspace:      i.Workspace,
+		Environment:    i.Environment,
 		Usage:          transport.MarshalUsage(i.Usage),
 		CreatedAt:      i.CreatedAt,
 		UpdatedAt:      i.UpdatedAt,
@@ -49,7 +51,7 @@ func toConversation(i drepo.ConversationInfo) conversationDTO {
 
 // toolCallDTO is the owner-visible call record — id, name, lifecycle
 // status, the exact input string the model produced, when the call was
-// recorded, the persisted result envelope when one exists, and any
+// recorded, the plain result text when one exists, and any
 // media the tool produced. Tool I/O intentionally crosses to the local
 // owner UI; optionalContent and key material never do. Output and
 // calledAt are pointers so absent facts omit the key rather than
@@ -74,8 +76,9 @@ func toToolCall(t entity.ToolCall) toolCallDTO {
 	if at := t.CallAt(); !at.IsZero() {
 		d.CalledAt = &at
 	}
-	if out := t.Output(); out != "" {
-		d.Output = &out
+	if t.HasOutput() {
+		plain := t.Output()
+		d.Output = &plain
 	} else {
 		d.Status = "pending"
 	}

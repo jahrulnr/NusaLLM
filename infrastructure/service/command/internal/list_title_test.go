@@ -1,4 +1,4 @@
-package aggregate
+package commandinternal
 
 import (
 	"testing"
@@ -10,7 +10,6 @@ import (
 func TestListDisplayTitle(t *testing.T) {
 	user, _ := entity.NewMessage(enum.RoleUser, "  hello   world  ")
 	assistant, _ := entity.NewMessage(enum.RoleAssistant, "ignore me")
-
 	if got := ListDisplayTitle("My chat", nil); got != "My chat" {
 		t.Fatalf("stored title = %q", got)
 	}
@@ -26,16 +25,16 @@ func TestListDisplayTitle(t *testing.T) {
 }
 
 func TestListDisplayTitleMatchesPrefix(t *testing.T) {
+	if !ListDisplayTitleMatchesPrefix("conv_1", "Bug", "Bug hunt", "") {
+		t.Fatal("empty prefix should match every title")
+	}
 	if !ListDisplayTitleMatchesPrefix("conv_1", "Bug", "Bug hunt", "conv") {
-		t.Fatal("expected id prefix match")
+		t.Fatal("expected id match")
 	}
 	if !ListDisplayTitleMatchesPrefix("conv_1", "", "Find order", "order") {
 		t.Fatal("expected display title match")
 	}
 	if ListDisplayTitleMatchesPrefix("conv_1", "Other", "Other", "nope") {
 		t.Fatal("expected no match")
-	}
-	if !ListDisplayTitleMatchesPrefix("x", "y", "z", "") {
-		t.Fatal("empty prefix matches all")
 	}
 }

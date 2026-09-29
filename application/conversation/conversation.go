@@ -25,7 +25,6 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/config"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
-	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 	"github.com/jahrulnr/nusallm/infrastructure/worker"
 )
@@ -44,11 +43,12 @@ type queuedJob interface {
 // config (mailbox size feeds the workers, turn limits ride inside deps);
 // workers maps conversation id → its serial executor.
 type ConversationApp struct {
-	cfg        config.ConversationConfig
-	configPath string
-	deps       appjob.Deps
-	mu         sync.Mutex
-	workers    map[string]*worker.Worker
+	cfg         config.ConversationConfig
+	configPath  string
+	configStore config.Store
+	deps        appjob.Deps
+	mu          sync.Mutex
+	workers     map[string]*worker.Worker
 
 	shuttingDown bool
 	shutdownDone chan struct{}
@@ -58,9 +58,9 @@ type ConversationApp struct {
 func New(
 	convs drepo.Conversation,
 	gateways drepo.Gateway,
-	services map[enum.Style]dservice.TextModelService,
-	tools map[string]dservice.Tool,
+	environments map[enum.Environment]appjob.EnvironmentDriver,
 	cfg config.Config,
+	configStore config.Store,
 	configPath string,
 ) *ConversationApp {
 	// Normalize once at the boundary — invalid values clamp and zeros
@@ -69,14 +69,14 @@ func New(
 	ccfg := cfg.Conversation
 	ccfg.Normalize()
 	return &ConversationApp{
-		cfg:        ccfg,
-		configPath: configPath,
+		cfg:         ccfg,
+		configStore: configStore,
+		configPath:  configPath,
 		deps: appjob.Deps{
-			Convs:    convs,
-			Gateways: gateways,
-			Services: services,
-			Tools:    tools,
-			Config:   ccfg,
+			Convs:        convs,
+			Gateways:     gateways,
+			Environments: environments,
+			Config:       ccfg,
 		},
 		workers: map[string]*worker.Worker{},
 	}
@@ -92,7 +92,7 @@ func (app *ConversationApp) reloadConfigLocked() {
 		return
 	}
 	var fresh config.Config
-	if err := fresh.Load(app.configPath); err != nil {
+	if err := fresh.Load(app.configStore, app.configPath); err != nil {
 		return
 	}
 	ccfg := fresh.Conversation

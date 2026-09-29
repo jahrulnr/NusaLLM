@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/http/internal/transport"
 )
@@ -44,14 +45,14 @@ type entryDTO struct {
 }
 
 // Register mounts this boundary's routes under /api.
-func Register(api *gin.RouterGroup) {
-	api.GET("/fs/browse", browse)
+func Register(api *gin.RouterGroup, tree drepo.FileTree) {
+	api.GET("/fs/browse", func(c *gin.Context) { browse(c, tree) })
 }
 
-func browse(c *gin.Context) {
+func browse(c *gin.Context, tree drepo.FileTree) {
 	dir := strings.TrimSpace(c.Query("path"))
 	if dir == "" {
-		home, err := os.UserHomeDir()
+		home, err := tree.HomeDir()
 		if err != nil {
 			transport.WriteProblem(c, 500, "internal", "could not resolve the home directory")
 			return
@@ -63,17 +64,17 @@ func browse(c *gin.Context) {
 		return
 	}
 	dir = filepath.Clean(dir)
-	info, err := os.Stat(dir)
+	info, err := tree.Stat(dir)
 	if err != nil || !info.IsDir() {
 		transport.WriteProblem(c, 404, "not_found", "no such directory")
 		return
 	}
-	ents, err := os.ReadDir(dir)
+	ents, err := tree.ReadDir(dir)
 	if err != nil {
 		transport.WriteProblem(c, 403, "forbidden", "directory is not readable")
 		return
 	}
-	out := browseDTO{Path: dir, Roots: roots(), Entries: make([]entryDTO, 0)}
+	out := browseDTO{Path: dir, Roots: roots(tree), Entries: make([]entryDTO, 0)}
 	if parent := filepath.Dir(dir); parent != dir {
 		out.Parent = parent
 	}
@@ -85,7 +86,7 @@ func browse(c *gin.Context) {
 		if e.Type()&os.ModeSymlink != 0 {
 			// A symlink counts only if it resolves to a directory — the
 			// picker navigates real trees.
-			fi, err := os.Stat(filepath.Join(dir, e.Name()))
+			fi, err := tree.Stat(filepath.Join(dir, e.Name()))
 			if err != nil || !fi.IsDir() {
 				continue
 			}
@@ -108,14 +109,14 @@ func browse(c *gin.Context) {
 // roots lists the navigable filesystem roots — "/" on unix, the present
 // drive letters on Windows — so the picker can jump to a tree outside
 // the current directory's ancestry.
-func roots() []rootDTO {
+func roots(tree drepo.FileTree) []rootDTO {
 	if runtime.GOOS != "windows" {
 		return []rootDTO{{Name: "/", Path: "/"}}
 	}
 	var out []rootDTO
 	for d := 'A'; d <= 'Z'; d++ {
 		p := string(d) + `:\`
-		if _, err := os.Stat(p); err == nil {
+		if _, err := tree.Stat(p); err == nil {
 			out = append(out, rootDTO{Name: string(d) + ":", Path: p})
 		}
 	}

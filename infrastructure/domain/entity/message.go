@@ -134,7 +134,8 @@ func (m Message) Attachments() []valueobject.Attachment { return m.attachments }
 func (m *Message) SetToolOutput(id, output string) error {
 	for i := range m.toolCalls {
 		if m.toolCalls[i].ID() == id {
-			return m.toolCalls[i].SetOutput(output)
+			m.toolCalls[i].SetOutput(output)
+			return nil
 		}
 	}
 	return errors.New("tool call not found: " + id)
@@ -153,13 +154,12 @@ func (m *Message) SetToolOutputAttachments(id string, atts []valueobject.Attachm
 	return errors.New("tool call not found: " + id)
 }
 
-// SetStoredToolOutput restores a persisted tool output verbatim — it is
-// already in the enveloped form written by SetOutput. Repository hydration
-// and patch application only.
-func (m *Message) SetStoredToolOutput(id, output string) error {
+// SetStoredToolOutput restores a persisted raw tool output and latency.
+// Repository hydration and patch application only.
+func (m *Message) SetStoredToolOutput(id, output, latency string) error {
 	for i := range m.toolCalls {
 		if m.toolCalls[i].ID() == id {
-			m.toolCalls[i].SetStoredOutput(output)
+			m.toolCalls[i].SetStoredOutput(output, latency)
 			return nil
 		}
 	}

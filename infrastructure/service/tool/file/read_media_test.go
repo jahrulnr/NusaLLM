@@ -12,6 +12,7 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
+	repoworkspace "github.com/jahrulnr/nusallm/infrastructure/repository/workspace"
 )
 
 // Signature + minimal IHDR stub — DetectContentType only inspects the
@@ -138,7 +139,7 @@ func TestReadMediaToolRejects(t *testing.T) {
 
 func mustMediaTool(t *testing.T, root string) service.Tool {
 	t.Helper()
-	tool, err := NewReadMediaTool(root)
+	tool, err := NewReadMediaTool(repoworkspace.NewLocal(), root)
 	if err != nil {
 		t.Fatal(err)
 	}

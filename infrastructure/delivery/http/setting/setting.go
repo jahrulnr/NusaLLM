@@ -27,8 +27,8 @@ type Writer interface {
 	Set(key, rawValue string) ([]byte, error)
 }
 
-// Deps wires the use cases; Writes is optional — nil leaves PATCH
-// unregistered.
+// Deps wires the use cases; Reads and Writes are optional — nil leaves
+// the corresponding routes unregistered.
 type Deps struct {
 	Reads  Reader
 	Writes Writer
@@ -37,7 +37,9 @@ type Deps struct {
 // Register mounts this boundary's routes under /api.
 func Register(api *gin.RouterGroup, d Deps) {
 	s := &server{reads: d.Reads, writes: d.Writes}
-	api.GET("/settings", s.get)
+	if d.Reads != nil {
+		api.GET("/settings", s.get)
+	}
 	if d.Writes != nil {
 		api.PATCH("/settings", s.patch)
 	}

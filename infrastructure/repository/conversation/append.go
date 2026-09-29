@@ -7,8 +7,8 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 )
 
-// AppendMessage appends one message line to active.jsonl — O(1), never
-// rewrites history — and bumps the meta counters Info serves. The bool is
+// AppendMessage appends one message line to active.jsonl without rewriting
+// history and bumps the meta counters Info serves. The bool is
 // true once the line itself has been appended and synced, even when writing
 // the later metadata projection fails.
 func (r *ConversationRepository) AppendMessage(ctx context.Context, convID string, msg entity.Message) (bool, error) {

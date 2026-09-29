@@ -23,7 +23,7 @@ class ToolActivity extends Widget {
   //         input?, output?, resultStored?}
   // `input`/`output` are exact strings from the wire record — live
   // chunks accumulate into `output`; a persisted `completed` record
-  // lands as resultStored+output (the evidence envelope).
+  // lands as resultStored+plain output from the HTTP projection.
   set tool(t) {
     this._tool = t || null;
     this._sync();
@@ -100,13 +100,8 @@ class ToolActivity extends Widget {
       this.inputNote.hidden = false;
     }
 
-    // The stored tool record includes transport delimiters. Show and
-    // copy the tool's own output, without that envelope.
-    let output = t?.output ?? '';
-    if (t?.resultStored) {
-      const wrapped = /^<untrusted_tool(?:\s[^>]*)?>(?:\\n|\n)([\s\S]*)\n<\/untrusted_tool>$/.exec(output);
-      if (wrapped) output = wrapped[1];
-    }
+    // Live chunks and persisted results are both plain tool text.
+    const output = t?.output ?? '';
     if (output) {
       if (this.outputCode._code !== output) {
         this.outputCode.code = output;

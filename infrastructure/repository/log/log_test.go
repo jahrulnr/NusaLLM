@@ -54,6 +54,35 @@ func TestAppendWritesEnvelope(t *testing.T) {
 	}
 }
 
+func TestAppendRejectsEmptyKindWithoutTruncatingLaterRecords(t *testing.T) {
+	dir := t.TempDir()
+	l, err := New(dir, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Append(t.Context(), "first", "one"); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Append(t.Context(), "", "invalid"); err == nil {
+		t.Fatal("empty kind must be rejected before append")
+	}
+	if err := l.Append(t.Context(), "last", "two"); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	l, err = New(dir, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	lines := readLines(t, filepath.Join(dir, activeFile))
+	if len(lines) != 2 || !strings.Contains(lines[1], `"kind":"last"`) {
+		t.Fatalf("restart lost later record: %v", lines)
+	}
+}
+
 func TestRotatePerLines(t *testing.T) {
 	dir := t.TempDir()
 	l, err := New(dir, Options{MaxLines: 2})
@@ -228,6 +257,45 @@ func TestResumeTruncatesTornTail(t *testing.T) {
 		}
 		if err := json.Unmarshal([]byte(line), &rec); err != nil || rec.Kind != "evt" {
 			t.Fatalf("invalid line after torn resume: %q", line)
+		}
+	}
+}
+
+// A corrupt newline-terminated line mid-file must drop the whole tail —
+// the valid records after it are not resurrected, and the next append
+// must not glue onto the dead line's bytes.
+func TestResumeDropsCorruptTail(t *testing.T) {
+	dir := t.TempDir()
+	good := `{"ts":"2024-01-01T00:00:00Z","kind":"evt","data":1}` + "\n"
+	bad := `not-json` + "\n"
+	tail := `{"ts":"2024-01-01T00:00:01Z","kind":"evt","data":2}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, activeFile), []byte(good+bad+tail), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	l, err := New(dir, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	if l.lines != 1 {
+		t.Fatalf("resumed lines = %d, want 1 (valid prefix only)", l.lines)
+	}
+	if err := l.Append(t.Context(), "evt", 3); err != nil {
+		t.Fatal(err)
+	}
+	l.Close()
+
+	lines := readLines(t, filepath.Join(dir, activeFile))
+	if len(lines) != 2 {
+		t.Fatalf("active lines = %d, want 2 (valid prefix + append)", len(lines))
+	}
+	for _, line := range lines {
+		var rec struct {
+			Kind string `json:"kind"`
+		}
+		if err := json.Unmarshal([]byte(line), &rec); err != nil || rec.Kind != "evt" {
+			t.Fatalf("invalid line after corrupt-tail resume: %q", line)
 		}
 	}
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	appconversation "github.com/jahrulnr/nusallm/application/conversation"
 	appgateway "github.com/jahrulnr/nusallm/application/gateway"
+	appjob "github.com/jahrulnr/nusallm/application/job"
 	"github.com/jahrulnr/nusallm/infrastructure/config"
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/session"
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/term"
@@ -27,7 +28,9 @@ import (
 	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	repoconversation "github.com/jahrulnr/nusallm/infrastructure/repository/conversation"
 	repogateway "github.com/jahrulnr/nusallm/infrastructure/repository/gateway"
+	repohistory "github.com/jahrulnr/nusallm/infrastructure/repository/history"
 	reposecret "github.com/jahrulnr/nusallm/infrastructure/repository/secret"
+	repoworkspace "github.com/jahrulnr/nusallm/infrastructure/repository/workspace"
 	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
 	textcompletion "github.com/jahrulnr/nusallm/infrastructure/service/core/text/completion"
 	toolexec "github.com/jahrulnr/nusallm/infrastructure/service/tool/terminal"
@@ -82,23 +85,25 @@ func TestREPLSendsListsAndResumesConversation(t *testing.T) {
 	conversationApplication := appconversation.New(
 		conversationRepository,
 		gatewayRepository,
-		map[enum.Style]dservice.TextModelService{
-			enum.StyleCompletion: textcompletion.New(coretext.Options{FileRoot: workspace}),
-		},
-		nil,
+		map[enum.Environment]appjob.EnvironmentDriver{enum.EnvironmentLocal: appjob.EnvironmentBundle{
+			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: textcompletion.New(coretext.Options{FileRoot: workspace, FileStore: repoworkspace.NewLocal()})},
+		}},
 		config.NewConfig(),
+		nil,
 		"",
 	)
 	var output, stderr bytes.Buffer
 	input := pipeInput(t, "/route gw1\n/model m1\n/attach shot.png\nhello\n/list\n/history 10\n/exit\n")
 	repl, err := NewREPL(Options{
-		Conversations: conversationApplication,
-		Gateways:      gatewayApplication,
-		Workspace:     workspace,
-		HistoryDir:    filepath.Join(storage, "cli"),
-		Stdin:         input,
-		Stdout:        &output,
-		Stderr:        &stderr,
+		Conversations:  conversationApplication,
+		Gateways:       gatewayApplication,
+		Workspace:      workspace,
+		WorkspaceStore: repoworkspace.NewLocal(),
+		HistoryDir:     filepath.Join(storage, "cli"),
+		HistoryStore:   repohistory.NewLocal(),
+		Stdin:          input,
+		Stdout:         &output,
+		Stderr:         &stderr,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -140,13 +145,15 @@ func TestREPLSendsListsAndResumesConversation(t *testing.T) {
 
 	var resumedOutput, resumedError bytes.Buffer
 	resumed, err := NewREPL(Options{
-		Conversations: conversationApplication,
-		Gateways:      gatewayApplication,
-		Workspace:     workspace,
-		HistoryDir:    filepath.Join(storage, "cli"),
-		Stdin:         pipeInput(t, "/resume "+repl.ConversationID+"\n/edit "+stored.Messages()[0].ID()+" updated user text\n/route gw2\n/new\n/model m2\n/attach shot.png\ntext-only turn\n/exit\n"),
-		Stdout:        &resumedOutput,
-		Stderr:        &resumedError,
+		Conversations:  conversationApplication,
+		Gateways:       gatewayApplication,
+		Workspace:      workspace,
+		WorkspaceStore: repoworkspace.NewLocal(),
+		HistoryDir:     filepath.Join(storage, "cli"),
+		HistoryStore:   repohistory.NewLocal(),
+		Stdin:          pipeInput(t, "/resume "+repl.ConversationID+"\n/edit "+stored.Messages()[0].ID()+" updated user text\n/route gw2\n/new\n/model m2\n/attach shot.png\ntext-only turn\n/exit\n"),
+		Stdout:         &resumedOutput,
+		Stderr:         &resumedError,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -252,23 +259,24 @@ func TestAutoSelectNotifyDoesNotDeadlock(t *testing.T) {
 	conversationApplication := appconversation.New(
 		conversationRepository,
 		gatewayRepository,
-		map[enum.Style]dservice.TextModelService{
-			enum.StyleCompletion: textcompletion.New(coretext.Options{FileRoot: workspace}),
-		},
-		nil,
+		map[enum.Environment]appjob.EnvironmentDriver{enum.EnvironmentLocal: appjob.EnvironmentBundle{
+			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: textcompletion.New(coretext.Options{FileRoot: workspace, FileStore: repoworkspace.NewLocal()})},
+		}},
 		config.NewConfig(),
+		nil,
 		"",
 	)
 
 	sess, err := session.New(session.Options{
-		Conversations: conversationApplication,
-		Gateways:      gatewayApplication,
-		Workspace:     workspace,
+		Conversations:  conversationApplication,
+		Gateways:       gatewayApplication,
+		Workspace:      workspace,
+		WorkspaceStore: repoworkspace.NewLocal(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	repl := &REPL{Session: sess, historyFile: filepath.Join(storage, "cli", "history")}
+	repl := &REPL{Session: sess, historyFile: filepath.Join(storage, "cli", "history"), historyStore: repohistory.NewLocal()}
 	m := newModel(repl, true)
 	m.ctx = t.Context()
 	runtime := &tuiRuntime{}
@@ -300,6 +308,19 @@ func TestAutoSelectNotifyDoesNotDeadlock(t *testing.T) {
 	if !strings.Contains(out.String(), "auto-selected route gw1") ||
 		!strings.Contains(out.String(), "auto-selected model m1") {
 		t.Fatalf("auto-select notices never reached scrollback: %q", out.String())
+	}
+
+	// "pong" reaching the output is not proof the turn finished — the
+	// live region repaints deltas while the send is still in flight, and
+	// a ctrl+c that lands then is consumed as cancel-turn, not quit. The
+	// footer's context badge only exists once finishTurn has bound the
+	// conversation and refreshed the stats, so it is the deterministic
+	// idle marker to wait on before interrupting.
+	for !strings.Contains(out.String(), " Tokens") {
+		if time.Now().After(deadline) {
+			t.Fatalf("turn never reached idle — output=%q", out.String())
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 
 	// ctrl+c on an idle composer still quits — input stays live.
@@ -351,11 +372,11 @@ func TestPipedCRNeverTriggersPicker(t *testing.T) {
 	conversationApplication := appconversation.New(
 		conversationRepository,
 		gatewayRepository,
-		map[enum.Style]dservice.TextModelService{
-			enum.StyleCompletion: textcompletion.New(coretext.Options{FileRoot: t.TempDir()}),
-		},
-		nil,
+		map[enum.Environment]appjob.EnvironmentDriver{enum.EnvironmentLocal: appjob.EnvironmentBundle{
+			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: textcompletion.New(coretext.Options{FileRoot: t.TempDir(), FileStore: repoworkspace.NewLocal()})},
+		}},
 		config.NewConfig(),
+		nil,
 		"",
 	)
 	t.Cleanup(func() { _ = conversationApplication.Shutdown(context.Background()) })
@@ -363,13 +384,15 @@ func TestPipedCRNeverTriggersPicker(t *testing.T) {
 	// Seed one saved conversation, then close that session.
 	var seedOutput bytes.Buffer
 	seed, err := NewREPL(Options{
-		Conversations: conversationApplication,
-		Gateways:      gatewayApplication,
-		Workspace:     t.TempDir(),
-		HistoryDir:    filepath.Join(storage, "cli"),
-		Stdin:         pipeInput(t, "hello\n/exit\n"),
-		Stdout:        &seedOutput,
-		Stderr:        io.Discard,
+		Conversations:  conversationApplication,
+		Gateways:       gatewayApplication,
+		Workspace:      t.TempDir(),
+		WorkspaceStore: repoworkspace.NewLocal(),
+		HistoryDir:     filepath.Join(storage, "cli"),
+		HistoryStore:   repohistory.NewLocal(),
+		Stdin:          pipeInput(t, "hello\n/exit\n"),
+		Stdout:         &seedOutput,
+		Stderr:         io.Discard,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -389,13 +412,15 @@ func TestPipedCRNeverTriggersPicker(t *testing.T) {
 	// submit the fuzzy top row and the seeded room would be gone.
 	var output bytes.Buffer
 	repl, err := NewREPL(Options{
-		Conversations: conversationApplication,
-		Gateways:      gatewayApplication,
-		Workspace:     t.TempDir(),
-		HistoryDir:    filepath.Join(storage, "cli"),
-		Stdin:         pipeInput(t, "/delete \r\n/exit\n"),
-		Stdout:        &output,
-		Stderr:        io.Discard,
+		Conversations:  conversationApplication,
+		Gateways:       gatewayApplication,
+		Workspace:      t.TempDir(),
+		WorkspaceStore: repoworkspace.NewLocal(),
+		HistoryDir:     filepath.Join(storage, "cli"),
+		HistoryStore:   repohistory.NewLocal(),
+		Stdin:          pipeInput(t, "/delete \r\n/exit\n"),
+		Stdout:         &output,
+		Stderr:         io.Discard,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -455,20 +480,21 @@ func TestConversationArgPicker(t *testing.T) {
 	conversationApplication := appconversation.New(
 		conversationRepository,
 		gatewayRepository,
-		map[enum.Style]dservice.TextModelService{
-			enum.StyleCompletion: textcompletion.New(coretext.Options{FileRoot: workspace}),
-		},
-		nil,
+		map[enum.Environment]appjob.EnvironmentDriver{enum.EnvironmentLocal: appjob.EnvironmentBundle{
+			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: textcompletion.New(coretext.Options{FileRoot: workspace, FileStore: repoworkspace.NewLocal()})},
+		}},
 		config.NewConfig(),
+		nil,
 		"",
 	)
 	t.Cleanup(func() { _ = conversationApplication.Shutdown(context.Background()) })
 
 	sess, err := session.New(session.Options{
-		Conversations: conversationApplication,
-		Gateways:      gatewayApplication,
-		Workspace:     workspace,
-		Stderr:        io.Discard,
+		Conversations:  conversationApplication,
+		Gateways:       gatewayApplication,
+		Workspace:      workspace,
+		WorkspaceStore: repoworkspace.NewLocal(),
+		Stderr:         io.Discard,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -479,7 +505,7 @@ func TestConversationArgPicker(t *testing.T) {
 	}
 	sess.ConversationID = "" // fresh session, one saved conversation
 
-	m := newModel(&REPL{Session: sess, historyFile: filepath.Join(storage, "cli", "history")}, true)
+	m := newModel(&REPL{Session: sess, historyFile: filepath.Join(storage, "cli", "history"), historyStore: repohistory.NewLocal()}, true)
 	m.ctx = t.Context()
 
 	// An in-progress draft must survive a parked picker — it lands in
@@ -626,30 +652,37 @@ func TestToolCallLoopRunsEndToEnd(t *testing.T) {
 	}
 	workspace := t.TempDir()
 	conversationRepository := repoconversation.NewConversationRepository(filepath.Join(storage, "conversations"))
-	execTool, err := toolexec.NewExecTool()
+	toolOutputs, err := repoconversation.NewToolOutputRepository(filepath.Join(storage, "conversations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	execTool, err := toolexec.NewExecTool(toolOutputs, toolexec.NewLocalRunner())
 	if err != nil {
 		t.Fatal(err)
 	}
 	conversationApplication := appconversation.New(
 		conversationRepository,
 		gatewayRepository,
-		map[enum.Style]dservice.TextModelService{
-			enum.StyleCompletion: textcompletion.New(coretext.Options{FileRoot: workspace}),
-		},
-		map[string]dservice.Tool{"exec": execTool},
+		map[enum.Environment]appjob.EnvironmentDriver{enum.EnvironmentLocal: appjob.EnvironmentBundle{
+			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: textcompletion.New(coretext.Options{FileRoot: workspace, FileStore: repoworkspace.NewLocal()})},
+			Tools:    map[string]dservice.Tool{"exec": execTool},
+		}},
 		config.NewConfig(),
+		nil,
 		"",
 	)
 
 	var output, stderr bytes.Buffer
 	repl, err := NewREPL(Options{
-		Conversations: conversationApplication,
-		Gateways:      gatewayApplication,
-		Workspace:     workspace,
-		HistoryDir:    filepath.Join(storage, "cli"),
-		Stdin:         pipeInput(t, "run echo\n/exit\n"),
-		Stdout:        &output,
-		Stderr:        &stderr,
+		Conversations:  conversationApplication,
+		Gateways:       gatewayApplication,
+		Workspace:      workspace,
+		WorkspaceStore: repoworkspace.NewLocal(),
+		HistoryDir:     filepath.Join(storage, "cli"),
+		HistoryStore:   repohistory.NewLocal(),
+		Stdin:          pipeInput(t, "run echo\n/exit\n"),
+		Stdout:         &output,
+		Stderr:         &stderr,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -17,7 +17,9 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
+	repoworkspace "github.com/jahrulnr/nusallm/infrastructure/repository/workspace"
 	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
+	"github.com/jahrulnr/nusallm/infrastructure/service/wire"
 )
 
 // newService spins an httptest server and a fake gateway pointing at it.
@@ -35,7 +37,7 @@ func newService(t *testing.T, stream bool, handler http.HandlerFunc) (*Service, 
 	} else {
 		gw.DisableStream()
 	}
-	return New(coretext.Options{}), &gw, srv
+	return New(coretext.Options{FileStore: repoworkspace.NewLocal()}), &gw, srv
 }
 
 func newConv(t *testing.T) *aggregate.Conversation {
@@ -257,7 +259,10 @@ func TestToolCallRoundtrip(t *testing.T) {
 	if fr["id"] != "fc-1" || fr["name"] != "get_time" {
 		t.Fatalf("functionResponse id echo: %+v", fr)
 	}
-	if !strings.Contains(string(mustJSON(fr["response"])), "12:00") {
+	result := fr["response"].(map[string]any)["result"].(string)
+	if !strings.HasPrefix(result, `<untrusted_tool latency="`) ||
+		!strings.Contains(result, "12:00") ||
+		!strings.HasSuffix(result, "</untrusted_tool>") {
 		t.Fatalf("functionResponse payload: %+v", fr["response"])
 	}
 }
@@ -265,6 +270,21 @@ func TestToolCallRoundtrip(t *testing.T) {
 func mustJSON(v any) string {
 	raw, _ := json.Marshal(v)
 	return string(raw)
+}
+
+func TestUserTurnKeepsInjectedToolEvidence(t *testing.T) {
+	msg, _ := entity.NewMessage(enum.RoleUser, "question")
+	call, _ := entity.NewToolCall("injected", "context", "{}", enum.TooltypeInjection)
+	call.SetOutput("extra context")
+	msg.AddToolCall(call)
+	contents := encodeMessage(msg, entity.Model{}, wire.MediaRoot{})
+	if len(contents) != 1 || contents[0].Role != "user" {
+		t.Fatalf("user turn missing: %+v", contents)
+	}
+	text := contents[0].Parts[0].(PartBody).Text
+	if !strings.Contains(text, "extra context") || !strings.Contains(text, "<untrusted_tool") {
+		t.Fatalf("injected evidence was dropped from user turn: %q", text)
+	}
 }
 
 func TestSignatureReplayAndMerge(t *testing.T) {
@@ -476,7 +496,7 @@ func TestStreamMidError(t *testing.T) {
 func TestEncodeAttachmentRejectsPinnedRemoteURL(t *testing.T) {
 	a, _ := valueobject.NewAttachment("https://example.com/x.png", "image/png")
 	a.SetSHA256(strings.Repeat("a", 64))
-	if _, err := encodeAttachment(a, ""); err == nil {
+	if _, err := encodeAttachment(a, wire.MediaRoot{}); err == nil {
 		t.Fatal("pinned remote https attachment must fail")
 	}
 }

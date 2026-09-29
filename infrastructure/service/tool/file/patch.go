@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 )
@@ -18,14 +20,15 @@ import (
 // fails, forcing a re-read instead of a fuzzy guess.
 type FilePatchTool struct {
 	dir    string
+	store  drepo.Workspace
 	schema valueobject.ToolSchema
 }
 
 // NewFilePatchTool binds the tool's default root: every requested path
 // resolves inside it — os.Root confines traversal and symlink escapes
 // alike. A turn-scoped workspace dir overrides it per call.
-func NewFilePatchTool(root string) (service.Tool, error) {
-	abs, err := checkDir(root)
+func NewFilePatchTool(store drepo.Workspace, root string) (service.Tool, error) {
+	abs, err := checkDir(store, root)
 	if err != nil {
 		return nil, err
 	}
@@ -39,7 +42,7 @@ func NewFilePatchTool(root string) (service.Tool, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &FilePatchTool{dir: abs, schema: schema}, nil
+	return &FilePatchTool{dir: abs, store: store, schema: schema}, nil
 }
 
 func (tool *FilePatchTool) Schema() valueobject.ToolSchema {
@@ -63,25 +66,29 @@ func (tool *FilePatchTool) Execute(ctx context.Context, call entity.ToolCall, _ 
 	if input.OldString == "" {
 		return service.ToolResult{}, fmt.Errorf("old_string must not be empty")
 	}
-	root, _, err := callRoot(ctx, tool.dir)
+	root, err := callRoot(ctx, tool.store, tool.dir)
 	if err != nil {
 		return service.ToolResult{}, err
 	}
 	defer root.Close()
-	info, err := root.Stat(input.Path)
+	f, info, err := root.OpenRegular(input.Path)
 	if err != nil {
 		return service.ToolResult{}, err
 	}
-	if info.IsDir() {
-		return service.ToolResult{}, fmt.Errorf("%q is a directory", input.Path)
-	}
+	defer f.Close()
 	// Patching loads the whole file into memory; files larger than 4 MiB
 	// belong to exec/sed, not an in-memory edit tool.
 	if info.Size() > 4<<20 {
 		return service.ToolResult{}, fmt.Errorf("%q is too large to patch (%d bytes > 4 MiB)", input.Path, info.Size())
 	}
-	data, err := root.ReadFile(input.Path)
+	data, err := io.ReadAll(io.LimitReader(f, (4<<20)+1))
 	if err != nil {
+		return service.ToolResult{}, err
+	}
+	if len(data) > 4<<20 {
+		return service.ToolResult{}, fmt.Errorf("%q is too large to patch (> 4 MiB)", input.Path)
+	}
+	if err := f.Close(); err != nil {
 		return service.ToolResult{}, err
 	}
 	content := string(data)

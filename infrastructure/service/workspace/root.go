@@ -4,37 +4,37 @@
 package workspace
 
 import (
+	"context"
+	"errors"
 	"io"
 	"io/fs"
-	"os"
-	"path/filepath"
+
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 )
 
-// Root is an opened workspace directory (os.Root sandbox).
+// Root is an opened workspace directory through an injected store.
 type Root struct {
-	root    *os.Root
+	root    drepo.WorkspaceSession
 	absPath string
 }
 
 // Open resolves and opens a workspace root directory.
-func Open(dir string) (*Root, error) {
+func Open(store drepo.Workspace, dir string) (*Root, error) {
+	if store == nil {
+		return nil, errors.New("workspace repository is required")
+	}
 	if dir == "" {
 		dir = "."
 	}
-	absPath, err := filepath.Abs(dir)
+	absPath, err := store.CheckRoot(dir)
 	if err != nil {
 		return nil, err
 	}
-	root, err := os.OpenRoot(absPath)
+	root, err := store.Open(context.Background(), absPath)
 	if err != nil {
 		return nil, err
 	}
 	return &Root{root: root, absPath: absPath}, nil
-}
-
-// FromRoot adopts an existing os.Root and absolute path.
-func FromRoot(root *os.Root, absPath string) *Root {
-	return &Root{root: root, absPath: absPath}
 }
 
 // Path returns the absolute workspace path.
@@ -45,12 +45,8 @@ func (w *Root) FS() fs.FS { return w.root.FS() }
 
 // CreateFile opens a new file inside the workspace.
 func (w *Root) CreateFile(name string) (io.WriteCloser, error) {
-	return w.root.Create(name)
+	return w.root.CreateFile(name)
 }
 
 // Close releases the underlying root handle.
 func (w *Root) Close() error { return w.root.Close() }
-
-// OSRoot exposes the sandbox for callers that still need os.Root (session
-// send path); prefer Path/FS/Create/ResolveAttachment when possible.
-func (w *Root) OSRoot() *os.Root { return w.root }
