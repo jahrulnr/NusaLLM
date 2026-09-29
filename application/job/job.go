@@ -91,6 +91,12 @@ func (j *Base) Interrupt() {
 
 // Cancellable derives the execution ctx: it dies on Interrupt, on the
 // worker's own ctx (Terminate's hard stop), or on the caller's ctx.
+// Cancellable gives the job a ctx that dies with either the worker's
+// execCtx or the caller's own ctx, and returns it already canceled when
+// the caller was gone before the job started. The direct check matters:
+// AfterFunc's cancel runs on its own goroutine, so a job whose caller
+// died while it sat in the queue could pass its first ctx checks and
+// persist against a 408 that already told the caller nothing did.
 func (j *Base) Cancellable(execCtx, callerCtx context.Context) context.Context {
 	if callerCtx == nil {
 		callerCtx = context.Background()
@@ -98,7 +104,7 @@ func (j *Base) Cancellable(execCtx, callerCtx context.Context) context.Context {
 	ctx, cancel := context.WithCancel(execCtx)
 	j.cancel.Store(cancel)
 	context.AfterFunc(callerCtx, cancel)
-	if j.interrupted.Load() {
+	if callerCtx.Err() != nil || j.interrupted.Load() {
 		cancel()
 	}
 	return ctx

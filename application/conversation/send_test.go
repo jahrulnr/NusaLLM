@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -351,6 +352,92 @@ func TestQueuedSendCancelable(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("first send did not finish after release")
+	}
+}
+
+// A queued send whose caller ctx died before the worker reached it must
+// leave no trace: the 408 already told the caller nothing persisted, so a
+// job that runs anyway writes a user line contradicting that reply — and
+// races whatever cleanup the caller does next (the CI flake this test was
+// born from). Cancellation used to arrive only through context.AfterFunc's
+// goroutine, which on a busy or single-P machine loses the race against
+// the job's own ctx checks; pinning one P keeps that window wide enough
+// for the omission to fail reliably.
+func TestQueuedSendCanceledBeforeStartPersistsNothing(t *testing.T) {
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	entered := make(chan struct{})
+	var enteredOnce sync.Once
+	app, _ := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		enteredOnce.Do(func() { close(entered) })
+		<-release
+		okHandler(w, r)
+	})
+	firstDone := make(chan sendOutcome, 1)
+	go func() {
+		result, err := app.Send(t.Context(), "qc", "gw1", "m1", "first", nil, appjob.SendOptions{}, nil)
+		firstDone <- sendOutcome{result: result, err: err}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first send did not reach the upstream")
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	queuedCtx := &signaledContext{Context: ctx, observed: make(chan struct{})}
+	queuedDone := make(chan sendOutcome, 1)
+	go func() {
+		result, err := app.Send(queuedCtx, "qc", "", "", "second", nil, appjob.SendOptions{}, nil)
+		queuedDone <- sendOutcome{result: result, err: err}
+	}()
+	<-queuedCtx.observed
+	cancel()
+	select {
+	case outcome := <-queuedDone:
+		if apperror.As(outcome.err).StatusCode() != 408 {
+			t.Fatalf("queued cancel → %v, want 408", outcome.err)
+		}
+		if outcome.result.UserMessagePersisted {
+			t.Fatal("queued cancellation must report no user line")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued send not cancelable")
+	}
+
+	unblock()
+	select {
+	case outcome := <-firstDone:
+		if outcome.err != nil {
+			t.Fatalf("first send: %v", outcome.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first send did not finish after release")
+	}
+
+	// The freed worker now reaches the canceled job; give it every chance
+	// to (wrongly) persist before asserting the room kept only the first
+	// turn.
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for {
+		messages, err := app.History(t.Context(), "qc", 0, -1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range messages {
+			if m.Role() == enum.RoleUser && m.Content() == "second" {
+				t.Fatal("canceled queued send persisted its user line after the 408 reply")
+			}
+		}
+		if time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
