@@ -1,12 +1,13 @@
 // Package repolog implements the Logger port as an append-only JSONL file
 // with line-count rotation — the same segment pattern as the conversation
-// store: a live active.jsonl plus numbered sealed files (0.jsonl, 1.jsonl,
+// store: a live active.jsonl plus numbered gzip files (0.jsonl.gz, 1.jsonl.gz,
 // …). Single-process ownership; the mutex serializes writes.
 package repolog
 
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"errors"
 	"io"
@@ -75,14 +76,17 @@ func New(dir string, opts Options) (*Logger, error) {
 	return l, nil
 }
 
-// loadSegments enumerates sealed <n>.jsonl files in numeric order.
+// loadSegments enumerates sealed <n>.jsonl.gz files in numeric order.
 func (l *Logger) loadSegments() error {
 	entries, err := os.ReadDir(l.dir)
 	if err != nil {
 		return err
 	}
 	for _, e := range entries {
-		name := strings.TrimSuffix(e.Name(), ".jsonl")
+		if !strings.HasSuffix(e.Name(), ".jsonl.gz") {
+			continue
+		}
+		name := strings.TrimSuffix(e.Name(), ".jsonl.gz")
 		if n, err := strconv.Atoi(name); err == nil && !e.IsDir() {
 			l.segs = append(l.segs, n)
 		}
@@ -111,9 +115,33 @@ func (l *Logger) rotate() error {
 	}
 	seg := l.nextSeg()
 	activePath := filepath.Join(l.dir, activeFile)
-	segPath := filepath.Join(l.dir, strconv.Itoa(seg)+".jsonl")
-	if err := os.Rename(activePath, segPath); err != nil {
-		l.reopen() // keep the logger writable even if rotation failed
+	segPath := filepath.Join(l.dir, strconv.Itoa(seg)+".jsonl.gz")
+	segment, err := os.OpenFile(segPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		l.reopen()
+		return err
+	}
+	active, err := os.Open(activePath)
+	if err != nil {
+		segment.Close()
+		os.Remove(segPath)
+		l.reopen()
+		return err
+	}
+	zw := gzip.NewWriter(segment)
+	_, copyErr := io.Copy(zw, active)
+	readErr := active.Close()
+	zipErr := zw.Close()
+	syncErr := segment.Sync()
+	closeErr := segment.Close()
+	if err := errors.Join(copyErr, readErr, zipErr, syncErr, closeErr); err != nil {
+		os.Remove(segPath)
+		l.reopen()
+		return err
+	}
+	if err := os.Remove(activePath); err != nil {
+		os.Remove(segPath)
+		l.reopen()
 		return err
 	}
 	if d, err := os.Open(l.dir); err == nil {
@@ -124,7 +152,7 @@ func (l *Logger) rotate() error {
 	if l.maxFiles > 0 {
 		for len(l.segs) > l.maxFiles {
 			old := l.segs[0]
-			if err := os.Remove(filepath.Join(l.dir, strconv.Itoa(old)+".jsonl")); err != nil {
+			if err := os.Remove(filepath.Join(l.dir, strconv.Itoa(old)+".jsonl.gz")); err != nil {
 				l.reopen()
 				return apperror.NewInternalError("log rotate: prune segment", err)
 			}

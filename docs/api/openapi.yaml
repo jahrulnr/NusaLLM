@@ -582,7 +582,7 @@ paths:
                 server: { port: 10998, hosts: ["127.0.0.1", "localhost"] }
                 conversation: { mailbox_cap: 128, max_turn_steps: 512, compact_budget_pct: 90, compact_keep_tail: 4 }
                 service: { header_timeout: "30s", idle_timeout: "90s" }
-                log: { bodies: false, max_lines: 2000, max_files: 8 }
+                log: { max_lines: 2000, max_files: 9 }
         "403": { $ref: "#/components/responses/ForbiddenOrigin" }
         "500": { $ref: "#/components/responses/Internal" }
     patch:
@@ -1283,11 +1283,8 @@ components:
           additionalProperties: false
         log:
           type: object
-          required: [bodies, max_lines, max_files]
+          required: [max_lines, max_files]
           properties:
-            bodies:
-              type: boolean
-              description: Record raw provider request/response payloads in the diagnostic log — off keeps kinds and counts only.
             max_lines: { type: integer, minimum: 0 }
             max_files: { type: integer, minimum: 0 }
           additionalProperties: false

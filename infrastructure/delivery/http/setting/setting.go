@@ -70,7 +70,6 @@ var leaves = map[string]map[string]bool{
 		"idle_timeout":   true,
 	},
 	"log": {
-		"bodies":    true,
 		"max_lines": true,
 		"max_files": true,
 	},

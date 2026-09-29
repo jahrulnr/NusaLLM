@@ -478,9 +478,8 @@ The REPL path (`run`) boots strict, generates a missing config once via
 `application/setup.EnsureConfig`, and wires: `repogateway` +
 `reposecret` (sqlite, `0600`, busy-timeout so a one-shot `gateway add`
 retries behind a running REPL), `repoconversation`, `repolog` (JSONL with
-line-count rotation; every entry scrubbed by `infrastructure/redact`,
-with request/response bodies dropped unless `log.bodies` is on — the
-payload includes conversation content, so it's opt-in), the `services`
+line-count rotation into compressed archives; diagnostic bodies are always
+omitted so conversation content is not duplicated), the `services`
 map (all four `enum.Style` values — `StyleCompletion` → `textcompletion`,
 `StyleResponses` → `textresponses`, `StyleMessages` → `textmessages`,
 `StyleGenerateContent` → `textgeneratecontent` — sharing one

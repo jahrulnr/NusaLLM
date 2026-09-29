@@ -59,3 +59,37 @@ func TestRedactWithoutBodiesProviderResponseKeepsMeta(t *testing.T) {
 		t.Fatalf("response meta should survive without body: %s", s)
 	}
 }
+
+func TestRedactWithoutBodiesOmitsConversationAndStream(t *testing.T) {
+	dir := t.TempDir()
+	l, err := repolog.New(dir, repolog.Options{Redact: redactWithoutBodies})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range []struct {
+		kind  string
+		value any
+	}{
+		{"provider.request", json.RawMessage(`{"messages":[{"content":"conversation-marker"}]}`)},
+		{"provider.response", map[string]any{"request_id": "req-1", "body": json.RawMessage(`{"content":"conversation-marker"}`)}},
+		{"provider.error", map[string]any{"status": 400, "body": json.RawMessage(`{"content":"conversation-marker"}`)}},
+		{"provider.stream", []any{map[string]any{"content": "conversation-marker"}}},
+	} {
+		if err := l.Append(t.Context(), entry.kind, entry.value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "active.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "conversation-marker") {
+		t.Fatalf("conversation content reached log: %s", raw)
+	}
+	if !strings.Contains(string(raw), `"request_id":"req-1"`) || !strings.Contains(string(raw), `"chunks":1`) {
+		t.Fatalf("diagnostic metadata missing: %s", raw)
+	}
+}

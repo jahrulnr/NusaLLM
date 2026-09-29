@@ -3,9 +3,11 @@ package repolog
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -15,6 +17,18 @@ func readLines(t *testing.T, path string) []string {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if strings.HasSuffix(path, ".gz") {
+		zr, err := gzip.NewReader(bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer zr.Close()
+		var buf bytes.Buffer
+		if _, err := buf.ReadFrom(zr); err != nil {
+			t.Fatal(err)
+		}
+		raw = buf.Bytes()
 	}
 	var out []string
 	sc := bufio.NewScanner(bytes.NewReader(raw))
@@ -98,11 +112,11 @@ func TestRotatePerLines(t *testing.T) {
 	}
 	l.Close()
 
-	// 5 records, cap 2 → segments 0.jsonl+1.jsonl (2 each), active has 1.
-	if got := len(readLines(t, filepath.Join(dir, "0.jsonl"))); got != 2 {
+	// 5 records, cap 2 → two compressed segments (2 each), active has 1.
+	if got := len(readLines(t, filepath.Join(dir, "0.jsonl.gz"))); got != 2 {
 		t.Fatalf("seg0 = %d", got)
 	}
-	if got := len(readLines(t, filepath.Join(dir, "1.jsonl"))); got != 2 {
+	if got := len(readLines(t, filepath.Join(dir, "1.jsonl.gz"))); got != 2 {
 		t.Fatalf("seg1 = %d", got)
 	}
 	if got := len(readLines(t, filepath.Join(dir, activeFile))); got != 1 {
@@ -126,11 +140,46 @@ func TestRotatePrunesMaxFiles(t *testing.T) {
 	l.Close()
 
 	// cap 2 → segments 0,1 pruned; 2,3 remain.
-	if _, err := os.Stat(filepath.Join(dir, "0.jsonl")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(dir, "0.jsonl.gz")); !os.IsNotExist(err) {
 		t.Fatal("seg0 should be pruned")
 	}
-	if _, err := os.Stat(filepath.Join(dir, "3.jsonl")); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, "3.jsonl.gz")); err != nil {
 		t.Fatal("seg3 should exist")
+	}
+}
+
+func TestRotateKeepsTenFilesIncludingActive(t *testing.T) {
+	dir := t.TempDir()
+	l, err := New(dir, Options{MaxLines: 1, MaxFiles: 9})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 12; i++ {
+		if err := l.Append(t.Context(), "evt", i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 10 {
+		t.Fatalf("files = %d, want 9 archives and active", len(entries))
+	}
+	for i := 0; i < 12; i++ {
+		path := filepath.Join(dir, strconv.Itoa(i)+".jsonl.gz")
+		if i < 3 {
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatalf("archive %d should be pruned: %v", i, err)
+			}
+			continue
+		}
+		if got := len(readLines(t, path)); got != 1 {
+			t.Fatalf("archive %d lines = %d", i, got)
+		}
 	}
 }
 
@@ -188,7 +237,7 @@ func TestReopenResumes(t *testing.T) {
 	}
 	l.Close()
 
-	if got := len(readLines(t, filepath.Join(dir, "0.jsonl"))); got != 3 {
+	if got := len(readLines(t, filepath.Join(dir, "0.jsonl.gz"))); got != 3 {
 		t.Fatalf("seg0 = %d", got)
 	}
 	if got := len(readLines(t, filepath.Join(dir, activeFile))); got != 0 {
@@ -322,7 +371,7 @@ func TestResumeDropsInvalidFinalLine(t *testing.T) {
 	}
 	l.Close()
 
-	if got := len(readLines(t, filepath.Join(dir, "0.jsonl"))); got != 3 {
+	if got := len(readLines(t, filepath.Join(dir, "0.jsonl.gz"))); got != 3 {
 		t.Fatalf("seg0 = %d, want 3 (1 resumed + 2 appended)", got)
 	}
 }

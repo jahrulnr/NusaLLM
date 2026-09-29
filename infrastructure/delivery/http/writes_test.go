@@ -271,7 +271,7 @@ func TestDeleteGateway204(t *testing.T) {
 // --- settings mutation ---
 
 func TestPatchSettingsAllowlist(t *testing.T) {
-	doc := []byte(`{"conversation":{"mailbox_cap":128,"max_turn_steps":512,"compact_budget_pct":90,"compact_keep_tail":4},"service":{"header_timeout":"30s","idle_timeout":"90s"},"log":{"bodies":false,"max_lines":2000,"max_files":8},"storage":{"dir":"/root/secret-path"}}`)
+	doc := []byte(`{"conversation":{"mailbox_cap":128,"max_turn_steps":512,"compact_budget_pct":90,"compact_keep_tail":4},"service":{"header_timeout":"30s","idle_timeout":"90s"},"log":{"max_lines":2000,"max_files":9},"storage":{"dir":"/root/secret-path"}}`)
 	fsw := &fakeSettingsWriter{doc: doc}
 	h := newTestHandler(t, Deps{SettingsWriter: fsw, Settings: &fakeSettings{raw: doc}})
 
@@ -291,10 +291,10 @@ func TestPatchSettingsAllowlist(t *testing.T) {
 	for _, tc := range []struct{ name, body string }{
 		{"non-whitelisted leaf", `{"key":"storage.dir","value":"/x"}`},
 		{"invented leaf", `{"key":"conversation.secret","value":1}`},
-		{"null value", `{"key":"log.bodies","value":null}`},
+		{"null value", `{"key":"log.max_files","value":null}`},
 		{"no section", `{"key":"bodies","value":true}`},
 		{"missing key", `{"value":true}`},
-		{"missing value", `{"key":"log.bodies"}`},
+		{"missing value", `{"key":"log.max_files"}`},
 	} {
 		fsw.key = ""
 		rec := doBody(t, h, "PATCH", "/api/settings", "application/json", tc.body)
@@ -359,7 +359,7 @@ func TestPagingEdgeCases(t *testing.T) {
 // --- settings leaf projection ---
 
 func TestSettingsProjectionDropsUnlistedLeaves(t *testing.T) {
-	raw := []byte(`{"conversation":{"mailbox_cap":64,"secret_thing":"bearer-x"},"service":{"header_timeout":"30s"},"log":{"bodies":false},"storage":{"dir":"/root/x"}}`)
+	raw := []byte(`{"conversation":{"mailbox_cap":64,"secret_thing":"bearer-x"},"service":{"header_timeout":"30s"},"log":{"max_files":9},"storage":{"dir":"/root/x"}}`)
 	h := newTestHandler(t, Deps{Settings: &fakeSettings{raw: raw}})
 	rec := do(t, h, "GET", "/api/settings", "", "")
 	if rec.Code != 200 {

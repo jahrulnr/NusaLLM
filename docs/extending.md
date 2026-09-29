@@ -361,7 +361,7 @@ instances.
   `apperror.As` normalizes foreign errors to a 500 with no leakage.
 - **Diagnostics**: the `drepo.Logger` port is a write-only JSONL sink;
   every entry passes through `infrastructure/redact` before disk, and
-  request/response bodies are stripped entirely unless `log.bodies` is on
+  request/response bodies are always stripped
   (see the `Redact` hook in `cmd/nusallm/wire.go`).
 - **Secrets**: persisted values are `"env:NAME"` or `"secret:<key>"`
   references resolved through the `SecretStore` port — never plaintext.

@@ -235,9 +235,8 @@ The config file holds tunables — never credentials — under four sections:
 | `service.header_timeout` | duration | `"30s"` | deadline for the provider's first response byte |
 | `service.idle_timeout` | duration | `"90s"` | per-chunk deadline on a streaming body |
 | `storage.dir` | string | `"./data"` | the data directory above |
-| `log.bodies` | bool | `false` | record raw provider request/response payloads |
 | `log.max_lines` | int | `2000` | rotate `active.jsonl` past this many records |
-| `log.max_files` | int | `8` | cap on sealed log segments; oldest are pruned |
+| `log.max_files` | int | `9` | cap on compressed archives (10 files including active); oldest are pruned |
 
 Durations decode with `time.ParseDuration` — `"30s"`, `"5m"`, `"1m30s"`
 are all valid; a bare number is raw nanoseconds, which nobody wants, so
@@ -487,18 +486,11 @@ line after each turn (cache counters appear when nonzero), the footer's
 `~estimate/total` context gauge against the model's input allowance, and
 `/usage` for cumulative per-conversation counters.
 
-Provider diagnostics land in `storage.dir/logs/` as JSONL —
-`active.jsonl` rotates into numbered segments at `log.max_lines`, capped
-at `log.max_files`. Entries are always scrubbed for credential-shaped
-keys before writing. **Request/response bodies are recorded only when
-`log.bodies` is `true`** — off the default the log keeps event kinds and
-counts, enough to debug sequencing without persisting conversation
-content. Payloads include everything sent to the provider, so enable it
-deliberately:
-
-```sh
-nusallm config set log.bodies true
-```
+Provider diagnostics land in `storage.dir/logs/` as JSONL. `active.jsonl`
+rotates every 2000 records into numbered `.jsonl.gz` archives, with at most
+9 archives retained by default (10 log files total). Request, response, error, and stream bodies
+are omitted; metadata and event counts remain without duplicating conversation
+content in logs.
 
 ## Exit codes and errors
 

@@ -79,10 +79,7 @@ func compose(cfg config.Config, secrets *reposecret.Store, configPath string) (*
 		tools[tool.Schema().Name()] = tool
 	}
 
-	logOpts := repolog.Options{MaxLines: cfg.Log.MaxLines, MaxFiles: cfg.Log.MaxFiles}
-	if !cfg.Log.Bodies {
-		logOpts.Redact = redactWithoutBodies
-	}
+	logOpts := repolog.Options{MaxLines: cfg.Log.MaxLines, MaxFiles: cfg.Log.MaxFiles, Redact: redactWithoutBodies}
 	logger, err := repolog.New(filepath.Join(dir, "logs"), logOpts)
 	if err != nil {
 		return nil, err
@@ -119,7 +116,7 @@ func compose(cfg config.Config, secrets *reposecret.Store, configPath string) (*
 	}, nil
 }
 
-// redactWithoutBodies scrubs provider payloads when log.bodies is false.
+// redactWithoutBodies keeps diagnostic metadata without persisting conversation content.
 // provider.request is logged as unmarshaled JSON (the whole body), not a
 // map with a "body" key — omit it entirely. Response/error maps still drop
 // only their "body" field so status and request_id survive.

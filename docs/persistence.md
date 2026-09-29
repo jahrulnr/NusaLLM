@@ -42,7 +42,7 @@ real directory names, not conventions:
 │       └── tool-output/        created on exec; full-output files only when result exceeds budget
 ├── logs/
 │   ├── active.jsonl            current diagnostic log
-│   └── 0.jsonl, 1.jsonl …      rotated segments
+│   └── 0.jsonl.gz, 1.jsonl.gz … compressed rotated archives
 ├── cli/
 │   └── history                 REPL input history — dir 0700, file 0600
 └── secrets.db                  sqlite key-value store — file 0600
@@ -403,18 +403,18 @@ that leaves room for an encrypted backend later.
 `logs/` implements the `Logger` port — a write-only diagnostic sink for
 provider traffic, kept deliberately separate from conversation history.
 `infrastructure/repository/log/` reuses the segment pattern: a live
-`active.jsonl` (mode `0600`) plus numbered rotated files `0.jsonl`,
-`1.jsonl`, ….
+`active.jsonl` (mode `0600`) plus numbered compressed archives `0.jsonl.gz`,
+`1.jsonl.gz`, ….
 
 ### Entry shape
 
 Each line is a `record{ts, kind, data}` envelope — timestamp, a grep tag,
 and the scrubbed payload. The completion adapter
 (`infrastructure/service/core/text/completion/`) emits kinds
-`provider.request` (the raw request body), `provider.response`
-(`request_id`, `model`, `body`), `provider.error` (`status`,
-`request_id`, `body`), and `provider.stream` (the accumulated SSE chunk
-list). Append failures are swallowed at the call site — diagnostics must
+`provider.request`, `provider.response` (`request_id`, `model`),
+`provider.error` (`status`, `request_id`), and `provider.stream`
+(chunk count). Request/response/stream bodies are omitted before persistence.
+Append failures are swallowed at the call site — diagnostics must
 never break a send.
 
 ### The redact pipeline
@@ -433,22 +433,20 @@ and replaces matches with `"***"`:
 - secret-shaped strings anywhere: `Bearer …` header values, `sk-…` and
   `AIza…` API keys, and `-----BEGIN … PRIVATE KEY-----` PEM blocks.
 
-On top of that, `cmd/nusallm/wire.go` installs a stricter redactor unless
-`log.bodies` is on: it still runs `redact.Value`, then deletes the `body`
+On top of that, `cmd/nusallm/wire.go` installs a stricter redactor: it
+runs `redact.Value`, then deletes the `body`
 key from map payloads, collapses chunk lists to `{"chunks": n}`, and
-replaces anything else with `{"omitted": true}`. Request/response payloads
-contain full conversation content, so recording them is opt-in; with
-bodies off the log still carries event kinds and counts — enough to debug
-sequencing without persisting content.
+replaces anything else with `{"omitted": true}`. The log retains event kinds
+and counts without duplicating conversation content.
 
 ### Rotation and resume
 
 `log.max_lines` (`LogConfig.MaxLines`, default 2000) rotates
-`active.jsonl` once it holds that many records: the file is renamed to the
-next segment number (`max+1`) and a fresh active file is opened.
-`log.max_files` (`MaxFiles`, default 8) caps sealed segments — the oldest
-are deleted past the cap. Zero disables either bound, and `Normalize`
-clamps negatives back to zero rather than reading them as "unbounded".
+`active.jsonl` once it holds that many records: the file is compressed to
+the next numbered `.jsonl.gz` archive (`max+1`) and a fresh active file is opened.
+`log.max_files` (`MaxFiles`, default 9) caps sealed archives — the oldest
+are deleted past the cap. Zero selects the defaults; `Normalize` clamps
+configured values to these maxima.
 
 `New` resumes across restarts: it enumerates existing numbered segments so
 numbering continues, and `prepareActive` scans the existing
