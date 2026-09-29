@@ -44,14 +44,19 @@ type IAppError interface {
 	ErrCause() error
 	SetCaller(string)
 	CalledAt() string
+	IsUpstream() bool
 }
 
 // AppError carries a status code, a public message, and an internal cause.
+// Upstream marks provider-originated failures so consumers can split a
+// shared status — an upstream 429 is a provider rate limit, a local 429
+// is a full queue.
 type AppError struct {
-	Code    int
-	Message string
-	Cause   error
-	Caller  string
+	Code     int
+	Message  string
+	Cause    error
+	Caller   string
+	Upstream bool
 }
 
 // New builds an AppError — code must be a valid HTTP status (100-599).
@@ -83,6 +88,9 @@ func (e *AppError) StatusCode() int { return e.Code }
 func (e *AppError) SetCaller(v string) { e.Caller = v }
 func (e *AppError) CalledAt() string   { return e.Caller }
 
+// IsUpstream reports whether the failure originated at the provider.
+func (e *AppError) IsUpstream() bool { return e.Upstream }
+
 // Caused renders code + public message + internal cause for logs.
 func (e *AppError) Caused() string {
 	cause := e.Cause
@@ -97,17 +105,22 @@ func (e *AppError) ErrCause() error { return errors.New(e.Caused()) }
 
 // CausedBy returns a copy with a new cause, re-pointing Caller here.
 func (e *AppError) CausedBy(err error) IAppError {
-	return newAt(e.Code, e.Message, err, 2)
+	n := newAt(e.Code, e.Message, err, 2).(*AppError)
+	n.Upstream = e.Upstream
+	return n
 }
 
 // FromStatus adapts an upstream HTTP status into an AppError — the shared
-// baseline for adapters. message must be safe for the frontend; raw
-// upstream bodies belong in causedBy.
+// baseline for adapters, marked IsUpstream so consumers can tell a
+// provider failure from a local one on the same status. message must be
+// safe for the frontend; raw upstream bodies belong in causedBy.
 func FromStatus(status int, message string, causedBy error) IAppError {
 	if status < 400 || status > 599 {
 		status = StatusBadGateway
 	}
-	return New(status, message, causedBy)
+	e := newAt(status, message, causedBy, 2).(*AppError)
+	e.Upstream = true
+	return e
 }
 
 func NewNotFoundError(resource string, causedBy error) IAppError {

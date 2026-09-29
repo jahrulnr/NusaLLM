@@ -24,8 +24,12 @@ the `default:"./data"` struct tag and is set in the config file as
 `storage.dir`. One root means a deployment moves, backs up, or inspects
 all state in a single place.
 
-`cmd/nusallm/main.go` wires the layout — these are the real directory
-names, not conventions:
+The layout is wired at the composition root, split by lifecycle:
+`admin.LoadBoot` opens `secrets.db` (and a `gateways/` repository for
+the management plane); `compose` (`cmd/nusallm/wire.go`) wires
+`gateways/`, `conversations/`, and `logs/` for the engine; `run` points
+the TUI at `cli/`, which `infrastructure/repository/history/history.go` creates on open. These are the
+real directory names, not conventions:
 
 ```text
 <storage.dir>/                  (default ./data)
@@ -34,7 +38,8 @@ names, not conventions:
 │   └── <convID>/               e.g. c_US57K3ZKE7NJ4TKZOOHCHDBOF4
 │       ├── meta.json           record + counters
 │       ├── 0.jsonl, 1.jsonl …  sealed archive segments (only after Compact)
-│       └── active.jsonl        the live tail
+│       ├── active.jsonl        the live tail
+│       └── tool-output/        created on exec; full-output files only when result exceeds budget
 ├── logs/
 │   ├── active.jsonl            current diagnostic log
 │   └── 0.jsonl, 1.jsonl …      rotated segments
@@ -51,12 +56,20 @@ separators ever reach `filepath.Join`.
 
 The JSON config file itself is *not* part of this tree. Its location is
 whatever the `CONFIG_PATH` environment variable points at; when it is
-missing, `setup.EnsureConfig` (`application/setup/setup.go`) generates it
-once at REPL startup. `storage.dir` inside it selects the root above. A
+missing, `admin.EnsureConfig` (`delivery/cli/admin/admin.go`) generates
+it once — called by both `run` and `serve`, it delegates to
+`setup.EnsureConfig` (`application/setup/setup.go`), which writes a
+default-tagged file only when the path is non-empty and nothing exists
+there. Read-only admin commands never create it. `storage.dir` inside
+it selects the root above. A
 `.env` file in the working directory is also read at boot
 (`admin.loadEnvFile`) — it feeds the `env:` credential references
 described below, and real environment variables always win over `.env`
 entries.
+
+When a non-empty config path is configured, loading fails on a missing,
+unreadable, or malformed file. Defaults apply to fields absent from a valid
+document, not to a failed document read.
 
 ## Conversations
 
@@ -76,6 +89,7 @@ counters `Info` serves, so inspection never has to scan message files:
 |---|---|
 | `id` | conversation ID — also the directory name |
 | `title`, `route`, `modelId` | display title, bound gateway ID, bound model ID |
+| `environment`, `workspace` | execution-driver identity and that driver's bound workspace path; both survive resume |
 | `tools` | bound tool catalog: `name`, `description`, `parameters` (raw JSON schema), `enabled`, `permission` (`system`/`agent`/`general`) |
 | `usage` | accumulated `inputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `outputTokens` |
 | `messageCount` | total logical messages — sealed plus live |
@@ -89,6 +103,11 @@ persisted (`load.go` ignores stamped copies in old metas for the same
 reason). And there is no credential material: `route` is just the gateway
 ID, resolved through the gateway repository at use time.
 
+`environment` is required in the current format. A record without it fails
+to load; `List` reports invalid metadata rather than silently hiding the
+conversation. Existing records must be updated explicitly to a registered
+environment before they can be used.
+
 `Save` (`write.go`) upserts this file. It creates the directory on first
 write and preserves record-level fields (`createdAt`, the counters) on
 update, so a `Save` never disturbs the stream's accounting. The port
@@ -98,16 +117,16 @@ fails with 404 on a conversation that has no meta.
 ### The JSONL line stream
 
 Every `*.jsonl` file is a sequence of `lineRecord` envelopes — one JSON
-object per line. Two line types share the stream so that appends stay
-O(1) and ordering is literal:
+object per line. Two line types share the stream so writes append without
+rewriting earlier records, and ordering is literal:
 
 ```json
 {"type":"message","data":{ …messageRecord… }}
-{"type":"tool_output","callId":"call_…","output":"…","attachments":[ … ]}
+{"type":"tool_output","callId":"call_…","output":"…","outputLatency":"12ms","attachments":[ … ]}
 ```
 
 `type` is `"message"` or `"tool_output"`. A `tool_output` line carries the
-patch fields (`callId`, `output`, `attachments`) at the envelope level; its
+patch fields (`callId`, raw `output`, `outputLatency`, `attachments`) at the envelope level; its
 `data` still serializes as an empty message object but is meaningless.
 Patches resolve **globally by `callId`** at read time
 (`messagesFromLines` in `conversation.go`), so a patch may target a call
@@ -121,7 +140,8 @@ A `message` line's `data` is a `messageRecord`:
 | `id`, `role`, `content`, `createdAt` | `role` is `system`/`user`/`developer`/`assistant` |
 | `userType` | `origin` (real user input) or `system` (harness-injected) |
 | `finishReason` | `stop`/`tool_calls`/`length`/`content_filter` |
-| `toolCalls` | each with `id`, `name`, `input`, `output`, `outputBudget`, `outputAttachments`, `type` (`origin`/`injection`), `callAt`, `optionalContent` |
+| `parts` | Ordered assistant text, reasoning, and tool-call positions |
+| `toolCalls` | each with `id`, `name`, `input`, raw `output`, `outputSet`, `outputLatency`, `outputBudget`, `outputAttachments`, `type` (`origin`/`injection`), `callAt`, `optionalContent` |
 | `attachments` | `uri` + `mediaType`, optional `name` and `sha256` pin — stored references (`file://`, `https://`), materialized by adapters at send time |
 | `optionalContent` | adapter-namespaced extras like `completion.reasoning_content`; domain never interprets values |
 
@@ -158,7 +178,7 @@ rewrite afterwards fails — the message is already in history; the counter
 is only a projection.
 
 `UpdateToolCallOutput` (`updatetool.go`) appends a `tool_output` patch
-line carrying the enveloped output and any media references. Because it is
+line carrying raw output, fixed latency, and any media references. Because it is
 a pure append with no read-modify-write, parallel tool calls completing
 out of order are safe by construction, and a crash mid-batch leaves the
 remaining calls honestly pending instead of losing every result.
@@ -174,12 +194,27 @@ global, so a late output still reaches a call that was just sealed.
 
 The commit point is `meta.sealedSegments`: the segment file is written
 first, then active is rewritten, then meta is bumped. That ordering is
-chosen so every failure mode is recoverable — a segment file that exists
-but is not counted is an orphan the meta-bounded loader ignores; if the
+chosen so the surviving bytes can be recovered — a segment file that exists
+but is not counted is an orphan that normal readers reject; if the
 active rewrite fails the orphaned segment is deleted (the prefix still
 exists in the untouched active copy, so the orphan is a pure duplicate);
 if only the meta write fails, the uncounted segment is left on disk as the
-sole surviving copy of the dropped prefix, available for manual recovery.
+sole surviving copy of the dropped prefix, available for offline recovery.
+Until metadata and numbered files agree, per-conversation reads and writes
+fail rather than presenting a partial history or overwriting
+an uncommitted era. Stop every NusaLLM process using the store and back up
+the conversation directory before recovery. Run
+`nusallm conversation repair <id> --discard-duplicate` if the orphaned
+segment's message lines still lead `active.jsonl` (the active rewrite did
+not land). Run `nusallm conversation repair <id> --commit` if the prefix is
+absent from active (the active rewrite landed); this validates the stream
+and recalculates both message counters. The command refuses the wrong
+action. It supports exactly one extra numbered segment; a missing segment
+must be restored from backup. A partially overlapping orphan is not a
+documented Compact crash window: neither repair action can safely choose
+which copy of a message to keep. If the command rejects both actions, leave
+the files unchanged and reconcile them manually from a backup.
+
 `messageCount` grows by one (the summary is a message) and `activeCount`
 shrinks to `activeCount - dropBefore + 1`.
 
@@ -214,7 +249,8 @@ the model.
 ### `Delete`
 
 `Delete` (`delete.go`) is `os.RemoveAll` on the conversation directory —
-meta, live tail, and every sealed segment go together. A missing
+meta, live tail, every sealed segment, and `tool-output/` spill files go together.
+Spill files are retained until the user deletes the conversation. A missing
 directory is a 404.
 
 ### Two read paths
@@ -226,7 +262,8 @@ by consumer:
   `active.jsonl` — the live context the model actually sees. Sealed
   history stays on disk.
 - **`Info` / `List` / `LoadAt`** are projections for UIs. `Info` is a
-  pure meta read — O(1), no message parsing. `List` reads every
+  meta projection with a sealed-filename consistency check; it parses no
+  messages. `List` reads every
   conversation's meta, skips directories without a readable one, and
   sorts by `updatedAt` descending. `LoadAt(start, end)` slices the global
   logical history — sealed segments in numeric order, then the tail —
@@ -270,7 +307,8 @@ records may carry credential references.
 }
 ```
 
-`style` is the wire family (`completion`, `responses`, `messages`).
+`style` is the wire family (`completion`, `responses`, `messages`,
+`generatecontent`).
 `models` is the catalog; each `modelRecord` mirrors every `Model` field —
 `id`, `route`, the generation parameters (`temperature`, `topP`, `topK`,
 `maxOutputTokens`, `presencePenalty`, `frequencyPenalty`, `seed`,
@@ -395,7 +433,7 @@ and replaces matches with `"***"`:
 - secret-shaped strings anywhere: `Bearer …` header values, `sk-…` and
   `AIza…` API keys, and `-----BEGIN … PRIVATE KEY-----` PEM blocks.
 
-On top of that, `cmd/nusallm/main.go` installs a stricter redactor unless
+On top of that, `cmd/nusallm/wire.go` installs a stricter redactor unless
 `log.bodies` is on: it still runs `redact.Value`, then deletes the `body`
 key from map payloads, collapses chunk lists to `{"chunks": n}`, and
 replaces anything else with `{"omitted": true}`. Request/response payloads
@@ -413,16 +451,22 @@ are deleted past the cap. Zero disables either bound, and `Normalize`
 clamps negatives back to zero rather than reading them as "unbounded".
 
 `New` resumes across restarts: it enumerates existing numbered segments so
-numbering continues, and counts lines in the existing `active.jsonl` so
-the rotation threshold accounts for prior runs. If rotation itself fails,
-the logger reopens the active file rather than going permanently dead.
-The crash window is the record boundary — a torn write drops the tail
-line; sealed segments stay intact.
+numbering continues, and `prepareActive` scans the existing
+`active.jsonl` before it is reopened — fail-stop, unlike the
+conversation stream's torn-tail-only tolerance. The file is truncated at
+the *first* line that is not a complete valid record, so a torn or
+corrupt line drops itself and everything after it; the surviving prefix
+is then counted so the rotation threshold accounts for prior runs. The
+truncation is what lets `O_APPEND` reopen safely — a new record can
+never be glued onto partial bytes — and for a diagnostic sink a lost
+tail is cheaper than a misread stream. If rotation itself fails, the
+logger reopens the active file rather than going permanently dead;
+sealed segments stay intact.
 
 ## CLI state
 
 `cli/` holds terminal-local state — currently a single `history` file for
-the REPL's input history (`infrastructure/delivery/cli/tui/history.go`).
+the REPL's input history (`infrastructure/repository/history/history.go`).
 It is kept deliberately private: the directory must be a real directory
 (symlinks rejected) created `0700`, and the file must be a regular file
 forced to `0600`, since submitted input can contain anything the user
@@ -441,6 +485,7 @@ whatever parsed, because history is a nicety and never a boot blocker.
 | `gateways/` | `0700` | records may carry credential references |
 | `gateways/<id>.json` | `0600` | same |
 | `conversations/<id>/` and its files | `0755` / `0644` | conversation content, no refs |
+| `conversations/<id>/tool-output/*.log` | `0600` | conversation-owned full tool output |
 | `logs/active.jsonl` | `0600` | may carry opted-in payloads |
 | `cli/`, `cli/history` | `0700` / `0600` | private user input |
 | `secrets.db` | `0600` under `0700` parent | key material, plaintext in a binary container |

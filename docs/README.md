@@ -28,9 +28,34 @@ New to the codebase? Start at the top and stop when you've had enough:
 - **[Adapters](adapters.md)** — the `infrastructure/service/` layer:
   wire styles, the completion adapter, tools, and the workspace sandbox.
 
+## WebUI API (HTTP + WebSocket implemented)
+
+The `api/` directory holds the **contract** for the browser WebUI — a
+local, single-user surface over Gin HTTP plus one multiplexed
+WebSocket. Phases 1–4 are live: `nusallm serve` binds `127.0.0.1` on
+the configured `server.port` (default `10998`) and accepts the configured
+`server.hosts` aliases (default `127.0.0.1` and `localhost`). It serves
+every `GET` route, the mutations (`PATCH`/`PUT`/`DELETE`/`POST`),
+and the WebSocket turn commands (`turn.send`/`turn.edit`/`turn.cancel`/
+`turn.watch` with bounded-journal replay) under the security envelope.
+The Swagger UI is still a design document only.
+
+- **[API contract](api/contract.md)** — trust model, security rules,
+  endpoint surface, error model, implementation work, and the acceptance
+  matrix.
+- **[OpenAPI spec](api/openapi.yaml)** — OpenAPI 3.1 for every HTTP
+  endpoint, including the `GET /api/ws` upgrade stub.
+- **[WebSocket protocol](api/websocket.md)** — the normative frame spec
+  for `turn.send`/`turn.edit`/`turn.cancel`/`turn.watch` and the
+  `turn.*` event stream.
+
 ## Honest status
 
 These docs describe the code as it exists. Where something is scaffolded
-but not implemented — the `responses`/`messages` wire styles, the HTTP
-and WebSocket deliveries, most `service/core` capability dirs — the docs
-say so rather than document intent.
+but not implemented — most `service/core` capability dirs and the
+Swagger UI — the docs say so rather than document intent. The
+`docs/api/` documents describe a contract whose HTTP surface and full
+WebSocket turn lifecycle (`turn.send`/`turn.edit`/`turn.cancel`/
+`turn.watch` with journal replay) are implemented: they say
+"implementation work" wherever the current engine cannot yet supply
+what they specify.

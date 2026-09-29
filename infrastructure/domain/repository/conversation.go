@@ -6,6 +6,7 @@ import (
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 )
 
@@ -13,13 +14,15 @@ import (
 // conversation without parsing its message history — conversation lists,
 // pagination headers, and inspection UIs consume it.
 type ConversationInfo struct {
-	ID        string
-	Title     string
-	Route     string
-	ModelID   string
-	Usage     valueobject.Usage
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID          string
+	Title       string
+	Route       string
+	ModelID     string
+	Workspace   string
+	Environment enum.Environment
+	Usage       valueobject.Usage
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 	// MessageCount is the total logical message count across sealed segments
 	// plus the live tail; ActiveCount covers the live tail only — the slice
 	// Load returns and the range most UI turns live in.
@@ -46,7 +49,7 @@ type Conversation interface {
 
 	// UpdateToolCallOutput patches the stored output of a previously
 	// appended tool call — a call is persisted pending execution, and its
-	// enveloped output (ToolCall.Output()) plus any media references it
+	// raw output, fixed latency, and any media references it
 	// produced arrive later. Each call is an independent patch: concurrent
 	// completions of parallel tool calls are safe by construction
 	// (implementations append patch records rather than rewriting stored
@@ -54,7 +57,7 @@ type Conversation interface {
 	// pending instead of losing every result. callID resolves globally
 	// across segments: a call compacted before its output arrived is still
 	// patched correctly.
-	UpdateToolCallOutput(ctx context.Context, convID, callID, output string, atts []valueobject.Attachment) error
+	UpdateToolCallOutput(ctx context.Context, convID string, call entity.ToolCall) error
 
 	// Compact seals messages[:dropBefore] into the next numbered archive
 	// segment and restarts the live history as [summary] + tail — mirroring
@@ -93,5 +96,7 @@ type Conversation interface {
 	// the most recent message.
 	LoadAt(ctx context.Context, convID string, start, end int) ([]entity.Message, error)
 
+	// Delete removes the whole conversation and its owned files, including
+	// tool output, while leaving other conversations untouched.
 	Delete(ctx context.Context, convID string) error
 }

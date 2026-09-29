@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
 // Save upserts meta.json — creates the conversation directory on first
@@ -23,11 +24,13 @@ func (r *ConversationRepository) Save(ctx context.Context, conv *aggregate.Conve
 	}
 
 	m := metaRecord{
-		ID:      conv.ID(),
-		Title:   conv.Title(),
-		Route:   conv.Route(),
-		ModelID: conv.ModelID(),
-		Usage:   encodeUsage(conv.Usage()),
+		ID:          conv.ID(),
+		Title:       conv.Title(),
+		Route:       conv.Route(),
+		ModelID:     conv.ModelID(),
+		Workspace:   conv.Workspace(),
+		Environment: conv.Environment().String(),
+		Usage:       encodeUsage(conv.Usage()),
 		// SystemPrompt is deliberately absent: the prompt ships embedded
 		// in the binary, so it is applied in memory, never persisted.
 	}
@@ -40,8 +43,10 @@ func (r *ConversationRepository) Save(ctx context.Context, conv *aggregate.Conve
 		m.MessageCount = prev.MessageCount
 		m.ActiveCount = prev.ActiveCount
 		m.SealedSegments = prev.SealedSegments
-	} else {
+	} else if apperror.As(err).StatusCode() == apperror.StatusNotFound {
 		m.CreatedAt = time.Now()
+	} else {
+		return err
 	}
 	return r.writeMeta(conv.ID(), m)
 }

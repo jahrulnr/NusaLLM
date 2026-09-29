@@ -39,7 +39,7 @@ func TestParseRoundtrips(t *testing.T) {
 			t.Fatalf("FinishReason %q roundtrip failed", v)
 		}
 	}
-	for _, v := range []TurnEventKind{TurnEventDelta, TurnEventToolCall, TurnEventFinished, TurnEventError} {
+	for _, v := range []TurnEventKind{TurnEventDelta, TurnEventReasoning, TurnEventReasoningSummary, TurnEventToolCall, TurnEventToolOutput, TurnEventFinished, TurnEventError} {
 		if got, f := ParseTurnEventKind(v.String()); !f || got != v {
 			t.Fatalf("TurnEventKind %q roundtrip failed", v)
 		}

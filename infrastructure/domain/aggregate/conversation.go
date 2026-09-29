@@ -2,8 +2,10 @@ package aggregate
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 )
 
@@ -25,6 +27,8 @@ type Conversation struct {
 	modelID      string // bound model id on that route — Send may still override per request
 	systemPrompt string
 	title        string // optional display title for conversation lists
+	workspace    string // absolute directory the room's tools work in; empty = the delivery's default
+	environment  enum.Environment
 	messages     []entity.Message
 	tools        []valueobject.ToolSchema
 	usage        valueobject.Usage
@@ -37,7 +41,7 @@ func NewConversation(id string) (*Conversation, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Conversation{id: vo.String()}, nil
+	return &Conversation{id: vo.String(), environment: enum.EnvironmentLocal}, nil
 }
 
 // Append adds a message to the conversation history.
@@ -57,6 +61,17 @@ func (c *Conversation) Compact(summary entity.Message, dropBefore int) {
 		dropBefore = len(c.messages)
 	}
 	c.messages = append([]entity.Message{summary}, c.messages[dropBefore:]...)
+}
+
+// CanManualCompact reports whether a manual checkpoint can fold history.
+// The live tail has to be longer than the messages that stay afterwards.
+// A tail that is only a previous checkpoint plus the kept messages is
+// still longer than keepTail, so another explicit fold is allowed.
+func (c *Conversation) CanManualCompact(keepTail int) bool {
+	if keepTail < 0 {
+		keepTail = 0
+	}
+	return len(c.messages) > keepTail
 }
 
 // RewriteFrom replaces a user message's content and drops every message
@@ -129,6 +144,25 @@ func (c *Conversation) SetModelID(modelID string) {
 	c.modelID = modelID
 }
 
+// SetWorkspace binds the conversation to the path its tools work in within
+// the selected environment — file tools confine to it, exec runs there.
+// Like the route binding it persists with the room; empty defers to the
+// selected driver's default workspace.
+func (c *Conversation) SetWorkspace(dir string) {
+	c.workspace = dir
+}
+
+// SetEnvironment binds this room to one execution environment. A registered
+// driver is checked by the application before work starts; the domain only
+// validates the known identity.
+func (c *Conversation) SetEnvironment(environment enum.Environment) error {
+	if _, ok := enum.ParseEnvironment(environment.String()); !ok {
+		return fmt.Errorf("unknown environment %q", environment)
+	}
+	c.environment = environment
+	return nil
+}
+
 // AddUsage accumulates the token accounting reported for one request —
 // providers report per call, the conversation tracks the running total.
 func (c *Conversation) AddUsage(u valueobject.Usage) {
@@ -165,7 +199,7 @@ func (c *Conversation) EstimatedTokens() int {
 			chars += len(v)
 		}
 		for _, tc := range m.ToolCalls() {
-			chars += len(tc.Input()) + len(tc.Output())
+			chars += len(tc.Input()) + len(tc.OutputWithUntrustedTag())
 			flat += len(tc.OutputAttachments()) * attachmentTokenEstimate
 		}
 	}
@@ -184,6 +218,8 @@ func (c *Conversation) NeedCompaction(budget int) bool {
 func (c Conversation) ID() string                      { return c.id }
 func (c Conversation) Route() string                   { return c.route }
 func (c Conversation) ModelID() string                 { return c.modelID }
+func (c Conversation) Workspace() string               { return c.workspace }
+func (c Conversation) Environment() enum.Environment   { return c.environment }
 func (c Conversation) SystemPrompt() string            { return c.systemPrompt }
 func (c Conversation) Title() string                   { return c.title }
 func (c Conversation) Messages() []entity.Message      { return c.messages }

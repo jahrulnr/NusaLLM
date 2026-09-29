@@ -8,6 +8,15 @@ import (
 	"time"
 )
 
+type testStore struct{}
+
+func (testStore) Read(path string) ([]byte, error)          { return os.ReadFile(path) }
+func (testStore) WriteAtomic(path string, raw []byte) error { return os.WriteFile(path, raw, 0o644) }
+func (testStore) Exists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	return err == nil, err
+}
+
 func writeConfig(t *testing.T, body string) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "config.json")
@@ -19,7 +28,7 @@ func writeConfig(t *testing.T, body string) string {
 
 func TestLoadFileValuesWin(t *testing.T) {
 	var c Config
-	if err := c.Load(writeConfig(t, `{"conversation":{"mailbox_cap":8,"max_turn_steps":3},"service":{"idle_timeout":"10s"}}`)); err != nil {
+	if err := c.Load(testStore{}, writeConfig(t, `{"conversation":{"mailbox_cap":8,"max_turn_steps":3},"service":{"idle_timeout":"10s"}}`)); err != nil {
 		t.Fatal(err)
 	}
 	if c.Conversation.MailboxCap != 8 || c.Conversation.MaxTurnStep != 3 {
@@ -36,7 +45,7 @@ func TestLoadFileValuesWin(t *testing.T) {
 
 func TestLoadZeroMeansDefault(t *testing.T) {
 	var c Config
-	if err := c.Load(writeConfig(t, `{"conversation":{"mailbox_cap":0}}`)); err != nil {
+	if err := c.Load(testStore{}, writeConfig(t, `{"conversation":{"mailbox_cap":0}}`)); err != nil {
 		t.Fatal(err)
 	}
 	if c.Conversation.MailboxCap != 128 {
@@ -46,28 +55,38 @@ func TestLoadZeroMeansDefault(t *testing.T) {
 
 func TestLoadRejectsUnknownKeys(t *testing.T) {
 	var c Config
-	if err := c.Load(writeConfig(t, `{"conversation":{"mailbox_cap":8},"bogus":true}`)); err == nil {
+	if err := c.Load(testStore{}, writeConfig(t, `{"conversation":{"mailbox_cap":8},"bogus":true}`)); err == nil {
 		t.Fatal("unknown key must fail loudly")
 	}
-	if err := c.Load(writeConfig(t, `{"conversation":{"mailbox_cap":8,"typo":1}}`)); err == nil {
+	if err := c.Load(testStore{}, writeConfig(t, `{"conversation":{"mailbox_cap":8,"typo":1}}`)); err == nil {
 		t.Fatal("unknown nested key must fail loudly")
 	}
 }
 
 func TestLoadRejectsMalformedJSON(t *testing.T) {
 	var c Config
-	if err := c.Load(writeConfig(t, `{nope`)); err == nil {
+	if err := c.Load(testStore{}, writeConfig(t, `{nope`)); err == nil {
 		t.Fatal("malformed JSON must fail")
 	}
-	if err := c.Load(writeConfig(t, `{"conversation":{"mailbox_cap":8}} {"extra":true}`)); err == nil {
+	if err := c.Load(testStore{}, writeConfig(t, `{"conversation":{"mailbox_cap":8}} {"extra":true}`)); err == nil {
 		t.Fatal("trailing garbage must fail")
 	}
 	// More() only reports inside an open array/object — a stray closer
 	// reads as "nothing more" to it, so the EOF check must catch it.
 	for _, raw := range []string{`{"conversation":{}}}`, `{"conversation":{}}]`, `{"conversation":{}} extra`, `{"conversation":{}}42`} {
-		if err := c.Load(writeConfig(t, raw)); err == nil {
+		if err := c.Load(testStore{}, writeConfig(t, raw)); err == nil {
 			t.Fatalf("trailing %q must fail", raw)
 		}
+	}
+}
+
+func TestValidateRejectsNonObjectDocument(t *testing.T) {
+	for _, raw := range []string{"null", "[]", `"text"`, "42"} {
+		t.Run(raw, func(t *testing.T) {
+			if _, err := Validate([]byte(raw)); err == nil {
+				t.Fatalf("%s must not be a valid config document", raw)
+			}
+		})
 	}
 }
 
@@ -96,22 +115,40 @@ func TestDurationMarshalEmitsHumanString(t *testing.T) {
 
 func TestLoadMissingFile(t *testing.T) {
 	var c Config
-	if err := c.Load(filepath.Join(t.TempDir(), "nope.json")); err == nil {
+	if err := c.Load(testStore{}, filepath.Join(t.TempDir(), "nope.json")); err == nil {
 		t.Fatal("missing file must fail")
+	}
+}
+
+func TestLoadRequiresStoreForFile(t *testing.T) {
+	var c Config
+	if err := c.Load(nil, "config.json"); err == nil {
+		t.Fatal("non-empty config path requires a store")
+	}
+	if err := c.Load(nil, ""); err != nil {
+		t.Fatalf("default config must not require a store: %v", err)
+	}
+}
+
+func TestAppDefaultsOnNormalize(t *testing.T) {
+	var c Config
+	c.Normalize()
+	if c.App.Name != "NusaLLM" || c.App.Source != "https://github.com/jahrulnr/NusaLLM" {
+		t.Fatalf("App defaults not applied: %+v", c.App)
 	}
 }
 
 func TestLoadEmptyPathYieldsDefaults(t *testing.T) {
 	c := NewConfig()
 	c.Conversation.MailboxCap = 1 // simulate a caller mutation
-	if err := c.Load(""); err != nil {
+	if err := c.Load(testStore{}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if c.Conversation.MailboxCap != 1 {
 		t.Fatal("empty path must not clobber set values")
 	}
 	c.Conversation.MailboxCap = 0
-	if err := c.Load(""); err != nil {
+	if err := c.Load(testStore{}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if c.Conversation.MailboxCap != 128 {

@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -12,7 +11,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/term"
-	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 )
 
 const (
@@ -91,7 +89,7 @@ func (m replModel) renderFooter(paletteOpen bool) string {
 	if m.repl.Workspace != nil {
 		// Keep the tail of the path: the project directory is what the user
 		// recognizes, not the shared prefix.
-		path := []rune(displayPath(m.repl.Workspace.Path()))
+		path := []rune(displayPath(m.repl.Workspace.Path(), m.repl.homeDir))
 		if len(path) > footerSegmentLimit {
 			path = append([]rune("…"), path[len(path)-footerSegmentLimit+1:]...)
 		}
@@ -117,7 +115,7 @@ func (m replModel) renderFooter(paletteOpen bool) string {
 	if id := m.repl.ConversationID; id != "" {
 		add(term.Magenta, id)
 		if m.contextTotal > 0 {
-			add(term.Dim, fmt.Sprintf("~%s/%s Tokens", valueobject.FormatScaledTokens(m.contextEstimate), valueobject.FormatScaledTokens(m.contextTotal)))
+			add(term.Dim, fmt.Sprintf("~%s/%s Tokens", term.FormatScaledTokens(m.contextEstimate), term.FormatScaledTokens(m.contextTotal)))
 		}
 	}
 	if n := len(m.repl.Attachments); n > 0 {
@@ -161,9 +159,8 @@ func (m replModel) renderTurnStatus() string {
 }
 
 // displayPath abbreviates the home directory the way shells do.
-func displayPath(path string) string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
+func displayPath(path, home string) string {
+	if home == "" {
 		return path
 	}
 	if path == home {

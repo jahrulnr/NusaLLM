@@ -1,10 +1,11 @@
 # NusaLLM CLI Guide
 
 `nusallm` is the terminal client for NusaLLM, a provider-agnostic LLM
-conversation engine. One binary gives you an interactive REPL, a small set
-of admin subcommands for providers and configuration, and nothing else —
-there is no daemon, no account system, and no telemetry. The REPL is the
-product; the subcommands exist to feed it providers and settings.
+conversation engine. One binary gives you an interactive REPL, a loopback
+WebUI (`nusallm serve`), and admin subcommands for providers,
+configuration, and offline conversation repair — no account system or telemetry.
+The REPL and the WebUI are two transports over the same engine; the
+subcommands exist to feed both providers and settings.
 
 This guide covers installing the binary, wiring a provider, driving the
 REPL, and the knobs the config file exposes. For what the engine is doing
@@ -27,7 +28,16 @@ make build
 
 # Build and run in one step
 make cli
+
+# Loopback WebUI (HTTP API + browser UI + WebSocket turns)
+make serve
+# or: nusallm serve [--port N]
 ```
+
+`serve` binds `127.0.0.1` only. The port comes from `server.port` in
+config (default `10998`); `--port` overrides it for one process. Configured
+`server.hosts` values are the accepted `Host`/`Origin` names for HTTP and
+the WebSocket upgrade — see [WebUI API contract](./api/contract.md).
 
 Running from source without building also works:
 
@@ -57,8 +67,9 @@ project directory keeps that project's state together.
   no file exists to edit (`nusallm config path` prints `(no config file —
   running on defaults)`). If it is set and the file is missing, the REPL
   writes a fully-default document there on first start and tells you:
-  `nusallm: no config found; wrote defaults to <path>`. Admin subcommands
-  never create it — only the REPL and `config set` write the file.
+  `nusallm: no config found; wrote defaults to <path>`. The REPL and
+  `serve` write defaults on start (`admin.EnsureConfig`); `config set`
+  writes the file too — other admin subcommands never create it.
 - **`.env`** — before reading `CONFIG_PATH`, the process loads
   `KEY=VALUE` pairs from a `.env` file in the launch directory (comments
   with `#` allowed, quotes stripped). Real environment variables win over
@@ -143,7 +154,7 @@ the source of truth):
 
 | Flag | Meaning |
 |---|---|
-| `--style <s>` | wire style: `completion`, `responses`, or `messages` |
+| `--style <s>` | wire style: `completion`, `responses`, `messages`, or `generatecontent` |
 | `--endpoint <url>` | provider base URL — the adapter appends its path |
 | `--name <name>` | display name; defaults to the id |
 | `--models a,b,c` | replace the whole catalog; each entry's route equals its id |
@@ -195,15 +206,21 @@ variable exists.
 
 ### Styles, honestly
 
-`--style` accepts `completion`, `responses`, and `messages` — those are
-the enum values (`infrastructure/domain/enum/style.go`). **Today only
-`completion` has a wired adapter in this binary** (`cmd/nusallm/main.go`
-registers `enum.StyleCompletion` alone); it speaks OpenAI-shaped
-`POST <endpoint>/chat/completions`, which covers OpenAI, OpenRouter,
-DeepSeek, Groq, xAI, Mistral, and the compatible long tail. A
-`responses` or `messages` gateway saves fine but fails at send time with
-`no adapter for gateway style`. See [Adapters](./adapters.md) for where
-new styles plug in.
+`--style` accepts `completion`, `responses`, `messages`, and
+`generatecontent` — the enum values in
+`infrastructure/domain/enum/style.go`, and all four have adapters wired in
+`cmd/nusallm/wire.go`. Pick the wire your endpoint speaks:
+
+- `completion` — OpenAI-shaped `POST <endpoint>/chat/completions`; covers
+  OpenAI, OpenRouter, DeepSeek, Groq, xAI, Mistral, and the compatible
+  long tail.
+- `responses` — OpenAI's Responses API at `POST <endpoint>/responses`.
+- `messages` — Anthropic at `POST <endpoint>/messages` (`x-api-key` auth).
+- `generatecontent` — Gemini at
+  `POST <endpoint>/models/{model}:generateContent` (`x-goog-api-key`).
+
+See [Adapters](./adapters.md) for what each wire carries and where new
+styles plug in.
 
 ## Managing settings: `nusallm config`
 
@@ -232,16 +249,18 @@ Subcommands:
 nusallm config show                 effective config — file values over defaults
 nusallm config path                 resolved config file path (or "(no config file…)")
 nusallm config set <key> <value>    patch one dotted leaf
-nusallm config unset <key>          remove a key — the repair path for bad files
+nusallm config unset <key>          remove an override; defaulted keys reset to their default
 nusallm config validate             strict-decode check on the file
 ```
 
 `set` takes a dotted leaf (`service.idle_timeout`), decodes the value as
 a JSON literal (`5`, `true`, `"2m"`), and falls back to a plain string
 for bare text — so `nusallm config set service.idle_timeout 2m` stores
-`"2m"`. `null` is refused; `unset` is the removal path. The key must be a
-real leaf in the schema — typos fail instead of planting dead keys — and
-the file is rewritten atomically as the full normalized document, so what
+`"2m"`. `null` is refused. `set` requires a real leaf in the schema —
+typos fail instead of planting dead keys. `unset` removes an existing key
+from the input document, including an unknown key that prevents validation;
+normalization restores its default when one exists. The file is rewritten
+atomically as the full normalized document, so what
 lands on disk is exactly what the loader computes (durations come back
 canonical: `2m` becomes `"2m0s"`). Both `set` and `unset` print
 "takes effect on next start"; in practice the REPL re-reads the
@@ -250,8 +269,9 @@ canonical: `2m` becomes `"2m0s"`). Both `set` and `unset` print
 
 Strictness is split deliberately: the REPL refuses to boot on a file that
 fails strict decode — unknown keys or trailing garbage are errors, not
-warnings — while the admin commands decode leniently so
-`config unset` can still repair the file that strict mode rejects.
+warnings. Gateway and onboarding commands use lenient boot loading;
+`config` commands open the file directly so `config unset` can repair a
+document that strict mode rejects.
 
 ## Inside the REPL
 
@@ -413,10 +433,18 @@ removes it entirely, `/title` names it, `/export` dumps it as markdown.
 not on exit. See [Persistence](./persistence.md) for the segment format
 compaction produces.
 
+If an interrupted compaction leaves one extra sealed segment, stop the app,
+back up the affected conversation directory, then use
+`nusallm conversation repair <id> --discard-duplicate` when its messages
+still lead `active.jsonl`, or `--commit` when the active rewrite removed
+them. The command checks the chosen case and recalculates counters when
+committing. A missing segment needs restoration from backup; see the
+[recovery procedure](./persistence.md#compact--sealing-history).
+
 ### Tools the model can call
 
 `/tools` lists what the model may invoke; the current wiring
-(`cmd/nusallm/main.go`) registers five, all at `agent` permission —
+(`cmd/nusallm/wire.go`) registers five, all at `agent` permission —
 meaning they run without asking you first:
 
 | Tool | Scope |
@@ -430,7 +458,10 @@ meaning they run without asking you first:
 The file tools are confined to the workspace; `exec` is not — it runs in
 the launch environment with a default 120 s timeout (the model may ask
 for up to 600 s) and spills oversized output to
-`$TMPDIR/nusallm-exec-*.log`. `/help` says it plainly: *exec is
+`<storage.dir>/conversations/<id>/tool-output/`. Spill files remain available
+until the user deletes the conversation; deleting the conversation removes
+them together with its history.
+`/help` says it plainly: *exec is
 unsandboxed — review command activity.* Watch the `exec <tool>` phase in
 the status line.
 

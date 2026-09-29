@@ -45,6 +45,10 @@ func (d Deps) compact(ctx context.Context, convID string, conv *aggregate.Conver
 		return err
 	}
 	scratch.SetSystemPrompt(conv.SystemPrompt())
+	scratch.SetWorkspace(conv.Workspace())
+	if err := scratch.SetEnvironment(conv.Environment()); err != nil {
+		return err
+	}
 	for _, m := range conv.Messages() {
 		scratch.Append(m)
 	}
@@ -59,13 +63,6 @@ func (d Deps) compact(ctx context.Context, convID string, conv *aggregate.Conver
 
 	checkpoint, err := d.writeCheckpoint(ctx, scratch, gw, model, svc, summary)
 	if err != nil {
-		return err
-	}
-	// The model's own handoff tokens belong to the room's accounting —
-	// the scratch conv collected them so the caller can merge. Persist
-	// immediately: a failed retry below must not lose the spend.
-	conv.AddUsage(scratch.Usage())
-	if err := d.Convs.Save(ctx, conv); err != nil {
 		return err
 	}
 
@@ -90,6 +87,12 @@ func (d Deps) compact(ctx context.Context, convID string, conv *aggregate.Conver
 		return err
 	}
 	conv.Compact(next, dropBefore)
+	// Handoff spend merges only after the fold commits — a failed
+	// Compact must not persist usage against an unchanged history.
+	conv.AddUsage(scratch.Usage())
+	if err := d.Convs.Save(ctx, conv); err != nil {
+		return err
+	}
 	return nil
 }
 

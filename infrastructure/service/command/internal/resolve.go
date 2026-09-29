@@ -4,7 +4,6 @@ import (
 	"context"
 
 	appcommand "github.com/jahrulnr/nusallm/application/command"
-	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
 	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 )
 
@@ -13,33 +12,32 @@ import (
 func DisplayTitles(ctx context.Context, h appcommand.SlashSession, conversations []drepo.ConversationInfo) map[string]string {
 	out := make(map[string]string, len(conversations))
 	for _, conv := range conversations {
-		if !aggregate.TitleUnset(conv.Title) {
-			out[conv.ID] = aggregate.ListDisplayTitle(conv.Title, nil)
+		if !TitleUnset(conv.Title) {
+			out[conv.ID] = ListDisplayTitle(conv.Title, nil)
 		}
 	}
 	for _, conv := range conversations {
-		if !aggregate.TitleUnset(conv.Title) {
+		if !TitleUnset(conv.Title) {
 			continue
 		}
 		messages, err := h.ConversationHistory(ctx, conv.ID, 0, TitleHistoryEnd)
 		if err != nil {
-			// Fall back to aggregate rules (typically "untitled") when history is unavailable.
-			out[conv.ID] = aggregate.ListDisplayTitle(conv.Title, nil)
+			out[conv.ID] = ListDisplayTitle(conv.Title, nil)
 			continue
 		}
-		out[conv.ID] = aggregate.ListDisplayTitle(conv.Title, messages)
+		out[conv.ID] = ListDisplayTitle(conv.Title, messages)
 	}
 	return out
 }
 
-// Resolve loads a prefix of history when needed and applies aggregate list-title rules.
+// Resolve loads a prefix of history when a command label needs it.
 func Resolve(ctx context.Context, h appcommand.SlashSession, convID, storedTitle string) string {
-	if !aggregate.TitleUnset(storedTitle) {
-		return aggregate.ListDisplayTitle(storedTitle, nil)
+	if !TitleUnset(storedTitle) {
+		return ListDisplayTitle(storedTitle, nil)
 	}
 	messages, err := h.ConversationHistory(ctx, convID, 0, TitleHistoryEnd)
 	if err != nil {
-		return aggregate.ListDisplayTitle(storedTitle, nil)
+		return ListDisplayTitle(storedTitle, nil)
 	}
-	return aggregate.ListDisplayTitle(storedTitle, messages)
+	return ListDisplayTitle(storedTitle, messages)
 }

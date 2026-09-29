@@ -8,7 +8,8 @@ import (
 )
 
 // Delete removes the conversation and everything it stored — meta, the
-// live tail, every sealed segment. A running job is interrupted before
+// live tail, every sealed segment, and conversation-owned tool output.
+// A running job is interrupted before
 // the repository call, so an in-flight tool or provider request dies with
 // the room; queued jobs get 410. Afterwards the worker retires and the id
 // is free again — a new Send with the same id mints a fresh room.
@@ -17,7 +18,7 @@ import (
 // abandons Delete mid-flight must not half-delete a room.
 func (app *ConversationApp) Delete(ctx context.Context, convID string) error {
 	res := make(chan error, 1)
-	j := &appjob.Delete{Deps: app.deps}
+	j := &appjob.Delete{}
 	j.Result = res
 	app.post(convID, j)
 	select {

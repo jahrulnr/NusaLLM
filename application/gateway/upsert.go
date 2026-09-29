@@ -56,22 +56,44 @@ func (app *GatewayApp) Upsert(ctx context.Context, in GatewayInput) error {
 		seen[m.ID()] = true
 		models = append(models, m)
 	}
-	gw.SetModels(models)
-
-	// The stored ref drives keep and cleanup alike: carried verbatim on
-	// keep, and an abandoned canonical ref loses its vault entry below.
+	// The stored snapshot drives three things: the key ref on keep, the
+	// canonical vault cleanup below, and the server-owned hidden
+	// optionalContent each surviving model carries. Transports never see
+	// optionalContent, so a full replace would otherwise drop it — a
+	// model whose id survives keeps its stored map when the input omits
+	// the field (nil), an explicit map overrides, a dropped id loses it
+	// with the record.
+	//
 	// 404 is a first registration — nothing stored; Inspect tolerates a
-	// corrupt record too (empty ref), so Upsert repairs a broken file
-	// instead of bouncing off it.
+	// corrupt record too (empty ref, nil gateway), so Upsert repairs a
+	// broken file instead of bouncing off it.
+	app.mu.Lock()
+	defer app.mu.Unlock()
 	var oldRef string
+	storedOC := map[string]map[string]string{}
 	snap, err := app.gateways.Inspect(ctx, in.ID)
 	switch {
 	case err == nil:
 		oldRef = snap.ApiKeyRef
+		if snap.Gateway != nil {
+			for _, sm := range snap.Gateway.Models() {
+				if oc := sm.OptionalContent(); oc != nil {
+					storedOC[sm.ID()] = oc
+				}
+			}
+		}
 	case apperror.As(err).StatusCode() == apperror.StatusNotFound:
 	default:
 		return err
 	}
+	for i := range models {
+		if in.Models[i].OptionalContent == nil {
+			for k, v := range storedOC[models[i].ID()] {
+				models[i].SetOptionalContent(k, v)
+			}
+		}
+	}
+	gw.SetModels(models)
 
 	var ref string
 	switch {

@@ -14,9 +14,11 @@ import (
 
 	appconversation "github.com/jahrulnr/nusallm/application/conversation"
 	appgateway "github.com/jahrulnr/nusallm/application/gateway"
+	appjob "github.com/jahrulnr/nusallm/application/job"
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/term"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 	"github.com/jahrulnr/nusallm/infrastructure/service/workspace"
@@ -25,10 +27,11 @@ import (
 // Options wires a session to the conversation/gateway applications and
 // its terminal workspace.
 type Options struct {
-	Conversations *appconversation.ConversationApp
-	Gateways      *appgateway.GatewayApp
-	Workspace     string
-	Stderr        io.Writer
+	Conversations  *appconversation.ConversationApp
+	Gateways       *appgateway.GatewayApp
+	Workspace      string
+	WorkspaceStore drepo.Workspace
+	Stderr         io.Writer
 }
 
 // Session owns the active conversation, route/model selection, and pending
@@ -69,7 +72,7 @@ func New(opts Options) (*Session, error) {
 	if opts.Workspace == "" {
 		opts.Workspace = "."
 	}
-	workspace, err := workspace.Open(opts.Workspace)
+	workspace, err := workspace.Open(opts.WorkspaceStore, opts.Workspace)
 	if err != nil {
 		return nil, err
 	}
@@ -162,7 +165,7 @@ func (s *Session) ResolveRoute(ctx context.Context) (route, modelID string, err 
 	}
 	if modelID == "" && route != "" {
 		if gw, err := s.Gateways.Get(ctx, route); err == nil && !gw.Broken {
-			listed := entity.ListedModels(gw.Models)
+			listed := appgateway.ListedModels(gw.Models)
 			if len(listed) == 1 {
 				modelID = listed[0].ID()
 			}
@@ -206,7 +209,7 @@ func (s *Session) Send(ctx context.Context, text, route, modelID string, onEvent
 		}
 		break
 	}
-	return s.Conversations.Send(ctx, s.ConversationID, route, modelID, text, s.Attachments, onEvent)
+	return s.Conversations.Send(ctx, s.ConversationID, route, modelID, text, s.Attachments, appjob.SendOptions{}, onEvent)
 }
 
 // Edit regenerates a conversation from a user message — a turn just like

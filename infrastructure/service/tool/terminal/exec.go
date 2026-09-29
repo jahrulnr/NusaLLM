@@ -6,17 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
+	"io"
 	"strings"
 	"sync"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 )
@@ -24,6 +21,7 @@ import (
 const (
 	defaultExecTimeout = 120 * time.Second
 	maxExecTimeout     = 10 * time.Minute
+	maxExecSpillBytes  = 32 << 20 // cap spill file growth
 	// waitDelay caps how long Wait may block on output pipes a stray
 	// grandchild inherited — without it a detached process stalls the
 	// tool forever even after its shell is dead.
@@ -35,10 +33,18 @@ const (
 // schema's ToolPermissionAgent is the gate the application turn
 // consults before invoking it.
 type ExecTool struct {
-	schema valueobject.ToolSchema
+	schema  valueobject.ToolSchema
+	outputs drepo.ToolOutput
+	runner  service.CommandRunner
 }
 
-func NewExecTool() (service.Tool, error) {
+func NewExecTool(outputs drepo.ToolOutput, runner service.CommandRunner) (service.Tool, error) {
+	if outputs == nil {
+		return nil, errors.New("tool output repository is required")
+	}
+	if runner == nil {
+		return nil, errors.New("command runner is required")
+	}
 	schema, err := valueobject.NewToolSchema(
 		"exec",
 		"Run a shell command and return its combined stdout and stderr.",
@@ -49,7 +55,7 @@ func NewExecTool() (service.Tool, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &ExecTool{schema: schema}, nil
+	return &ExecTool{schema: schema, outputs: outputs, runner: runner}, nil
 }
 
 func (tool *ExecTool) Schema() valueobject.ToolSchema {
@@ -59,6 +65,10 @@ func (tool *ExecTool) Schema() valueobject.ToolSchema {
 func (tool *ExecTool) Execute(ctx context.Context, call entity.ToolCall, emit service.ToolEmitter) (service.ToolResult, error) {
 	if err := ctx.Err(); err != nil {
 		return service.ToolResult{}, err
+	}
+	convID := service.ConversationID(ctx)
+	if err := valueobject.ValidID(convID); err != nil {
+		return service.ToolResult{}, fmt.Errorf("exec conversation id: %w", err)
 	}
 	var input struct {
 		Command   string `json:"command"`
@@ -73,51 +83,44 @@ func (tool *ExecTool) Execute(ctx context.Context, call entity.ToolCall, emit se
 
 	timeout := defaultExecTimeout
 	if input.TimeoutMS > 0 {
-		timeout = min(time.Duration(input.TimeoutMS)*time.Millisecond, maxExecTimeout)
+		// Clamp in milliseconds first — a huge timeout_ms converted
+		// straight to a Duration would overflow int64 into a negative
+		// and kill the command instantly.
+		timeout = time.Duration(min(input.TimeoutMS, int(maxExecTimeout.Milliseconds()))) * time.Millisecond
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	budget := call.OutputBudget()
-	// The spill path is chosen before start so the sink can stream into it
-	// the moment output outgrows the in-memory head — a command printing
-	// unbounded output must not grow memory unboundedly with it.
-	safe := strings.Map(func(r rune) rune {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == '_' || r == '.' {
-			return r
-		}
-		return '_'
-	}, call.ID())
-	spillPath := filepath.Join(os.TempDir(), "nusallm-exec-"+safe+".log")
+	// Reserve before starting the process, but create the file only on spill.
+	spill, err := tool.outputs.Reserve(ctx, convID, call.ID())
+	if err != nil {
+		return service.ToolResult{}, err
+	}
+	spillPath := spill.Reference()
 
-	cmd := shellCommand(ctx, input.Command)
-	cmd.WaitDelay = waitDelay
-	// stdout and stderr share one writer: os/exec then wires both child
-	// fds to a single pipe, so the merged stream keeps arrival order and
-	// each Write below is one preview chunk.
-	sink := &outputSink{emit: emit, budget: budget, spillPath: spillPath}
-	cmd.Stdout = sink
-	cmd.Stderr = sink
-	if err := cmd.Start(); err != nil {
+	sink := &outputSink{emit: emit, budget: budget, spill: spill}
+	// The turn's workspace is the shell's working directory. The runner
+	// chooses where the command actually executes; output still flows into
+	// one sink regardless of backend.
+	exit, err := tool.runner.Run(ctx, input.Command, service.WorkspaceDir(ctx), sink)
+	if err != nil {
 		return service.ToolResult{}, fmt.Errorf("exec: %w", err)
 	}
-	runErr := cmd.Wait()
 
 	// Exit status is data the model must see — a nonzero exit is not a
 	// Go error. It belongs at the end of the stream, so it lands inside
 	// the tail of the excerpt and at the end of the spill file.
 	suffix := ""
-	var exitErr *exec.ExitError
 	switch {
-	case runErr == nil:
-	case errors.As(runErr, &exitErr) && exitErr.ExitCode() > 0:
-		suffix = fmt.Sprintf("\n(exit %d)", exitErr.ExitCode())
+	case exit.Code > 0:
+		suffix = fmt.Sprintf("\n(exit %d)", exit.Code)
 	case ctx.Err() != nil:
 		suffix = fmt.Sprintf("\n(killed: %v)", ctx.Err())
-	case errors.As(runErr, &exitErr):
-		suffix = fmt.Sprintf("\n(%s)", exitErr) // signal death, e.g. "signal: killed"
-	default:
-		suffix = fmt.Sprintf("\n(%v)", runErr)
+	case exit.Signal != "":
+		suffix = fmt.Sprintf("\n(%s)", exit.Signal)
+	case exit.Err != nil:
+		suffix = fmt.Sprintf("\n(%v)", exit.Err)
 	}
 
 	sink.mu.Lock()
@@ -126,10 +129,11 @@ func (tool *ExecTool) Execute(ctx context.Context, call entity.ToolCall, emit se
 	total := sink.total
 	spilled := sink.spilled
 	spillErr := sink.spillErr
-	if sink.spill != nil {
-		_, _ = sink.spill.Write([]byte(suffix))
-		_ = sink.spill.Close()
+	if sink.writer != nil {
+		sink.writeSpill([]byte(suffix))
+		_ = sink.writer.Close()
 	}
+	spillWritten := sink.spillWritten
 	sink.mu.Unlock()
 
 	if !spilled {
@@ -141,20 +145,40 @@ func (tool *ExecTool) Execute(ctx context.Context, call entity.ToolCall, emit se
 		// suffix (or on a final chunk boundary) — spill the whole string
 		// now; it is still fully in memory.
 		ref := "full output: " + spillPath
-		if err := os.WriteFile(spillPath, []byte(full), 0o600); err != nil {
+		toWrite := full
+		if len(toWrite) > maxExecSpillBytes {
+			toWrite = toWrite[:maxExecSpillBytes]
+			ref = fmt.Sprintf("spilled output (truncated at %d MiB): %s", maxExecSpillBytes>>20, spillPath)
+		}
+		f, err := spill.Open()
+		if err == nil {
+			var written int
+			written, err = f.Write([]byte(toWrite))
+			if err == nil && written != len(toWrite) {
+				err = io.ErrShortWrite
+			}
+			if closeErr := f.Close(); err == nil {
+				err = closeErr
+			}
+		}
+		if err != nil {
 			ref = fmt.Sprintf("spill to %s failed: %v", spillPath, err)
 		}
-		return service.ToolResult{Text: truncateOutput(full, budget, ref)}, nil
+		return service.ToolResult{Text: call.OutputWithMiddleTruncateWindow(full, full, len(full), ref)}, nil
 	}
 
-	// Spilled mid-run: the file already holds everything, the excerpt is
-	// assembled from the frozen head and the rolling tail.
+	// Spilled mid-run: the file holds the stream up to the spill cap, and
+	// the excerpt is assembled from the frozen head and the rolling tail.
 	tail += suffix
 	ref := "full output: " + spillPath
-	if spillErr != nil {
+	switch {
+	case spillErr != nil:
 		ref = fmt.Sprintf("spill to %s failed: %v", spillPath, spillErr)
+	case spillWritten < total+len(suffix):
+		// The cap dropped stream bytes — "full" would be a lie.
+		ref = fmt.Sprintf("spilled output (truncated at %d MiB): %s", maxExecSpillBytes>>20, spillPath)
 	}
-	return service.ToolResult{Text: truncateSpilled(head, tail, total+len(suffix), ref, budget)}, nil
+	return service.ToolResult{Text: call.OutputWithMiddleTruncateWindow(head, tail, total+len(suffix), ref)}, nil
 }
 
 // outputSink is the single writer behind cmd.Stdout+Stderr: one pipe
@@ -162,26 +186,49 @@ func (tool *ExecTool) Execute(ctx context.Context, call entity.ToolCall, emit se
 // preview chunk to emit. Memory stays bounded by the call budget: while
 // output fits it buffers outright; the first Write past the budget opens
 // the spill file, freezes buf as the head region, and keeps only a
-// rolling tail window — the full stream continues into the file.
+// rolling tail window — the stream continues into the file up to
+// maxExecSpillBytes.
 type outputSink struct {
-	mu        sync.Mutex
-	buf       bytes.Buffer // head region — frozen once spilled
-	tail      []byte       // rolling tail once spilled
-	spill     *os.File
-	spillPath string
-	spillErr  error
-	spilled   bool
-	total     int // everything ever written, for the omitted-byte count
-	budget    int
-	emit      service.ToolEmitter
+	mu           sync.Mutex
+	buf          bytes.Buffer // head region — frozen once spilled
+	tail         []byte       // rolling tail once spilled
+	writer       io.WriteCloser
+	spill        drepo.ToolOutputSpill
+	spillErr     error
+	spilled      bool
+	spillWritten int
+	total        int // everything ever written, for the omitted-byte count
+	budget       int
+	emit         service.ToolEmitter
+}
+
+func (s *outputSink) writeSpill(p []byte) {
+	if s.writer == nil || s.spillErr != nil || len(p) == 0 || s.spillWritten >= maxExecSpillBytes {
+		return
+	}
+	n := len(p)
+	if s.spillWritten+n > maxExecSpillBytes {
+		n = maxExecSpillBytes - s.spillWritten
+	}
+	if n > 0 {
+		// Count only bytes actually written and latch the first failure —
+		// the guard above then stops further writes and the marker
+		// reports "failed" instead of claiming "full output".
+		written, err := s.writer.Write(p[:n])
+		s.spillWritten += written
+		if err == nil && written < n {
+			err = io.ErrShortWrite
+		}
+		s.spillErr = err
+	}
 }
 
 func (s *outputSink) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	s.total += len(p)
 	if s.spilled {
-		if s.spill != nil {
-			_, _ = s.spill.Write(p)
+		if s.writer != nil {
+			s.writeSpill(p)
 		}
 		s.tail = append(s.tail, p...)
 		if len(s.tail) > s.budget {
@@ -191,9 +238,9 @@ func (s *outputSink) Write(p []byte) (int, error) {
 		s.buf.Write(p)
 		if s.buf.Len() > s.budget {
 			s.spilled = true
-			if f, err := os.OpenFile(s.spillPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600); err == nil {
-				s.spill = f
-				_, _ = f.Write(s.buf.Bytes())
+			if f, err := s.spill.Open(); err == nil {
+				s.writer = f
+				s.writeSpill(s.buf.Bytes())
 			} else {
 				// Degrade to head+tail without the file — the marker
 				// reports the failure; memory still stays bounded.
@@ -210,55 +257,4 @@ func (s *outputSink) Write(p []byte) (int, error) {
 		s.emit(string(p))
 	}
 	return len(p), nil
-}
-
-// truncateOutput keeps a head and tail of full inside budget, joined by
-// a marker carrying the omitted byte count and where the full output
-// went. Head gets ~60% of the room — command failures usually show up
-// early.
-func truncateOutput(full string, budget int, ref string) string {
-	const markerFmt = "\n\n[... %d bytes omitted — %s ...]\n\n"
-	// omitted never exceeds len(full), so sizing the room against a
-	// marker with that many digits bounds the real marker's length.
-	room := budget - len(fmt.Sprintf(markerFmt, len(full), ref))
-	if room <= 0 {
-		return full[:budget] // budget too small for even the marker
-	}
-	head := room * 3 / 5
-	tailStart := len(full) - (room - head)
-	// Cut on rune boundaries so log excerpts stay valid UTF-8.
-	for head > 0 && !utf8.RuneStart(full[head]) {
-		head--
-	}
-	for tailStart < len(full) && !utf8.RuneStart(full[tailStart]) {
-		tailStart++
-	}
-	return full[:head] + fmt.Sprintf(markerFmt, tailStart-head, ref) + full[tailStart:]
-}
-
-// truncateSpilled is truncateOutput for the mid-run spill path: the head
-// comes from the sink's frozen head buffer and the tail from its rolling
-// window, so the omitted middle is derived rather than sliced out of a
-// full string. Both sides are cut on rune boundaries like truncateOutput.
-func truncateSpilled(head, tail string, total int, ref string, budget int) string {
-	const markerFmt = "\n\n[... %d bytes omitted — %s ...]\n\n"
-	room := budget - len(fmt.Sprintf(markerFmt, total, ref))
-	if room <= 0 {
-		return head[:min(budget, len(head))]
-	}
-	headRoom := room * 3 / 5
-	tailRoom := room - headRoom
-	if len(head) > headRoom {
-		head = head[:headRoom]
-		for len(head) > 0 && !utf8.ValidString(head) {
-			head = head[:len(head)-1]
-		}
-	}
-	if len(tail) > tailRoom {
-		tail = tail[len(tail)-tailRoom:]
-		for len(tail) > 0 && !utf8.ValidString(tail) {
-			tail = tail[1:]
-		}
-	}
-	return head + fmt.Sprintf(markerFmt, total-len(head)-len(tail), ref) + tail
 }

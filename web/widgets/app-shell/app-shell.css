@@ -1,0 +1,44 @@
+:host {
+  display: block;
+  height: 100vh;
+  font-family: var(--font-ui);
+  color: var(--text);
+}
+
+/* Staggered shell entrance — one motion, nothing else animates on load. */
+@keyframes rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr); /* bounded — children scroll internally */
+  height: 100%;
+}
+.grid > * { min-height: 0; min-width: 0; overflow: hidden; }
+.grid > * { animation: rise 220ms ease backwards; }
+.grid > :nth-child(2) { animation-delay: 60ms; }
+
+.workspace { min-width: 0; min-height: 0; height: 100%; overflow: visible; }
+.workspace > [hidden] { display: none !important; }
+.workspace > * { min-width: 0; }
+
+.main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  height: 100%;
+}
+.main > nusa-message-thread { flex: 1; min-height: 0; }
+
+@media (max-width: 760px) {
+  /* Both drawers are fixed overlays — the grid has ONE in-flow track
+     and <main> must fill it. */
+  .grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .grid > * { animation: none; }
+}

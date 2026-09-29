@@ -32,6 +32,25 @@ func TestNewConversation(t *testing.T) {
 	}
 }
 
+func TestConversationEnvironmentBinding(t *testing.T) {
+	c := mustConv(t)
+	if c.Environment() != enum.EnvironmentLocal {
+		t.Fatalf("new room environment = %q, want local", c.Environment())
+	}
+	if err := c.SetEnvironment(enum.EnvironmentDocker); err != nil {
+		t.Fatal(err)
+	}
+	if c.Environment() != enum.EnvironmentDocker {
+		t.Fatalf("environment = %q, want docker", c.Environment())
+	}
+	if err := c.SetEnvironment(enum.Environment("unregistered")); err == nil {
+		t.Fatal("unknown environment must not replace the binding")
+	}
+	if c.Environment() != enum.EnvironmentDocker {
+		t.Fatal("invalid environment changed the binding")
+	}
+}
+
 func TestConversationAppendLast(t *testing.T) {
 	c := mustConv(t)
 	m, _ := entity.NewMessage(enum.RoleUser, "hi")
@@ -55,14 +74,16 @@ func TestConversationEstimatedTokens(t *testing.T) {
 	// history must still trip the compaction budget.
 	am, _ := entity.NewMessage(enum.RoleAssistant, "")
 	tc, _ := entity.NewToolCall("c1", "read_media", strings.Repeat("i", 40), enum.TooltypeOrigin)
-	tc.SetStoredOutput(strings.Repeat("o", 40))
+	tc.SetStoredOutput(strings.Repeat("o", 40), "")
 	tc.SetOutputAttachments([]valueobject.Attachment{a})
 	am.AddToolCall(tc)
 	c.Append(am)
 
-	// (400 + 400 + 40 + 40 + 40)/4 + 2×1000 flat attachments = 2230
-	if got := c.EstimatedTokens(); got != 2230 {
-		t.Fatalf("EstimatedTokens = %d, want 2230", got)
+	// Provider context includes the untrusted evidence envelope; media
+	// contributes a flat estimate independent of text length.
+	want := (400+400+40+40+len(tc.OutputWithUntrustedTag()))/4 + 2*attachmentTokenEstimate
+	if got := c.EstimatedTokens(); got != want {
+		t.Fatalf("EstimatedTokens = %d, want %d", got, want)
 	}
 }
 
@@ -108,6 +129,28 @@ func TestConversationCompact(t *testing.T) {
 	}
 }
 
+func TestManualCompactWhileTailExceedsKeep(t *testing.T) {
+	c := mustConv(t)
+	for _, role := range []enum.Role{enum.RoleUser, enum.RoleAssistant, enum.RoleUser, enum.RoleAssistant} {
+		m, _ := entity.NewMessage(role, "previous turn")
+		c.Append(m)
+	}
+	if !c.CanManualCompact(2) {
+		t.Fatal("history longer than the keep-tail should be foldable")
+	}
+	checkpoint, _ := entity.NewMessage(enum.RoleUser, "checkpoint")
+	checkpoint.SetUserType(enum.LLMUserTypeSystem)
+	c.Compact(checkpoint, 2)
+	// checkpoint + kept tail is still longer than keepTail, so an explicit
+	// fold remains available instead of failing the button.
+	if !c.CanManualCompact(2) {
+		t.Fatal("checkpoint plus a longer tail should stay foldable")
+	}
+	if c.CanManualCompact(3) {
+		t.Fatal("a tail that fits in the keep window is not foldable")
+	}
+}
+
 func TestConversationAddUsageAccumulates(t *testing.T) {
 	c := mustConv(t)
 	u1, _ := valueobject.NewUsage(100, 0, 0, 50)
@@ -124,7 +167,7 @@ func BenchmarkConversationEstimatedTokens(b *testing.B) {
 	for i := 0; i < 200; i++ {
 		m, _ := entity.NewMessage(enum.RoleUser, strings.Repeat("x", 2000))
 		tc, _ := entity.NewToolCall("id", "name", strings.Repeat("i", 500), enum.TooltypeOrigin)
-		_ = tc.SetOutput(strings.Repeat("o", 3000))
+		tc.SetOutput(strings.Repeat("o", 3000))
 		m.AddToolCall(tc)
 		c.Append(m)
 	}

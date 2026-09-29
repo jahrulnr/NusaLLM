@@ -20,6 +20,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	appconversation "github.com/jahrulnr/nusallm/application/conversation"
 	appgateway "github.com/jahrulnr/nusallm/application/gateway"
+	appjob "github.com/jahrulnr/nusallm/application/job"
 	"github.com/jahrulnr/nusallm/infrastructure/config"
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/session"
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/term"
@@ -27,7 +28,10 @@ import (
 	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	repoconversation "github.com/jahrulnr/nusallm/infrastructure/repository/conversation"
 	repogateway "github.com/jahrulnr/nusallm/infrastructure/repository/gateway"
+	repohistory "github.com/jahrulnr/nusallm/infrastructure/repository/history"
 	reposecret "github.com/jahrulnr/nusallm/infrastructure/repository/secret"
+	repoworkspace "github.com/jahrulnr/nusallm/infrastructure/repository/workspace"
+	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
 	textcompletion "github.com/jahrulnr/nusallm/infrastructure/service/core/text/completion"
 	toolexec "github.com/jahrulnr/nusallm/infrastructure/service/tool/terminal"
 )
@@ -56,7 +60,7 @@ func TestREPLSendsListsAndResumesConversation(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = secrets.Close() })
 	gatewayRepository := repogateway.NewGatewayRepository(filepath.Join(storage, "gateways"), secrets)
-	gatewayApplication := appgateway.New(gatewayRepository, secrets)
+	gatewayApplication := appgateway.New(gatewayRepository, secrets, nil)
 	key := "local-test-key"
 	stream := false
 	if err := gatewayApplication.Upsert(t.Context(), appgateway.GatewayInput{
@@ -81,23 +85,25 @@ func TestREPLSendsListsAndResumesConversation(t *testing.T) {
 	conversationApplication := appconversation.New(
 		conversationRepository,
 		gatewayRepository,
-		map[enum.Style]dservice.TextModelService{
-			enum.StyleCompletion: textcompletion.New(textcompletion.Options{FileRoot: workspace}),
-		},
-		nil,
+		map[enum.Environment]appjob.EnvironmentDriver{enum.EnvironmentLocal: appjob.EnvironmentBundle{
+			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: textcompletion.New(coretext.Options{FileRoot: workspace, FileStore: repoworkspace.NewLocal()})},
+		}},
 		config.NewConfig(),
+		nil,
 		"",
 	)
 	var output, stderr bytes.Buffer
 	input := pipeInput(t, "/route gw1\n/model m1\n/attach shot.png\nhello\n/list\n/history 10\n/exit\n")
 	repl, err := NewREPL(Options{
-		Conversations: conversationApplication,
-		Gateways:      gatewayApplication,
-		Workspace:     workspace,
-		HistoryDir:    filepath.Join(storage, "cli"),
-		Stdin:         input,
-		Stdout:        &output,
-		Stderr:        &stderr,
+		Conversations:  conversationApplication,
+		Gateways:       gatewayApplication,
+		Workspace:      workspace,
+		WorkspaceStore: repoworkspace.NewLocal(),
+		HistoryDir:     filepath.Join(storage, "cli"),
+		HistoryStore:   repohistory.NewLocal(),
+		Stdin:          input,
+		Stdout:         &output,
+		Stderr:         &stderr,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -131,24 +137,23 @@ func TestREPLSendsListsAndResumesConversation(t *testing.T) {
 	if request := string(<-requests); !strings.Contains(request, "data:image/png;base64,") {
 		t.Fatalf("attached image not materialized in provider request: %s", request)
 	}
-	for _, want := range []string{"route set to gw1", "model set to m1", "attached shot.png", "pong", "messages=2", "> hello", "10 in · 5 out · 15 total"} {
+	for _, want := range []string{"route set to gw1", "model set to m1", "attached shot.png", "private chain of thought", "pong", "messages=2", "> hello", "10 in · 5 out · 15 total"} {
 		if !strings.Contains(output.String(), want) {
 			t.Errorf("REPL output missing %q:\n%s", want, output.String())
 		}
 	}
-	if strings.Contains(output.String(), "private chain of thought") {
-		t.Fatalf("provider reasoning leaked into CLI output:\n%s", output.String())
-	}
 
 	var resumedOutput, resumedError bytes.Buffer
 	resumed, err := NewREPL(Options{
-		Conversations: conversationApplication,
-		Gateways:      gatewayApplication,
-		Workspace:     workspace,
-		HistoryDir:    filepath.Join(storage, "cli"),
-		Stdin:         pipeInput(t, "/resume "+repl.ConversationID+"\n/edit "+stored.Messages()[0].ID()+" updated user text\n/route gw2\n/new\n/model m2\n/attach shot.png\ntext-only turn\n/exit\n"),
-		Stdout:        &resumedOutput,
-		Stderr:        &resumedError,
+		Conversations:  conversationApplication,
+		Gateways:       gatewayApplication,
+		Workspace:      workspace,
+		WorkspaceStore: repoworkspace.NewLocal(),
+		HistoryDir:     filepath.Join(storage, "cli"),
+		HistoryStore:   repohistory.NewLocal(),
+		Stdin:          pipeInput(t, "/resume "+repl.ConversationID+"\n/edit "+stored.Messages()[0].ID()+" updated user text\n/route gw2\n/new\n/model m2\n/attach shot.png\ntext-only turn\n/exit\n"),
+		Stdout:         &resumedOutput,
+		Stderr:         &resumedError,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -237,7 +242,7 @@ func TestAutoSelectNotifyDoesNotDeadlock(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = secrets.Close() })
 	gatewayRepository := repogateway.NewGatewayRepository(filepath.Join(storage, "gateways"), secrets)
-	gatewayApplication := appgateway.New(gatewayRepository, secrets)
+	gatewayApplication := appgateway.New(gatewayRepository, secrets, nil)
 	key := "local-test-key"
 	stream := false
 	// Exactly one gateway with one model — the first send auto-selects
@@ -254,23 +259,24 @@ func TestAutoSelectNotifyDoesNotDeadlock(t *testing.T) {
 	conversationApplication := appconversation.New(
 		conversationRepository,
 		gatewayRepository,
-		map[enum.Style]dservice.TextModelService{
-			enum.StyleCompletion: textcompletion.New(textcompletion.Options{FileRoot: workspace}),
-		},
-		nil,
+		map[enum.Environment]appjob.EnvironmentDriver{enum.EnvironmentLocal: appjob.EnvironmentBundle{
+			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: textcompletion.New(coretext.Options{FileRoot: workspace, FileStore: repoworkspace.NewLocal()})},
+		}},
 		config.NewConfig(),
+		nil,
 		"",
 	)
 
 	sess, err := session.New(session.Options{
-		Conversations: conversationApplication,
-		Gateways:      gatewayApplication,
-		Workspace:     workspace,
+		Conversations:  conversationApplication,
+		Gateways:       gatewayApplication,
+		Workspace:      workspace,
+		WorkspaceStore: repoworkspace.NewLocal(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	repl := &REPL{Session: sess, historyFile: filepath.Join(storage, "cli", "history")}
+	repl := &REPL{Session: sess, historyFile: filepath.Join(storage, "cli", "history"), historyStore: repohistory.NewLocal()}
 	m := newModel(repl, true)
 	m.ctx = t.Context()
 	runtime := &tuiRuntime{}
@@ -302,6 +308,19 @@ func TestAutoSelectNotifyDoesNotDeadlock(t *testing.T) {
 	if !strings.Contains(out.String(), "auto-selected route gw1") ||
 		!strings.Contains(out.String(), "auto-selected model m1") {
 		t.Fatalf("auto-select notices never reached scrollback: %q", out.String())
+	}
+
+	// "pong" reaching the output is not proof the turn finished — the
+	// live region repaints deltas while the send is still in flight, and
+	// a ctrl+c that lands then is consumed as cancel-turn, not quit. The
+	// footer's context badge only exists once finishTurn has bound the
+	// conversation and refreshed the stats, so it is the deterministic
+	// idle marker to wait on before interrupting.
+	for !strings.Contains(out.String(), " Tokens") {
+		if time.Now().After(deadline) {
+			t.Fatalf("turn never reached idle — output=%q", out.String())
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 
 	// ctrl+c on an idle composer still quits — input stays live.
@@ -341,7 +360,7 @@ func TestPipedCRNeverTriggersPicker(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = secrets.Close() })
 	gatewayRepository := repogateway.NewGatewayRepository(filepath.Join(storage, "gateways"), secrets)
-	gatewayApplication := appgateway.New(gatewayRepository, secrets)
+	gatewayApplication := appgateway.New(gatewayRepository, secrets, nil)
 	stream := false
 	if err := gatewayApplication.Upsert(t.Context(), appgateway.GatewayInput{
 		ID: "gw1", Name: "Test gateway", Style: enum.StyleCompletion, Endpoint: server.URL,
@@ -353,11 +372,11 @@ func TestPipedCRNeverTriggersPicker(t *testing.T) {
 	conversationApplication := appconversation.New(
 		conversationRepository,
 		gatewayRepository,
-		map[enum.Style]dservice.TextModelService{
-			enum.StyleCompletion: textcompletion.New(textcompletion.Options{FileRoot: t.TempDir()}),
-		},
-		nil,
+		map[enum.Environment]appjob.EnvironmentDriver{enum.EnvironmentLocal: appjob.EnvironmentBundle{
+			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: textcompletion.New(coretext.Options{FileRoot: t.TempDir(), FileStore: repoworkspace.NewLocal()})},
+		}},
 		config.NewConfig(),
+		nil,
 		"",
 	)
 	t.Cleanup(func() { _ = conversationApplication.Shutdown(context.Background()) })
@@ -365,13 +384,15 @@ func TestPipedCRNeverTriggersPicker(t *testing.T) {
 	// Seed one saved conversation, then close that session.
 	var seedOutput bytes.Buffer
 	seed, err := NewREPL(Options{
-		Conversations: conversationApplication,
-		Gateways:      gatewayApplication,
-		Workspace:     t.TempDir(),
-		HistoryDir:    filepath.Join(storage, "cli"),
-		Stdin:         pipeInput(t, "hello\n/exit\n"),
-		Stdout:        &seedOutput,
-		Stderr:        io.Discard,
+		Conversations:  conversationApplication,
+		Gateways:       gatewayApplication,
+		Workspace:      t.TempDir(),
+		WorkspaceStore: repoworkspace.NewLocal(),
+		HistoryDir:     filepath.Join(storage, "cli"),
+		HistoryStore:   repohistory.NewLocal(),
+		Stdin:          pipeInput(t, "hello\n/exit\n"),
+		Stdout:         &seedOutput,
+		Stderr:         io.Discard,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -391,13 +412,15 @@ func TestPipedCRNeverTriggersPicker(t *testing.T) {
 	// submit the fuzzy top row and the seeded room would be gone.
 	var output bytes.Buffer
 	repl, err := NewREPL(Options{
-		Conversations: conversationApplication,
-		Gateways:      gatewayApplication,
-		Workspace:     t.TempDir(),
-		HistoryDir:    filepath.Join(storage, "cli"),
-		Stdin:         pipeInput(t, "/delete \r\n/exit\n"),
-		Stdout:        &output,
-		Stderr:        io.Discard,
+		Conversations:  conversationApplication,
+		Gateways:       gatewayApplication,
+		Workspace:      t.TempDir(),
+		WorkspaceStore: repoworkspace.NewLocal(),
+		HistoryDir:     filepath.Join(storage, "cli"),
+		HistoryStore:   repohistory.NewLocal(),
+		Stdin:          pipeInput(t, "/delete \r\n/exit\n"),
+		Stdout:         &output,
+		Stderr:         io.Discard,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -412,6 +435,32 @@ func TestPipedCRNeverTriggersPicker(t *testing.T) {
 	}
 	if _, err := conversationRepository.Info(t.Context(), convID); err != nil {
 		t.Fatalf("piped \\r deleted a fuzzy-match conversation: %v", err)
+	}
+}
+
+// Exit waits for scrollback: a print still travelling to the event loop
+// must land before the quit, or the line that produced it vanishes
+// (bubbletea stops the loop on QuitMsg and never handles the pending
+// print). The exit is finished by the print ack instead.
+func TestExitWaitsForPendingScrollback(t *testing.T) {
+	repl := &REPL{Session: &session.Session{}}
+	m := &replModel{repl: repl, live: &strings.Builder{}}
+	m.println("queued line")
+	repl.Exit = true
+	if cmd := m.drain(); cmd == nil {
+		t.Fatal("drain with a pending line must return the flush sequence")
+	}
+	if m.pendingPrints != 1 {
+		t.Fatalf("pendingPrints = %d, want the scrollback print tracked", m.pendingPrints)
+	}
+	_, ack := m.Update(printAckMsg{})
+	if ack == nil {
+		t.Fatal("the acknowledged print must finish the exit")
+	}
+	if msg := ack(); msg == nil {
+		t.Fatal("ack cmd returned no message")
+	} else if _, ok := msg.(tea.QuitMsg); !ok {
+		t.Fatalf("ack of the last print → %T, want tea.QuitMsg", msg)
 	}
 }
 
@@ -438,7 +487,7 @@ func TestConversationArgPicker(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = secrets.Close() })
 	gatewayRepository := repogateway.NewGatewayRepository(filepath.Join(storage, "gateways"), secrets)
-	gatewayApplication := appgateway.New(gatewayRepository, secrets)
+	gatewayApplication := appgateway.New(gatewayRepository, secrets, nil)
 	stream := false
 	if err := gatewayApplication.Upsert(t.Context(), appgateway.GatewayInput{
 		ID: "gw1", Name: "Test gateway", Style: enum.StyleCompletion, Endpoint: server.URL,
@@ -457,20 +506,21 @@ func TestConversationArgPicker(t *testing.T) {
 	conversationApplication := appconversation.New(
 		conversationRepository,
 		gatewayRepository,
-		map[enum.Style]dservice.TextModelService{
-			enum.StyleCompletion: textcompletion.New(textcompletion.Options{FileRoot: workspace}),
-		},
-		nil,
+		map[enum.Environment]appjob.EnvironmentDriver{enum.EnvironmentLocal: appjob.EnvironmentBundle{
+			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: textcompletion.New(coretext.Options{FileRoot: workspace, FileStore: repoworkspace.NewLocal()})},
+		}},
 		config.NewConfig(),
+		nil,
 		"",
 	)
 	t.Cleanup(func() { _ = conversationApplication.Shutdown(context.Background()) })
 
 	sess, err := session.New(session.Options{
-		Conversations: conversationApplication,
-		Gateways:      gatewayApplication,
-		Workspace:     workspace,
-		Stderr:        io.Discard,
+		Conversations:  conversationApplication,
+		Gateways:       gatewayApplication,
+		Workspace:      workspace,
+		WorkspaceStore: repoworkspace.NewLocal(),
+		Stderr:         io.Discard,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -481,7 +531,7 @@ func TestConversationArgPicker(t *testing.T) {
 	}
 	sess.ConversationID = "" // fresh session, one saved conversation
 
-	m := newModel(&REPL{Session: sess, historyFile: filepath.Join(storage, "cli", "history")}, true)
+	m := newModel(&REPL{Session: sess, historyFile: filepath.Join(storage, "cli", "history"), historyStore: repohistory.NewLocal()}, true)
 	m.ctx = t.Context()
 
 	// An in-progress draft must survive a parked picker — it lands in
@@ -616,7 +666,7 @@ func TestToolCallLoopRunsEndToEnd(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = secrets.Close() })
 	gatewayRepository := repogateway.NewGatewayRepository(filepath.Join(storage, "gateways"), secrets)
-	gatewayApplication := appgateway.New(gatewayRepository, secrets)
+	gatewayApplication := appgateway.New(gatewayRepository, secrets, nil)
 	key := "local-test-key"
 	stream := false
 	if err := gatewayApplication.Upsert(t.Context(), appgateway.GatewayInput{
@@ -628,30 +678,37 @@ func TestToolCallLoopRunsEndToEnd(t *testing.T) {
 	}
 	workspace := t.TempDir()
 	conversationRepository := repoconversation.NewConversationRepository(filepath.Join(storage, "conversations"))
-	execTool, err := toolexec.NewExecTool()
+	toolOutputs, err := repoconversation.NewToolOutputRepository(filepath.Join(storage, "conversations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	execTool, err := toolexec.NewExecTool(toolOutputs, toolexec.NewLocalRunner())
 	if err != nil {
 		t.Fatal(err)
 	}
 	conversationApplication := appconversation.New(
 		conversationRepository,
 		gatewayRepository,
-		map[enum.Style]dservice.TextModelService{
-			enum.StyleCompletion: textcompletion.New(textcompletion.Options{FileRoot: workspace}),
-		},
-		map[string]dservice.Tool{"exec": execTool},
+		map[enum.Environment]appjob.EnvironmentDriver{enum.EnvironmentLocal: appjob.EnvironmentBundle{
+			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: textcompletion.New(coretext.Options{FileRoot: workspace, FileStore: repoworkspace.NewLocal()})},
+			Tools:    map[string]dservice.Tool{"exec": execTool},
+		}},
 		config.NewConfig(),
+		nil,
 		"",
 	)
 
 	var output, stderr bytes.Buffer
 	repl, err := NewREPL(Options{
-		Conversations: conversationApplication,
-		Gateways:      gatewayApplication,
-		Workspace:     workspace,
-		HistoryDir:    filepath.Join(storage, "cli"),
-		Stdin:         pipeInput(t, "run echo\n/exit\n"),
-		Stdout:        &output,
-		Stderr:        &stderr,
+		Conversations:  conversationApplication,
+		Gateways:       gatewayApplication,
+		Workspace:      workspace,
+		WorkspaceStore: repoworkspace.NewLocal(),
+		HistoryDir:     filepath.Join(storage, "cli"),
+		HistoryStore:   repohistory.NewLocal(),
+		Stdin:          pipeInput(t, "run echo\n/exit\n"),
+		Stdout:         &output,
+		Stderr:         &stderr,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -688,13 +745,10 @@ func TestToolCallLoopRunsEndToEnd(t *testing.T) {
 		t.Fatalf("tool output never returned to provider: %s", second[:min(len(second), 400)])
 	}
 	plainOutput := ansi.Strip(output.String())
-	for _, want := range []string{"⏺ exec", `{"command":"printf dG9vbC1vdXRwdXQtc2VjcmV0 | base64 -d"}`, "tool said hi"} {
+	for _, want := range []string{"⏺ exec", `{"command":"printf dG9vbC1vdXRwdXQtc2VjcmV0 | base64 -d"}`, "tool-output-secret", "tool said hi"} {
 		if !strings.Contains(plainOutput, want) {
 			t.Errorf("output missing %q:\n%s", want, output.String())
 		}
-	}
-	if strings.Contains(plainOutput, "tool-output-secret") {
-		t.Fatalf("tool output leaked into CLI transcript:\n%s", output.String())
 	}
 	if err := conversationApplication.Shutdown(t.Context()); err != nil {
 		t.Fatal(err)

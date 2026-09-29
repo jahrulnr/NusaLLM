@@ -14,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/session"
+	repohistory "github.com/jahrulnr/nusallm/infrastructure/repository/history"
 	"golang.org/x/sys/unix"
 )
 
@@ -54,7 +55,7 @@ func TestTTYTypingReachesComposer(t *testing.T) {
 	var out safeBuffer
 	input := &eofInput{rc: slave, inject: []byte("\n/exit\n")}
 	m := newModel(&REPL{Session: &session.Session{Notify: func(string) {}},
-		historyFile: t.TempDir() + "/h"}, true)
+		historyFile: t.TempDir() + "/h", historyStore: repohistory.NewLocal()}, true)
 	m.ctx = context.Background()
 	runtime := &tuiRuntime{}
 	m.runtime = runtime

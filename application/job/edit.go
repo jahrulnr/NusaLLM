@@ -42,26 +42,16 @@ func (j *Edit) Execute(execCtx context.Context) (err error) {
 		if err != nil {
 			return err // 404 — a room that isn't there has nothing to edit
 		}
+		sealed := false
 		switch err := conv.RewriteFrom(j.MsgID, j.Content); {
 		case errors.Is(err, aggregate.ErrNotUserMessage):
 			return apperror.New(400, "only user messages are editable", err)
 		case errors.Is(err, aggregate.ErrMessageNotFound):
-			// Not in the live tail — maybe sealed. The repository
-			// repromotes the era holding it; reload so the aggregate
-			// mirrors the new tail.
-			if err := d.Convs.RewriteFrom(ctx, convID, j.MsgID, j.Content); err != nil {
-				return err
-			}
-			conv, err = d.Convs.Load(ctx, convID)
-			if err != nil {
-				return err
-			}
+			// Not in the live tail — maybe sealed. Validate routing
+			// before repromotion so a dead route never truncates history.
+			sealed = true
 		case err != nil:
 			return err
-		default:
-			if err := d.Convs.RewriteFrom(ctx, convID, j.MsgID, j.Content); err != nil {
-				return err
-			}
 		}
 
 		// Same embedded-prompt contract as send: applied per execution,
@@ -69,11 +59,27 @@ func (j *Edit) Execute(execCtx context.Context) (err error) {
 		if conv.SystemPrompt() == "" {
 			conv.SetSystemPrompt(prompt.SystemPrompt("conversation"))
 		}
-		gw, model, svc, err := d.resolveRoute(ctx, convID, conv, "", "")
+		driver, err := d.environment(conv)
 		if err != nil {
 			return err
 		}
-		return d.runTurn(ctx, convID, conv, gw, model, svc, j.OnEvent)
+		gw, model, svc, err := d.resolveRoute(ctx, convID, conv, driver, "", "")
+		if err != nil {
+			return err
+		}
+		if err := d.Convs.RewriteFrom(ctx, convID, j.MsgID, j.Content); err != nil {
+			return err
+		}
+		if sealed {
+			conv, err = d.Convs.Load(ctx, convID)
+			if err != nil {
+				return err
+			}
+			if conv.SystemPrompt() == "" {
+				conv.SetSystemPrompt(prompt.SystemPrompt("conversation"))
+			}
+		}
+		return d.runTurn(ctx, convID, conv, driver, gw, model, svc, j.OnEvent)
 	}()
 	return err
 }

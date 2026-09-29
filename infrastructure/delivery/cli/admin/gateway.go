@@ -91,7 +91,7 @@ const gatewayUsage = `Usage: nusallm gateway <subcommand> [flags]
   delete <id>                   remove the gateway and its vaulted key
 
 add/set flags:
-  --style <s>         completion | responses | messages
+  --style <s>         completion | responses | messages | generatecontent
   --endpoint <url>    provider base URL
   --name <name>       display name (default: id)
   --models a,b,c      replace the model catalog (route = model id)
@@ -125,7 +125,7 @@ func gatewayWrite(b *Boot, edit bool, args []string, stdout, stderr io.Writer, s
 	fs := flag.NewFlagSet("gateway", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() { fmt.Fprint(stderr, gatewayUsage) }
-	style := fs.String("style", "", "completion | responses | messages")
+	style := fs.String("style", "", "completion | responses | messages | generatecontent")
 	endpoint := fs.String("endpoint", "", "provider base URL")
 	name := fs.String("name", "", "display name (default: id)")
 	models := fs.String("models", "", "comma-separated model ids")
@@ -146,14 +146,24 @@ func gatewayWrite(b *Boot, edit bool, args []string, stdout, stderr io.Writer, s
 	// Contradictory key flags are a usage error, not silent last-wins.
 	var keyFlags []string
 	modelsSet := false
+	modelsFlagSet := false
+	modelFlagSet := false
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case "key-env", "key", "key-stdin", "clear-key":
 			keyFlags = append(keyFlags, "--"+f.Name)
-		case "models", "model":
+		case "models":
 			modelsSet = true
+			modelsFlagSet = true
+		case "model":
+			modelsSet = true
+			modelFlagSet = true
 		}
 	})
+	if modelsFlagSet && modelFlagSet {
+		fmt.Fprintln(stderr, "nusallm: --models and --model conflict — pass exactly one")
+		return 2
+	}
 	if len(keyFlags) > 1 {
 		fmt.Fprintf(stderr, "nusallm: %s conflict — pass exactly one key flag\n",
 			strings.Join(keyFlags, " and "))
@@ -187,7 +197,7 @@ func gatewayWrite(b *Boot, edit bool, args []string, stdout, stderr io.Writer, s
 	if *style != "" {
 		s, ok := enum.ParseStyle(*style)
 		if !ok {
-			fmt.Fprintf(stderr, "nusallm: unknown style %q — completion | responses | messages\n", *style)
+			fmt.Fprintf(stderr, "nusallm: unknown style %q — completion | responses | messages | generatecontent\n", *style)
 			return 2
 		}
 		in.Style = s
@@ -223,7 +233,7 @@ func gatewayWrite(b *Boot, edit bool, args []string, stdout, stderr io.Writer, s
 	// must not have already consumed stdin.
 	if !edit && in.Style == "" {
 		if !isTTY(stdin) {
-			fmt.Fprintln(stderr, "nusallm: --style is required — completion | responses | messages (or run: nusallm onboard)")
+			fmt.Fprintln(stderr, "nusallm: --style is required — completion | responses | messages | generatecontent (or run: nusallm onboard)")
 			return 2
 		}
 	}
@@ -265,7 +275,7 @@ func gatewayWrite(b *Boot, edit bool, args []string, stdout, stderr io.Writer, s
 	if f, tty := stdin.(*os.File); !edit && tty && term.IsTerminal(int(f.Fd())) {
 		prompt := bufio.NewReader(f)
 		if in.Style == "" {
-			fmt.Fprintln(stderr, "  style  1) completion  2) responses  3) messages")
+			fmt.Fprintln(stderr, "  style  1) completion  2) responses  3) messages  4) generatecontent")
 			pick, err := promptField(prompt, bufio.NewWriter(stderr), "  style", "1")
 			if err != nil {
 				fmt.Fprintln(stderr, "cancelled.")
@@ -278,6 +288,8 @@ func gatewayWrite(b *Boot, edit bool, args []string, stdout, stderr io.Writer, s
 				in.Style = enum.StyleResponses
 			case "3", "messages":
 				in.Style = enum.StyleMessages
+			case "4", "generatecontent":
+				in.Style = enum.StyleGenerateContent
 			default:
 				fmt.Fprintf(stderr, "nusallm: unknown style %q\n", pick)
 				return 2

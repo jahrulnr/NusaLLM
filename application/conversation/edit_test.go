@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	appjob "github.com/jahrulnr/nusallm/application/job"
+
 	"github.com/jahrulnr/nusallm/infrastructure/config"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
@@ -23,10 +25,10 @@ import (
 // and regenerates — the room ends as [edited user, fresh assistant].
 func TestEditRegeneratesFromTarget(t *testing.T) {
 	app, _ := fixture(t, okHandler)
-	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "original", nil, nil); err != nil {
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "original", nil, appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.Send(t.Context(), "room", "", "", "second", nil, nil); err != nil {
+	if _, err := app.Send(t.Context(), "room", "", "", "second", nil, appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	conv, _ := app.deps.Convs.Load(t.Context(), "room")
@@ -50,7 +52,7 @@ func TestEditRegeneratesFromTarget(t *testing.T) {
 
 func TestEditRejectsNonUser(t *testing.T) {
 	app, _ := fixture(t, okHandler)
-	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "hi", nil, nil); err != nil {
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "hi", nil, appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	conv, _ := app.deps.Convs.Load(t.Context(), "room")
@@ -62,7 +64,7 @@ func TestEditRejectsNonUser(t *testing.T) {
 
 func TestEditNotFound(t *testing.T) {
 	app, _ := fixture(t, okHandler)
-	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "hi", nil, nil); err != nil {
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "hi", nil, appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := app.Edit(t.Context(), "room", "m_nope", "x", nil); apperror.As(err).StatusCode() != 404 {
@@ -78,7 +80,7 @@ func TestEditNotFound(t *testing.T) {
 // The worker repromotes its era and regenerates from there.
 func TestEditCompactedMessage(t *testing.T) {
 	app, _ := fixture(t, okHandler)
-	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "old question", nil, nil); err != nil {
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "old question", nil, appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	conv, _ := app.deps.Convs.Load(t.Context(), "room")
@@ -122,15 +124,26 @@ func TestEditPreemptsRunningSend(t *testing.T) {
 		okHandler(w, r)
 	})
 	// Seed the room so the edit has a target.
-	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "v1", nil, nil); err != nil {
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "v1", nil, appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	conv, _ := app.deps.Convs.Load(t.Context(), "room")
 	target := conv.Messages()[0].ID()
 
 	sent := make(chan error, 1)
-	go func() { _, err := app.Send(t.Context(), "room", "", "", "v2", nil, nil); sent <- err }()
-	time.Sleep(50 * time.Millisecond) // send is holding the slot
+	go func() {
+		_, err := app.Send(t.Context(), "room", "", "", "v2", nil, appjob.SendOptions{}, nil)
+		sent <- err
+	}()
+	// The second request blocks upstream — calls==2 means the send is
+	// provably holding the slot before the edit preempts it.
+	deadline := time.Now().Add(2 * time.Second)
+	for atomic.LoadInt32(&calls) != 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("second send did not reach the upstream")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 
 	if err := app.Edit(t.Context(), "room", target, "edited", nil); err != nil {
 		t.Fatal(err)
@@ -166,9 +179,11 @@ func TestEditPreemptsRunningTool(t *testing.T) {
 	}
 	convs := repoconversation.NewConversationRepository(t.TempDir())
 	app := New(convs, gateways,
-		map[enum.Style]dservice.TextModelService{enum.StyleCompletion: svc},
-		map[string]dservice.Tool{"blocking": tool},
-		config.NewConfig(), "")
+		map[enum.Environment]appjob.EnvironmentDriver{enum.EnvironmentLocal: appjob.EnvironmentBundle{
+			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: svc},
+			Tools:    map[string]dservice.Tool{"blocking": tool},
+		}},
+		config.NewConfig(), nil, "")
 	seed, _ := aggregate.NewConversation("room")
 	seed.SetTools([]valueobject.ToolSchema{tool.Schema()})
 	seed.SetRoute("gw1")
@@ -178,7 +193,10 @@ func TestEditPreemptsRunningTool(t *testing.T) {
 	}
 
 	sent := make(chan error, 1)
-	go func() { _, err := app.Send(t.Context(), "room", "gw1", "m1", "run it", nil, nil); sent <- err }()
+	go func() {
+		_, err := app.Send(t.Context(), "room", "gw1", "m1", "run it", nil, appjob.SendOptions{}, nil)
+		sent <- err
+	}()
 	<-entered // the tool call is mid-execution
 
 	conv, _ := convs.Load(t.Context(), "room")
@@ -243,4 +261,50 @@ func (s *blockingScriptSvc) Send(_ context.Context, conv *aggregate.Conversation
 	}
 	conv.Append(m)
 	return nil
+}
+
+// The driver is resolved before any persistent rewrite: an edit in a room
+// whose environment is unavailable must fail without touching history.
+func TestEditResolvesEnvironmentBeforeRewrite(t *testing.T) {
+	gw, _ := aggregate.NewGateway("gw1", "stub", "http://unused", enum.StyleCompletion)
+	m, _ := entity.NewModel("m1", "gw1")
+	gw.SetModels([]entity.Model{m})
+	gateways := repogateway.NewGatewayRepository(t.TempDir(), nil)
+	if err := gateways.Save(t.Context(), &gw); err != nil {
+		t.Fatal(err)
+	}
+	convs := repoconversation.NewConversationRepository(t.TempDir())
+	seed, err := aggregate.NewConversation("room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed.SetRoute("gw1")
+	seed.SetModelID("m1")
+	if err := convs.Save(t.Context(), seed); err != nil {
+		t.Fatal(err)
+	}
+	user, _ := entity.NewMessage(enum.RoleUser, "original")
+	if _, err := convs.AppendMessage(t.Context(), "room", user); err != nil {
+		t.Fatal(err)
+	}
+	assistant, _ := entity.NewMessage(enum.RoleAssistant, "reply")
+	if _, err := convs.AppendMessage(t.Context(), "room", assistant); err != nil {
+		t.Fatal(err)
+	}
+
+	app := New(convs, gateways, map[enum.Environment]appjob.EnvironmentDriver{}, config.NewConfig(), nil, "")
+	t.Cleanup(func() { _ = app.Shutdown(context.Background()) })
+
+	if err := app.Edit(t.Context(), "room", user.ID(), "edited", nil); apperror.As(err).StatusCode() != 400 {
+		t.Fatalf("edit with unavailable environment => %v, want 400", err)
+	}
+
+	after, err := convs.Load(t.Context(), "room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs := after.Messages()
+	if len(msgs) != 2 || msgs[0].Content() != "original" || msgs[1].Content() != "reply" {
+		t.Fatalf("failed edit mutated history: %+v", msgs)
+	}
 }

@@ -48,7 +48,7 @@ func (c *ExportCommand) Execute(ctx context.Context, _ string, emitter dservice.
 		}
 		for _, call := range message.ToolCalls() {
 			fmt.Fprintf(&out, "[tool %s %s] %s\n", call.Name(), call.ID(), call.Input())
-			if call.Output() != "" {
+			if call.HasOutput() {
 				fmt.Fprintf(&out, "[tool result %s] %s\n", call.ID(), call.Output())
 			}
 		}

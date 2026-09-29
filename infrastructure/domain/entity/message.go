@@ -18,11 +18,27 @@ type Message struct {
 	content         string
 	userType        enum.LLMUserType
 	finishReason    enum.FinishReason
+	parts           []MessagePart
 	toolCalls       []ToolCall
 	attachments     []valueobject.Attachment
 	optionalContent map[string]string
 	createdAt       time.Time
 }
+
+// MessagePart records the provider-independent order of assistant text,
+// reasoning, and tool calls. Tool-call parts refer to the call stored on
+// the same message.
+type MessagePart struct {
+	Kind       string
+	Text       string
+	ToolCallID string
+}
+
+const (
+	MessagePartText      = "text"
+	MessagePartReasoning = "reasoning"
+	MessagePartToolCall  = "tool_call"
+)
 
 func NewMessage(role enum.Role, content string) (Message, error) {
 	id, _ := valueobject.NewID("m", "") // minted ids are valid by construction
@@ -60,6 +76,7 @@ func EditableMessage(role enum.Role, userType enum.LLMUserType) bool {
 func (m *Message) SetContent(v string)               { m.content = v }
 func (m Message) UserType() enum.LLMUserType         { return m.userType }
 func (m Message) FinishReason() enum.FinishReason    { return m.finishReason }
+func (m Message) Parts() []MessagePart               { return m.parts }
 func (m Message) ToolCalls() []ToolCall              { return m.toolCalls }
 func (m Message) OptionalContent() map[string]string { return m.optionalContent }
 
@@ -84,6 +101,11 @@ func (m *Message) SetUserType(t enum.LLMUserType) {
 // SetFinishReason records the normalized reason the model ended this turn.
 func (m *Message) SetFinishReason(r enum.FinishReason) {
 	m.finishReason = r
+}
+
+// SetParts records the ordered assistant response content.
+func (m *Message) SetParts(parts []MessagePart) {
+	m.parts = parts
 }
 
 func (m Message) CreatedAt() time.Time { return m.createdAt }
@@ -112,7 +134,8 @@ func (m Message) Attachments() []valueobject.Attachment { return m.attachments }
 func (m *Message) SetToolOutput(id, output string) error {
 	for i := range m.toolCalls {
 		if m.toolCalls[i].ID() == id {
-			return m.toolCalls[i].SetOutput(output)
+			m.toolCalls[i].SetOutput(output)
+			return nil
 		}
 	}
 	return errors.New("tool call not found: " + id)
@@ -131,13 +154,12 @@ func (m *Message) SetToolOutputAttachments(id string, atts []valueobject.Attachm
 	return errors.New("tool call not found: " + id)
 }
 
-// SetStoredToolOutput restores a persisted tool output verbatim — it is
-// already in the enveloped form written by SetOutput. Repository hydration
-// and patch application only.
-func (m *Message) SetStoredToolOutput(id, output string) error {
+// SetStoredToolOutput restores a persisted raw tool output and latency.
+// Repository hydration and patch application only.
+func (m *Message) SetStoredToolOutput(id, output, latency string) error {
 	for i := range m.toolCalls {
 		if m.toolCalls[i].ID() == id {
-			m.toolCalls[i].SetStoredOutput(output)
+			m.toolCalls[i].SetStoredOutput(output, latency)
 			return nil
 		}
 	}

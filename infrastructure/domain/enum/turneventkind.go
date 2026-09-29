@@ -6,9 +6,11 @@ type TurnEventKind string
 const (
 	// TurnEventDelta carries an incremental text chunk.
 	TurnEventDelta TurnEventKind = "delta"
-	// TurnEventReasoning carries an incremental reasoning/thinking chunk —
-	// a preview of model scratchpad text, never the answer itself.
+	// TurnEventReasoning carries an incremental provider reasoning chunk.
 	TurnEventReasoning TurnEventKind = "reasoning"
+	// TurnEventReasoningSummary carries an incremental provider reasoning
+	// summary chunk.
+	TurnEventReasoningSummary TurnEventKind = "reasoning_summary"
 	// TurnEventToolCall carries a completed tool call.
 	TurnEventToolCall TurnEventKind = "tool_call"
 	// TurnEventToolOutput carries a live output chunk from a running tool
@@ -26,7 +28,7 @@ func (k TurnEventKind) String() string {
 
 func ParseTurnEventKind(v string) (TurnEventKind, bool) {
 	switch k := TurnEventKind(v); k {
-	case TurnEventDelta, TurnEventReasoning, TurnEventToolCall, TurnEventToolOutput, TurnEventFinished, TurnEventError:
+	case TurnEventDelta, TurnEventReasoning, TurnEventReasoningSummary, TurnEventToolCall, TurnEventToolOutput, TurnEventFinished, TurnEventError:
 		return k, true
 	}
 	return "", false

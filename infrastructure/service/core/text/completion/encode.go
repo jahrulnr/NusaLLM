@@ -15,8 +15,10 @@ import (
 // encodeRequest maps domain state onto the wire body. Attachments are
 // resolved to sendable form here (data:/https passthrough, file:// read +
 // base64) — the domain stores references only.
-func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool, fileRoot string) (*RequestBody, error) {
-	body := &RequestBody{Model: model.ID(), PromptCacheKey: conv.ID(), Stream: stream}
+func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool, fileRoot wire.MediaRoot, endpoint string) (*RequestBody, error) {
+	body := &RequestBody{Model: model.ID(), Stream: stream}
+	body.PromptCacheKey = conv.ID()
+	body.PromptCacheOption = RequestPromptCacheOption{TTL: "30m"}
 	if stream {
 		body.StreamOptions = &StreamOptions{IncludeUsage: true} // else usage never arrives
 	}
@@ -54,6 +56,20 @@ func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool
 	if e := model.Effort(); !e.IsUnset() {
 		body.ReasoningEffort = e.String() // OpenAI native; OpenRouter translates
 	}
+	// An upstream pin routes an aggregator request to one named backend —
+	// no silent fallback to a provider the user did not pick.
+	if up := model.Upstream(); up != "" && strings.Contains(endpoint, string(enum.OpenRouter)) {
+		pref, err := json.Marshal(map[string]any{
+			"order":           []string{up},
+			"allow_fallbacks": false,
+		})
+		if err == nil {
+			if body.Extra == nil {
+				body.Extra = map[string]json.RawMessage{}
+			}
+			body.Extra["provider"] = pref
+		}
+	}
 	// Adapter-namespaced escape hatch: "completion.<param>" lands verbatim.
 	for k, v := range model.OptionalContent() {
 		if name, ok := strings.CutPrefix(k, "completion."); ok {
@@ -83,7 +99,7 @@ func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool
 // the whole tool block: strict providers require an uninterrupted run of
 // tool messages behind tool_calls, so a media-bearing earlier call must
 // not push its user message between two tool results.
-func encodeMessage(m entity.Message, model entity.Model, fileRoot string) ([]MessageBody, error) {
+func encodeMessage(m entity.Message, model entity.Model, fileRoot wire.MediaRoot) ([]MessageBody, error) {
 	out := MessageBody{Role: m.Role().String()}
 
 	var origin, injected []entity.ToolCall
@@ -97,8 +113,8 @@ func encodeMessage(m entity.Message, model entity.Model, fileRoot string) ([]Mes
 
 	text := m.Content()
 	for _, tc := range injected {
-		if tc.Output() != "" {
-			text += "\n" + tc.Output() // already an untrusted-evidence envelope
+		if tc.HasOutput() {
+			text += "\n" + tc.OutputWithUntrustedTag() // already an untrusted-evidence envelope
 		}
 	}
 
@@ -148,10 +164,7 @@ func encodeMessage(m entity.Message, model entity.Model, fileRoot string) ([]Mes
 	msgs := []MessageBody{out}
 	var media []MessageBody
 	for _, tc := range origin {
-		content := tc.Output()
-		if content == "" {
-			content = "<untrusted_tool>\n(interrupted — no result was recorded)\n</untrusted_tool>"
-		}
+		content := tc.OutputWithUntrustedTagOrInterrupted()
 		msgs = append(msgs, MessageBody{
 			Role:       "tool",
 			ToolCallID: tc.ID(),
@@ -199,7 +212,7 @@ func safeAttachmentName(name string) string {
 // modality. Audio must arrive as base64 — URL audio is rejected upstream.
 // Pinned attachments verify here: a digest mismatch surfaces as a resolve
 // error, which callers degrade or propagate as their contract dictates.
-func encodeAttachment(a valueobject.Attachment, fileRoot string) (any, error) {
+func encodeAttachment(a valueobject.Attachment, fileRoot wire.MediaRoot) (any, error) {
 	switch a.Modality() {
 	case enum.ModalityImage:
 		u, err := wire.ResolveURI(a, fileRoot)

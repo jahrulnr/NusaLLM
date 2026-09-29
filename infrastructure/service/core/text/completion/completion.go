@@ -20,38 +20,25 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
 	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
+	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
+	"github.com/jahrulnr/nusallm/infrastructure/service/wire"
 )
-
-// Options configures the service. Client defaults to a transport with a
-// header deadline only — interactive streams must not carry a fixed total
-// timeout (reasoning models think for minutes); the idle deadline resets
-// per SSE chunk. Referer/Title ride as OpenRouter attribution headers.
-type Options struct {
-	Client      *http.Client
-	Logger      drepo.Logger
-	Referer     string        // → HTTP-Referer
-	Title       string        // → X-Title
-	FileRoot    string        // root for local file:// attachments; empty disables local refs
-	IdleTimeout time.Duration // per-chunk deadline; default 90s
-	// HeaderTimeout bounds the wait for a response's first byte on the
-	// built-in transport; ignored when Client is supplied. Default 30s.
-	HeaderTimeout time.Duration
-}
 
 // Service is the stateless translator for this wire — endpoint,
 // credentials, and stream preference are read from the gateway argument
 // of every Send, so one instance serves every completion-style gateway.
 type Service struct {
-	client   *http.Client
-	log      drepo.Logger
-	referer  string
-	title    string
-	fileRoot string
-	idle     time.Duration
+	client    *http.Client
+	log       drepo.Logger
+	referer   string
+	title     string
+	fileRoot  string
+	fileStore drepo.Workspace
+	idle      time.Duration
 }
 
 // New builds the service — Options only; gateways arrive per Send.
-func New(opts Options) *Service {
+func New(opts coretext.Options) *Service {
 	// Options map onto the service config section — zero fields take the
 	// struct-tag defaults, so this adapter owns no literal of its own.
 	svcCfg := config.ServiceConfig{
@@ -67,12 +54,13 @@ func New(opts Options) *Service {
 	}
 	idle := time.Duration(svcCfg.IdleTimeout)
 	return &Service{
-		client:   client,
-		log:      opts.Logger,
-		referer:  opts.Referer,
-		title:    opts.Title,
-		fileRoot: opts.FileRoot,
-		idle:     idle,
+		client:    client,
+		log:       opts.Logger,
+		referer:   opts.Referer,
+		title:     opts.Title,
+		fileRoot:  opts.FileRoot,
+		fileStore: opts.FileStore,
+		idle:      idle,
 	}
 }
 
@@ -81,7 +69,7 @@ func New(opts Options) *Service {
 // selected by gw; events reach onEvent uniformly either way.
 func (s *Service) Send(ctx context.Context, conv *aggregate.Conversation, gw *aggregate.Gateway, model entity.Model, onEvent event.TurnEventHandler) error {
 	stream := gw.StreamMode()
-	body, err := encodeRequest(conv, model, stream, s.fileRoot)
+	body, err := encodeRequest(conv, model, stream, wire.MediaRoot{Dir: coretext.FileRoot(conv, s.fileRoot), Store: s.fileStore}, gw.Endpoint())
 	if err != nil {
 		return err
 	}
@@ -164,6 +152,8 @@ func (s *Service) unaryResponse(ctx context.Context, resp *http.Response, conv *
 	conv.Append(msg)
 	conv.AddUsage(usage)
 	if r := msg.OptionalContent()["completion.reasoning_content"]; r != "" {
+		// Preserve reasoning separately so the application can store it
+		// in the message timeline and the delivery layer can render it.
 		emit(onEvent, event.NewReasoningEvent(r))
 	}
 	emit(onEvent, event.NewDeltaEvent(msg.Content()))

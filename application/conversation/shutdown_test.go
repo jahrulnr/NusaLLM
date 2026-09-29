@@ -30,7 +30,7 @@ func (j *blockingShutdownJob) Execute(execCtx context.Context) error {
 }
 
 func TestShutdownCancelsWaitsAndRejectsPosts(t *testing.T) {
-	app := New(nil, nil, nil, nil, config.NewConfig(), "")
+	app := New(nil, nil, nil, config.NewConfig(), nil, "")
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	unblock := func() { releaseOnce.Do(func() { close(release) }) }
@@ -98,7 +98,7 @@ func TestShutdownCancelsWaitsAndRejectsPosts(t *testing.T) {
 		t.Fatal("Shutdown completion channel was not initialized")
 	}
 
-	result, err := app.Send(t.Context(), "late-room", "gw1", "m1", "late", nil, nil)
+	result, err := app.Send(t.Context(), "late-room", "gw1", "m1", "late", nil, appjob.SendOptions{}, nil)
 	if apperror.As(err).StatusCode() != 503 {
 		t.Fatalf("post after shutdown → %v, want 503", err)
 	}

@@ -38,6 +38,21 @@ func SplitSSE(data []byte, atEOF bool) (advance int, token []byte, err error) {
 	return 0, nil, nil
 }
 
+// SSENamed extracts the block's event: name alongside the joined data
+// payload — the dispatch token on Anthropic and OpenAI Responses streams,
+// whose event names drive the state machine. OpenAI-compatible blocks
+// carry no event: line and return "".
+func SSENamed(block []byte) (string, []byte) {
+	var name string
+	for _, line := range strings.Split(string(block), "\n") {
+		line = strings.TrimRight(line, "\r")
+		if n, ok := strings.CutPrefix(line, "event:"); ok && name == "" {
+			name = strings.TrimSpace(n)
+		}
+	}
+	return name, SSEData(block)
+}
+
 // SSEData joins a block's data: lines into one payload, skipping keepalive
 // comments (":") and blank lines. Named event: lines are not interpreted —
 // families that need them parse the block themselves.

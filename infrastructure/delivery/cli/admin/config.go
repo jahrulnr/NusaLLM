@@ -5,11 +5,12 @@ import (
 	"io"
 
 	"github.com/jahrulnr/nusallm/application/setting"
+	repoconfig "github.com/jahrulnr/nusallm/infrastructure/repository/config"
 )
 
 // Config is the `nusallm config <sub>` handler — show/path/set/unset/
-// validate over the config file, decoded leniently so repair commands
-// still work on a file strict loading would reject.
+// validate over the config file. It resolves only the file path here;
+// each setting operation handles validation or repair of file contents.
 func Config(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprint(stderr, configUsage)
@@ -20,12 +21,9 @@ func Config(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stdout, configUsage)
 		return 0
 	}
-	_, configPath, err := LoadConfig(false)
-	if err != nil {
-		printErr(stderr, err)
-		return 1
-	}
-	settings := setting.New(configPath)
+	// Config file operations need its location, not a decoded storage.dir.
+	// In particular, unset must work when storage.dir itself is malformed.
+	settings := setting.New(repoconfig.NewLocal(), resolveConfigPath())
 	switch args[0] {
 	case "show":
 		if len(args) != 1 {

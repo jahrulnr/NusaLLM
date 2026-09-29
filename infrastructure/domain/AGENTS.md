@@ -45,9 +45,11 @@ distinct invariant, or a meaningful interface boundary.
 4. **`Usage.inputTokens` is UNCACHED input.** Disjoint counters → `NewUsage`;
    inclusive total + cached subset → `NewUsageFromTotal`. Never map an
    inclusive total into `inputTokens` — it double-counts.
-5. **Tool outputs are untrusted evidence.** Runtime output always via
-   `SetOutput` (envelope + sanitize); hydration via `SetStoredOutput`
-   verbatim. Tool-produced media ride as `outputAttachments` — stored
+5. **Tool outputs are untrusted evidence.** `SetOutput` stores raw text and
+   fixed latency; `NeedTruncate` and the head/tail/middle getters own the
+   context budget. `OutputWithUntrustedTag` adds a bounded evidence envelope
+   only for provider replay. Hydration restores raw output and latency via
+   `SetStoredOutput`. Tool-produced media ride as `outputAttachments` — stored
    references resolved at send time, gated per-request by the bound
    model's `AcceptsInput` (non-support degrades to a text placeholder).
 6. **Unset ≠ zero.** Generation params are `*T`; `enum.Effort` uses
@@ -61,6 +63,10 @@ distinct invariant, or a meaningful interface boundary.
    429 = rate-limited → fallback, 401/403 = dead credential).
 10. **Diagnostics via `Logger`** — verbose JSONL sink; entries are scrubbed
     by `infrastructure/redact` before write.
+11. **Execution environment is a room binding.** `Conversation.Environment()`
+    identifies the workspace/command driver selected for this room. The
+    application resolves the registered driver per turn; an unavailable
+    environment must never silently fall back to local.
 
 ## Conventions
 
@@ -90,7 +96,7 @@ distinct invariant, or a meaningful interface boundary.
 ## Verify
 
 ```sh
-gofmt -w . && go build ./... && go vet ./... && go test ./...
+make fmt-check && make test && make test-web
 ```
 
 Media fixtures live in `test/media/` — pinned by `TestMediaFixtures`.

@@ -1,0 +1,304 @@
+package textresponses
+
+import (
+	"encoding/json"
+	"path"
+	"strings"
+
+	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
+	"github.com/jahrulnr/nusallm/infrastructure/service/wire"
+)
+
+// itemsKey is the adapter-namespaced optionalContent key carrying the
+// turn's ordered output template: message and function_call entries are
+// bare placeholders refilled from domain state; reasoning and server items
+// are stored verbatim — encrypted reasoning blobs must replay byte-exact.
+const itemsKey = "responses.output_items"
+
+var errUnsupported = errPlain("modality has no carrier on this wire")
+
+// encodeRequest maps domain state onto the wire body. The conversation is
+// sent stateless — store:false, full item list each turn — because our
+// repository is the record and edits would break previous_response_id
+// chains anyway. include: reasoning.encrypted_content opts into replayable
+// reasoning so stateless turns keep their chain of thought.
+func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool, fileRoot wire.MediaRoot) (*RequestBody, error) {
+	body := &RequestBody{
+		Model:   model.ID(),
+		Store:   false,
+		Include: []string{"reasoning.encrypted_content"},
+		Stream:  stream,
+	}
+	body.PromptCacheKey = conv.ID()
+	if sp := conv.SystemPrompt(); sp != "" {
+		body.Instructions = sp
+	}
+	for _, m := range conv.Messages() {
+		items, err := encodeMessage(m, model, fileRoot)
+		if err != nil {
+			return nil, err
+		}
+		body.Input = append(body.Input, items...)
+	}
+	for _, t := range conv.Tools() {
+		if !t.CallableByAgent() {
+			continue // system-only and disabled tools never reach the wire
+		}
+		body.Tools = append(body.Tools, ToolBody{
+			Type:        "function",
+			Name:        t.Name(),
+			Description: t.Description(),
+			Parameters:  t.Parameters(),
+		})
+	}
+
+	body.MaxOutputTokens = model.MaxOutputTokens()
+	body.Temperature = model.Temperature()
+	body.TopP = model.TopP()
+	// Params without a wire home are dropped, not zeroed — top_k, presence/
+	// frequency penalty, seed, and stop sequences don't exist on this
+	// surface; reasoning models reject sampling params outright. The
+	// provider validates what it receives.
+	if e := model.Effort(); !e.IsUnset() && e != enum.EffortNone {
+		effort := e.String()
+		switch e {
+		case enum.EffortXHigh, enum.EffortMax:
+			effort = "high" // no wire equivalent — clamp to the ceiling
+		}
+		body.Reasoning = &ReasoningBody{Effort: effort}
+	}
+	// Adapter-namespaced escape hatch: "responses.<param>" lands verbatim —
+	// text.verbosity, service_tier, tool_choice, a store:true override…
+	for k, v := range model.OptionalContent() {
+		if name, ok := strings.CutPrefix(k, "responses."); ok {
+			if body.Extra == nil {
+				body.Extra = map[string]json.RawMessage{}
+			}
+			var raw json.RawMessage
+			if err := json.Unmarshal([]byte(v), &raw); err != nil {
+				raw, _ = json.Marshal(v) // not JSON → plain string value
+			}
+			body.Extra[name] = raw
+		}
+	}
+	return body, nil
+}
+
+// encodeMessage emits one message item for plain turns, or — for an
+// assistant turn with executed calls — the replayed output items followed
+// by function_call_output items and any media follow-up user items. Items
+// arrive pre-marshaled: template entries are raw bytes that must pass
+// through untouched, so a typed item envelope can't carry them.
+// Injection calls hydrate as inline text (application-originated; their
+// output attachments are never encoded). A call's output attachments ride
+// a user message after the whole output block: function_call_output
+// carries only a string on this surface, so media follows the same
+// convention the completion wire uses.
+func encodeMessage(m entity.Message, model entity.Model, fileRoot wire.MediaRoot) ([]json.RawMessage, error) {
+	var origin, injected []entity.ToolCall
+	for _, tc := range m.ToolCalls() {
+		if tc.Type() == enum.TooltypeInjection {
+			injected = append(injected, tc)
+		} else {
+			origin = append(origin, tc)
+		}
+	}
+
+	text := m.Content()
+	for _, tc := range injected {
+		if tc.HasOutput() {
+			text += "\n" + tc.OutputWithUntrustedTag() // already an untrusted-evidence envelope
+		}
+	}
+
+	if m.Role() == enum.RoleAssistant {
+		items := assistantItems(m, text, origin)
+		return append(items, toolResultItems(origin, model, fileRoot)...), nil
+	}
+
+	role := m.Role().String() // user/developer/system pass through as items
+	if len(m.Attachments()) == 0 {
+		return marshalItem(ItemBody{Type: "message", Role: role, Content: text})
+	}
+	parts := []any{}
+	if text != "" {
+		parts = append(parts, PartBody{Type: "input_text", Text: text})
+	}
+	for _, a := range m.Attachments() {
+		parts = append(parts, attachmentPart(a, model, fileRoot))
+	}
+	return marshalItem(ItemBody{Type: "message", Role: role, Content: parts})
+}
+
+// assistantItems rebuilds the turn's output items in provider order. A
+// stored template replays reasoning and server items verbatim with
+// message/function_call refilled at their marked positions; without one,
+// the message item leads and calls follow — the shape a non-reasoning
+// turn takes.
+func assistantItems(m entity.Message, text string, origin []entity.ToolCall) []json.RawMessage {
+	var items []json.RawMessage
+	var template []json.RawMessage
+	if raw := m.OptionalContent()[itemsKey]; raw != "" {
+		_ = json.Unmarshal([]byte(raw), &template) // malformed → default order
+	}
+	msgDone, used := false, 0
+	emit := func(it ItemBody) {
+		raw, err := marshalItem(it)
+		if err == nil {
+			items = append(items, raw...)
+		}
+	}
+	emitMsg := func() {
+		emit(ItemBody{Type: "message", Role: "assistant",
+			Content: []any{PartBody{Type: "output_text", Text: text}}})
+		msgDone = true
+	}
+	emitCall := func() {
+		if used >= len(origin) {
+			return
+		}
+		tc := origin[used]
+		in := tc.Input()
+		if !json.Valid(json.RawMessage(in)) || in == "" {
+			in = "{}"
+		}
+		emit(ItemBody{Type: "function_call", CallID: tc.ID(), Name: tc.Name(), Arguments: in})
+		used++
+	}
+	for _, entry := range template {
+		var head struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(entry, &head); err != nil {
+			continue
+		}
+		switch head.Type {
+		case "message":
+			emitMsg()
+		case "function_call":
+			emitCall()
+		case "reasoning":
+			// Stateless replay needs the encrypted blob — a reasoning
+			// item without it is unverifiable padding; drop it
+			// (documented ZDR behavior).
+			var probe struct {
+				Encrypted json.RawMessage `json:"encrypted_content"`
+			}
+			if json.Unmarshal(entry, &probe) == nil && len(probe.Encrypted) > 0 {
+				items = append(items, entry)
+			}
+		default:
+			// Server-tool items (web_search_call, …) replay verbatim.
+			items = append(items, entry)
+		}
+	}
+	if !msgDone && (text != "" || len(items) == 0) {
+		emitMsg()
+	}
+	for used < len(origin) {
+		emitCall()
+	}
+	return items
+}
+
+// toolResultItems emits one function_call_output per origin call, then —
+// after the whole block — a user message carrying each call's media
+// attachments, mirroring the completion wire's convention.
+func toolResultItems(origin []entity.ToolCall, model entity.Model, fileRoot wire.MediaRoot) []json.RawMessage {
+	if len(origin) == 0 {
+		return nil
+	}
+	var items, media []json.RawMessage
+	for _, tc := range origin {
+		content := tc.OutputWithUntrustedTagOrInterrupted()
+		out, _ := marshalItem(ItemBody{Type: "function_call_output", CallID: tc.ID(), Output: content})
+		items = append(items, out...)
+		if atts := tc.OutputAttachments(); len(atts) > 0 {
+			parts := []any{PartBody{Type: "input_text",
+				Text: "Attached output from tool " + tc.Name() + " (call " + tc.ID() + "):"}}
+			for _, a := range atts {
+				parts = append(parts, attachmentPart(a, model, fileRoot))
+			}
+			follow, _ := marshalItem(ItemBody{Type: "message", Role: "user", Content: parts})
+			media = append(media, follow...)
+		}
+	}
+	return append(items, media...)
+}
+
+// marshalItem encodes one input item as a single JSON element — the slice
+// stays flat, one message or call per element, raw entries untouched.
+func marshalItem(it ItemBody) ([]json.RawMessage, error) {
+	raw, err := json.Marshal(it)
+	if err != nil {
+		return nil, err
+	}
+	return []json.RawMessage{raw}, nil
+}
+
+// attachmentPart maps a stored reference to an input part, degrading in
+// place — a missing file or an uncarriable modality must not wedge the
+// whole request.
+func attachmentPart(a valueobject.Attachment, model entity.Model, fileRoot wire.MediaRoot) any {
+	if !model.AcceptsInput(a.Modality()) {
+		return PartBody{Type: "input_text", Text: "(" + a.Modality().String() + " attachment omitted: model does not accept it)"}
+	}
+	p, err := encodeAttachment(a, fileRoot)
+	if err != nil {
+		label := "(media attachment unavailable)"
+		if err == errUnsupported {
+			label = "(" + a.Modality().String() + " attachment omitted: this wire cannot carry it)"
+		} else if name := safeAttachmentName(a.Name()); name != "" {
+			label = "(media attachment unavailable: " + name + ")"
+		}
+		return PartBody{Type: "input_text", Text: label}
+	}
+	return p
+}
+
+// encodeAttachment resolves a reference into an input_image or input_file
+// part — URLs pass through (image_url/file_url), local and inline payloads
+// materialize as data: URIs (image_url/file_data).
+func encodeAttachment(a valueobject.Attachment, fileRoot wire.MediaRoot) (PartBody, error) {
+	uri := a.URI()
+	remote := strings.HasPrefix(uri, "https://") || strings.HasPrefix(uri, "http://")
+	switch a.Modality() {
+	case enum.ModalityImage:
+		u, err := wire.ResolveURI(a, fileRoot)
+		if err != nil {
+			return PartBody{}, err
+		}
+		return PartBody{Type: "input_image", ImageURL: u}, nil
+	case enum.ModalityFile, enum.ModalityText:
+		if remote {
+			if _, err := wire.ResolveURI(a, fileRoot); err != nil {
+				return PartBody{}, err
+			}
+			return PartBody{Type: "input_file", FileURL: uri, Filename: safeAttachmentName(a.Name())}, nil
+		}
+		u, err := wire.ResolveURI(a, fileRoot) // data: URI form
+		if err != nil {
+			return PartBody{}, err
+		}
+		return PartBody{Type: "input_file", FileData: u, Filename: safeAttachmentName(a.Name())}, nil
+	default:
+		return PartBody{}, errUnsupported // audio/video — no carrier here
+	}
+}
+
+func safeAttachmentName(name string) string {
+	name = path.Base(strings.ReplaceAll(name, `\`, "/"))
+	if name == "." || name == "/" {
+		return ""
+	}
+	return name
+}
+
+type plainError string
+
+func (e plainError) Error() string { return string(e) }
+
+func errPlain(s string) error { return plainError(s) }

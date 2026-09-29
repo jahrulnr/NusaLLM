@@ -5,27 +5,28 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
-	"github.com/jahrulnr/nusallm/infrastructure/service/wire"
 )
 
-// FileReadTool reads a text file under a fixed root — the constructor
-// carries the schema and validates the sandbox boundary; Execute resolves
-// the call input against an os.Root so symlink escapes fail too.
+// FileReadTool reads a text file under the turn's workspace — the
+// constructor carries the schema and validates the default sandbox
+// boundary; Execute resolves the call input through the injected workspace
+// repository, whose local implementation confines symlink traversal.
 type FileReadTool struct {
-	root   *os.Root
+	dir    string
+	store  drepo.Workspace
 	schema valueobject.ToolSchema
 }
 
-// NewFileReadTool binds the tool to root: every requested path resolves
-// inside it — os.Root confines traversal and symlink escapes alike.
-func NewFileReadTool(root string) (service.Tool, error) {
-	r, err := os.OpenRoot(root)
+// NewFileReadTool binds the tool's default root: every requested path
+// resolves inside it. A turn-scoped workspace dir overrides it per call.
+func NewFileReadTool(store drepo.Workspace, root string) (service.Tool, error) {
+	abs, err := checkDir(store, root)
 	if err != nil {
 		return nil, err
 	}
@@ -37,10 +38,9 @@ func NewFileReadTool(root string) (service.Tool, error) {
 		enum.ToolPermissionAgent,
 	)
 	if err != nil {
-		_ = r.Close()
 		return nil, err
 	}
-	return &FileReadTool{root: r, schema: schema}, nil
+	return &FileReadTool{dir: abs, store: store, schema: schema}, nil
 }
 
 func (tool *FileReadTool) Schema() valueobject.ToolSchema {
@@ -59,7 +59,16 @@ func (tool *FileReadTool) Execute(ctx context.Context, call entity.ToolCall, _ s
 	}
 	// Reject oversized files before reading — the call's output budget is
 	// the honest cap, enforced again by SetToolOutput on the way out.
-	f, info, err := wire.OpenRegularFile(tool.root, input.Path)
+	root, err := callRoot(ctx, tool.store, tool.dir)
+	if err != nil {
+		return service.ToolResult{}, err
+	}
+	defer func() {
+		if closeErr := root.Close(); retErr == nil {
+			retErr = closeErr
+		}
+	}()
+	f, info, err := root.OpenRegular(input.Path)
 	if err != nil {
 		return service.ToolResult{}, err
 	}

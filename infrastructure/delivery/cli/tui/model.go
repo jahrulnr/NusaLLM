@@ -1,9 +1,7 @@
 package tui
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -46,35 +44,39 @@ type (
 // running turn, a status line, the composer, and the slash palette —
 // committed output queues in outbox and flushes to scrollback via Println.
 type replModel struct {
-	repl        *REPL
-	commands    *commands.Registry
-	textarea    textarea.Model
-	palette     slashPalette
-	history     []string
-	historyIdx  int    // -1 while editing the live draft
-	draft       string // live draft stashed while browsing history
-	queued      []string
-	live         *strings.Builder // in-flight assistant delta not yet sealed
-	liveTimeline []livePiece      // turn transcript in TurnEvent arrival order
-	contextEstimate int    // footer ~estimate/total input budget
+	repl            *REPL
+	commands        *commands.Registry
+	textarea        textarea.Model
+	palette         slashPalette
+	history         []string
+	historyIdx      int    // -1 while editing the live draft
+	draft           string // live draft stashed while browsing history
+	queued          []string
+	live            *strings.Builder // in-flight assistant delta not yet sealed
+	liveTimeline    []livePiece      // turn transcript in TurnEvent arrival order
+	contextEstimate int              // footer ~estimate/total input budget
 	contextTotal    int
 	turnActive      bool
-	turnCancel  context.CancelFunc
-	spin        spinner.Model
-	phase       string // waiting → thinking → responding → exec <tool>
-	runtime     *tuiRuntime
-	outbox      []string
-	interactive bool // stdin is a terminal
-	width       int  // terminal columns; 0 until WindowSizeMsg arrives
-	ctx         context.Context
+	turnCancel      context.CancelFunc
+	spin            spinner.Model
+	phase           string // waiting → thinking → responding → exec <tool>
+	runtime         *tuiRuntime
+	outbox          []string
+	pendingPrints   int  // scrollback batches not yet taken by the loop
+	interactive     bool // stdin is a terminal
+	width           int  // terminal columns; 0 until WindowSizeMsg arrives
+	ctx             context.Context
 }
 
-// livePiece is one sealed slice of the turn timeline — either markdown
-// source or a preformatted line (tool activity, usage). Order is event
+// livePiece is one sealed slice of the turn timeline. Order is event
 // order only; render walks the slice once.
 type livePiece struct {
-	markdown string
-	line     string
+	markdown   string
+	line       string
+	reasoning  string
+	toolOutput string
+	toolCallID string
+	toolName   string
 }
 
 func newModel(r *REPL, interactive bool) replModel {
@@ -101,7 +103,7 @@ func newModel(r *REPL, interactive bool) replModel {
 		textarea:    ta,
 		spin:        spin,
 		palette:     slashPalette{describe: registry.Describe, complete: registry.Complete},
-		history:     loadHistory(r.historyFile),
+		history:     r.historyStore.Load(r.historyFile),
 		historyIdx:  -1,
 		live:        &strings.Builder{},
 		interactive: interactive,
@@ -139,6 +141,16 @@ func (m replModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// outbox and emit.
 		m.drainNotes()
 		return m, m.flush()
+	case printAckMsg:
+		if m.pendingPrints > 0 {
+			m.pendingPrints--
+		}
+		// An exit waiting on scrollback: the last line landed, take the
+		// session down.
+		if m.repl.Exit && m.pendingPrints == 0 {
+			return m, tea.Quit
+		}
+		return m, nil
 	case spinner.TickMsg:
 		// Forward ticks only while a turn runs — dropping the chain when
 		// idle is what stops the animation.
@@ -183,7 +195,8 @@ func (m replModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		default:
-			return m, tea.Quit
+			m.repl.Exit = true
+			return m, m.quitOrWait()
 		}
 	case tea.KeyEscape:
 		switch {
@@ -197,7 +210,8 @@ func (m replModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyCtrlD:
 		if value == "" && !m.turnActive {
-			return m, tea.Quit
+			m.repl.Exit = true
+			return m, m.quitOrWait()
 		}
 	case tea.KeyTab:
 		if rows != nil {
@@ -315,7 +329,10 @@ func (m *replModel) drain() tea.Cmd {
 	}
 	cmds = append(cmds, m.flush())
 	if m.repl.Exit {
-		cmds = append(cmds, tea.Quit)
+		// An exit waits for scrollback still in flight — quitOrWait
+		// returns nil and printAckMsg finishes the quit once the last
+		// line landed.
+		cmds = append(cmds, m.quitOrWait())
 	}
 	return tea.Sequence(cmds...)
 }
@@ -366,6 +383,35 @@ func (m *replModel) println(s string) {
 	m.outbox = append(m.outbox, strings.TrimRight(s, "\n"))
 }
 
+// printAckMsg reports that a scrollback batch reached the event loop. The
+// flush cmd emits it after tea.Println's own message, which the program
+// takes in order — so an exit can wait for the last line instead of racing
+// it (a quit that overtakes a pending print drops it: the loop returns on
+// QuitMsg and never handles the print).
+type printAckMsg struct{}
+
+// flush hands the outbox to the renderer as scrollback and tracks the
+// batch until the loop has taken it; an exit requested in the same breath
+// is finished by the ack, not by tea.Quit.
+func (m *replModel) flush() tea.Cmd {
+	if len(m.outbox) == 0 {
+		return nil
+	}
+	batch := m.wrap(strings.Join(m.outbox, "\n"))
+	m.outbox = nil
+	m.pendingPrints++
+	return tea.Sequence(tea.Println(batch), func() tea.Msg { return printAckMsg{} })
+}
+
+// quitOrWait returns tea.Quit unless scrollback output is still in flight;
+// the ack of the last batch finishes the exit then.
+func (m *replModel) quitOrWait() tea.Cmd {
+	if m.pendingPrints > 0 {
+		return nil
+	}
+	return tea.Quit
+}
+
 // drainNotes pulls queued session notifications into the outbox. The
 // session Notify hook can fire on the update loop itself (route
 // auto-select inside ResolveRoute) — queueing on the runtime keeps that
@@ -377,15 +423,6 @@ func (m *replModel) drainNotes() {
 	if notes := m.runtime.takeNotes(); len(notes) > 0 {
 		m.outbox = append(m.outbox, notes...)
 	}
-}
-
-func (m *replModel) flush() tea.Cmd {
-	if len(m.outbox) == 0 {
-		return nil
-	}
-	batch := m.wrap(strings.Join(m.outbox, "\n"))
-	m.outbox = nil
-	return tea.Println(batch)
 }
 
 func (m *replModel) runCommand(command, args string) tea.Cmd {
@@ -567,7 +604,7 @@ func (m *replModel) resetLive() {
 }
 
 func (m *replModel) sealLiveMarkdown() {
-	if strings.TrimSpace(m.live.String()) == "" {
+	if m.live.Len() == 0 {
 		m.live.Reset()
 		return
 	}
@@ -601,62 +638,66 @@ func (m replModel) renderLive() string {
 		if piece.line != "" {
 			write(piece.line)
 		}
+		if piece.reasoning != "" {
+			write(piece.reasoning)
+		}
+		if piece.toolOutput != "" {
+			write(term.Dim + "↳ " + term.Sanitize(piece.toolName) + ": " + piece.toolOutput + term.Reset)
+		}
 	}
-	if strings.TrimSpace(m.live.String()) != "" {
+	if m.live.Len() > 0 {
 		write(renderMarkdown(m.live.String(), m.width))
 	}
-	return strings.TrimRight(b.String(), "\n")
+	return b.String()
 }
 
-// applyEvent folds a turn event into the live region — text deltas append,
-// tool calls become compact activity rows, and tool output stays hidden.
+// applyEvent folds a turn event into the live region in arrival order.
 func (m *replModel) applyEvent(e event.TurnEvent) {
 	switch e.Kind() {
 	case enum.TurnEventDelta:
 		m.phase = "responding"
 		m.live.WriteString(term.Sanitize(e.Delta()))
-	case enum.TurnEventReasoning:
-		// Reasoning is a provider scratchpad, not transcript content. Keep
-		// the operator informed through the status line without exposing
-		// private chain-of-thought in scrollback.
+	case enum.TurnEventReasoning, enum.TurnEventReasoningSummary:
 		m.phase = "thinking"
+		m.sealLiveMarkdown()
+		text := term.Sanitize(e.Delta())
+		if text != "" {
+			if len(m.liveTimeline) > 0 && m.liveTimeline[len(m.liveTimeline)-1].reasoning != "" {
+				m.liveTimeline[len(m.liveTimeline)-1].reasoning += text
+			} else {
+				m.liveTimeline = append(m.liveTimeline, livePiece{reasoning: text})
+			}
+		}
 	case enum.TurnEventToolCall:
 		m.phase = "exec " + e.ToolCall().Name()
 		m.sealLiveMarkdown()
 		m.appendLiveLine(formatToolActivityRow(e.ToolCall()))
 	case enum.TurnEventToolOutput:
-		// Tool output is useful to the model and logs, but noisy in the
-		// chat transcript. The tool call row remains visible as progress.
+		m.sealLiveMarkdown()
+		call := e.ToolCall()
+		text := term.Sanitize(e.Delta())
+		if text != "" {
+			if len(m.liveTimeline) > 0 {
+				last := &m.liveTimeline[len(m.liveTimeline)-1]
+				if last.toolCallID == call.ID() && last.toolOutput != "" {
+					last.toolOutput += text
+					break
+				}
+			}
+			m.liveTimeline = append(m.liveTimeline, livePiece{
+				toolOutput: text, toolCallID: call.ID(), toolName: call.Name(),
+			})
+		}
 	case enum.TurnEventFinished:
 		m.sealLiveMarkdown()
 		m.appendLiveLine(term.Dim + "↳ " + formatUsage(e.Usage()) + term.Reset)
 	}
 }
 
-const toolSummaryMax = 96
-
 func formatToolActivityRow(call entity.ToolCall) string {
 	row := fmt.Sprintf("%s%s⏺ %s%s", term.Yellow, term.Bold, term.Sanitize(call.Name()), term.Reset)
-	if args := compactToolInput(call.Input()); args != "" {
-		row += " " + term.Dim + term.Sanitize(args) + term.Reset
-	}
+	row += " " + term.Dim + term.Sanitize(call.Input()) + term.Reset
 	return row
-}
-
-// compactToolInput keeps a tool activity row to one line without dropping
-// argument names. Valid JSON is compacted; malformed input is whitespace
-// collapsed and preserved as a bounded preview.
-func compactToolInput(input string) string {
-	input = strings.TrimSpace(input)
-	if input == "" || input == "{}" {
-		return ""
-	}
-
-	var compact bytes.Buffer
-	if err := json.Compact(&compact, []byte(input)); err == nil {
-		return truncateInline(compact.String(), toolSummaryMax)
-	}
-	return truncateInline(strings.Join(strings.Fields(input), " "), toolSummaryMax)
 }
 
 func truncateInline(text string, max int) string {
@@ -713,7 +754,7 @@ func (m replModel) historyNext() (tea.Model, tea.Cmd) {
 func (m *replModel) pushHistory(text string) {
 	m.history = append(m.history, text)
 	m.historyIdx = -1
-	_ = appendHistory(m.repl.historyFile, text)
+	_ = m.repl.historyStore.Append(m.repl.historyFile, text)
 }
 
 // editComposer forwards an edit to the textarea at full height, then fits

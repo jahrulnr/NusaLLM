@@ -4,28 +4,31 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
+	"io"
 	"strings"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 )
 
-// FilePatchTool rewrites a text file under a fixed root by literal
-// search/replace — deliberately not unified diff: diff grammars are
-// fragile for models, and exact-match anchoring either matches or fails,
-// forcing a re-read instead of a fuzzy guess.
+// FilePatchTool rewrites a text file under the turn's workspace by
+// literal search/replace — deliberately not unified diff: diff grammars
+// are fragile for models, and exact-match anchoring either matches or
+// fails, forcing a re-read instead of a fuzzy guess.
 type FilePatchTool struct {
-	root   *os.Root
+	dir    string
+	store  drepo.Workspace
 	schema valueobject.ToolSchema
 }
 
-// NewFilePatchTool binds the tool to root: every requested path resolves
-// inside it — os.Root confines traversal and symlink escapes alike.
-func NewFilePatchTool(root string) (service.Tool, error) {
-	r, err := os.OpenRoot(root)
+// NewFilePatchTool binds the tool's default root: every requested path
+// resolves inside it — os.Root confines traversal and symlink escapes
+// alike. A turn-scoped workspace dir overrides it per call.
+func NewFilePatchTool(store drepo.Workspace, root string) (service.Tool, error) {
+	abs, err := checkDir(store, root)
 	if err != nil {
 		return nil, err
 	}
@@ -37,10 +40,9 @@ func NewFilePatchTool(root string) (service.Tool, error) {
 		enum.ToolPermissionAgent,
 	)
 	if err != nil {
-		_ = r.Close()
 		return nil, err
 	}
-	return &FilePatchTool{root: r, schema: schema}, nil
+	return &FilePatchTool{dir: abs, store: store, schema: schema}, nil
 }
 
 func (tool *FilePatchTool) Schema() valueobject.ToolSchema {
@@ -64,20 +66,29 @@ func (tool *FilePatchTool) Execute(ctx context.Context, call entity.ToolCall, _ 
 	if input.OldString == "" {
 		return service.ToolResult{}, fmt.Errorf("old_string must not be empty")
 	}
-	info, err := tool.root.Stat(input.Path)
+	root, err := callRoot(ctx, tool.store, tool.dir)
 	if err != nil {
 		return service.ToolResult{}, err
 	}
-	if info.IsDir() {
-		return service.ToolResult{}, fmt.Errorf("%q is a directory", input.Path)
+	defer root.Close()
+	f, info, err := root.OpenRegular(input.Path)
+	if err != nil {
+		return service.ToolResult{}, err
 	}
+	defer f.Close()
 	// Patching loads the whole file into memory; files larger than 4 MiB
 	// belong to exec/sed, not an in-memory edit tool.
 	if info.Size() > 4<<20 {
 		return service.ToolResult{}, fmt.Errorf("%q is too large to patch (%d bytes > 4 MiB)", input.Path, info.Size())
 	}
-	data, err := tool.root.ReadFile(input.Path)
+	data, err := io.ReadAll(io.LimitReader(f, (4<<20)+1))
 	if err != nil {
+		return service.ToolResult{}, err
+	}
+	if len(data) > 4<<20 {
+		return service.ToolResult{}, fmt.Errorf("%q is too large to patch (> 4 MiB)", input.Path)
+	}
+	if err := f.Close(); err != nil {
 		return service.ToolResult{}, err
 	}
 	content := string(data)
@@ -97,7 +108,7 @@ func (tool *FilePatchTool) Execute(ctx context.Context, call entity.ToolCall, _ 
 	}
 	// Write through the root with the recorded mode — WriteFile only
 	// applies perm on create, so an existing file keeps its bits anyway.
-	if err := tool.root.WriteFile(input.Path, []byte(content), info.Mode().Perm()); err != nil {
+	if err := root.WriteFile(input.Path, []byte(content), info.Mode().Perm()); err != nil {
 		return service.ToolResult{}, err
 	}
 	occurrence := "occurrences"

@@ -21,10 +21,16 @@ func NewDeltaEvent(delta string) TurnEvent {
 	return TurnEvent{kind: enum.TurnEventDelta, delta: delta}
 }
 
-// NewReasoningEvent carries a thinking/reasoning chunk for live UI status or
-// optional detail, kept out of the assistant's answer text.
+// NewReasoningEvent carries a provider reasoning chunk separately from the
+// assistant's answer text so callers can preserve and display its position.
 func NewReasoningEvent(delta string) TurnEvent {
 	return TurnEvent{kind: enum.TurnEventReasoning, delta: delta}
+}
+
+// NewReasoningSummaryEvent carries a provider-supplied reasoning summary
+// separately from the assistant's answer text.
+func NewReasoningSummaryEvent(delta string) TurnEvent {
+	return TurnEvent{kind: enum.TurnEventReasoningSummary, delta: delta}
 }
 
 func NewToolCallEvent(tc entity.ToolCall) TurnEvent {

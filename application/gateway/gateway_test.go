@@ -22,7 +22,7 @@ func newApp(t *testing.T) (*GatewayApp, drepo.SecretStore, string) {
 	t.Cleanup(func() { secrets.Close() })
 	dir := t.TempDir()
 	repo := repogateway.NewGatewayRepository(dir, secrets)
-	return New(repo, secrets), secrets, dir
+	return New(repo, secrets, nil), secrets, dir
 }
 
 func strptr(s string) *string { return &s }
@@ -347,5 +347,70 @@ func TestGetDeleteNotFound(t *testing.T) {
 	}
 	if _, err := app.Get(t.Context(), "g"); apperror.As(err).StatusCode() != apperror.StatusNotFound {
 		t.Fatal("deleted gateway still gets")
+	}
+}
+
+// Server-owned hidden fields: optionalContent never crosses a transport,
+// so a full-document upsert must carry it forward for surviving model
+// ids. nil keeps the stored map, a non-nil map overrides, a dropped id
+// loses it with the record.
+func TestUpsertPreservesOptionalContent(t *testing.T) {
+	app, _, _ := newApp(t)
+	ctx := t.Context()
+
+	// First upsert sets the hidden map directly (the CLI path).
+	in := GatewayInput{
+		ID: "g", Name: "n", Style: enum.StyleMessages, Endpoint: "https://x",
+		Models: []ModelInput{{ID: "m1", OptionalContent: map[string]string{
+			"gemini.thought_signature": "sig-1"}}},
+	}
+	if err := app.Upsert(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+
+	// A full replace omitting the field preserves it.
+	in.Models = []ModelInput{{ID: "m1"}}
+	if err := app.Upsert(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	info, err := app.Get(ctx, "g")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Models[0].OptionalContent()["gemini.thought_signature"]; got != "sig-1" {
+		t.Fatalf("surviving model lost hidden content: %v", info.Models[0].OptionalContent())
+	}
+
+	// A non-nil map is an explicit override — an empty one clears.
+	in.Models = []ModelInput{{ID: "m1", OptionalContent: map[string]string{}}}
+	if err := app.Upsert(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	info, _ = app.Get(ctx, "g")
+	if len(info.Models[0].OptionalContent()) != 0 {
+		t.Fatalf("explicit empty map must override stored: %v", info.Models[0].OptionalContent())
+	}
+
+	// Dropping the model id drops its hidden content with the record;
+	// re-adding the id later starts empty.
+	in.Models = []ModelInput{{ID: "m1", OptionalContent: map[string]string{
+		"gemini.thought_signature": "sig-2"}}, {ID: "m2"}}
+	if err := app.Upsert(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	in.Models = []ModelInput{{ID: "m2"}} // m1's record is gone here
+	if err := app.Upsert(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	in.Models = []ModelInput{{ID: "m2"}, {ID: "m1"}}
+	if err := app.Upsert(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	info, _ = app.Get(ctx, "g")
+	for _, m := range info.Models {
+		if m.ID() == "m1" && len(m.OptionalContent()) != 0 {
+			t.Fatalf("re-added model must not resurrect dropped content: %v",
+				m.OptionalContent())
+		}
 	}
 }

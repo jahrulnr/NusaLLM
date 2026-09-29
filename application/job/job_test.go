@@ -2,6 +2,7 @@ package job
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/jahrulnr/nusallm/infrastructure/config"
@@ -9,16 +10,21 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
+	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 	repoconversation "github.com/jahrulnr/nusallm/infrastructure/repository/conversation"
 )
 
 // loopSvc asks for a tool on every provider call — the model that never
 // stops requesting, which the step cap exists to catch.
-type loopSvc struct{ calls int }
+type loopSvc struct {
+	calls              int
+	seenConversationID string
+}
 
-func (s *loopSvc) Send(_ context.Context, conv *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, _ event.TurnEventHandler) error {
+func (s *loopSvc) Send(ctx context.Context, conv *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, _ event.TurnEventHandler) error {
 	s.calls++
+	s.seenConversationID = dservice.ConversationID(ctx)
 	m, _ := entity.NewMessage(enum.RoleAssistant, "one more tool")
 	tc, err := entity.NewToolCall("call_"+string(rune('a'+s.calls)), "echo", `{}`, enum.TooltypeOrigin)
 	if err != nil {
@@ -44,9 +50,62 @@ func TestRunTurnStepCap(t *testing.T) {
 	if _, err := d.Convs.AppendMessage(t.Context(), "room", user); err != nil {
 		t.Fatal(err)
 	}
-	err := d.runTurn(t.Context(), "room", conv, nil, entity.Model{}, &loopSvc{}, nil)
+	svc := &loopSvc{}
+	err := d.runTurn(t.Context(), "room", conv, EnvironmentBundle{}, nil, entity.Model{}, svc, nil)
 	if apperror.As(err).StatusCode() != 500 {
 		t.Fatalf("step cap → %v, want 500", err)
+	}
+	if svc.seenConversationID != "room" {
+		t.Fatalf("provider context conversation id = %q, want room", svc.seenConversationID)
+	}
+}
+
+// partial413Svc commits a message and then fails with a 413 — the
+// compact-retry path must not fire when the call already appended: the
+// in-memory entry was never persisted.
+type partial413Svc struct{ calls int }
+
+func (s *partial413Svc) Send(_ context.Context, conv *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, _ event.TurnEventHandler) error {
+	s.calls++
+	m, _ := entity.NewMessage(enum.RoleAssistant, "partial")
+	conv.Append(m)
+	return apperror.New(413, "context overflow", errors.New("prompt too long"))
+}
+
+func TestRunTurn413WithAppendedMessagePropagates(t *testing.T) {
+	d := Deps{
+		Convs:  repoconversation.NewConversationRepository(t.TempDir()),
+		Config: config.ConversationConfig{MaxTurnStep: 2},
+	}
+	conv, _ := aggregate.NewConversation("room")
+	if err := d.Convs.Save(t.Context(), conv); err != nil {
+		t.Fatal(err)
+	}
+	// Seed a transcript longer than keepTail (4) once the service appends
+	// — otherwise the compact-retry branch's length check can never hold
+	// and the len(added)==0 guard goes unexercised.
+	for _, seed := range []struct {
+		role enum.Role
+		text string
+	}{
+		{enum.RoleUser, "hi"},
+		{enum.RoleAssistant, "first answer"},
+		{enum.RoleUser, "follow-up"},
+		{enum.RoleAssistant, "second answer"},
+	} {
+		m, _ := entity.NewMessage(seed.role, seed.text)
+		conv.Append(m)
+		if _, err := d.Convs.AppendMessage(t.Context(), "room", m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := &partial413Svc{}
+	err := d.runTurn(t.Context(), "room", conv, EnvironmentBundle{}, nil, entity.Model{}, svc, nil)
+	if apperror.As(err).StatusCode() != 413 {
+		t.Fatalf("appended-message 413 must propagate, got %v", err)
+	}
+	if svc.calls != 1 {
+		t.Fatalf("compact-retry fired despite the appended message: calls=%d", svc.calls)
 	}
 }
 
@@ -54,9 +113,7 @@ func TestPendingCallsFilter(t *testing.T) {
 	m, _ := entity.NewMessage(enum.RoleAssistant, "calls")
 	inject, _ := entity.NewToolCall("c1", "read", `{}`, enum.TooltypeInjection)
 	answered, _ := entity.NewToolCall("c2", "echo", `{}`, enum.TooltypeOrigin)
-	if err := answered.SetOutput("done"); err != nil {
-		t.Fatal(err)
-	}
+	answered.SetOutput("done")
 	pending, _ := entity.NewToolCall("c3", "echo", `{}`, enum.TooltypeOrigin)
 	m.AddToolCall(inject)
 	m.AddToolCall(answered)
@@ -92,5 +149,22 @@ func TestFinishPanicBecomes500(t *testing.T) {
 	}
 	if got := <-b.Result; apperror.As(got).StatusCode() != 500 {
 		t.Fatalf("reply → %v, want 500", got)
+	}
+}
+
+// A registered-but-nil driver and an unregistered one must both fail with
+// the same explicit 400 — never reach a nil interface method call.
+func TestEnvironmentRejectsNilAndUnregisteredDrivers(t *testing.T) {
+	conv, err := aggregate.NewConversation("room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := Deps{Environments: map[enum.Environment]EnvironmentDriver{enum.EnvironmentLocal: nil}}
+	if _, err := d.environment(conv); apperror.As(err).StatusCode() != 400 {
+		t.Fatalf("nil driver => %v, want 400", err)
+	}
+	d = Deps{Environments: map[enum.Environment]EnvironmentDriver{}}
+	if _, err := d.environment(conv); apperror.As(err).StatusCode() != 400 {
+		t.Fatalf("unregistered driver => %v, want 400", err)
 	}
 }

@@ -37,6 +37,7 @@ type Model struct {
 
 	// effort uses the enum's IsUnset sentinel instead of a pointer.
 	effort          enum.Effort
+	upstream        string // upstream provider pin inside the route (e.g. an aggregator's backends); empty = the gateway decides
 	optionalContent map[string]string
 
 	// Catalog metadata, hydrated from the gateway's model list — descriptive,
@@ -92,6 +93,14 @@ func (m *Model) SetStopSequences(v []string)    { m.stopSequences = v }
 // unset mean the field is omitted from the wire.
 func (m *Model) SetEffort(v enum.Effort) { m.effort = v }
 
+func (m Model) Upstream() string { return m.upstream }
+
+// SetUpstream pins which upstream provider inside the route serves this
+// request — aggregator gateways (OpenRouter-style) fan a model id out to
+// several backends and the pin picks one; direct providers ignore it.
+// Empty restores the gateway's own routing.
+func (m *Model) SetUpstream(v string) { m.upstream = v }
+
 func (m Model) OptionalContent() map[string]string { return m.optionalContent }
 
 // SetOptionalContent stores a provider-specific generation parameter under
@@ -104,12 +113,12 @@ func (m *Model) SetOptionalContent(key, value string) {
 	m.optionalContent[key] = value
 }
 
-func (m Model) ModelType() enum.ModelType             { return m.mtype }
-func (m *Model) SetModelType(v enum.ModelType)        { m.mtype = v }
-func (m Model) Pricing() valueobject.Pricing          { return m.pricing }
-func (m *Model) SetPricing(v valueobject.Pricing)     { m.pricing = v }
-func (m Model) ContextWindow() int                    { return m.contextWindow }
-func (m *Model) SetContextWindow(v int)               { m.contextWindow = v }
+func (m Model) ModelType() enum.ModelType         { return m.mtype }
+func (m *Model) SetModelType(v enum.ModelType)    { m.mtype = v }
+func (m Model) Pricing() valueobject.Pricing      { return m.pricing }
+func (m *Model) SetPricing(v valueobject.Pricing) { m.pricing = v }
+func (m Model) ContextWindow() int                { return m.contextWindow }
+func (m *Model) SetContextWindow(v int)           { m.contextWindow = v }
 
 // EffectiveContextWindow is the total context size used for UI budgeting
 // when the catalog left contextWindow at zero.

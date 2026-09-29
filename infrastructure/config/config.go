@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"reflect"
 	"strconv"
 	"time"
@@ -16,6 +14,7 @@ import (
 
 type Config struct {
 	App          App                `json:"-"`
+	Server       ServerConfig       `json:"server"`
 	Conversation ConversationConfig `json:"conversation"`
 	Service      ServiceConfig      `json:"service"`
 	Storage      StorageConfig      `json:"storage"`
@@ -25,15 +24,17 @@ type Config struct {
 // Normalize runs each section's normalization — invalid values clamp to
 // unconfigured, zeros fill from `default` tags.
 func (c *Config) Normalize() {
+	ApplyDefaults(&c.App)
+	c.Server.Normalize()
 	c.Conversation.Normalize()
 	c.Service.Normalize()
 	c.Storage.Normalize()
 	c.Log.Normalize()
 }
 
-// NewConfig returns the defaults — every tunable reads its `default`
-// struct tag, so the tag is the single source of truth and nothing
-// downstream re-declares a literal.
+// NewConfig returns the defaults — scalar tunables read their `default`
+// struct tags, while section normalizers fill compound values such as
+// server host lists.
 func NewConfig() Config {
 	var c Config
 	c.Normalize()
@@ -47,12 +48,15 @@ func NewConfig() Config {
 // nothing. An empty path skips the file and only normalizes c in place —
 // values already set survive — which keeps the
 // Load(os.Getenv("CONFIG_PATH")) pattern safe.
-func (c *Config) Load(path string) error {
+func (c *Config) Load(store Store, path string) error {
 	if path == "" {
 		c.Normalize()
 		return nil
 	}
-	raw, err := os.ReadFile(path)
+	if store == nil {
+		return apperror.NewInternalError("config load failed", fmt.Errorf("config store is required"))
+	}
+	raw, err := store.Read(path)
 	if err != nil {
 		return apperror.NewInternalError("config load failed", err)
 	}
@@ -69,6 +73,10 @@ func (c *Config) Load(path string) error {
 // silently tuning nothing — then normalizes. Callers mutating the file
 // validate the candidate before it replaces the old one.
 func Validate(raw []byte) (Config, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return Config{}, apperror.NewInternalError("config load failed", fmt.Errorf("config document must be a JSON object"))
+	}
 	var fresh Config
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -83,57 +91,10 @@ func Validate(raw []byte) (Config, error) {
 			fmt.Errorf("trailing data after the JSON document"))
 	}
 	fresh.Normalize()
+	if err := fresh.Server.validate(); err != nil {
+		return Config{}, apperror.NewInternalError("config load failed", err)
+	}
 	return fresh, nil
-}
-
-// WriteFileAtomic persists a config document via tmp + fsync + rename —
-// the repo write convention: a crash mid-write leaves either the old
-// file or nothing, never a torn config. The tmp name is unique per call
-// (CreateTemp) so two processes writing concurrently cannot truncate
-// each other's staged bytes. A symlinked path is resolved first — the
-// rename replaces the real file, not the link. An existing file's mode
-// is preserved; new files default to 0o644.
-func WriteFileAtomic(path string, raw []byte) error {
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
-		path = resolved
-	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	mode := os.FileMode(0o644)
-	if fi, err := os.Stat(path); err == nil {
-		mode = fi.Mode().Perm()
-	}
-	f, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	defer os.Remove(tmp) // no-op after a successful rename
-	if err := f.Chmod(mode); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if _, err := f.Write(raw); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return err
-	}
-	if d, err := os.Open(dir); err == nil {
-		_ = d.Sync()
-		_ = d.Close()
-	}
-	return nil
 }
 
 // ApplyDefaults fills zero-valued fields from their `default` struct tag,

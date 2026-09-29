@@ -8,8 +8,8 @@ import (
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
-// Delete removes the whole conversation directory — meta, live tail, and
-// every sealed segment.
+// Delete removes the whole conversation directory — meta, live tail,
+// sealed segments, and conversation-owned tool output.
 func (r *ConversationRepository) Delete(ctx context.Context, convID string) error {
 	if err := validID(convID); err != nil {
 		return err

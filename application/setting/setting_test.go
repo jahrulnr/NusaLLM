@@ -4,10 +4,13 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jahrulnr/nusallm/infrastructure/config"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
+	repoconfig "github.com/jahrulnr/nusallm/infrastructure/repository/config"
 )
 
 func newApp(t *testing.T) (*SettingApp, string) {
@@ -20,7 +23,81 @@ func newApp(t *testing.T) (*SettingApp, string) {
 	if err := os.WriteFile(path, raw, 0o644); err != nil {
 		t.Fatalf("seed config: %v", err)
 	}
-	return New(path), path
+	return New(repoconfig.NewLocal(), path), path
+}
+
+func TestUnsetExplainsNonSectionValue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"storage":123}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := New(repoconfig.NewLocal(), path).Unset("storage.dir")
+	if err == nil || !strings.Contains(apperror.As(err).Caused(), `non-section value at "storage"`) || !strings.Contains(apperror.As(err).Caused(), `unset storage`) {
+		t.Fatalf("unset diagnostic = %v", err)
+	}
+	if _, err := New(repoconfig.NewLocal(), path).Unset("storage"); err != nil {
+		t.Fatalf("suggested repair failed: %v", err)
+	}
+}
+
+func TestSetReportsPreexistingInvalidField(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"service":{"idle_timeout":"bogus"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := New(repoconfig.NewLocal(), path).Set("log.bodies", "true")
+	if err == nil || !strings.Contains(apperror.As(err).Caused(), `after setting "log.bodies"`) || !strings.Contains(apperror.As(err).Caused(), `invalid duration`) {
+		t.Fatalf("set diagnostic = %v", err)
+	}
+}
+
+func TestSetDoesNotReplaceUndecodableFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	before := []byte(`{"service":`)
+	if err := os.WriteFile(path, before, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(repoconfig.NewLocal(), path).Set("log.bodies", "true"); err == nil {
+		t.Fatal("set must reject undecodable existing file")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("invalid file was changed: %q, %v", after, err)
+	}
+}
+
+func TestMutationsDoNotReplaceNullDocument(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	before := []byte("null\n")
+	if err := os.WriteFile(path, before, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app := New(repoconfig.NewLocal(), path)
+	for _, mutate := range []struct {
+		name string
+		run  func() error
+	}{
+		{"set", func() error { _, err := app.Set("log.bodies", "true"); return err }},
+		{"unset", func() error { _, err := app.Unset("log.bodies"); return err }},
+	} {
+		t.Run(mutate.name, func(t *testing.T) {
+			if err := mutate.run(); err == nil || !strings.Contains(apperror.As(err).Caused(), "not a JSON object") {
+				t.Fatalf("mutation of null document = %v", err)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || string(after) != string(before) {
+				t.Fatalf("null document was changed: %q, %v", after, err)
+			}
+		})
+	}
+}
+
+func TestValidateMissingFileExplainsCreation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing.json")
+	err := New(repoconfig.NewLocal(), path).Validate()
+	if err == nil || !strings.Contains(apperror.As(err).Caused(), "config set") || !strings.Contains(apperror.As(err).Caused(), path) {
+		t.Fatalf("missing file guidance = %v", err)
+	}
 }
 
 func TestShowMergesDefaultsOverFile(t *testing.T) {
@@ -28,7 +105,7 @@ func TestShowMergesDefaultsOverFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"service":{"idle_timeout":"5s"}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, err := New(path).Show()
+	out, err := New(repoconfig.NewLocal(), path).Show()
 	if err != nil {
 		t.Fatalf("show: %v", err)
 	}
@@ -50,7 +127,7 @@ func TestSetPatchesLeafAndPersists(t *testing.T) {
 		t.Fatalf("set: %v", err)
 	}
 	var cfg config.Config
-	if err := cfg.Load(path); err != nil {
+	if err := cfg.Load(repoconfig.NewLocal(), path); err != nil {
 		t.Fatalf("reload: %v", err)
 	}
 	if time.Duration(cfg.Service.IdleTimeout) != 2*time.Minute {
@@ -82,10 +159,10 @@ func TestSetScalarsAndRejectsUnknownKeys(t *testing.T) {
 }
 
 func TestSetWithoutFileFails(t *testing.T) {
-	if _, err := New("").Set("log.bodies", "true"); err == nil {
+	if _, err := New(repoconfig.NewLocal(), "").Set("log.bodies", "true"); err == nil {
 		t.Fatal("set without a config path should fail")
 	}
-	if err := New("").Validate(); err == nil {
+	if err := New(repoconfig.NewLocal(), "").Validate(); err == nil {
 		t.Fatal("validate without a config path should fail")
 	}
 }
@@ -97,12 +174,12 @@ func TestSetFillsMissingLeaves(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"storage":{"dir":"/tmp/x"}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	app := New(path)
+	app := New(repoconfig.NewLocal(), path)
 	if _, err := app.Set("log.bodies", "true"); err != nil {
 		t.Fatalf("set absent leaf: %v", err)
 	}
 	var cfg config.Config
-	if err := cfg.Load(path); err != nil {
+	if err := cfg.Load(repoconfig.NewLocal(), path); err != nil {
 		t.Fatal(err)
 	}
 	if !cfg.Log.Bodies {
@@ -131,11 +208,11 @@ func TestSetRejectsSectionsNullAndTypeMismatch(t *testing.T) {
 
 func TestSetCreatesMissingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	if _, err := New(path).Set("log.max_lines", "42"); err != nil {
+	if _, err := New(repoconfig.NewLocal(), path).Set("log.max_lines", "42"); err != nil {
 		t.Fatalf("set on missing file: %v", err)
 	}
 	var cfg config.Config
-	if err := cfg.Load(path); err != nil {
+	if err := cfg.Load(repoconfig.NewLocal(), path); err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Log.MaxLines != 42 {
@@ -148,7 +225,7 @@ func TestUnsetRemovesUnknownKeyAndLeaf(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"bogus":true,"log":{"bodies":true}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	app := New(path)
+	app := New(repoconfig.NewLocal(), path)
 	if err := app.Validate(); err == nil {
 		t.Fatal("fixture file must be invalid")
 	}
@@ -165,7 +242,7 @@ func TestUnsetRemovesUnknownKeyAndLeaf(t *testing.T) {
 		t.Fatalf("unset leaf: %v", err)
 	}
 	var cfg config.Config
-	if err := cfg.Load(path); err != nil {
+	if err := cfg.Load(repoconfig.NewLocal(), path); err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Log.Bodies {

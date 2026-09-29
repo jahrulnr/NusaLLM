@@ -22,7 +22,7 @@ func (w *Root) ResolveAttachment(requested string) (attachment valueobject.Attac
 	if err != nil {
 		return valueobject.Attachment{}, err
 	}
-	f, info, err := wire.OpenRegularFile(w.root, workspace.Path())
+	f, info, err := w.root.OpenRegular(workspace.Path())
 	if err != nil {
 		return valueobject.Attachment{}, fmt.Errorf("%q is not a readable regular file: %w", requested, err)
 	}
@@ -39,7 +39,7 @@ func (w *Root) ResolveAttachment(requested string) (attachment valueobject.Attac
 	}
 	prefix = prefix[:n]
 	mediaType := http.DetectContentType(prefix)
-	att, err := valueobject.NewAttachment("file://"+filepath.Join(w.absPath, workspace.Path()), mediaType)
+	att, err := valueobject.NewAttachment(w.root.AttachmentURI(workspace.Path()), mediaType)
 	if err != nil {
 		return valueobject.Attachment{}, err
 	}

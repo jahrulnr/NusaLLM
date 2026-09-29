@@ -1,0 +1,123 @@
+:host { display: block; position: relative; z-index: 10; font-family: var(--font-ui); }
+
+.header {
+  position: relative;
+  z-index: 10;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--panel);
+  min-height: 46px;
+  min-width: 0; /* the header must shrink inside its column, never clip actions */
+}
+
+.icon-btn {
+  display: grid;
+  place-items: center;
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  padding: 5px;
+  border-radius: 4px;
+}
+.icon-btn:hover { color: var(--text); background: var(--panel-2); }
+.icon-btn.danger:hover { color: var(--danger); }
+.compact-btn {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 10.5px;
+  padding: 5px 8px;
+  cursor: pointer;
+}
+.compact-btn:hover:not(:disabled) { color: var(--text); border-color: var(--hairline-strong); }
+.compact-btn:disabled { opacity: .56; cursor: default; }
+
+.title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  max-width: 300px;
+  min-width: 0;
+  flex-shrink: 1;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.title span { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.title:hover { background: var(--panel-2); }
+.title svg { color: var(--text-faint); flex-shrink: 0; }
+
+.rename-input {
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: var(--text);
+  font: inherit;
+  padding: 4px 8px;
+  max-width: 300px;
+  min-width: 0;
+  flex-shrink: 1;
+}
+
+.spacer { flex: 1 1 0; min-width: 0; }
+
+nusa-model-picker { flex: 0 1 auto; min-width: 0; max-width: min(300px, 40vw); }
+
+@media (max-width: 520px) {
+  .header { padding: 8px 8px; gap: 4px; }
+  .title { max-width: 110px; }
+  nusa-model-picker { max-width: 152px; }
+  /* The confirm row may drop only its explanatory text — Delete/Keep
+     stay reachable at every width. */
+  .confirm { gap: 6px; padding: 3px 6px; }
+  .confirm-text { display: none; }
+  .icon-btn { padding: 4px; }
+  .compact-btn { padding: 4px 6px; font-size: 10px; }
+}
+
+.confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius);
+}
+.confirm-text { font-size: 12px; color: var(--warn); }
+.confirm-yes {
+  background: var(--danger);
+  color: var(--bg);
+  border: none;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 11.5px;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+.confirm-no {
+  background: none;
+  color: var(--text-dim);
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  font: inherit;
+  font-size: 11.5px;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+.confirm-no:hover { color: var(--text); }

@@ -6,6 +6,10 @@ package repolog
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -57,7 +61,8 @@ func New(dir string, opts Options) (*Logger, error) {
 	if err := l.loadSegments(); err != nil {
 		return nil, err
 	}
-	lines, err := countLines(filepath.Join(dir, activeFile))
+	active := filepath.Join(dir, activeFile)
+	lines, err := prepareActive(active)
 	if err != nil {
 		return nil, err
 	}
@@ -98,14 +103,22 @@ func (l *Logger) nextSeg() int {
 // active file, and prunes segments past maxFiles. On any failure it tries
 // to reopen the active file so the logger never goes permanently dead.
 func (l *Logger) rotate() error {
+	if err := l.f.Sync(); err != nil {
+		return err
+	}
 	if err := l.f.Close(); err != nil {
 		return err
 	}
 	seg := l.nextSeg()
-	if err := os.Rename(filepath.Join(l.dir, activeFile),
-		filepath.Join(l.dir, strconv.Itoa(seg)+".jsonl")); err != nil {
+	activePath := filepath.Join(l.dir, activeFile)
+	segPath := filepath.Join(l.dir, strconv.Itoa(seg)+".jsonl")
+	if err := os.Rename(activePath, segPath); err != nil {
 		l.reopen() // keep the logger writable even if rotation failed
 		return err
+	}
+	if d, err := os.Open(l.dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
 	}
 	l.segs = append(l.segs, seg)
 	if l.maxFiles > 0 {
@@ -133,25 +146,63 @@ func (l *Logger) reopen() error {
 	return nil
 }
 
-// countLines scans a file for newlines — 0 for a missing file. ReadString
-// keeps huge single-line records (raw payloads) from hitting scanner caps.
-func countLines(path string) (int, error) {
-	f, err := os.Open(path)
-	if os.IsNotExist(err) {
-		return 0, nil
+// validLogLine matches conversation readLines: a complete jsonl row must
+// decode as a log envelope with a non-empty kind tag.
+func validLogLine(line []byte) bool {
+	var probe struct {
+		Kind string `json:"kind"`
 	}
+	return json.Unmarshal(bytes.TrimSpace(line), &probe) == nil && probe.Kind != ""
+}
+
+// prepareActive counts records in active.jsonl and truncates at the
+// first torn or invalid line — keep is the byte offset where that line
+// starts, so the corrupt record and everything after it are dropped and
+// O_APPEND cannot glue the next write to partial bytes. ReadString keeps
+// huge single-line records from hitting scanner caps. Missing or empty
+// files yield 0.
+func prepareActive(path string) (int, error) {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return 0, err
 	}
 	defer f.Close()
-	n := 0
-	br := bufio.NewReader(f)
-	for {
-		_, err := br.ReadString('\n')
-		if err != nil {
-			break // io.EOF ends the count; read errors count what we got
-		}
-		n++
+
+	info, err := f.Stat()
+	if err != nil {
+		return 0, err
 	}
-	return n, nil
+	if info.Size() == 0 {
+		return 0, nil
+	}
+
+	br := bufio.NewReader(f)
+	var (
+		lines int
+		keep  int64 // byte length to retain
+	)
+	for {
+		part, err := br.ReadString('\n')
+		if err == nil {
+			if !validLogLine([]byte(part[:len(part)-1])) {
+				break // fail-stop: drop the bad line and its tail
+			}
+			keep += int64(len(part))
+			lines++
+			continue
+		}
+		if errors.Is(err, io.EOF) {
+			break // partial tail without newline — keep excludes it
+		}
+		return 0, err
+	}
+	if keep < info.Size() {
+		if err := f.Truncate(keep); err != nil {
+			return 0, err
+		}
+		if err := f.Sync(); err != nil {
+			return 0, err
+		}
+	}
+	return lines, nil
 }

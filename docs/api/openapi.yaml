@@ -1,0 +1,1446 @@
+openapi: "3.1.0"
+info:
+  title: NusaLLM WebUI API
+  version: "0.1.0"
+  summary: Local single-seat HTTP API for the NusaLLM conversation engine.
+  description: |
+    **Status: implemented.** The HTTP surface described here is served by
+    `nusallm serve`, alongside the multiplexed WebSocket turn channel and
+    the embedded browser WebUI (see `websocket.md` and `docs/README.md`).
+    Interactive Swagger UI itself remains proposed future work — this
+    document is the reference contract.
+
+    ## Transport model
+
+    Ordinary resource reads and management writes happen over HTTP on this
+    API. Live turn traffic — streaming deltas and the commands that drive
+    turns — happens over a single multiplexed WebSocket at `GET /api/ws`,
+    whose frame protocol is defined in `websocket.md`, not here. There is no
+    client-facing SSE anywhere on this surface.
+
+    ## Security model (loopback, single-seat)
+
+    The server binds `127.0.0.1` only and authenticates nobody — "single
+    user" means one *intended* user; any local process or OS user on the
+    host may call the API, so this is not access control. Two header
+    checks stand in for a session layer:
+
+    - Every request: `Host` must match a `server.hosts` alias with the
+      configured port. Defaults are `127.0.0.1` and `localhost`.
+      Otherwise `403 forbidden_origin`.
+    - Unsafe methods (`POST`, `PUT`, `PATCH`, `DELETE`) and the WebSocket
+      upgrade: `Origin` must be present and match one configured host
+      alias with the configured port. Otherwise `403 forbidden_origin`.
+      Non-browser clients must set `Origin` explicitly; there is no exemption.
+
+    ## Errors
+
+    Every 4xx/5xx error response is `application/problem+json` with a
+    stable machine `code`, `status`, and a display-safe `detail`.
+    Internal causes (upstream bodies, file paths, stack data) are never
+    serialized. (The `101` WebSocket upgrade is a successful non-2xx and
+    carries no body.)
+
+    ## Notation
+
+    - Timestamps are RFC 3339 (`format: date-time`).
+    - "Provider optionalContent" — adapter-namespaced replay artifacts such
+      as `gemini.thought_signature` — is never serialized, in either
+      direction.
+    - `file://` and `data:` URIs are never serialized. Attachments project
+      metadata only.
+servers:
+  - url: "http://127.0.0.1:{port}"
+    description: Loopback listener; default host alias.
+    variables:
+      port:
+        default: "10998"
+        description: Configured by server.port; changes apply after restart.
+  - url: "http://localhost:{port}"
+    description: Loopback listener; enabled by default in server.hosts.
+    variables:
+      port:
+        default: "10998"
+        description: Configured by server.port; changes apply after restart.
+
+tags:
+  - name: system
+    description: Liveness.
+  - name: conversations
+    description: Conversation projections, ranged history, and room lifecycle.
+  - name: gateways
+    description: Provider route management (upsert is full replace).
+  - name: settings
+    description: Effective JSON config — projected, leaf-level writes.
+  - name: tools
+    description: Registered tool catalog.
+  - name: realtime
+    description: The multiplexed WebSocket (frames in websocket.md).
+
+paths:
+  /api/health:
+    get:
+      operationId: getHealth
+      tags: [system]
+      summary: Liveness check
+      responses:
+        "200":
+          description: Server is up.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+              example: { status: "ok" }
+        "403": { $ref: "#/components/responses/ForbiddenOrigin" }
+
+  /api/conversations:
+    get:
+      operationId: listConversations
+      tags: [conversations]
+      summary: List conversations
+      description: |
+        Conversation projections ordered by `updatedAt` descending
+        (best-effort). Backed by a full repository `List` sliced after the
+        fact — the result is **not a snapshot**: writes between page
+        requests shift offsets, so a client paging a live list may see
+        duplicates or gaps.
+      parameters:
+        - name: offset
+          in: query
+          schema: { type: integer, minimum: 0, default: 0 }
+          description: Zero-based index into the ordered list.
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 30 }
+      responses:
+        "200":
+          description: One page of conversation projections.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConversationPage" }
+              example:
+                data:
+                  - id: "c_k4j9xm2p8q1vz7w0t6nb5r3yhd"
+                    title: "fix flaky cache test"
+                    route: "openrouter"
+                    modelId: "openai/gpt-5"
+                    usage: { inputTokens: 4120, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 812, totalInputTokens: 4120, totalTokens: 4932 }
+                    createdAt: "2026-01-12T09:14:02Z"
+                    updatedAt: "2026-01-12T09:31:47Z"
+                    messageCount: 14
+                    activeCount: 14
+                    sealedSegments: 0
+                page: { offset: 0, limit: 30, total: 41, hasMore: true }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/ForbiddenOrigin" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/conversations/{conversationId}:
+    parameters:
+      - $ref: "#/components/parameters/ConversationId"
+    get:
+      operationId: getConversation
+      tags: [conversations]
+      summary: Get one conversation
+      responses:
+        "200":
+          description: The conversation projection.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Conversation" }
+              example:
+                id: "c_k4j9xm2p8q1vz7w0t6nb5r3yhd"
+                title: "fix flaky cache test"
+                route: "openrouter"
+                modelId: "openai/gpt-5"
+                usage: { inputTokens: 4120, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 812, totalInputTokens: 4120, totalTokens: 4932 }
+                createdAt: "2026-01-12T09:14:02Z"
+                updatedAt: "2026-01-12T09:31:47Z"
+                messageCount: 14
+                activeCount: 6
+                sealedSegments: 2
+                canCompact: true
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/ForbiddenOrigin" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    patch:
+      operationId: renameConversation
+      tags: [conversations]
+      summary: Rename a conversation
+      description: |
+        Sets the display title. The write is queued on the room's worker so
+        it cannot race a running turn's metadata saves — the request may
+        take a moment and can lose the race to a delete (`410`).
+        Requires a same-origin `Origin` header.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RenameConversationRequest" }
+            example: { title: "cache invalidation bugfix" }
+      responses:
+        "200":
+          description: Rename applied; returns the updated projection.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Conversation" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/ForbiddenOrigin" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "408": { $ref: "#/components/responses/Interrupted" }
+        "410": { $ref: "#/components/responses/Gone" }
+        "413": { $ref: "#/components/responses/InputTooLarge" }
+        "429": { $ref: "#/components/responses/QueueFull" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    delete:
+      operationId: deleteConversation
+      tags: [conversations]
+      summary: Delete a conversation
+      description: |
+        Removes the room and all of its storage — meta, live tail, every
+        sealed segment. A running turn is interrupted first and any jobs
+        still queued on the room die with `410`. The repository delete runs
+        on a server-scoped context: abandoning the HTTP request mid-flight
+        cannot half-delete a room. Afterwards the id is free — a new
+        `turn.send` with the same id mints a fresh room.
+        Requires a same-origin `Origin` header.
+      responses:
+        "204": { description: Deleted. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/ForbiddenOrigin" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "408": { $ref: "#/components/responses/Interrupted" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/conversations/{conversationId}/messages:
+    parameters:
+      - $ref: "#/components/parameters/ConversationId"
+    get:
+      operationId: listMessages
+      tags: [conversations]
+      summary: Ranged message history
+      description: |
+        Messages over the conversation's **global logical history** —
+        sealed archive segments first, then the live tail — in append
+        order, backed by `LoadAt`.
+
+        - `start >= 0` is an absolute index.
+        - `start < 0` counts back from the end: `start=-50` begins at the
+          50th message from the end.
+        - `limit` caps how many messages return, max 100.
+
+        The response resolves the range explicitly: `effectiveStart` is
+        the absolute index the read began at (clamped into `[0, total]`),
+        `nextStart` is the index to continue forward from (`null` when
+        `hasMore` is false). Indexes are not stable across writes — after
+        any terminal turn frame, re-fetch rather than merge.
+
+        Tool calls project the owner-visible call record (`id`, `name`,
+        `status`, exact `input`, `calledAt`, and `output` when recorded,
+        plus any tool-produced `attachments`); attachments project
+        `mediaType`, `modality`, `uri`, and optional `name` — reference
+        locations cross to the loopback owner by design, bytes and the
+        sha256 pin never do — and provider `optionalContent` is dropped.
+      parameters:
+        - name: start
+          in: query
+          schema: { type: integer, default: -50 }
+          description: Absolute index (>= 0) or count back from the end (negative).
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        "200":
+          description: One range of sanitized messages.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MessagePage" }
+              example:
+                effectiveStart: 12
+                nextStart: null
+                total: 14
+                hasMore: false
+                messages:
+                  - id: "m_9p2xv7kq4f1nz8w0t6jb5r3yce"
+                    role: "user"
+                    userType: "origin"
+                    content: "the cache test still flakes — look at invalidate()"
+                    createdAt: "2026-01-12T09:29:10Z"
+                  - id: "m_2r8qa1lv5h0kx9w4t7nc6d3yfg"
+                    role: "assistant"
+                    content: "Found it — `invalidate()` drops the entry but not the pending in-flight read..."
+                    parts:
+                      - kind: "text"
+                        text: "Found it — `invalidate()` drops the entry but not the pending in-flight read..."
+                      - kind: "tool_call"
+                        toolCallId: "call_9f2a"
+                    finishReason: "tool_calls"
+                    toolCalls:
+                      - id: "call_9f2a"
+                        name: "read_file"
+                        status: "completed"
+                        input: "{\"path\":\"README.md\"}"
+                        output: "…"
+                        calledAt: "2026-01-12T09:29:29Z"
+                    createdAt: "2026-01-12T09:29:31Z"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/ForbiddenOrigin" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/conversations/{conversationId}/compactions:
+    parameters:
+      - $ref: "#/components/parameters/ConversationId"
+    post:
+      operationId: compactConversation
+      tags: [conversations]
+      summary: Compact history into a checkpoint
+      description: |
+        Queues a one-shot manual compaction on the room's worker — it runs
+        after any in-flight turn finishes (compaction never preempts) and
+        folds the live tail into a sealed segment plus a checkpoint
+        summary, keeping the configured tail messages live.
+
+        The request blocks until the queued job completes — including any
+        time spent waiting behind a running turn — and answers `200` with
+        the updated conversation when done. A live tail that already fits
+        in the keep-tail answers `400`. A client that abandons the
+        request early does not cancel the job; the compaction still lands.
+        Requires a same-origin `Origin` header.
+      responses:
+        "200":
+          description: Compaction completed; updated conversation projection.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Conversation" }
+        "400":
+          description: e.g. nothing to compact — the live tail fits within the keep-tail.
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+              example:
+                type: "urn:nusallm:problem:invalid_argument"
+                title: "Invalid Argument"
+                status: 400
+                code: "invalid_argument"
+                detail: "nothing to compact"
+        "403": { $ref: "#/components/responses/ForbiddenOrigin" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "408": { $ref: "#/components/responses/Interrupted" }
+        "410": { $ref: "#/components/responses/Gone" }
+        "429": { $ref: "#/components/responses/QueueFull" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "502": { $ref: "#/components/responses/UpstreamError" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "504": { $ref: "#/components/responses/UpstreamTimeout" }
+
+  /api/gateways:
+    get:
+      operationId: listGateways
+      tags: [gateways]
+      summary: List gateways
+      description: |
+        Sanitized projections of configured gateways, sorted by id —
+        including records that can't load (undecodable file, unresolvable
+        credential), which appear with `broken: true` so the management UI
+        can surface and repair them.
+
+        Same paging mechanics as `GET /api/conversations`: the transport
+        slices the application's full list after the fact, so the page is
+        not a snapshot (gateway writes are rare, so drift is mostly
+        theoretical — the rule is still best-effort).
+      parameters:
+        - name: offset
+          in: query
+          schema: { type: integer, minimum: 0, default: 0 }
+          description: Zero-based index into the ordered list.
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 30 }
+      responses:
+        "200":
+          description: One page of gateway projections.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GatewayPage" }
+              example:
+                data:
+                  - id: "openrouter"
+                    name: "OpenRouter"
+                    style: "completion"
+                    endpoint: "https://openrouter.ai/api/v1"
+                    keySet: true
+                    keyState: "vaulted"
+                    broken: false
+                    stream: true
+                    models:
+                      - id: "openai/gpt-5"
+                        contextWindow: 400000
+                        modelType: "text"
+                        inputModalities: ["text", "image"]
+                        outputModalities: ["text"]
+                        pricing: { inputPerMillionUsd: 1.25, outputPerMillionUsd: 10.0, cacheReadPerMillionUsd: 0.125, cacheWritePerMillionUsd: 0 }
+                  - id: "corp-llm"
+                    name: ""
+                    style: "messages"
+                    endpoint: "https://llm.internal.example/v1"
+                    keySet: true
+                    keyState: "broken"
+                    broken: true
+                    stream: true
+                    models: []
+                page: { offset: 0, limit: 30, total: 2, hasMore: false }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/ForbiddenOrigin" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/gateways/{gatewayId}/available-models:
+    parameters:
+      - $ref: "#/components/parameters/GatewayId"
+    get:
+      operationId: discoverGatewayModels
+      tags: [gateways]
+      summary: Discover models from a configured provider
+      description: |
+        Uses the gateway's stored endpoint, API style, and resolved key to
+        read every page of the provider model list. This is read-only;
+        selected IDs are merged into the gateway with PUT.
+      responses:
+        "200":
+          description: Provider model IDs in provider order, deduplicated.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/ForbiddenOrigin" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "502": { $ref: "#/components/responses/UpstreamError" }
+
+  /api/gateways/{gatewayId}/providers:
+    parameters:
+      - $ref: "#/components/parameters/GatewayId"
+    get:
+      operationId: discoverGatewayProviders
+      tags: [gateways]
+      summary: List upstream providers an aggregator can route a model to
+      description: |
+        Reads the gateway's per-model endpoint list (OpenRouter-style
+        aggregators) and returns the routable upstream backends. Direct
+        providers answer an empty list. The picker echoes `slug` back as
+        `payload.provider` on `turn.send`.
+      parameters:
+        - name: model
+          in: query
+          required: true
+          schema: { type: string }
+          description: Model id within the gateway's catalog (e.g. "openai/gpt-5").
+      responses:
+        "200":
+          description: Routable upstream providers, deduplicated in provider order.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, slug]
+                      properties:
+                        name: { type: string }
+                        slug: { type: string, description: "Value echoed as payload.provider on turn.send" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/ForbiddenOrigin" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "502": { $ref: "#/components/responses/UpstreamError" }
+
+  /api/gateways/{gatewayId}:
+    parameters:
+      - $ref: "#/components/parameters/GatewayId"
+    get:
+      operationId: getGateway
+      tags: [gateways]
+      summary: Get one gateway
+      description: Returns the sanitized projection. A gateway whose credential cannot resolve still renders, marked `broken`.
+      responses:
+        "200":
+          description: The gateway projection.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Gateway" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/ForbiddenOrigin" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    put:
+      operationId: upsertGateway
+      tags: [gateways]
+      summary: Create or fully replace a gateway
+      description: |
+        Upsert with **full-replace** semantics — there is no PATCH for
+        gateways. The path id is authoritative: a body `id` does not exist
+        in the schema and is rejected `400` (the document is strict). Every
+        readable field is the whole truth on each call:
+        omitting `name` or `models` clears them, and `stream` omitted
+        falls back to the domain default (`true`).
+
+        `apiKey` is the one write-only exception, tri-state:
+
+        - absent — keep the stored credential verbatim (`env:`/`secret:`
+          indirections survive edits to other fields); on a new gateway,
+          configures no key.
+        - `""` — clear the credential (the ref and its vault entry).
+        - any other value — a literal is vaulted under
+          `gateway/<id>/api_key` and the record stores only its `secret:`
+          reference; an `"env:NAME"`/`"secret:<key>"` value persists
+          as-is for callers managing their own indirection.
+
+        Key material is never returned — the response is the same
+        sanitized projection as `GET`. Requires a same-origin `Origin`
+        header.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GatewayUpsert" }
+            example:
+              name: "OpenRouter"
+              style: "completion"
+              endpoint: "https://openrouter.ai/api/v1"
+              stream: true
+              apiKey: "sk-or-v1-…"
+              models:
+                - id: "openai/gpt-5"
+                  contextWindow: 400000
+                  modelType: "text"
+                  inputModalities: ["text", "image"]
+                  outputModalities: ["text"]
+      responses:
+        "200":
+          description: Upsert applied (create or replace); returns the sanitized projection.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Gateway" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/ForbiddenOrigin" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "408": { $ref: "#/components/responses/Interrupted" }
+        "413": { $ref: "#/components/responses/InputTooLarge" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    delete:
+      operationId: deleteGateway
+      tags: [gateways]
+      summary: Delete a gateway
+      description: |
+        Removes the record and its vaulted credential. Conversations bound
+        to this route are untouched — their stored reference dangles and
+        the next `turn.send` surfaces `404`, letting the client rebind.
+        Requires a same-origin `Origin` header.
+      responses:
+        "204": { description: Deleted. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/ForbiddenOrigin" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/settings:
+    get:
+      operationId: getSettings
+      tags: [settings]
+      summary: Effective settings
+      description: |
+        The **effective persisted** configuration — the JSON file as
+        stored on disk, merged over built-in defaults; what a restart
+        would load, not a snapshot of the running process. Projected to
+        browser-safe leaves: `server`, `conversation`, `service`, and `log`
+        sections only. Server internals and local filesystem paths
+        (e.g. `storage.dir`) are never serialized.
+      responses:
+        "200":
+          description: Effective settings projection.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Settings" }
+              example:
+                server: { port: 10998, hosts: ["127.0.0.1", "localhost"] }
+                conversation: { mailbox_cap: 128, max_turn_steps: 512, compact_budget_pct: 90, compact_keep_tail: 4 }
+                service: { header_timeout: "30s", idle_timeout: "90s" }
+                log: { bodies: false, max_lines: 2000, max_files: 8 }
+        "403": { $ref: "#/components/responses/ForbiddenOrigin" }
+        "500": { $ref: "#/components/responses/Internal" }
+    patch:
+      operationId: patchSetting
+      tags: [settings]
+      summary: Set one settings leaf
+      description: |
+        Body `{key, value}` where `key` is a dotted path to a **leaf inside
+        the projected document** (e.g. `conversation.max_turn_steps` or
+        `server.hosts`) and
+        `value` is a JSON literal — `null` is refused. The whole candidate
+        document is validated and written atomically.
+
+        Timing: writes land in the config file. `conversation.*` values are
+        picked up by the next submitted job (the app re-reads that section
+        per post); `server.*`, `service.*`, and `log.*` apply on next
+        process start.
+        Requires a same-origin `Origin` header.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SettingPatch" }
+            example: { key: "service.idle_timeout", value: "120s" }
+      responses:
+        "200":
+          description: Setting applied; returns the updated projection.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Settings" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/ForbiddenOrigin" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /api/tools:
+    get:
+      operationId: listTools
+      tags: [tools]
+      summary: Tool catalog for a conversation
+      parameters:
+        - in: query
+          name: conversationId
+          schema: { type: string }
+          description: Persisted conversation ID. Omit for the local starting catalog.
+      description: |
+        The registered tool schemas, sorted by name — the catalog the turn
+        loop re-applies each turn. Note this is the *registered* set, not
+        necessarily what reaches the model: `CallableByAgent` filters out
+        disabled or `system`-permission schemas per turn. `description`
+        and `parameters` are catalog text (they may reference the
+        workspace by relative path) and may be redacted for tools whose
+        internals are unsafe to expose; `permission` is always honest.
+      responses:
+        "200":
+          description: The tool catalog.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/Tool" }
+              example:
+                data:
+                  - name: "exec"
+                    description: "Run a shell command and return its combined stdout and stderr."
+                    enabled: true
+                    permission: "agent"
+                    parameters:
+                      type: "object"
+                      properties:
+                        command: { type: "string", description: "Shell command to execute" }
+                        timeout_ms: { type: "integer", description: "Timeout in milliseconds — default 120000, capped at 600000" }
+                      required: ["command"]
+                  - name: "read_file"
+                    description: "Read a UTF-8 text file relative to the workspace root."
+                    enabled: true
+                    permission: "agent"
+                    parameters:
+                      type: "object"
+                      properties:
+                        path: { type: "string", description: "Path relative to the workspace root" }
+                      required: ["path"]
+        "403": { $ref: "#/components/responses/ForbiddenOrigin" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/fs/browse:
+    get:
+      operationId: browseFilesystem
+      tags: [fs]
+      summary: Directory listing for the workspace picker
+      description: |
+        Lists the subdirectories of one absolute path — directories only,
+        never file contents. An empty `path` defaults to the owner's home
+        directory. `parent` ascends toward the filesystem root and
+        `roots` lists jump targets ("/" on unix; present drive letters on
+        Windows) so targets outside home stay reachable. Listings cap at
+        1000 directories.
+      parameters:
+        - name: path
+          in: query
+          required: false
+          schema: { type: string }
+          description: Absolute directory path; empty means the owner's home.
+      responses:
+        "200":
+          description: The directory listing.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [path, roots, entries]
+                properties:
+                  path: { type: string }
+                  parent: { type: string, description: "Omitted at the filesystem root" }
+                  roots:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, path]
+                      properties:
+                        name: { type: string }
+                        path: { type: string }
+                  entries:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, path]
+                      properties:
+                        name: { type: string }
+                        path: { type: string }
+                        hidden: { type: boolean }
+                  truncated:
+                    type: boolean
+                    description: True when more than 1000 directories exist under path.
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/ForbiddenOrigin" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/context:
+    get:
+      operationId: contextStats
+      tags: [conversations]
+      summary: Composer footer token stats
+      description: |
+        The "~estimate/total Tokens" line: `estimate` is the live input
+        size of the named conversation, `total` the bound model's input
+        allowance. `conversationId` is optional — a fresh, never-persisted
+        room still resolves `total` when `route`+`modelId` name a known
+        model.
+      parameters:
+        - name: conversationId
+          in: query
+          required: false
+          schema: { type: string }
+        - name: route
+          in: query
+          required: false
+          schema: { type: string }
+        - name: modelId
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: Token stats for the composer footer.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [estimate, total]
+                properties:
+                  estimate: { type: integer, minimum: 0 }
+                  total: { type: integer, minimum: 0 }
+        "403": { $ref: "#/components/responses/ForbiddenOrigin" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /api/ws:
+    get:
+      operationId: openWebSocket
+      tags: [realtime]
+      summary: Multiplexed turn WebSocket
+      description: |
+        Upgrades to the single WebSocket that carries all turn traffic —
+        the commands `turn.send`, `turn.edit`, `turn.cancel`, `turn.watch`
+        and the event stream `turn.opened`/`turn.delta`/`turn.phase`/
+        `turn.tool_call`/`turn.tool_input`/`turn.tool_output` (ordered
+        tool argument and output chunks — progress, not completion)
+        /`turn.step_finished`/`turn.completed`/
+        `turn.failed`, plus `turn.cancel_ack`, `turn.resync_required`, and
+        a generic `error` frame for malformed commands.
+
+        The handshake must satisfy the same-origin rule: `Host` must match
+        a configured `server.hosts` alias with the configured port, and
+        `Origin` must match that host origin. Violations are rejected `403`
+        before upgrade.
+
+        **The frame protocol is defined normatively in `websocket.md`
+        (docs/api/websocket.md) — this spec describes only the HTTP
+        upgrade; Swagger/OpenAPI does not model WebSocket frames.** There
+        is no SSE endpoint anywhere on this API.
+      responses:
+        "101":
+          description: Switching Protocols — the socket is open; frames per websocket.md.
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/ForbiddenOrigin" }
+
+components:
+  parameters:
+    ConversationId:
+      name: conversationId
+      in: path
+      required: true
+      schema: { type: string, minLength: 1 }
+      description: Path-safe conversation id. Server-minted ids look like `c_<base32>`; client-minted ids are accepted if path-safe.
+    GatewayId:
+      name: gatewayId
+      in: path
+      required: true
+      schema: { type: string, minLength: 1 }
+      description: Configured gateway id (path-safe, e.g. `openrouter`).
+
+  schemas:
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, const: "ok" }
+      additionalProperties: false
+
+    Problem:
+      type: object
+      required: [type, title, status, code]
+      properties:
+        type:
+          type: string
+          format: uri
+          description: Stable problem type URN — `urn:nusallm:problem:<code>`.
+          example: "urn:nusallm:problem:not_found"
+        title: { type: string, example: "Not Found" }
+        status: { type: integer, example: 404 }
+        code:
+          type: string
+          enum: [invalid_argument, forbidden_origin, not_found, interrupted, gone, input_too_large, queue_full, internal, upstream_error, unavailable, upstream_timeout]
+          description: Stable machine code for programmatic routing.
+        detail:
+          type: string
+          description: Display-safe explanation. Never contains internal causes, file paths, or upstream bodies.
+          example: "conversation not found"
+        instance: { type: string, description: "Optional request-scoped reference." }
+      additionalProperties: false
+
+    Usage:
+      type: object
+      required: [inputTokens, cacheReadTokens, cacheWriteTokens, outputTokens, totalInputTokens, totalTokens]
+      properties:
+        inputTokens:
+          type: integer
+          minimum: 0
+          description: Uncached input tokens only (cache counters are disjoint).
+        cacheReadTokens: { type: integer, minimum: 0 }
+        cacheWriteTokens: { type: integer, minimum: 0 }
+        outputTokens: { type: integer, minimum: 0 }
+        totalInputTokens:
+          type: integer
+          minimum: 0
+          description: Derived convenience — inputTokens + cacheReadTokens + cacheWriteTokens.
+        totalTokens:
+          type: integer
+          minimum: 0
+          description: Derived convenience — totalInputTokens + outputTokens.
+      additionalProperties: false
+
+    Conversation:
+      type: object
+      required: [id, route, modelId, environment, usage, createdAt, updatedAt, messageCount, activeCount, sealedSegments]
+      properties:
+        id: { type: string, example: "c_k4j9xm2p8q1vz7w0t6nb5r3yhd" }
+        title:
+          type: string
+          description: Display title; derived from the first user line on a fresh room, settable via PATCH. May be empty.
+        route:
+          type: string
+          description: Bound gateway id; empty when the conversation has never successfully bound.
+        modelId:
+          type: string
+          description: Model id within the route's catalog; empty when unbound.
+        workspace:
+          type: string
+          description: Directory the room's tools work in according to its selected environment; empty defers to that driver's default workspace.
+        environment:
+          type: string
+          enum: [local, ssh, docker]
+          description: Persisted execution environment binding. Only registered drivers are available; currently local is registered.
+        usage: { $ref: "#/components/schemas/Usage" }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        messageCount:
+          type: integer
+          minimum: 0
+          description: Total logical messages across sealed segments plus the live tail.
+        activeCount:
+          type: integer
+          minimum: 0
+          description: Messages in the live tail only — the range the model sees.
+        sealedSegments:
+          type: integer
+          minimum: 0
+          description: Number of compacted archive segments.
+        canCompact:
+          type: boolean
+          description: Present on detail and completed-compaction responses; whether manual compaction can fold new live history.
+      additionalProperties: false
+
+    Page:
+      type: object
+      required: [offset, limit, total, hasMore]
+      description: Offset-page metadata shared by list endpoints — best-effort, not a snapshot.
+      properties:
+        offset: { type: integer, minimum: 0 }
+        limit: { type: integer, minimum: 1 }
+        total: { type: integer, minimum: 0 }
+        hasMore: { type: boolean }
+      additionalProperties: false
+
+    ConversationPage:
+      type: object
+      required: [data, page]
+      properties:
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/Conversation" }
+        page: { $ref: "#/components/schemas/Page" }
+      additionalProperties: false
+
+    GatewayPage:
+      type: object
+      required: [data, page]
+      properties:
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/Gateway" }
+        page: { $ref: "#/components/schemas/Page" }
+      additionalProperties: false
+
+    Message:
+      type: object
+      required: [id, role, content, createdAt]
+      properties:
+        id: { type: string, example: "m_9p2xv7kq4f1nz8w0t6jb5r3yce" }
+        role:
+          type: string
+          enum: [system, user, developer, assistant]
+        content: { type: string }
+        parts:
+          type: array
+          description: Ordered assistant answer, reasoning, and tool-call segments. Text contains exact provider text; render as untrusted text.
+          items: { $ref: "#/components/schemas/MessagePart" }
+        userType:
+          type: string
+          enum: [origin, system]
+          description: 'Present on `role: "user"` messages only — `origin` is real user input, `system` is a synthetic user-role artifact (e.g. a compaction checkpoint).'
+        finishReason:
+          type: string
+          enum: [stop, tool_calls, length, content_filter]
+          description: Present on assistant messages that ended a provider call.
+        toolCalls:
+          type: array
+          items: { $ref: "#/components/schemas/ToolCallRef" }
+          description: Owner-visible call records — exact input and stored result cross to this loopback UI. See trust model in docs/api/contract.md.
+        attachments:
+          type: array
+          items: { $ref: "#/components/schemas/AttachmentRef" }
+          description: Stored references — uri and optional name cross to the owner; bytes never do.
+        createdAt: { type: string, format: date-time }
+      additionalProperties: false
+
+    MessagePart:
+      type: object
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          enum: [text, reasoning, tool_call]
+        text:
+          type: string
+          description: Exact answer or reasoning text for text/reasoning parts.
+        toolCallId:
+          type: string
+          description: References the matching call in the message's toolCalls array.
+      additionalProperties: false
+
+    ToolCallRef:
+      type: object
+      required: [id, name, status, input]
+      properties:
+        id: { type: string, description: "Provider-issued call id.", example: "call_9f2a" }
+        name: { type: string, example: "read_file" }
+        status:
+          type: string
+          enum: [pending, completed]
+          description: "`pending` = no output recorded yet; `completed` = output stored. Failure details appear in the plain output text."
+        input:
+          type: string
+          description: Exact argument string the model produced (usually JSON). Owner-visible untrusted text — render escaped, never as markup.
+          example: "{\"path\":\"README.md\"}"
+        calledAt:
+          type: string
+          format: date-time
+          description: When the call was recorded. Omitted when a hydrated record has no timestamp rather than reporting the zero time.
+        output:
+          type: string
+          description: "Plain tool result text without the provider's untrusted-evidence envelope — present only when status is `completed`. Omitted for `pending`."
+        attachments:
+          type: array
+          items: { $ref: "#/components/schemas/AttachmentRef" }
+          description: Media references the tool produced alongside its output — stored references only, resolved bytes are never served.
+      additionalProperties: false
+
+    AttachmentRef:
+      type: object
+      required: [mediaType, modality, uri]
+      description: >-
+        A stored attachment reference. `uri` serializes the stored
+        location — including `file://` local paths — by design for the
+        single loopback owner; it is untrusted display text, not a
+        fetchable resource. `name` is an optional stored display name
+        and can carry path-shaped data. Attachment bytes are never
+        served over this API, and the internal `sha256` content pin
+        stays server-side.
+      properties:
+        mediaType: { type: string, example: "image/png" }
+        modality:
+          type: string
+          enum: [text, image, audio, video, file]
+          description: Derived from the media type's top-level type.
+        uri:
+          type: string
+          example: "file:///home/user/notes/diagram.png"
+          description: Stored reference — `file://` or remote. Owner-visible untrusted text; never markup, never fetched by the server for the client.
+        name:
+          type: string
+          example: "diagram.png"
+          description: Optional stored display name — can carry path-shaped data; render as text only.
+      additionalProperties: false
+
+    MessagePage:
+      type: object
+      required: [effectiveStart, nextStart, total, hasMore, messages]
+      properties:
+        effectiveStart:
+          type: integer
+          minimum: 0
+          description: Absolute index the read began at, after resolving negative `start` and clamping into `[0, total]`.
+        nextStart:
+          type: [integer, "null"]
+          minimum: 0
+          description: Index to continue paging forward from; `null` when `hasMore` is false.
+        total:
+          type: integer
+          minimum: 0
+          description: Global logical message count at read time — moves as turns append.
+        hasMore: { type: boolean }
+        messages:
+          type: array
+          items: { $ref: "#/components/schemas/Message" }
+      additionalProperties: false
+
+    RenameConversationRequest:
+      type: object
+      required: [title]
+      properties:
+        title: { type: string, description: "New display title; may be empty to clear." }
+      additionalProperties: false
+
+    Gateway:
+      type: object
+      required: [id, name, style, endpoint, keySet, keyState, broken, stream, models]
+      properties:
+        id: { type: string, example: "openrouter" }
+        name: { type: string, description: "Display name; may be empty." }
+        style:
+          type: string
+          enum: [completion, responses, messages, generatecontent]
+          description: Wire paradigm the route speaks.
+        endpoint: { type: string, format: uri, example: "https://openrouter.ai/api/v1" }
+        keySet:
+          type: boolean
+          description: A credential is configured in some form (ref or server-held material).
+        keyState:
+          type: string
+          enum: [unset, env, vaulted, broken]
+          description: |
+            Credential projection, derived from the stored reference:
+
+            - `unset` — nothing stored.
+            - `env` — an `env:NAME` indirection that currently resolves.
+            - `vaulted` — key material held server-side: a resolvable
+              `secret:<key>` vault ref or inline material in the record.
+            - `broken` — a credential is configured but cannot resolve
+              (missing env var, absent vault entry).
+
+            The raw reference string is never exposed.
+        broken:
+          type: boolean
+          description: The record can't be decoded, or its credential ref can't resolve — the management view surfaces it instead of hiding it.
+        stream:
+          type: boolean
+          description: Whether the route streams (SSE upstream — internal only; never leaks to this API's clients).
+        models:
+          type: array
+          items: { $ref: "#/components/schemas/Model" }
+      additionalProperties: false
+
+    Model:
+      type: object
+      required: [id]
+      description: |
+        One catalog entry. Generation parameters that are unset are simply
+        absent — "absent" means "don't send" and lets the provider default
+        apply; it never serializes as `0` or `null`. Provider
+        `optionalContent` is never serialized — the API cannot express it
+        in either direction. On `PUT` replace the application preserves a
+        stored model's hidden `optionalContent` while its `id` survives
+        (see contract.md — this preservation rule is implementation work).
+      properties:
+        id: { type: string, example: "openai/gpt-5" }
+        route:
+          type: string
+          description: Optional gateway/account selector resolved by the service layer; empty for plain catalog entries.
+        temperature: { type: number }
+        topP: { type: number }
+        topK: { type: integer }
+        maxOutputTokens: { type: integer, minimum: 0 }
+        presencePenalty: { type: number }
+        frequencyPenalty: { type: number }
+        seed: { type: integer }
+        stopSequences:
+          type: array
+          items: { type: string }
+        effort:
+          type: string
+          enum: [default, none, low, medium, high, xhigh, max]
+          description: Reasoning effort; `default`/absent omits it from the wire.
+        modelType:
+          type: string
+          enum: [text, embedding, video, image, speech, transcription, audio, rerank, decision]
+        contextWindow:
+          type: integer
+          minimum: 0
+          description: Total context window in tokens; `0` = unknown (the engine budgets against a floor).
+        pricing: { $ref: "#/components/schemas/Pricing" }
+        inputModalities:
+          type: array
+          items: { $ref: "#/components/schemas/Modality" }
+          description: Empty/absent = unknown — capability is the provider's call.
+        outputModalities:
+          type: array
+          items: { $ref: "#/components/schemas/Modality" }
+      additionalProperties: false
+
+    ModelInput:
+      type: object
+      required: [id]
+      description: |
+        Write shape for one catalog entry inside a gateway upsert — same
+        fields as `Model`, same "absent = unset" semantics. Duplicate
+        `id`s in one catalog are `400`. `optionalContent` is intentionally
+        absent from this write shape: the server keeps each stored model's
+        hidden `optionalContent` across the replace while its `id`
+        survives; a model dropped from the catalog loses it with the
+        record.
+      properties:
+        id: { type: string }
+        route: { type: string }
+        temperature: { type: number }
+        topP: { type: number }
+        topK: { type: integer, minimum: 0 }
+        maxOutputTokens: { type: integer, minimum: 0 }
+        presencePenalty: { type: number }
+        frequencyPenalty: { type: number }
+        seed: { type: integer }
+        stopSequences:
+          type: array
+          items: { type: string }
+        effort:
+          type: string
+          enum: [default, none, low, medium, high, xhigh, max]
+        modelType:
+          type: string
+          enum: [text, embedding, video, image, speech, transcription, audio, rerank, decision]
+        contextWindow: { type: integer, minimum: 0 }
+        pricing: { $ref: "#/components/schemas/Pricing" }
+        inputModalities:
+          type: array
+          items: { $ref: "#/components/schemas/Modality" }
+        outputModalities:
+          type: array
+          items: { $ref: "#/components/schemas/Modality" }
+      additionalProperties: false
+
+    Modality:
+      type: string
+      enum: [text, image, audio, video, file]
+
+    Pricing:
+      type: object
+      required: [inputPerMillionUsd, outputPerMillionUsd, cacheReadPerMillionUsd, cacheWritePerMillionUsd]
+      description: Per-1M-token USD rate card — informational catalog metadata, never authoritative for billing.
+      properties:
+        inputPerMillionUsd: { type: number, minimum: 0 }
+        outputPerMillionUsd: { type: number, minimum: 0 }
+        cacheReadPerMillionUsd: { type: number, minimum: 0 }
+        cacheWritePerMillionUsd: { type: number, minimum: 0 }
+      additionalProperties: false
+
+    GatewayUpsert:
+      type: object
+      required: [style, endpoint]
+      description: |
+        The full gateway document. The path id is authoritative — a body
+        `id` is forbidden by schema and rejected `400`. Every readable
+        field is authoritative: omitting `name` or `models` clears them;
+        `stream` omitted resets to the domain default `true`. `apiKey` is
+        write-only and tri-state (absent = keep, `""` = clear, value =
+        set). Server-owned `optionalContent` on stored models is preserved
+        across the replace for model `id`s that survive — it is never on
+        the wire and cannot be written here.
+      properties:
+        name: { type: string }
+        style:
+          type: string
+          enum: [completion, responses, messages, generatecontent]
+        endpoint: { type: string, format: uri }
+        stream: { type: boolean }
+        apiKey:
+          type: string
+          writeOnly: true
+          description: Tri-state credential write — never echoed back.
+        models:
+          type: array
+          items: { $ref: "#/components/schemas/ModelInput" }
+      additionalProperties: false
+
+    Settings:
+      type: object
+      required: [server, conversation, service, log]
+      description: Effective settings, projected to browser-safe leaves. Durations serialize as Go duration strings (`"30s"`).
+      properties:
+        server:
+          type: object
+          required: [port, hosts]
+          description: Loopback WebUI listen port and accepted HTTP host aliases. Changes apply after restart.
+          properties:
+            port:
+              type: integer
+              minimum: 1
+              maximum: 65535
+              description: TCP port for the loopback listener; default 10998.
+            hosts:
+              type: array
+              minItems: 1
+              description: Hostname or IP aliases without ports. The listener remains bound to 127.0.0.1.
+              items: { type: string, minLength: 1 }
+          additionalProperties: false
+        conversation:
+          type: object
+          required: [mailbox_cap, max_turn_steps, compact_budget_pct, compact_keep_tail]
+          properties:
+            mailbox_cap:
+              type: integer
+              minimum: 0
+              description: Per-room job queue capacity; a full mailbox answers `429 queue_full`.
+            max_turn_steps:
+              type: integer
+              minimum: 0
+              description: Provider-call cap per turn before `500 internal`.
+            compact_budget_pct:
+              type: integer
+              minimum: 0
+              maximum: 100
+              description: Share of the model context window that triggers proactive compaction.
+            compact_keep_tail:
+              type: integer
+              minimum: 1
+              description: Recent messages that survive compaction alongside the checkpoint.
+          additionalProperties: false
+        service:
+          type: object
+          required: [header_timeout, idle_timeout]
+          properties:
+            header_timeout: { type: string, description: "Upstream first-byte deadline.", example: "30s" }
+            idle_timeout: { type: string, description: "Per-chunk deadline on a streaming upstream body.", example: "90s" }
+          additionalProperties: false
+        log:
+          type: object
+          required: [bodies, max_lines, max_files]
+          properties:
+            bodies:
+              type: boolean
+              description: Record raw provider request/response payloads in the diagnostic log — off keeps kinds and counts only.
+            max_lines: { type: integer, minimum: 0 }
+            max_files: { type: integer, minimum: 0 }
+          additionalProperties: false
+      additionalProperties: false
+
+    SettingPatch:
+      type: object
+      required: [key, value]
+      properties:
+        key:
+          type: string
+          description: Dotted path to a leaf inside the projected settings document (e.g. `conversation.max_turn_steps` or `server.hosts`). Sections and non-projected leaves like `storage.dir` are rejected.
+          example: "service.idle_timeout"
+        value:
+          type: [string, number, boolean, object, array]
+          description: JSON literal — `null` is refused; the value's JSON type must match the schema leaf.
+      additionalProperties: false
+
+    Tool:
+      type: object
+      required: [name, enabled, permission]
+      properties:
+        name: { type: string, example: "read_file" }
+        description: { type: string }
+        parameters:
+          type: object
+          description: JSON Schema for the call input, as offered to the model. May be redacted for tools unsafe to expose.
+        enabled: { type: boolean }
+        permission:
+          type: string
+          enum: [system, agent, general]
+          description: Who may invoke the tool — `system` tools are never offered to the model.
+      additionalProperties: false
+
+  responses:
+    BadRequest:
+      description: Invalid request — malformed id, out-of-range parameter, unknown enum, unknown setting leaf, or a rejected `null`.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+          example:
+            type: "urn:nusallm:problem:invalid_argument"
+            title: "Invalid Argument"
+            status: 400
+            code: "invalid_argument"
+            detail: "limit must be between 1 and 100"
+    ForbiddenOrigin:
+      description: '`Host` is not in server.hosts, or `Origin` is absent/mismatched on an unsafe request.'
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+          example:
+            type: "urn:nusallm:problem:forbidden_origin"
+            title: "Forbidden"
+            status: 403
+            code: "forbidden_origin"
+            detail: "Origin does not match the server origin"
+    NotFound:
+      description: The addressed resource does not exist.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+          example:
+            type: "urn:nusallm:problem:not_found"
+            title: "Not Found"
+            status: 404
+            code: "not_found"
+            detail: "conversation not found"
+    Interrupted:
+      description: The request was canceled — client disconnect where the operation is cancelable, or a shutdown race.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+          example:
+            type: "urn:nusallm:problem:interrupted"
+            title: "Interrupted"
+            status: 408
+            code: "interrupted"
+            detail: "request canceled"
+    Gone:
+      description: The job was queued on a conversation that was deleted underneath it.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+          example:
+            type: "urn:nusallm:problem:gone"
+            title: "Gone"
+            status: 410
+            code: "gone"
+            detail: "conversation deleted"
+    InputTooLarge:
+      description: The request payload exceeds the server's input bound.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+          example:
+            type: "urn:nusallm:problem:input_too_large"
+            title: "Payload Too Large"
+            status: 413
+            code: "input_too_large"
+            detail: "request body exceeds the input limit"
+    QueueFull:
+      description: The room's job mailbox is full — retry after the running job finishes.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+          example:
+            type: "urn:nusallm:problem:queue_full"
+            title: "Too Many Requests"
+            status: 429
+            code: "queue_full"
+            detail: "conversation queue full"
+    Internal:
+      description: Engine or deployment fault — missing adapter, persistence failure, tool loop limit.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+          example:
+            type: "urn:nusallm:problem:internal"
+            title: "Internal Error"
+            status: 500
+            code: "internal"
+            detail: "job failed"
+    UpstreamError:
+      description: The provider call failed at the wire — including dead credentials (upstream 401/403) and truncated streams. Detail is display-safe.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+          example:
+            type: "urn:nusallm:problem:upstream_error"
+            title: "Bad Gateway"
+            status: 502
+            code: "upstream_error"
+            detail: "upstream request failed"
+    Unavailable:
+      description: The application is shutting down.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+          example:
+            type: "urn:nusallm:problem:unavailable"
+            title: "Service Unavailable"
+            status: 503
+            code: "unavailable"
+            detail: "conversation application is shutting down"
+    UpstreamTimeout:
+      description: The provider did not answer inside its deadline.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+          example:
+            type: "urn:nusallm:problem:upstream_timeout"
+            title: "Gateway Timeout"
+            status: 504
+            code: "upstream_timeout"
+            detail: "upstream did not respond in time"

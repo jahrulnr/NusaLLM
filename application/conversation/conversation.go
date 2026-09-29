@@ -25,7 +25,6 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/config"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
-	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 	"github.com/jahrulnr/nusallm/infrastructure/worker"
 )
@@ -44,11 +43,12 @@ type queuedJob interface {
 // config (mailbox size feeds the workers, turn limits ride inside deps);
 // workers maps conversation id → its serial executor.
 type ConversationApp struct {
-	cfg        config.ConversationConfig
-	configPath string
-	deps       appjob.Deps
-	mu         sync.Mutex
-	workers    map[string]*worker.Worker
+	cfg         config.ConversationConfig
+	configPath  string
+	configStore config.Store
+	deps        appjob.Deps
+	mu          sync.Mutex
+	workers     map[string]*worker.Worker
 
 	shuttingDown bool
 	shutdownDone chan struct{}
@@ -58,9 +58,9 @@ type ConversationApp struct {
 func New(
 	convs drepo.Conversation,
 	gateways drepo.Gateway,
-	services map[enum.Style]dservice.TextModelService,
-	tools map[string]dservice.Tool,
+	environments map[enum.Environment]appjob.EnvironmentDriver,
 	cfg config.Config,
+	configStore config.Store,
 	configPath string,
 ) *ConversationApp {
 	// Normalize once at the boundary — invalid values clamp and zeros
@@ -69,14 +69,14 @@ func New(
 	ccfg := cfg.Conversation
 	ccfg.Normalize()
 	return &ConversationApp{
-		cfg:        ccfg,
-		configPath: configPath,
+		cfg:         ccfg,
+		configStore: configStore,
+		configPath:  configPath,
 		deps: appjob.Deps{
-			Convs:    convs,
-			Gateways: gateways,
-			Services: services,
-			Tools:    tools,
-			Config:   ccfg,
+			Convs:        convs,
+			Gateways:     gateways,
+			Environments: environments,
+			Config:       ccfg,
 		},
 		workers: map[string]*worker.Worker{},
 	}
@@ -87,12 +87,12 @@ func New(
 // ordinary jobs append FIFO. Posting stays under app.mu through Submit so
 // Shutdown has a clear boundary between accepted and rejected work. A
 // submit racing a worker's teardown gets ErrClosed — respawn and retry.
-func (app *ConversationApp) reloadConfig() {
+func (app *ConversationApp) reloadConfigLocked() {
 	if app.configPath == "" {
 		return
 	}
 	var fresh config.Config
-	if err := fresh.Load(app.configPath); err != nil {
+	if err := fresh.Load(app.configStore, app.configPath); err != nil {
 		return
 	}
 	ccfg := fresh.Conversation
@@ -101,11 +101,37 @@ func (app *ConversationApp) reloadConfig() {
 	app.deps.Config = ccfg
 }
 
+// depsSnapshot returns a shallow copy of deps under app.mu so entry points
+// do not read app.deps concurrently with reloadConfigLocked.
+func (app *ConversationApp) depsSnapshot() appjob.Deps {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	return app.deps
+}
+
+func setJobDeps(j queuedJob, deps appjob.Deps) {
+	switch x := j.(type) {
+	case *appjob.Send:
+		x.Deps = deps
+	case *appjob.Edit:
+		x.Deps = deps
+	case *appjob.Delete:
+		x.Deps = deps
+	case *appjob.Compact:
+		x.Deps = deps
+	case *appjob.Rename:
+		x.Deps = deps
+	}
+}
+
 func (app *ConversationApp) post(convID string, j queuedJob) {
-	j.Bind(convID)
-	app.reloadConfig()
 	for {
 		app.mu.Lock()
+		app.reloadConfigLocked()
+		deps := app.deps
+		cfg := app.cfg
+		setJobDeps(j, deps)
+		j.Bind(convID)
 		if app.shuttingDown {
 			app.mu.Unlock()
 			j.Reply(apperror.New(503, "conversation application is shutting down", nil))
@@ -114,7 +140,7 @@ func (app *ConversationApp) post(convID string, j queuedJob) {
 		w := app.workers[convID]
 		if w == nil || w.Dead() {
 			w = worker.New(worker.Options{
-				QueueCap: app.cfg.MailboxCap,
+				QueueCap: cfg.MailboxCap,
 				OnIdle:   func(idle *worker.Worker) { app.evict(convID, idle) },
 				OnTerminate: func(term *worker.Worker, drained []worker.Job) {
 					app.onTerminated(convID, term, drained)
@@ -140,7 +166,7 @@ func (app *ConversationApp) post(convID string, j queuedJob) {
 		case errors.Is(err, worker.ErrClosed):
 			continue
 		case errors.Is(err, worker.ErrFull):
-			j.Reply(apperror.New(429, "conversation queue full", fmt.Errorf("mailbox capacity %d", app.cfg.MailboxCap)))
+			j.Reply(apperror.New(429, "conversation queue full", fmt.Errorf("mailbox capacity %d", cfg.MailboxCap)))
 		}
 		return
 	}

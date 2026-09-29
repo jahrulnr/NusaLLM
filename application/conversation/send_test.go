@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	appjob "github.com/jahrulnr/nusallm/application/job"
 	"github.com/jahrulnr/nusallm/infrastructure/config"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
@@ -24,7 +26,9 @@ import (
 	repoconversation "github.com/jahrulnr/nusallm/infrastructure/repository/conversation"
 	repogateway "github.com/jahrulnr/nusallm/infrastructure/repository/gateway"
 	reposecret "github.com/jahrulnr/nusallm/infrastructure/repository/secret"
+	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
 	textcompletion "github.com/jahrulnr/nusallm/infrastructure/service/core/text/completion"
+	toolsummary "github.com/jahrulnr/nusallm/infrastructure/service/tool/summary"
 )
 
 type sendOutcome struct {
@@ -85,9 +89,11 @@ func fixture(t *testing.T, handler http.HandlerFunc) (*ConversationApp, *aggrega
 	app := New(
 		repoconversation.NewConversationRepository(t.TempDir()),
 		gateways,
-		map[enum.Style]dservice.TextModelService{enum.StyleCompletion: textcompletion.New(textcompletion.Options{})},
-		nil, // no tool executors
+		map[enum.Environment]appjob.EnvironmentDriver{enum.EnvironmentLocal: appjob.EnvironmentBundle{
+			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: textcompletion.New(coretext.Options{})},
+		}},
 		config.NewConfig(),
+		nil,
 		"",
 	)
 	return app, &gw
@@ -109,7 +115,7 @@ func TestSendRoundtrip(t *testing.T) {
 	app, _ := fixture(t, okHandler)
 
 	// FE-minted convID: send upserts the room and echoes the id back.
-	result, err := app.Send(t.Context(), "my-room", "gw1", "m1", "ping", nil, nil)
+	result, err := app.Send(t.Context(), "my-room", "gw1", "m1", "ping", nil, appjob.SendOptions{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +147,7 @@ func TestSendRoundtrip(t *testing.T) {
 
 	// Second send on stored bindings — empty route/modelID reuse them and
 	// must not replace the original title.
-	if _, err := app.Send(t.Context(), "my-room", "", "", "again", nil, nil); err != nil {
+	if _, err := app.Send(t.Context(), "my-room", "", "", "again", nil, appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	conv, err = app.deps.Convs.Load(t.Context(), "my-room")
@@ -172,7 +178,7 @@ func TestSendAppliesPromptWithoutPersisting(t *testing.T) {
 		okHandler(w, r)
 	}
 	app, _ := fixture(t, handler)
-	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "hi", nil, nil); err != nil {
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "hi", nil, appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !sawSystem.Load() {
@@ -191,7 +197,7 @@ func TestSendAppliesPromptWithoutPersisting(t *testing.T) {
 // the caller always learns which room received the message.
 func TestSendMintsConvID(t *testing.T) {
 	app, _ := fixture(t, okHandler)
-	result, err := app.Send(t.Context(), "", "gw1", "m1", "ping", nil, nil)
+	result, err := app.Send(t.Context(), "", "gw1", "m1", "ping", nil, appjob.SendOptions{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +219,7 @@ func TestSendFailedKeepsUserTurn(t *testing.T) {
 			t.Errorf("write provider error: %v", err)
 		}
 	})
-	result, err := app.Send(t.Context(), "c2", "gw1", "m1", "ping", nil, nil)
+	result, err := app.Send(t.Context(), "c2", "gw1", "m1", "ping", nil, appjob.SendOptions{}, nil)
 	if apperror.As(err).StatusCode() != 429 {
 		t.Fatalf("want 429, got %v", err)
 	}
@@ -236,7 +242,7 @@ func TestSendFailedKeepsUserTurn(t *testing.T) {
 // before any message is persisted.
 func TestSendUnknownRoute(t *testing.T) {
 	app, _ := fixture(t, okHandler)
-	_, err := app.Send(t.Context(), "c3", "missing", "m1", "hi", nil, nil)
+	_, err := app.Send(t.Context(), "c3", "missing", "m1", "hi", nil, appjob.SendOptions{}, nil)
 	if apperror.As(err).StatusCode() != 404 {
 		t.Fatalf("dangling route → %v, want 404", err)
 	}
@@ -256,14 +262,31 @@ func TestSendSerializesPerConv(t *testing.T) {
 		okHandler(w, r)
 	})
 	var wg sync.WaitGroup
+	posted := [2]chan struct{}{make(chan struct{}), make(chan struct{})}
 	for i := 0; i < 2; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, _ = app.Send(t.Context(), "ser", "gw1", "m1", fmt.Sprintf("m%d", i), nil, nil)
+			ctx := &signaledContext{Context: t.Context(), observed: posted[i]}
+			_, _ = app.Send(ctx, "ser", "gw1", "m1", fmt.Sprintf("m%d", i), nil, appjob.SendOptions{}, nil)
 		}(i)
 	}
-	time.Sleep(100 * time.Millisecond)             // both queued/running
+	// Both submissions must be posted, then exactly one may be running
+	// upstream — goroutine scheduling is not a synchronization point.
+	for i := range posted {
+		select {
+		case <-posted[i]:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("send %d was never posted", i)
+		}
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for atomic.LoadInt32(&calls) != 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("first send did not reach the upstream: %d calls", calls)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	if got := atomic.LoadInt32(&calls); got != 1 { // second must be queued
 		t.Fatalf("sends overlapped: %d upstream calls", got)
 	}
@@ -291,7 +314,7 @@ func TestQueuedSendCancelable(t *testing.T) {
 	})
 	firstDone := make(chan sendOutcome, 1)
 	go func() {
-		result, err := app.Send(t.Context(), "qc", "gw1", "m1", "first", nil, nil)
+		result, err := app.Send(t.Context(), "qc", "gw1", "m1", "first", nil, appjob.SendOptions{}, nil)
 		firstDone <- sendOutcome{result: result, err: err}
 	}()
 	select {
@@ -305,7 +328,7 @@ func TestQueuedSendCancelable(t *testing.T) {
 	queuedCtx := &signaledContext{Context: ctx, observed: make(chan struct{})}
 	queuedDone := make(chan sendOutcome, 1)
 	go func() {
-		result, err := app.Send(queuedCtx, "qc", "", "", "second", nil, nil)
+		result, err := app.Send(queuedCtx, "qc", "", "", "second", nil, appjob.SendOptions{}, nil)
 		queuedDone <- sendOutcome{result: result, err: err}
 	}()
 	<-queuedCtx.observed // Send calls Done only after the worker accepted the queued job.
@@ -332,8 +355,172 @@ func TestQueuedSendCancelable(t *testing.T) {
 	}
 }
 
+// A queued send whose caller ctx died before the worker reached it must
+// leave no trace: the 408 already told the caller nothing persisted, so a
+// job that runs anyway writes a user line contradicting that reply — and
+// races whatever cleanup the caller does next (the CI flake this test was
+// born from). Cancellation used to arrive only through context.AfterFunc's
+// goroutine, which on a busy or single-P machine loses the race against
+// the job's own ctx checks; pinning one P keeps that window wide enough
+// for the omission to fail reliably.
+func TestQueuedSendCanceledBeforeStartPersistsNothing(t *testing.T) {
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	entered := make(chan struct{})
+	var enteredOnce sync.Once
+	app, _ := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		enteredOnce.Do(func() { close(entered) })
+		<-release
+		okHandler(w, r)
+	})
+	firstDone := make(chan sendOutcome, 1)
+	go func() {
+		result, err := app.Send(t.Context(), "qc", "gw1", "m1", "first", nil, appjob.SendOptions{}, nil)
+		firstDone <- sendOutcome{result: result, err: err}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first send did not reach the upstream")
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	queuedCtx := &signaledContext{Context: ctx, observed: make(chan struct{})}
+	queuedDone := make(chan sendOutcome, 1)
+	go func() {
+		result, err := app.Send(queuedCtx, "qc", "", "", "second", nil, appjob.SendOptions{}, nil)
+		queuedDone <- sendOutcome{result: result, err: err}
+	}()
+	<-queuedCtx.observed
+	cancel()
+	select {
+	case outcome := <-queuedDone:
+		if apperror.As(outcome.err).StatusCode() != 408 {
+			t.Fatalf("queued cancel → %v, want 408", outcome.err)
+		}
+		if outcome.result.UserMessagePersisted {
+			t.Fatal("queued cancellation must report no user line")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued send not cancelable")
+	}
+
+	unblock()
+	select {
+	case outcome := <-firstDone:
+		if outcome.err != nil {
+			t.Fatalf("first send: %v", outcome.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first send did not finish after release")
+	}
+
+	// The freed worker now reaches the canceled job; give it every chance
+	// to (wrongly) persist before asserting the room kept only the first
+	// turn.
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for {
+		messages, err := app.History(t.Context(), "qc", 0, -1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range messages {
+			if m.Role() == enum.RoleUser && m.Content() == "second" {
+				t.Fatal("canceled queued send persisted its user line after the 408 reply")
+			}
+		}
+		if time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // Cancel kills the running send — 408, not an upstream error — after its
 // user message has committed.
+func TestCancelPersistsArrivedDeltasAndCompleteTools(t *testing.T) {
+	started := make(chan struct{})
+	arrived := make(chan struct{})
+	var arrivedOnce sync.Once
+	app, gw := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		// Tool-call deltas first, the text block last — its DeltaEvent
+		// proves every earlier block was already parsed by the client.
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"exec\",\"arguments\":\"{\\\"command\\\":\\\"somecode.sh\\\"}\"}}]}}]}\n\n"))
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"c2\",\"type\":\"function\",\"function\":{\"name\":\"exec\",\"arguments\":\"{\\\"command\\\":\\\"tail\"}}]}}]}\n\n"))
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"think\",\"content\":\"hello\"}}]}\n\n"))
+		w.(http.Flusher).Flush()
+		close(started)
+		<-r.Context().Done()
+	})
+	gw.EnableStream()
+	if err := app.deps.Gateways.Save(t.Context(), gw); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan sendOutcome, 1)
+	go func() {
+		result, err := app.Send(t.Context(), "partial", "gw1", "m1", "ping", nil, appjob.SendOptions{}, func(e event.TurnEvent) {
+			if e.Kind() == enum.TurnEventDelta && e.Delta() == "hello" {
+				arrivedOnce.Do(func() { close(arrived) })
+			}
+		})
+		done <- sendOutcome{result: result, err: err}
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream did not start")
+	}
+	// Cancel only once the client consumed every flushed block — the
+	// delta on the final block implies the tool-call blocks already ran.
+	select {
+	case <-arrived:
+	case <-time.After(2 * time.Second):
+		t.Fatal("streamed delta never arrived")
+	}
+	if err := app.Cancel(t.Context(), "partial"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case outcome := <-done:
+		if apperror.As(outcome.err).StatusCode() != 408 {
+			t.Fatalf("canceled send → %v, want 408", outcome.err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("cancel did not finish the send")
+	}
+	conv, err := app.deps.Convs.Load(t.Context(), "partial")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs := conv.Messages()
+	if len(msgs) != 2 || msgs[1].Role() != enum.RoleAssistant || msgs[1].Content() != "hello" {
+		t.Fatalf("history: %+v", msgs)
+	}
+	asst := msgs[1]
+	var sawReason bool
+	for _, part := range asst.Parts() {
+		if part.Kind == entity.MessagePartReasoning && part.Text == "think" {
+			sawReason = true
+		}
+	}
+	if !sawReason {
+		t.Fatalf("reasoning parts: %+v", asst.Parts())
+	}
+	calls := asst.ToolCalls()
+	if len(calls) != 1 || calls[0].Name() != "exec" || calls[0].Input() != `{"command":"somecode.sh"}` {
+		t.Fatalf("tools: %+v", calls)
+	}
+	if !strings.Contains(calls[0].Output(), "interrupted by user") {
+		t.Fatalf("output: %s", calls[0].Output())
+	}
+}
+
 func TestCancelRunningSend(t *testing.T) {
 	release := make(chan struct{})
 	var releaseOnce sync.Once
@@ -347,7 +534,7 @@ func TestCancelRunningSend(t *testing.T) {
 	})
 	done := make(chan sendOutcome, 1)
 	go func() {
-		result, err := app.Send(t.Context(), "run", "gw1", "m1", "ping", nil, nil)
+		result, err := app.Send(t.Context(), "run", "gw1", "m1", "ping", nil, appjob.SendOptions{}, nil)
 		done <- sendOutcome{result: result, err: err}
 	}()
 	select {
@@ -394,7 +581,7 @@ func TestSendCancelRacingAppendReportsPersisted(t *testing.T) {
 	defer cancel()
 	done := make(chan sendOutcome, 1)
 	go func() {
-		result, err := app.Send(ctx, "append-race", "gw1", "m1", "ping", nil, nil)
+		result, err := app.Send(ctx, "append-race", "gw1", "m1", "ping", nil, appjob.SendOptions{}, nil)
 		done <- sendOutcome{result: result, err: err}
 	}()
 	select {
@@ -461,29 +648,57 @@ func waitWorkers(t *testing.T, app *ConversationApp, n int) {
 // proceeds once the slot frees.
 func TestCancelLeavesQueuedSend(t *testing.T) {
 	release := make(chan struct{})
+	entered := make(chan struct{})
+	var enteredOnce sync.Once
 	app, _ := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		enteredOnce.Do(func() { close(entered) })
 		<-release
 		okHandler(w, r)
 	})
 	running := make(chan error, 1)
 	go func() {
-		_, err := app.Send(t.Context(), "q", "gw1", "m1", "first", nil, nil)
+		_, err := app.Send(t.Context(), "q", "gw1", "m1", "first", nil, appjob.SendOptions{}, nil)
 		running <- err
 	}()
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first send did not reach the upstream")
+	}
+	queuedCtx := &signaledContext{Context: t.Context(), observed: make(chan struct{})}
 	queued := make(chan error, 1)
-	go func() { _, err := app.Send(t.Context(), "q", "", "", "second", nil, nil); queued <- err }()
-	time.Sleep(50 * time.Millisecond) // second queued
+	go func() {
+		_, err := app.Send(queuedCtx, "q", "", "", "second", nil, appjob.SendOptions{}, nil)
+		queued <- err
+	}()
+	select {
+	case <-queuedCtx.observed: // second is queued while the first holds the slot
+	case <-time.After(2 * time.Second):
+		t.Fatal("second send never queued")
+	}
 
 	if err := app.Cancel(t.Context(), "q"); err != nil {
 		t.Fatalf("Cancel running: %v", err)
 	}
-	close(release)
-	if err := <-running; apperror.As(err).StatusCode() != 408 {
-		t.Fatalf("running send after Cancel = %v, want 408", err)
+	// The canceled send must fully unwind before the upstream opens: a
+	// response landing inside the cancel window is still persisted —
+	// partial replies are honest history — and would inflate the count.
+	select {
+	case err := <-running:
+		if apperror.As(err).StatusCode() != 408 {
+			t.Fatalf("running send after Cancel = %v, want 408", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Cancel did not reach the running send")
 	}
-	if err := <-queued; err != nil {
-		t.Fatalf("queued send must proceed after the running one dies: %v", err)
+	close(release)
+	select {
+	case err := <-queued:
+		if err != nil {
+			t.Fatalf("queued send must proceed after the running one dies: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued send never ran after the cancel")
 	}
 	conv, _ := app.deps.Convs.Load(t.Context(), "q")
 	if len(conv.Messages()) != 3 { // user1 + user2 + assistant2 — no assistant1
@@ -496,7 +711,7 @@ func TestDeadCtxNoMutation(t *testing.T) {
 	app, _ := fixture(t, okHandler)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	result, err := app.Send(ctx, "dead", "gw1", "m1", "ping", nil, nil)
+	result, err := app.Send(ctx, "dead", "gw1", "m1", "ping", nil, appjob.SendOptions{}, nil)
 	if apperror.As(err).StatusCode() != 408 {
 		t.Fatalf("dead ctx → %v, want 408", err)
 	}
@@ -514,7 +729,7 @@ func TestDeadCtxNoMutation(t *testing.T) {
 func TestLockEvictedAfterSend(t *testing.T) {
 	app, _ := fixture(t, okHandler)
 	for i := 0; i < 3; i++ {
-		if _, err := app.Send(t.Context(), fmt.Sprintf("evict-%d", i), "gw1", "m1", "ping", nil, nil); err != nil {
+		if _, err := app.Send(t.Context(), fmt.Sprintf("evict-%d", i), "gw1", "m1", "ping", nil, appjob.SendOptions{}, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -532,10 +747,10 @@ func TestFailedFreshSendStaysRetryable(t *testing.T) {
 		}
 		okHandler(w, r)
 	})
-	if _, err := app.Send(t.Context(), "retry", "gw1", "m1", "ping", nil, nil); err == nil {
+	if _, err := app.Send(t.Context(), "retry", "gw1", "m1", "ping", nil, appjob.SendOptions{}, nil); err == nil {
 		t.Fatal("first send must fail")
 	}
-	if _, err := app.Send(t.Context(), "retry", "", "", "ping", nil, nil); err != nil {
+	if _, err := app.Send(t.Context(), "retry", "", "", "ping", nil, appjob.SendOptions{}, nil); err != nil {
 		t.Fatalf("retry on stored binding: %v", err)
 	}
 	if got := atomic.LoadInt32(&calls); got != 2 {
@@ -559,12 +774,14 @@ func TestAdapterNoAppendIsInternalError(t *testing.T) {
 	app := New(
 		repoconversation.NewConversationRepository(t.TempDir()),
 		gateways,
-		map[enum.Style]dservice.TextModelService{enum.StyleCompletion: noAppendSvc{}},
-		nil,
+		map[enum.Environment]appjob.EnvironmentDriver{enum.EnvironmentLocal: appjob.EnvironmentBundle{
+			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: noAppendSvc{}},
+		}},
 		config.NewConfig(),
+		nil,
 		"",
 	)
-	result, err := app.Send(t.Context(), "badsvc", "gw1", "m1", "ping", nil, nil)
+	result, err := app.Send(t.Context(), "badsvc", "gw1", "m1", "ping", nil, appjob.SendOptions{}, nil)
 	if apperror.As(err).StatusCode() != 500 {
 		t.Fatalf("zero-append adapter → %v, want 500", err)
 	}
@@ -597,12 +814,16 @@ func TestSendToolLoop(t *testing.T) {
 	}
 	svc := &scriptSvc{}
 	convs := repoconversation.NewConversationRepository(t.TempDir())
+	ownerTool := &conversationOwnerTool{}
 	app := New(
 		convs,
 		gateways,
-		map[enum.Style]dservice.TextModelService{enum.StyleCompletion: svc},
-		map[string]dservice.Tool{"echo": echoTool{}},
+		map[enum.Environment]appjob.EnvironmentDriver{enum.EnvironmentLocal: appjob.EnvironmentBundle{
+			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: svc},
+			Tools:    map[string]dservice.Tool{"echo": ownerTool},
+		}},
 		config.NewConfig(),
+		nil,
 		"",
 	)
 	var evs []event.TurnEvent
@@ -614,12 +835,15 @@ func TestSendToolLoop(t *testing.T) {
 	if err := convs.Save(t.Context(), seed); err != nil {
 		t.Fatal(err)
 	}
-	result, err := app.Send(t.Context(), "loop", "gw1", "m1", "go", nil, onEvent)
+	result, err := app.Send(t.Context(), "loop", "gw1", "m1", "go", nil, appjob.SendOptions{}, onEvent)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.ConversationID != "loop" {
 		t.Fatalf("convID: %q", result.ConversationID)
+	}
+	if ownerTool.conversationID != "loop" {
+		t.Fatalf("tool output owner = %q, want loop", ownerTool.conversationID)
 	}
 	if !result.UserMessagePersisted {
 		t.Fatal("successful send must report its user message as persisted")
@@ -678,6 +902,171 @@ func (s *scriptSvc) Send(_ context.Context, conv *aggregate.Conversation, _ *agg
 }
 
 type echoTool struct{}
+
+type environmentService struct{ label string }
+
+func (s environmentService) Send(_ context.Context, conv *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, _ event.TurnEventHandler) error {
+	last := conv.Last()
+	if last.Role() == enum.RoleUser {
+		m, _ := entity.NewMessage(enum.RoleAssistant, "")
+		call, _ := entity.NewToolCall("call_1", "echo", `{}`, enum.TooltypeOrigin)
+		m.AddToolCall(call)
+		m.SetFinishReason(enum.FinishReasonToolCalls)
+		conv.Append(m)
+		return nil
+	}
+	m, _ := entity.NewMessage(enum.RoleAssistant, s.label+":"+last.ToolCalls()[0].Output())
+	m.SetFinishReason(enum.FinishReasonStop)
+	conv.Append(m)
+	return nil
+}
+
+type environmentTool struct {
+	echoTool
+	label string
+}
+
+type virtualWorkspace struct{}
+
+func (virtualWorkspace) CheckRoot(dir string) (string, error) {
+	if dir == "/remote/project" {
+		return dir, nil
+	}
+	return "", fmt.Errorf("unknown virtual workspace %q", dir)
+}
+
+func (virtualWorkspace) Open(context.Context, string) (drepo.WorkspaceSession, error) {
+	return nil, fmt.Errorf("unused by scripted service")
+}
+
+func (t environmentTool) Execute(context.Context, entity.ToolCall, dservice.ToolEmitter) (dservice.ToolResult, error) {
+	return dservice.ToolResult{Text: t.label}, nil
+}
+
+func TestSendSelectsEnvironmentPerConversationAndResume(t *testing.T) {
+	gw, _ := aggregate.NewGateway("gw1", "stub", "http://unused", enum.StyleCompletion)
+	m, _ := entity.NewModel("m1", "gw1")
+	gw.SetModels([]entity.Model{m})
+	gateways := repogateway.NewGatewayRepository(t.TempDir(), nil)
+	if err := gateways.Save(t.Context(), &gw); err != nil {
+		t.Fatal(err)
+	}
+	convs := repoconversation.NewConversationRepository(t.TempDir())
+	app := New(convs, gateways, map[enum.Environment]appjob.EnvironmentDriver{
+		enum.EnvironmentLocal: appjob.EnvironmentBundle{
+			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: environmentService{label: "local"}},
+			Tools:    map[string]dservice.Tool{"echo": environmentTool{label: "local"}},
+		},
+		enum.EnvironmentDocker: appjob.EnvironmentBundle{
+			WorkspaceStore: virtualWorkspace{},
+			Services:       map[enum.Style]dservice.TextModelService{enum.StyleCompletion: environmentService{label: "docker"}},
+			Tools:          map[string]dservice.Tool{"echo": environmentTool{label: "docker"}, "summary": toolsummary.NewSummaryTool()},
+		},
+	}, config.NewConfig(), nil, "")
+	t.Cleanup(func() { _ = app.Shutdown(context.Background()) })
+
+	for _, tc := range []struct {
+		id   string
+		opts appjob.SendOptions
+		want string
+	}{
+		{"local-room", appjob.SendOptions{}, "local:local"},
+		{"docker-room", appjob.SendOptions{Environment: enum.EnvironmentDocker, Workspace: "/remote/project"}, "docker:docker"},
+		{"docker-room", appjob.SendOptions{}, "docker:docker"},
+		{"local-room", appjob.SendOptions{}, "local:local"},
+	} {
+		if _, err := app.Send(t.Context(), tc.id, "gw1", "m1", "hi", nil, tc.opts, nil); err != nil {
+			t.Fatalf("send %s: %v", tc.id, err)
+		}
+		conv, err := convs.Load(t.Context(), tc.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := conv.Last().Content(); got != tc.want {
+			t.Fatalf("%s answer = %q, want %q", tc.id, got, tc.want)
+		}
+		if tc.id == "docker-room" && conv.Workspace() != "/remote/project" {
+			t.Fatalf("docker workspace = %q", conv.Workspace())
+		}
+	}
+	localSchemas, err := app.ToolSchemas(t.Context(), "local-room")
+	if err != nil || len(localSchemas) != 1 {
+		t.Fatalf("local tool catalog = %v, %v", localSchemas, err)
+	}
+	dockerSchemas, err := app.ToolSchemas(t.Context(), "docker-room")
+	if err != nil || len(dockerSchemas) != 2 || dockerSchemas[1].Name() != "summary" {
+		t.Fatalf("docker tool catalog = %v, %v", dockerSchemas, err)
+	}
+	if _, err := app.Send(t.Context(), "bad-workspace", "gw1", "m1", "hi", nil,
+		appjob.SendOptions{Environment: enum.EnvironmentDocker, Workspace: "/unknown"}, nil); apperror.As(err).StatusCode() != 400 {
+		t.Fatalf("driver must reject an unknown workspace before persistence: %v", err)
+	}
+	if _, err := convs.Load(t.Context(), "bad-workspace"); apperror.As(err).StatusCode() != 404 {
+		t.Fatalf("invalid workspace persisted a room: %v", err)
+	}
+	beforeEdit, err := convs.Load(t.Context(), "docker-room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lastUser := beforeEdit.Messages()[len(beforeEdit.Messages())-3]
+	if err := app.Edit(t.Context(), "docker-room", lastUser.ID(), "edited", nil); err != nil {
+		t.Fatal(err)
+	}
+	afterEdit, err := convs.Load(t.Context(), "docker-room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterEdit.Last().Content() != "docker:docker" || afterEdit.Environment() != enum.EnvironmentDocker {
+		t.Fatalf("edit used wrong driver: %q %q", afterEdit.Last().Content(), afterEdit.Environment())
+	}
+	if _, err := app.Send(t.Context(), "docker-room", "", "", "switch", nil,
+		appjob.SendOptions{Environment: enum.EnvironmentLocal}, nil); err != nil {
+		t.Fatal(err)
+	}
+	switched, err := convs.Load(t.Context(), "docker-room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if switched.Environment() != enum.EnvironmentLocal || switched.Workspace() != "" || switched.Last().Content() != "local:local" {
+		t.Fatalf("switched binding/result = %q %q %q", switched.Environment(), switched.Workspace(), switched.Last().Content())
+	}
+	if _, err := app.Send(t.Context(), "missing-driver", "gw1", "m1", "hi", nil,
+		appjob.SendOptions{Environment: enum.EnvironmentSSH}, nil); apperror.As(err).StatusCode() != 400 {
+		t.Fatalf("unregistered driver must fail before writing, got %v", err)
+	}
+	if _, err := convs.Load(t.Context(), "missing-driver"); apperror.As(err).StatusCode() != 404 {
+		t.Fatalf("unregistered driver persisted a room: %v", err)
+	}
+	orphan, _ := aggregate.NewConversation("unavailable-room")
+	orphan.SetRoute("gw1")
+	orphan.SetModelID("m1")
+	if err := orphan.SetEnvironment(enum.EnvironmentSSH); err != nil {
+		t.Fatal(err)
+	}
+	if err := convs.Save(t.Context(), orphan); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.Send(t.Context(), orphan.ID(), "", "", "hi", nil, appjob.SendOptions{}, nil); apperror.As(err).StatusCode() != 400 {
+		t.Fatalf("resumed unavailable driver must fail, got %v", err)
+	}
+	unchanged, err := convs.Load(t.Context(), orphan.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unchanged.Messages()) != 0 {
+		t.Fatalf("failed resume changed history: messages=%d", len(unchanged.Messages()))
+	}
+}
+
+type conversationOwnerTool struct {
+	echoTool
+	conversationID string
+}
+
+func (tool *conversationOwnerTool) Execute(ctx context.Context, call entity.ToolCall, emit dservice.ToolEmitter) (dservice.ToolResult, error) {
+	tool.conversationID = dservice.ConversationID(ctx)
+	return tool.echoTool.Execute(ctx, call, emit)
+}
 
 func (echoTool) Schema() valueobject.ToolSchema {
 	s, _ := valueobject.NewToolSchema("echo", "echo input", nil, true, enum.ToolPermissionAgent)

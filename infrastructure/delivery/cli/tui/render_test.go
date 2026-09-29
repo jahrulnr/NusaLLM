@@ -15,13 +15,15 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
+	repohistory "github.com/jahrulnr/nusallm/infrastructure/repository/history"
+	repoworkspace "github.com/jahrulnr/nusallm/infrastructure/repository/workspace"
 	"github.com/jahrulnr/nusallm/infrastructure/service/workspace"
 	"github.com/muesli/termenv"
 )
 
 func testModel(t *testing.T) *replModel {
 	t.Helper()
-	r := &REPL{Session: &session.Session{}} // render tests never reach command dispatch
+	r := &REPL{Session: &session.Session{}, historyStore: repohistory.NewLocal()} // render tests never reach command dispatch
 	m := newModel(r, false)
 	return &m
 }
@@ -37,20 +39,22 @@ func TestLiveWritesDeltaVerbatim(t *testing.T) {
 	}
 }
 
-func TestLiveHidesReasoningButShowsThinkingPhase(t *testing.T) {
+func TestLiveShowsReasoningInArrivalOrder(t *testing.T) {
 	m := testModel(t)
 	m.turnActive = true
 
-	m.applyEvent(event.NewReasoningEvent("private chain of thought"))
-
-	if got := m.live.String(); got != "" {
-		t.Fatalf("reasoning leaked into live transcript: %q", got)
-	}
+	m.applyEvent(event.NewDeltaEvent("before"))
+	m.applyEvent(event.NewReasoningEvent("raw reasoning"))
+	m.applyEvent(event.NewReasoningSummaryEvent(" summary"))
 	if m.phase != "thinking" {
 		t.Fatalf("phase = %q, want thinking", m.phase)
 	}
-	if got := m.renderTurnStatus(); !strings.Contains(got, "thinking") {
-		t.Fatalf("turn status = %q, want thinking indicator", got)
+	m.applyEvent(event.NewDeltaEvent("after"))
+
+	got := m.renderLive()
+	before, reasoning, after := strings.Index(got, "before"), strings.Index(got, "raw reasoning summary"), strings.Index(got, "after")
+	if before < 0 || reasoning < 0 || after < 0 || !(before < reasoning && reasoning < after) {
+		t.Fatalf("reasoning missing or out of order: %q", got)
 	}
 }
 
@@ -96,7 +100,7 @@ func TestViewPlacesFooterBadgesUnderComposer(t *testing.T) {
 
 func TestFooterShowsWorkspaceAndActivePhase(t *testing.T) {
 	m := testModel(t)
-	root, err := workspace.Open(t.TempDir())
+	root, err := workspace.Open(repoworkspace.NewLocal(), t.TempDir())
 	if err != nil {
 		t.Fatalf("workspace: %v", err)
 	}
@@ -257,7 +261,7 @@ func TestLiveInterleavesToolCallsWithAssistantText(t *testing.T) {
 	}
 }
 
-func TestLiveShowsCompactToolCallWithoutToolOutput(t *testing.T) {
+func TestLiveShowsToolCallAndOutput(t *testing.T) {
 	m := testModel(t)
 	call := newTestToolCall(t, "call-1", "exec", `{"command": "pwd"}`)
 
@@ -265,11 +269,11 @@ func TestLiveShowsCompactToolCallWithoutToolOutput(t *testing.T) {
 	m.applyEvent(event.NewToolOutputEvent(call, "private tool output"))
 
 	got := m.View()
-	if !strings.Contains(got, "⏺") || !strings.Contains(got, `{"command":"pwd"}`) {
-		t.Fatalf("compact tool activity missing: %q", got)
+	if !strings.Contains(got, "⏺") || !strings.Contains(got, `{"command": "pwd"}`) || !strings.Contains(got, "private tool output") {
+		t.Fatalf("tool activity or output missing: %q", got)
 	}
-	if strings.Contains(got, "call-1") || strings.Contains(got, "private tool output") {
-		t.Fatalf("tool internals leaked into view: %q", got)
+	if strings.Contains(got, "call-1") {
+		t.Fatalf("tool id should not render in activity row: %q", got)
 	}
 }
 
@@ -302,19 +306,19 @@ func TestLiveEscapesTerminalControlSequences(t *testing.T) {
 
 func TestLiveFormatsValidToolCallJSON(t *testing.T) {
 	m := testModel(t)
-	input := `{"city":"Paris","count":2}`
+	input := "{\n  \"city\": \"Paris\",\n  \"count\": 2\n}"
 	call := newTestToolCall(t, "call-1", "lookup", input)
 
 	m.applyEvent(event.NewToolCallEvent(call))
 
 	got := m.renderLive()
-	for _, want := range []string{"⏺", "lookup", `{"city":"Paris","count":2}`} {
+	for _, want := range []string{"⏺", "lookup", input} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("rendered tool call = %q, missing %q", got, want)
 		}
 	}
-	if strings.Contains(got, "call-1") || strings.Contains(got, "\n{\n") {
-		t.Fatalf("tool input should be compact, got %q", got)
+	if strings.Contains(got, "call-1") {
+		t.Fatalf("tool id should not render in activity row: %q", got)
 	}
 	if got := call.Input(); got != input {
 		t.Fatalf("tool input mutated to %q, want %q", got, input)
@@ -340,15 +344,15 @@ func TestLivePreservesInvalidToolCallJSON(t *testing.T) {
 	}
 }
 
-func TestLiveHidesToolOutput(t *testing.T) {
+func TestLiveShowsToolOutput(t *testing.T) {
 	m := testModel(t)
 	first := newTestToolCall(t, "call-1", "lookup", `{}`)
 
 	m.applyEvent(event.NewToolOutputEvent(first, "first"))
 
-	got := m.live.String()
-	if got != "" {
-		t.Fatalf("tool output should not render, got %q", got)
+	got := m.renderLive()
+	if !strings.Contains(got, "first") {
+		t.Fatalf("tool output missing from live transcript: %q", got)
 	}
 }
 

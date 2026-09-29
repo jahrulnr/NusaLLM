@@ -27,7 +27,6 @@ func (app *ConversationApp) Edit(
 ) error {
 	res := make(chan error, 1)
 	j := &appjob.Edit{
-		Deps:    app.deps,
 		Ctx:     ctx,
 		MsgID:   msgID,
 		Content: content,

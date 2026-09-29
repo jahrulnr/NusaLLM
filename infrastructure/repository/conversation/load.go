@@ -5,6 +5,7 @@ import (
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 )
 
@@ -28,6 +29,10 @@ func (r *ConversationRepository) Load(ctx context.Context, convID string) (*aggr
 	c.SetTitle(meta.Title)
 	c.SetRoute(meta.Route)
 	c.SetModelID(meta.ModelID)
+	c.SetWorkspace(meta.Workspace)
+	if err := c.SetEnvironment(enum.Environment(meta.Environment)); err != nil {
+		return nil, err
+	}
 	// systemPrompt is not restored: it is code (embedded templates), and
 	// older metas carrying a stamped copy are ignored so every room gets
 	// the current template.
@@ -46,7 +51,7 @@ func (r *ConversationRepository) Load(ctx context.Context, convID string) (*aggr
 	}
 	c.SetTools(schemas)
 
-	msgs, err := r.loadMessages(convID, false)
+	msgs, err := r.loadMessages(convID, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -65,10 +70,11 @@ func (r *ConversationRepository) LoadAt(ctx context.Context, convID string, star
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if _, err := r.readMeta(convID); err != nil {
+	meta, err := r.readMeta(convID)
+	if err != nil {
 		return nil, err
 	}
-	msgs, err := r.loadMessages(convID, true)
+	msgs, err := r.loadMessages(convID, meta.SealedSegments)
 	if err != nil {
 		return nil, err
 	}

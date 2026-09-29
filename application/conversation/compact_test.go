@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	appjob "github.com/jahrulnr/nusallm/application/job"
 	"github.com/jahrulnr/nusallm/infrastructure/config"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
@@ -23,6 +24,55 @@ import (
 // compactSvc answers the scratch dialogue (the conv carrying the summary
 // tool) with the checkpoint call, and any other conversation normally.
 type compactSvc struct{ calls atomic.Int32 }
+
+type environmentCompactSvc struct {
+	compactSvc
+	scratchEnvironment enum.Environment
+	scratchWorkspace   string
+}
+
+func (s *environmentCompactSvc) Send(ctx context.Context, conv *aggregate.Conversation, gw *aggregate.Gateway, model entity.Model, onEvent event.TurnEventHandler) error {
+	for _, tool := range conv.Tools() {
+		if tool.Name() == toolsummary.Name {
+			s.scratchEnvironment = conv.Environment()
+			s.scratchWorkspace = conv.Workspace()
+		}
+	}
+	return s.compactSvc.Send(ctx, conv, gw, model, onEvent)
+}
+
+func TestManualCompactKeepsEnvironmentAndWorkspace(t *testing.T) {
+	local := &compactSvc{}
+	app, convs := compactApp(t, local, 0)
+	remote := &environmentCompactSvc{}
+	app.deps.Environments[enum.EnvironmentDocker] = appjob.EnvironmentBundle{
+		Services:       map[enum.Style]dservice.TextModelService{enum.StyleCompletion: remote},
+		WorkspaceStore: virtualWorkspace{},
+	}
+	for _, content := range []string{"first", "second"} {
+		opts := appjob.SendOptions{}
+		if content == "first" {
+			opts.Environment = enum.EnvironmentDocker
+			opts.Workspace = "/remote/project"
+		}
+		if _, err := app.Send(t.Context(), "remote-room", "gw1", "m1", content, nil, opts, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := app.Compact(t.Context(), "remote-room"); err != nil {
+		t.Fatal(err)
+	}
+	if local.calls.Load() != 0 || remote.scratchEnvironment != enum.EnvironmentDocker || remote.scratchWorkspace != "/remote/project" {
+		t.Fatalf("compaction crossed drivers: local=%d scratch=%q %q", local.calls.Load(), remote.scratchEnvironment, remote.scratchWorkspace)
+	}
+	loaded, err := convs.Load(t.Context(), "remote-room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Environment() != enum.EnvironmentDocker || loaded.Workspace() != "/remote/project" {
+		t.Fatalf("compacted binding = %q %q", loaded.Environment(), loaded.Workspace())
+	}
+}
 
 func (s *compactSvc) Send(_ context.Context, conv *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, _ event.TurnEventHandler) error {
 	s.calls.Add(1)
@@ -90,8 +140,43 @@ func compactApp(t *testing.T, svc dservice.TextModelService, contextWindow int) 
 	cfg := config.NewConfig()
 	cfg.Conversation.CompactKeepTail = 2 // small tail keeps the test history tiny
 	return New(convs, gateways,
-		map[enum.Style]dservice.TextModelService{enum.StyleCompletion: svc},
-		nil, cfg, ""), convs
+		map[enum.Environment]appjob.EnvironmentDriver{enum.EnvironmentLocal: appjob.EnvironmentBundle{
+			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: svc},
+		}}, cfg, nil, ""), convs
+}
+
+func TestManualCompactAllowsAnotherFoldWhileTailExceedsKeep(t *testing.T) {
+	svc := &compactSvc{}
+	app, convs := compactApp(t, svc, 0)
+	for _, content := range []string{"first", "second"} {
+		if _, err := app.Send(t.Context(), "room", "gw1", "m1", content, nil, appjob.SendOptions{}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if available, err := app.CanCompact(t.Context(), "room"); err != nil || !available {
+		t.Fatalf("expected foldable history, available=%v err=%v", available, err)
+	}
+	if err := app.Compact(t.Context(), "room"); err != nil {
+		t.Fatal(err)
+	}
+	// The checkpoint plus the kept tail is still longer than keep-tail,
+	// so a second explicit fold is a real compaction, not an error.
+	if available, err := app.CanCompact(t.Context(), "room"); err != nil || !available {
+		t.Fatalf("tail still longer than keep-tail must stay foldable, available=%v err=%v", available, err)
+	}
+	if err := app.Compact(t.Context(), "room"); err != nil {
+		t.Fatal(err)
+	}
+	info, err := convs.Info(t.Context(), "room")
+	if err != nil || info.SealedSegments != 2 {
+		t.Fatalf("second compact sealed segments: %+v %v", info, err)
+	}
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "third", nil, appjob.SendOptions{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if available, err := app.CanCompact(t.Context(), "room"); err != nil || !available {
+		t.Fatalf("new history must permit another compact, available=%v err=%v", available, err)
+	}
 }
 
 // Proactive: the estimate crosses the window share → the prefix seals
@@ -101,11 +186,11 @@ func TestSendCompactsOverflow(t *testing.T) {
 	// 64_060 total → 60 input allowance → budget 54 at 90% — same headroom as the old 60×90% test.
 	app, convs := compactApp(t, svc, 64_060)
 
-	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "first", nil, nil); err != nil {
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "first", nil, appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	// Second send: 3 live messages > keepTail 2 → compaction must run.
-	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "second", nil, nil); err != nil {
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "second", nil, appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	conv, err := convs.Load(t.Context(), "room")
@@ -151,7 +236,7 @@ func TestSend413DoesNotLoop(t *testing.T) {
 	svc := &deadEndSvc{}
 	app, convs := compactApp(t, svc, 0)
 
-	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "one", nil, nil); err == nil || apperror.As(err).StatusCode() != 413 {
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "one", nil, appjob.SendOptions{}, nil); err == nil || apperror.As(err).StatusCode() != 413 {
 		t.Fatalf("a lone message is unfoldable — 413 must propagate: %v", err)
 	}
 	if svc.sawCompact.Load() {
@@ -159,12 +244,12 @@ func TestSend413DoesNotLoop(t *testing.T) {
 	}
 	// A 413 never appends an assistant message — after two sends the
 	// room holds two user lines, still at keepTail → no fold yet.
-	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "two", nil, nil); err == nil {
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "two", nil, appjob.SendOptions{}, nil); err == nil {
 		t.Fatal("expected 413")
 	}
 	// Third send: 3 messages > keepTail → exactly one compact, then
 	// the retried send still 413s and must surface, not re-compact.
-	_, err := app.Send(t.Context(), "room", "gw1", "m1", "three", nil, nil)
+	_, err := app.Send(t.Context(), "room", "gw1", "m1", "three", nil, appjob.SendOptions{}, nil)
 	if err == nil || apperror.As(err).StatusCode() != 413 {
 		t.Fatalf("persistent overflow must surface the provider's 413: %v", err)
 	}
@@ -180,13 +265,13 @@ func TestSendCompactsOn413(t *testing.T) {
 	svc := &overflowSvc{}
 	app, convs := compactApp(t, svc, 0) // unknown window → proactive budget is high; this path tests 413
 
-	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "first", nil, nil); err != nil {
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "first", nil, appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if svc.sawCompact.Load() {
 		t.Fatal("compaction must not run on a first overflow-free send")
 	}
-	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "second", nil, nil); err != nil {
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "second", nil, appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !svc.sawCompact.Load() {

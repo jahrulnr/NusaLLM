@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	appjob "github.com/jahrulnr/nusallm/application/job"
 	"github.com/jahrulnr/nusallm/infrastructure/config"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
@@ -46,7 +47,9 @@ func TestContextFooterStats(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	app := New(convs, gateways, nil, nil, config.NewConfig(), "")
+	app := New(convs, gateways, map[enum.Environment]appjob.EnvironmentDriver{
+		enum.EnvironmentLocal: appjob.EnvironmentBundle{},
+	}, config.NewConfig(), nil, "")
 	stats, err := app.ContextFooterStats(t.Context(), "room", "", "")
 	if err != nil {
 		t.Fatal(err)
@@ -56,6 +59,15 @@ func TestContextFooterStats(t *testing.T) {
 	}
 	if stats.Estimate < 190_000 {
 		t.Fatalf("estimate = %d, want ~200k from chars/4", stats.Estimate)
+	}
+	if err := conv.SetEnvironment(enum.EnvironmentSSH); err != nil {
+		t.Fatal(err)
+	}
+	if err := convs.Save(t.Context(), conv); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.ContextFooterStats(t.Context(), "room", "", ""); err == nil {
+		t.Fatal("unavailable driver produced a misleading token estimate")
 	}
 }
 
@@ -87,7 +99,9 @@ func TestContextFooterStatsUnknownWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	app := New(convs, gateways, nil, nil, config.NewConfig(), "")
+	app := New(convs, gateways, map[enum.Environment]appjob.EnvironmentDriver{
+		enum.EnvironmentLocal: appjob.EnvironmentBundle{},
+	}, config.NewConfig(), nil, "")
 	stats, err := app.ContextFooterStats(t.Context(), "room", "", "")
 	if err != nil {
 		t.Fatal(err)

@@ -13,8 +13,8 @@ import (
 
 // Compact seals the first dropBefore message lines verbatim into the next
 // numbered segment, then rewrites active.jsonl as [summary] + surviving
-// messages + every patch line — patches stay global so late outputs still
-// reach sealed calls.
+// messages + patch lines — patches stay global so late outputs still
+// reach sealed calls. Patches without a surviving call are ignored on read.
 func (r *ConversationRepository) Compact(ctx context.Context, convID string, summary entity.Message, dropBefore int) error {
 	if err := validID(convID); err != nil {
 		return err
@@ -35,8 +35,8 @@ func (r *ConversationRepository) Compact(ctx context.Context, convID string, sum
 	var msgLines, patchLines [][]byte
 	for _, l := range lines {
 		var lr lineRecord
-		if json.Unmarshal(l, &lr) != nil {
-			continue
+		if err := json.Unmarshal(l, &lr); err != nil {
+			return fmt.Errorf("corrupt line: %w", err)
 		}
 		if lr.Type == lineMessage {
 			msgLines = append(msgLines, l)
@@ -60,10 +60,11 @@ func (r *ConversationRepository) Compact(ctx context.Context, convID string, sum
 	if err := writeFileAtomic(sealed, buf.Bytes(), 0o644); err != nil {
 		return err
 	}
-	// The sealed file is committed only once meta counts it — failures
-	// below leave it an orphan the meta-bounded loader ignores.
+	// The sealed file is committed only once meta counts it. A crash before
+	// that leaves an orphan that normal reads reject until offline repair.
 
-	// Rewrite active: summary + surviving messages + every patch line.
+	// Rewrite active: summary + surviving messages + all patch lines.
+	// The reader matches patches to retained calls across every segment.
 	buf.Reset()
 	sum, err := json.Marshal(lineRecord{Type: lineMessage, Data: encodeMessage(summary)})
 	if err != nil {
@@ -88,8 +89,8 @@ func (r *ConversationRepository) Compact(ctx context.Context, convID string, sum
 	if err := r.writeMeta(convID, meta); err != nil {
 		// Do NOT remove the sealed file here — the active rewrite
 		// already dropped the prefix, so the uncounted segment is now
-		// its only copy. Loaders ignore it (meta is the commit point)
-		// while the bytes survive on disk for recovery.
+		// its only copy. Readers reject the mismatched archive until repair
+		// commits the segment and recalculates the counters.
 		return err
 	}
 	return nil
