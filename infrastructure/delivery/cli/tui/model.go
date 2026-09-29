@@ -62,6 +62,7 @@ type replModel struct {
 	phase           string // waiting → thinking → responding → exec <tool>
 	runtime         *tuiRuntime
 	outbox          []string
+	pendingPrints   int  // scrollback batches not yet taken by the loop
 	interactive     bool // stdin is a terminal
 	width           int  // terminal columns; 0 until WindowSizeMsg arrives
 	ctx             context.Context
@@ -140,6 +141,16 @@ func (m replModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// outbox and emit.
 		m.drainNotes()
 		return m, m.flush()
+	case printAckMsg:
+		if m.pendingPrints > 0 {
+			m.pendingPrints--
+		}
+		// An exit waiting on scrollback: the last line landed, take the
+		// session down.
+		if m.repl.Exit && m.pendingPrints == 0 {
+			return m, tea.Quit
+		}
+		return m, nil
 	case spinner.TickMsg:
 		// Forward ticks only while a turn runs — dropping the chain when
 		// idle is what stops the animation.
@@ -184,7 +195,8 @@ func (m replModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		default:
-			return m, tea.Quit
+			m.repl.Exit = true
+			return m, m.quitOrWait()
 		}
 	case tea.KeyEscape:
 		switch {
@@ -198,7 +210,8 @@ func (m replModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyCtrlD:
 		if value == "" && !m.turnActive {
-			return m, tea.Quit
+			m.repl.Exit = true
+			return m, m.quitOrWait()
 		}
 	case tea.KeyTab:
 		if rows != nil {
@@ -316,7 +329,10 @@ func (m *replModel) drain() tea.Cmd {
 	}
 	cmds = append(cmds, m.flush())
 	if m.repl.Exit {
-		cmds = append(cmds, tea.Quit)
+		// An exit waits for scrollback still in flight — quitOrWait
+		// returns nil and printAckMsg finishes the quit once the last
+		// line landed.
+		cmds = append(cmds, m.quitOrWait())
 	}
 	return tea.Sequence(cmds...)
 }
@@ -367,6 +383,35 @@ func (m *replModel) println(s string) {
 	m.outbox = append(m.outbox, strings.TrimRight(s, "\n"))
 }
 
+// printAckMsg reports that a scrollback batch reached the event loop. The
+// flush cmd emits it after tea.Println's own message, which the program
+// takes in order — so an exit can wait for the last line instead of racing
+// it (a quit that overtakes a pending print drops it: the loop returns on
+// QuitMsg and never handles the print).
+type printAckMsg struct{}
+
+// flush hands the outbox to the renderer as scrollback and tracks the
+// batch until the loop has taken it; an exit requested in the same breath
+// is finished by the ack, not by tea.Quit.
+func (m *replModel) flush() tea.Cmd {
+	if len(m.outbox) == 0 {
+		return nil
+	}
+	batch := m.wrap(strings.Join(m.outbox, "\n"))
+	m.outbox = nil
+	m.pendingPrints++
+	return tea.Sequence(tea.Println(batch), func() tea.Msg { return printAckMsg{} })
+}
+
+// quitOrWait returns tea.Quit unless scrollback output is still in flight;
+// the ack of the last batch finishes the exit then.
+func (m *replModel) quitOrWait() tea.Cmd {
+	if m.pendingPrints > 0 {
+		return nil
+	}
+	return tea.Quit
+}
+
 // drainNotes pulls queued session notifications into the outbox. The
 // session Notify hook can fire on the update loop itself (route
 // auto-select inside ResolveRoute) — queueing on the runtime keeps that
@@ -378,15 +423,6 @@ func (m *replModel) drainNotes() {
 	if notes := m.runtime.takeNotes(); len(notes) > 0 {
 		m.outbox = append(m.outbox, notes...)
 	}
-}
-
-func (m *replModel) flush() tea.Cmd {
-	if len(m.outbox) == 0 {
-		return nil
-	}
-	batch := m.wrap(strings.Join(m.outbox, "\n"))
-	m.outbox = nil
-	return tea.Println(batch)
 }
 
 func (m *replModel) runCommand(command, args string) tea.Cmd {

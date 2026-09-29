@@ -438,6 +438,32 @@ func TestPipedCRNeverTriggersPicker(t *testing.T) {
 	}
 }
 
+// Exit waits for scrollback: a print still travelling to the event loop
+// must land before the quit, or the line that produced it vanishes
+// (bubbletea stops the loop on QuitMsg and never handles the pending
+// print). The exit is finished by the print ack instead.
+func TestExitWaitsForPendingScrollback(t *testing.T) {
+	repl := &REPL{Session: &session.Session{}}
+	m := &replModel{repl: repl, live: &strings.Builder{}}
+	m.println("queued line")
+	repl.Exit = true
+	if cmd := m.drain(); cmd == nil {
+		t.Fatal("drain with a pending line must return the flush sequence")
+	}
+	if m.pendingPrints != 1 {
+		t.Fatalf("pendingPrints = %d, want the scrollback print tracked", m.pendingPrints)
+	}
+	_, ack := m.Update(printAckMsg{})
+	if ack == nil {
+		t.Fatal("the acknowledged print must finish the exit")
+	}
+	if msg := ack(); msg == nil {
+		t.Fatal("ack cmd returned no message")
+	} else if _, ok := msg.(tea.QuitMsg); !ok {
+		t.Fatalf("ack of the last print → %T, want tea.QuitMsg", msg)
+	}
+}
+
 // TestConversationArgPicker guards the picker flow: a bare completable
 // command on a TTY must not hard-fail with a usage error (or blindly
 // delete the active room) — the composer parks at the argument position
