@@ -4,8 +4,8 @@ import (
 	"context"
 
 	appjob "github.com/jahrulnr/nusallm/application/job"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
-	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
@@ -43,7 +43,7 @@ func (app *ConversationApp) History(ctx context.Context, id string, start, end i
 // not-yet-persisted room uses the local environment's starting catalog.
 func (app *ConversationApp) ToolSchemas(ctx context.Context, convID string) ([]valueobject.ToolSchema, error) {
 	deps := app.depsSnapshot()
-	kind := enum.EnvironmentLocal
+	kind := aggregate.DefaultEnvironment
 	if convID != "" {
 		conv, err := deps.Convs.Load(ctx, convID)
 		if err == nil {

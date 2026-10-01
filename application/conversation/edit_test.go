@@ -50,6 +50,18 @@ func TestEditRegeneratesFromTarget(t *testing.T) {
 	}
 }
 
+// Empty replacement text is rejected before the job ever posts — the
+// use case owns the submittable rule, same as Send.
+func TestEditRejectsEmpty(t *testing.T) {
+	app, _ := fixture(t, okHandler)
+	for _, content := range []string{"", "   "} {
+		if err := app.Edit(t.Context(), "room", "m_x", content, nil); apperror.As(err).StatusCode() != 400 {
+			t.Fatalf("empty edit %q → %v, want 400", content, err)
+		}
+	}
+	waitWorkers(t, app, 0)
+}
+
 func TestEditRejectsNonUser(t *testing.T) {
 	app, _ := fixture(t, okHandler)
 	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "hi", nil, appjob.SendOptions{}, nil); err != nil {

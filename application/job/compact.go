@@ -12,7 +12,6 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 	"github.com/jahrulnr/nusallm/infrastructure/prompt"
-	toolsummary "github.com/jahrulnr/nusallm/infrastructure/service/tool/summary"
 )
 
 // compactAttempts bounds the checkpoint dialogue — a model that cannot
@@ -27,7 +26,7 @@ const compactAttempts = 3
 // 413 (one over-sized message would loop forever).
 func (d Deps) maybeCompact(ctx context.Context, convID string, conv *aggregate.Conversation, gw *aggregate.Gateway, model entity.Model, svc dservice.TextModelService, budgetPct, keepTail int) (compacted bool, err error) {
 	budget := model.CompactionBudgetTokens(budgetPct)
-	if !conv.NeedCompaction(budget) || len(conv.Messages()) <= keepTail {
+	if !conv.NeedCompaction(budget) || !conv.CanManualCompact(keepTail) {
 		// Nothing foldable: a checkpoint that drops zero messages is
 		// noise in history, not headroom.
 		return false, nil
@@ -58,7 +57,7 @@ func (d Deps) compact(ctx context.Context, convID string, conv *aggregate.Conver
 	}
 	instruction.SetUserType(enum.LLMUserTypeSystem)
 	scratch.Append(instruction)
-	summary := toolsummary.NewSummaryTool()
+	summary := NewSummaryTool()
 	scratch.SetTools([]valueobject.ToolSchema{summary.Schema()})
 
 	checkpoint, err := d.writeCheckpoint(ctx, scratch, gw, model, svc, summary)
@@ -100,7 +99,7 @@ func (d Deps) compact(ctx context.Context, convID string, conv *aggregate.Conver
 // with a single summary tool call, but a plain-text answer is accepted —
 // a model that ignores the mandate still produced a checkpoint, which
 // beats failing into a 413 loop.
-func (d Deps) writeCheckpoint(ctx context.Context, scratch *aggregate.Conversation, gw *aggregate.Gateway, model entity.Model, svc dservice.TextModelService, summary *toolsummary.SummaryTool) (string, error) {
+func (d Deps) writeCheckpoint(ctx context.Context, scratch *aggregate.Conversation, gw *aggregate.Gateway, model entity.Model, svc dservice.TextModelService, summary *SummaryTool) (string, error) {
 	for attempt := 0; attempt < compactAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return "", apperror.New(408, "compaction canceled", err)
@@ -122,7 +121,7 @@ func (d Deps) writeCheckpoint(ctx context.Context, scratch *aggregate.Conversati
 			continue // an empty message deserves another attempt, not a checkpoint
 		}
 		for _, call := range pending {
-			if call.Name() != toolsummary.Name {
+			if call.Name() != SummaryToolName {
 				_ = last.SetToolOutput(call.ID(), "error: only the summary tool is available")
 				continue
 			}

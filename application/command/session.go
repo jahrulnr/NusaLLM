@@ -13,6 +13,11 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 )
 
+// MinListedContextWindow is the model-picker floor the session surface
+// republishes so handlers can cite it in refusals; application/gateway
+// owns the policy.
+const MinListedContextWindow = appgateway.MinListedContextWindow
+
 // SlashSession is what slash-command handlers call: client bindings,
 // workspace and output ports, and conversation/gateway use cases — without
 // exposing *ConversationApp or *GatewayApp.

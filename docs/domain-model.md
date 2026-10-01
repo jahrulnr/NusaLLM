@@ -374,9 +374,11 @@ ref into the name it points at, `SecretRef` builds the vault form. Any
 non-ref value is literal key material — writers persist refs verbatim, and
 readers may surface a ref but never the resolved value.
 
-**Support types.** `Workspace` (`workspace.go`) is a cleaned,
-workspace-relative path that rejects `..` escapes and absolute paths with
-`ErrPathTraversal` — the sandbox rule behind file tools; `ParseWorkspacePath`
+**Support types.** `Workspace` (`workspace.go`) is a canonical
+slash-separated workspace-relative path — platform-neutral because the
+workspace may live on a different OS than the host. It rejects `..`
+segments, rooted paths, drive-letter and UNC prefixes, and any `\` byte
+(`ErrPathTraversal`); `ParseWorkspacePath`
 accepts optionally double-quoted input. `Command` (`command.go`) wraps raw
 command text and `SplitFirst` separates a leading token from its tail.
 The terminal formatter `infrastructure/delivery/cli/term/token.go` renders
@@ -432,7 +434,9 @@ conversation referencing it by route. `Load` hydrates with the apiKey
 `Inspect` and `InspectList` are the management-plane reads: `GatewaySnapshot`
 carries the raw `ApiKeyRef` (literal, ref, or empty — never resolved) so an
 update to other fields can carry the ref forward instead of pinning
-whatever it resolved to, and a record that can't even decode still appears
+whatever it resolved to, plus `KeyResolved` — a non-fatal probe reporting
+whether that ref currently resolves — and a record that can't even decode
+still appears
 as a snapshot with a nil `Gateway` rather than vanishing from listings.
 `GatewaySecretKey(gatewayID)` is the canonical vault key
 (`"gateway/<id>/api_key"`) shared by the repository and the management

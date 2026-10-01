@@ -77,7 +77,7 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 		// finished. Persist that partial message and mark those calls
 		// interrupted instead of dropping the turn from history.
 		canceled := err != nil && (ctx.Err() != nil || apperror.As(err).StatusCode() == 408)
-		if err != nil && !canceled && apperror.As(err).StatusCode() == 413 && !didCompact && len(added) == 0 && len(conv.Messages()) > ccfg.CompactKeepTail {
+		if err != nil && !canceled && apperror.As(err).StatusCode() == 413 && !didCompact && len(added) == 0 && conv.CanManualCompact(ccfg.CompactKeepTail) {
 			// The provider says overflow even though our estimate
 			// disagreed — believe the provider once: compact and retry.
 			// Retrying needs a clean call: with a partial message

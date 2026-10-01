@@ -204,6 +204,7 @@ func TestNotFound(t *testing.T) {
 // Inspect reads without resolving: an unresolvable ref still loads, and a
 // file that can't decode at all surfaces as a nil-Gateway snapshot rather
 // than hiding — the management plane's view, unlike Load's picker view.
+// KeyResolved reports the same resolution Load enforces, non-fatally.
 func TestInspect(t *testing.T) {
 	repo := newRepo(t)
 	g, _ := aggregate.NewGateway("g", "n", "https://x", enum.StyleMessages)
@@ -216,8 +217,16 @@ func TestInspect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snap.Gateway == nil || snap.ApiKeyRef != "env:DEFINITELY_UNSET_INSPECT" {
+	if snap.Gateway == nil || snap.ApiKeyRef != "env:DEFINITELY_UNSET_INSPECT" ||
+		snap.KeyResolved {
 		t.Fatalf("Inspect = %+v", snap)
+	}
+
+	// The probe tracks the resolution source — set env flips the flag.
+	t.Setenv("DEFINITELY_UNSET_INSPECT", "now-set")
+	snap, err = repo.Inspect(t.Context(), "g")
+	if err != nil || !snap.KeyResolved {
+		t.Fatalf("resolved env ref must report KeyResolved: %+v, %v", snap, err)
 	}
 
 	if err := os.WriteFile(repo.(*GatewayRepository).file("bad"), []byte("{corrupt"), 0o600); err != nil {

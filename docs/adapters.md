@@ -381,7 +381,7 @@ backpressure the tool, and chunks are never persisted.
 | `apply_patch` | `tool/file` (`patch.go`) | Literal search/replace — deliberately not unified diff; files > 4 MiB are rejected in favor of `exec`/`sed`; ambiguous anchors must gain context or `replace_all` |
 | `read_media` | `tool/file` (`read_media.go`) | Attaches a non-text file to the result as a pinned `file://` reference — see below |
 | `exec` | `tool/terminal` (`exec.go`) | Shell command, merged output — see below |
-| `summary` | `tool/summary` (`summary.go`) | Compaction checkpoint contract — not in the agent-facing catalog |
+| `summary` | `application/job` (`summary.go`) | Compaction checkpoint contract — not in the agent-facing catalog |
 
 The four file tools receive the same `repository.Workspace` at construction;
 `cmd/nusallm/wire.go` also passes the process cwd as their fallback root.
@@ -432,12 +432,13 @@ referenced files.
 
 ### `summary` — the compaction contract
 
-`tool/summary` is not a user-or-agent tool in the usual sense: its `text`
-field *is* the result, and `Execute` merely extracts it. The compaction job
-(`application/job/compact.go`) builds a scratch conversation containing only
-this tool's schema and drives `Send` until the model answers through it,
-accepting plain text as a fallback. It is never registered in the `tools` map
-in `cmd/nusallm/wire.go`.
+The summary contract (`application/job/summary.go`) is not a user-or-agent
+tool in the usual sense: its `text` field *is* the result, and `Execute`
+merely extracts it. The compaction job (`application/job/compact.go`)
+builds a scratch conversation containing only this tool's schema and
+drives `Send` until the model answers through it, accepting plain text as
+a fallback. It is never registered in the `tools` map in
+`cmd/nusallm/wire.go`.
 
 ## `service/workspace` — the sandbox
 
@@ -447,8 +448,9 @@ in `cmd/nusallm/wire.go`.
 session. The local repository owns `os.OpenRoot` and regular-file checks.
 
 `ResolveAttachment` (`attachment.go`) is the attachment path: validate the
-requested path via `valueobject.NewWorkspace` (clean, reject absolute paths
-and `..`), open through `WorkspaceSession.OpenRegular`, sniff the media
+requested path via `valueobject.NewWorkspace` (canonical slash-separated
+form — rejects `\`, absolute/drive/UNC prefixes, and `..` segments), open
+through `WorkspaceSession.OpenRegular`, sniff the media
 type, reject text modalities, enforce the modality size limit, and pin the
 bytes by sha256 so the later wire-time read resolves only what the user
 selected. Materialization at send time — `file://` reopen + base64, `data:`

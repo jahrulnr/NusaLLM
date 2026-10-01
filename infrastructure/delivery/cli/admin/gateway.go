@@ -12,6 +12,7 @@ import (
 	appgateway "github.com/jahrulnr/nusallm/application/gateway"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 	"golang.org/x/term"
 )
@@ -66,7 +67,7 @@ func Gateway(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		// Deleting also removes the canonical vault key — warn when a
 		// surviving gateway references it, so the break is not silent.
 		if refs, err := b.gateways.List(context.Background()); err == nil {
-			canonical := valueobject.KeyRefSecret + "gateway/" + id + "/api_key"
+			canonical := valueobject.SecretRef(drepo.GatewaySecretKey(id))
 			for _, g := range refs {
 				if g.KeyRef == canonical {
 					fmt.Fprintf(stderr, "nusallm: warning: gateway %s references %s — now unresolvable\n",
@@ -118,8 +119,16 @@ func gatewayWrite(b *Boot, edit bool, args []string, stdout, stderr io.Writer, s
 		return 2
 	}
 	id := args[0]
-	if id == "" || strings.HasPrefix(id, "-") || strings.ContainsAny(id, " \t\n") {
+	// Path safety is the domain's identity rule; the transport adds two
+	// argv-boundary constraints on top: a leading "-" means a flag landed
+	// in the positional id slot, and whitespace would leave the gateway
+	// unaddressable — /route and argv split on spaces.
+	if strings.HasPrefix(id, "-") || strings.ContainsAny(id, " \t\n") {
 		fmt.Fprintf(stderr, "nusallm: invalid gateway id %q — no flags or whitespace\n", id)
+		return 2
+	}
+	if err := valueobject.ValidID(id); err != nil {
+		fmt.Fprintf(stderr, "nusallm: invalid gateway id %q — %s\n", id, err)
 		return 2
 	}
 	fs := flag.NewFlagSet("gateway", flag.ContinueOnError)

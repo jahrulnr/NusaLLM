@@ -12,11 +12,14 @@ import (
 	"golang.org/x/term"
 )
 
+// defaultEndpoint prefills the endpoint prompt with the flagship provider
+// for the chosen wire style. The hostnames come from the domain's provider
+// registry (enum.Provider); scheme and base path are delivery defaults.
 func defaultEndpoint(style enum.Style) string {
 	if style == enum.StyleMessages {
-		return "https://api.anthropic.com"
+		return "https://" + enum.Anthropic.String()
 	}
-	return "https://api.openai.com/v1"
+	return "https://" + enum.OpenAI.String() + "/v1"
 }
 
 // promptField prints "label [default]: " and returns the line or the

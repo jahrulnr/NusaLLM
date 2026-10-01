@@ -68,10 +68,11 @@ func (c *Config) Load(store Store, path string) error {
 	return nil
 }
 
-// Validate decodes one config document strictly — unknown keys or
-// trailing garbage are rejected so a typo fails loudly instead of
-// silently tuning nothing — then normalizes. Callers mutating the file
-// validate the candidate before it replaces the old one.
+// Validate decodes one config document — unknown keys are ignored so a
+// leftover or comment-as-field never blocks boot; malformed JSON, wrong
+// types on known keys, and trailing garbage still fail — then normalizes.
+// Callers mutating the file validate the candidate before it replaces the
+// old one.
 func Validate(raw []byte) (Config, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
@@ -79,7 +80,6 @@ func Validate(raw []byte) (Config, error) {
 	}
 	var fresh Config
 	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
 	if err := dec.Decode(&fresh); err != nil {
 		return Config{}, apperror.NewInternalError("config load failed", err)
 	}

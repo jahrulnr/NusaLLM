@@ -10,6 +10,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	commandinternal "github.com/jahrulnr/nusallm/infrastructure/service/command/internal"
 )
@@ -67,6 +68,41 @@ func (r *Registry) Execute(ctx context.Context, command string, emitter service.
 		return fmt.Errorf("unknown command %q; use /help", command)
 	}
 	return e.exec.Execute(ctx, command, emitter, args...)
+}
+
+// JobFunc is a worker-bound command body — the transport runs it off its
+// update loop with a command emitter for text output and a turn sink for
+// streamed events; a nil sink means the caller is not streaming.
+type JobFunc func(ctx context.Context, emit service.CommandEmitter, onEvent event.TurnEventHandler) error
+
+// JobCommand is a slash command that runs as a worker job — /edit,
+// /compact — rather than producing inline output. Job validates the
+// arguments up front and returns the work as a closure, so a TUI runs it
+// as a turn while synchronous transports run the same closure through
+// Execute. One implementation serves both.
+type JobCommand interface {
+	service.SlashCommand
+	Job(args ...string) (JobFunc, error)
+}
+
+// Job resolves the worker-bound body of a command. isJob reports whether
+// the named command runs as a job — true even when validation failed, in
+// which case job is nil and err carries the reason. Inline and unknown
+// commands return (nil, false, nil) for Execute to handle.
+func (r *Registry) Job(command string, args ...string) (job JobFunc, isJob bool, err error) {
+	e, ok := r.commands[strings.ToLower(strings.TrimPrefix(command, "/"))]
+	if !ok {
+		return nil, false, nil
+	}
+	jc, ok := e.exec.(JobCommand)
+	if !ok {
+		return nil, false, nil
+	}
+	job, err = jc.Job(args...)
+	if job == nil && err == nil {
+		err = fmt.Errorf("command %q returned no job", command)
+	}
+	return job, true, err
 }
 
 // Describe lists registered commands sorted by usage.

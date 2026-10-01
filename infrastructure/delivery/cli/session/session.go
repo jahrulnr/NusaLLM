@@ -16,7 +16,6 @@ import (
 	appgateway "github.com/jahrulnr/nusallm/application/gateway"
 	appjob "github.com/jahrulnr/nusallm/application/job"
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/term"
-	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
 	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
@@ -121,7 +120,7 @@ func (s *Session) EffectiveRouteModel(ctx context.Context) (route, modelID strin
 
 // ResolveRoute picks the effective route and model for the next turn —
 // explicit /route + /model selection, the conversation's stored binding,
-// or an unambiguous auto-selection — and must run on the update loop:
+// or the gateway app's auto-selection — and must run on the update loop:
 // it writes s.Route/s.ModelID that the same loop renders, so the turn
 // goroutine receives them as arguments rather than racing on the fields.
 // An unambiguous setup selects itself and says so, rather than making
@@ -146,56 +145,32 @@ func (s *Session) ResolveRoute(ctx context.Context) (route, modelID string, err 
 			}
 		}
 	}
-	if route == "" {
-		gateways, err := s.Gateways.List(ctx)
-		if err != nil {
-			return "", "", err
-		}
-		var ready []appgateway.GatewayInfo
-		for _, g := range gateways {
-			if !g.Broken {
-				ready = append(ready, g)
-			}
-		}
-		if len(ready) == 1 {
-			route = ready[0].ID
-			s.Route = route
-			s.Notify(fmt.Sprintf("auto-selected route %s — the only configured gateway", route))
-		}
+	sel, err := s.Gateways.ResolveSelection(ctx, route, modelID)
+	if err != nil {
+		return "", "", err
 	}
-	if modelID == "" && route != "" {
-		if gw, err := s.Gateways.Get(ctx, route); err == nil && !gw.Broken {
-			listed := appgateway.ListedModels(gw.Models)
-			if len(listed) == 1 {
-				modelID = listed[0].ID()
-			}
-		}
-		if modelID != "" {
-			s.ModelID = modelID
-			s.Notify(fmt.Sprintf("auto-selected model %s — the only model on %s", modelID, route))
-		}
+	if sel.AutoRoute {
+		s.Route = sel.Route
+		s.Notify(fmt.Sprintf("auto-selected route %s — the only configured gateway", sel.Route))
 	}
-	if route == "" || modelID == "" {
+	if sel.AutoModel {
+		s.ModelID = sel.ModelID
+		s.Notify(fmt.Sprintf("auto-selected model %s — the only model on %s", sel.ModelID, sel.Route))
+	}
+	if sel.Route == "" || sel.ModelID == "" {
 		return "", "", errors.New("select a route and model with /route and /model before starting a conversation")
 	}
-	return route, modelID, nil
+	return sel.Route, sel.ModelID, nil
 }
 
 // Send runs one conversation turn. Modality warnings surface through
 // Notify; persistence bookkeeping stays with the caller via SendResult.
+// Route, model, and payload validation are the use case's call — this
+// transport only warns where it can still help.
 func (s *Session) Send(ctx context.Context, text, route, modelID string, onEvent event.TurnEventHandler) (appconversation.SendResult, error) {
-	if text == "" && len(s.Attachments) == 0 {
-		return appconversation.SendResult{}, nil
-	}
 	gateway, err := s.Gateways.Get(ctx, route)
 	if err != nil {
 		return appconversation.SendResult{}, err
-	}
-	if gateway.Broken {
-		return appconversation.SendResult{}, fmt.Errorf("gateway %q is broken and cannot be used", route)
-	}
-	if !HasModel(gateway.Models, modelID) {
-		return appconversation.SendResult{}, fmt.Errorf("model %q is not in gateway %q; use /model to select one", modelID, route)
 	}
 	for _, model := range gateway.Models {
 		if model.ID() != modelID {
@@ -212,25 +187,9 @@ func (s *Session) Send(ctx context.Context, text, route, modelID string, onEvent
 	return s.Conversations.Send(ctx, s.ConversationID, route, modelID, text, s.Attachments, appjob.SendOptions{}, onEvent)
 }
 
-// Edit regenerates a conversation from a user message — a turn just like
-// Send, so the caller supplies the event handler.
-func (s *Session) Edit(ctx context.Context, convID, messageID, content string, onEvent event.TurnEventHandler) error {
-	return s.Conversations.Edit(ctx, convID, messageID, content, onEvent)
-}
-
 // Write emits formatted output through the command emitter.
 func (s *Session) Write(emitter service.CommandEmitter, format string, args ...any) {
 	if emitter != nil {
 		emitter(fmt.Sprintf(format, args...))
 	}
-}
-
-// HasModel reports whether id is in the gateway's model catalog.
-func HasModel(models []entity.Model, id string) bool {
-	for _, model := range models {
-		if model.ID() == id {
-			return true
-		}
-	}
-	return false
 }

@@ -1,12 +1,9 @@
 package commands
 
 import (
-	"context"
-
 	appcommand "github.com/jahrulnr/nusallm/application/command"
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/session"
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/term"
-	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 	svccommand "github.com/jahrulnr/nusallm/infrastructure/service/command"
@@ -18,8 +15,9 @@ type Registry = svccommand.Registry
 // Info is one palette or /help row.
 type Info = service.CommandCompletion
 
-// AttachmentPath parses /attach argument text.
-var AttachmentPath = svccommand.AttachmentPath
+// JobFunc is a worker-bound command body the registry resolved — the
+// update loop runs it as a turn with live event streaming.
+type JobFunc = svccommand.JobFunc
 
 type sessionBindings struct{ s *session.Session }
 
@@ -60,9 +58,4 @@ func Session(s *session.Session) appcommand.SlashSession {
 		s.Workspace,
 		&sessionOutput{s},
 	)
-}
-
-// Edit forwards to the session turn API for non-command callers.
-func Edit(ctx context.Context, s *session.Session, convID, messageID, content string, onEvent event.TurnEventHandler) error {
-	return s.Edit(ctx, convID, messageID, content, onEvent)
 }

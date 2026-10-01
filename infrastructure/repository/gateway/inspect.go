@@ -15,13 +15,14 @@ import (
 // Inspect reads the record and hydrates it WITHOUT resolving the stored
 // apiKey — the aggregate carries no key material and the raw stored value
 // comes back beside it, so the management plane renders records whose
-// credential is unresolvable. A file that can't even decode still
-// surfaces as a snapshot with nil Gateway rather than hiding; only a
-// truly absent id is 404, and genuine I/O failures (permissions, IO
-// errors) propagate — they are operational faults, not corruption. The
-// snapshot's ID is always the filename — the addressable id — even when
-// the record decodes with a mismatched embedded id.
-func (r *GatewayRepository) Inspect(_ context.Context, id string) (drepo.GatewaySnapshot, error) {
+// credential is unresolvable. Resolution is still answered: KeyResolved
+// probes the same dispatch Load enforces, non-fatally. A file that can't
+// even decode still surfaces as a snapshot with nil Gateway rather than
+// hiding; only a truly absent id is 404, and genuine I/O failures
+// (permissions, IO errors) propagate — they are operational faults, not
+// corruption. The snapshot's ID is always the filename — the addressable
+// id — even when the record decodes with a mismatched embedded id.
+func (r *GatewayRepository) Inspect(ctx context.Context, id string) (drepo.GatewaySnapshot, error) {
 	if err := validID(id); err != nil {
 		return drepo.GatewaySnapshot{}, err
 	}
@@ -40,13 +41,15 @@ func (r *GatewayRepository) Inspect(_ context.Context, id string) (drepo.Gateway
 			ApiKey string `json:"apiKey"`
 		}
 		_ = json.Unmarshal(raw, &stub)
-		return drepo.GatewaySnapshot{ID: id, ApiKeyRef: stub.ApiKey}, nil
+		return drepo.GatewaySnapshot{ID: id, ApiKeyRef: stub.ApiKey,
+			KeyResolved: r.keyResolves(ctx, id, stub.ApiKey)}, nil
 	}
+	resolved := r.keyResolves(ctx, id, rec.ApiKey)
 	g, err := decodeGateway(rec, "")
 	if err != nil {
-		return drepo.GatewaySnapshot{ID: id, ApiKeyRef: rec.ApiKey}, nil
+		return drepo.GatewaySnapshot{ID: id, ApiKeyRef: rec.ApiKey, KeyResolved: resolved}, nil
 	}
-	return drepo.GatewaySnapshot{ID: id, Gateway: g, ApiKeyRef: rec.ApiKey}, nil
+	return drepo.GatewaySnapshot{ID: id, Gateway: g, ApiKeyRef: rec.ApiKey, KeyResolved: resolved}, nil
 }
 
 // InspectList snapshots every <id>.json in the directory — including

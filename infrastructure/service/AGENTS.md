@@ -16,7 +16,7 @@ provider-independent business rules.
 |------|------|----------------|
 | Text completion adapter | One chat-completions-style request/response leg, streaming frames, finish reasons, provider-specific quirks on the wire | Route selection, retries, conversation mutations, compaction policy |
 | Wire helpers | Reusable encoding and streaming mechanics shared by adapters | Model choice or session state |
-| Tool implementations | Executing a named tool’s side effect (files, terminal, summaries, …) | Whether an agent may call a tool — decided in domain and enforced in the application turn |
+| Tool implementations | Executing a named tool’s side effect (files, terminal, …) | Whether an agent may call a tool — decided in domain and enforced in the application turn |
 | Workspace flow | Attachment selection and workspace-scoped tool behavior through `repository.Workspace` | Opening, reading, or writing host files directly |
 | Slash commands | Per-command handlers, registry dispatch, shared completion helpers | Session use-case port — application command; input UX — delivery |
 

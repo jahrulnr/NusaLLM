@@ -96,7 +96,9 @@ func readLocal(a valueobject.Attachment, fileRoot MediaRoot) (raw []byte, err er
 	if err != nil || relative == ".." || filepath.IsAbs(relative) || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 		return nil, apperror.New(400, "attachment outside workspace", err)
 	}
-	workspace, err := valueobject.NewWorkspace(relative)
+	// Workspace paths are slash-separated on every host; Rel emits host
+	// separators, so normalize before the workspace grammar validates it.
+	workspace, err := valueobject.NewWorkspace(filepath.ToSlash(relative))
 	if err != nil {
 		return nil, apperror.New(400, "attachment outside workspace", err)
 	}

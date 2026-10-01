@@ -34,6 +34,10 @@ type Conversation struct {
 	usage        valueobject.Usage
 }
 
+// DefaultEnvironment is the execution binding every room starts with —
+// local until SetEnvironment rebinds it.
+const DefaultEnvironment = enum.EnvironmentLocal
+
 // NewConversation creates the aggregate. An empty id mints a fresh c_<hex>
 // — the caller reads it back via ID().
 func NewConversation(id string) (*Conversation, error) {
@@ -41,7 +45,7 @@ func NewConversation(id string) (*Conversation, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Conversation{id: vo.String(), environment: enum.EnvironmentLocal}, nil
+	return &Conversation{id: vo.String(), environment: DefaultEnvironment}, nil
 }
 
 // Append adds a message to the conversation history.

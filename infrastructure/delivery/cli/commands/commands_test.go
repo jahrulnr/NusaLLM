@@ -26,17 +26,7 @@ import (
 	repoworkspace "github.com/jahrulnr/nusallm/infrastructure/repository/workspace"
 	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
 	textcompletion "github.com/jahrulnr/nusallm/infrastructure/service/core/text/completion"
-	toolsummary "github.com/jahrulnr/nusallm/infrastructure/service/tool/summary"
 )
-
-func TestAttachmentPathAcceptsQuotedSpaces(t *testing.T) {
-	if got, err := AttachmentPath(`"images/a photo.png"`); err != nil || got != "images/a photo.png" {
-		t.Fatalf("attachment path = %q, %v", got, err)
-	}
-	if _, err := AttachmentPath(`"unterminated`); err == nil {
-		t.Fatal("invalid quoted attachment path should fail")
-	}
-}
 
 // commandFixture wires a session+registry against a stub provider the way
 // the integration test does, minus the piped program loop — commands
@@ -85,7 +75,7 @@ func newCommandFixture(t *testing.T) *commandFixture {
 		gatewayRepository,
 		map[enum.Environment]appjob.EnvironmentDriver{enum.EnvironmentLocal: appjob.EnvironmentBundle{
 			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: textcompletion.New(coretext.Options{FileRoot: workspace, FileStore: repoworkspace.NewLocal()})},
-			Tools:    map[string]dservice.Tool{toolsummary.Name: toolsummary.NewSummaryTool()},
+			Tools:    map[string]dservice.Tool{appjob.SummaryToolName: appjob.NewSummaryTool()},
 		}},
 		config.NewConfig(),
 		nil,
@@ -141,7 +131,7 @@ func TestSessionCommandsReportState(t *testing.T) {
 	if out := f.run(t, "/pwd"); !strings.Contains(out, f.workspace) {
 		t.Fatalf("pwd = %q, want workspace", out)
 	}
-	if out := f.run(t, "/tools"); !strings.Contains(out, toolsummary.Name) {
+	if out := f.run(t, "/tools"); !strings.Contains(out, appjob.SummaryToolName) {
 		t.Fatalf("tools = %q, want the summary tool listed", out)
 	}
 	if out := f.run(t, "/attach"); !strings.Contains(out, "no pending attachments") {
@@ -252,6 +242,9 @@ func TestCompactFoldsHistoryOnDemand(t *testing.T) {
 	if strings.HasPrefix(out, "error:") {
 		t.Fatalf("compact failed: %s", out)
 	}
+	if !strings.Contains(out, "compacted "+convID) {
+		t.Fatalf("compact = %q, want the confirmation line", out)
+	}
 	info, err := f.app.Info(t.Context(), convID)
 	if err != nil {
 		t.Fatal(err)
@@ -268,6 +261,53 @@ func TestCompactFoldsHistoryOnDemand(t *testing.T) {
 	f.send(t, "short")
 	if out := f.run(t, "/compact"); !strings.Contains(out, "nothing to compact") {
 		t.Fatalf("compact on thin history = %q, want refusal", out)
+	}
+}
+
+// TestJobCommandsValidateBeforeRunning guards the worker-bound boundary:
+// /edit and /compact resolve through Registry.Job — the same validation
+// the TUI turn runner relies on — while inline commands stay Execute-only.
+func TestJobCommandsValidateBeforeRunning(t *testing.T) {
+	f := newCommandFixture(t)
+
+	if out := f.run(t, "/edit m_1 replacement"); !strings.Contains(out, "no active conversation") {
+		t.Fatalf("edit without a conversation = %q, want the guard", out)
+	}
+	if out := f.run(t, "/compact"); !strings.Contains(out, "no active conversation") {
+		t.Fatalf("compact without a conversation = %q, want the guard", out)
+	}
+	if out := f.run(t, "/compact extra"); !strings.Contains(out, "usage: /compact") {
+		t.Fatalf("compact with args = %q, want the usage error", out)
+	}
+
+	// Job is the dispatch seam the TUI turn runner consumes: inline and
+	// unknown commands are not jobs, job commands validate up front.
+	if _, isJob, err := f.reg.Job("status"); isJob || err != nil {
+		t.Fatalf("status must stay an inline command: isJob=%v err=%v", isJob, err)
+	}
+	if _, isJob, err := f.reg.Job("nosuch"); isJob || err != nil {
+		t.Fatalf("unknown command must fall through to Execute: isJob=%v err=%v", isJob, err)
+	}
+	if _, isJob, err := f.reg.Job("edit", ""); !isJob || err == nil {
+		t.Fatalf("bare /edit job = isJob:%v err:%v, want guard rejection", isJob, err)
+	}
+	if _, isJob, err := f.reg.Job("compact", "extra"); !isJob || err == nil {
+		t.Fatalf("/compact extra job = isJob:%v err:%v, want usage validation", isJob, err)
+	}
+	job, isJob, err := f.reg.Job("edit", "m_1 text")
+	if !isJob || err == nil || job != nil {
+		t.Fatalf("edit job without a conversation = isJob:%v job:%v err:%v, want the guard and no job", isJob, job != nil, err)
+	}
+
+	// With a conversation bound, Job resolves the bound closure — the
+	// same work Execute would run — so a thin history refuses to fold.
+	f.send(t, "hello")
+	job, isJob, err = f.reg.Job("compact", "")
+	if !isJob || err != nil || job == nil {
+		t.Fatalf("compact job = isJob:%v job:%v err:%v, want a bound job", isJob, job != nil, err)
+	}
+	if err := job(t.Context(), nil, nil); err == nil || !strings.Contains(err.Error(), "nothing to compact") {
+		t.Fatalf("compact job on thin history = %v, want the fold refusal", err)
 	}
 }
 

@@ -249,7 +249,7 @@ nusallm config show                 effective config — file values over defaul
 nusallm config path                 resolved config file path (or "(no config file…)")
 nusallm config set <key> <value>    patch one dotted leaf
 nusallm config unset <key>          remove an override; defaulted keys reset to their default
-nusallm config validate             strict-decode check on the file
+nusallm config validate             decode check on the file
 ```
 
 `set` takes a dotted leaf (`service.idle_timeout`), decodes the value as
@@ -257,7 +257,8 @@ a JSON literal (`5`, `true`, `"2m"`), and falls back to a plain string
 for bare text — so `nusallm config set service.idle_timeout 2m` stores
 `"2m"`. `null` is refused. `set` requires a real leaf in the schema —
 typos fail instead of planting dead keys. `unset` removes an existing key
-from the input document, including an unknown key that prevents validation;
+from the input document, including unknown keys left over from removed
+fields or comment-as-field additions;
 normalization restores its default when one exists. The file is rewritten
 atomically as the full normalized document, so what
 lands on disk is exactly what the loader computes (durations come back
@@ -267,10 +268,11 @@ canonical: `2m` becomes `"2m0s"`). Both `set` and `unset` print
 `log` bind once at startup.
 
 Strictness is split deliberately: the REPL refuses to boot on a file that
-fails strict decode — unknown keys or trailing garbage are errors, not
-warnings. Gateway and onboarding commands use lenient boot loading;
-`config` commands open the file directly so `config unset` can repair a
-document that strict mode rejects.
+fails decode — malformed JSON, a mistyped known key, or trailing garbage
+are errors, not warnings. Unknown keys are ignored so a stale field or a
+comment-as-field never blocks boot. Gateway and onboarding commands use
+lenient boot loading; `config` commands open the file directly so
+`config unset` can clean keys a lenient load tolerates.
 
 ## Inside the REPL
 

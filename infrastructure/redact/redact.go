@@ -6,6 +6,7 @@
 package redact
 
 import (
+	"encoding/json"
 	"regexp"
 )
 
@@ -61,4 +62,27 @@ func String(s string) string {
 		s = p.ReplaceAllString(s, Mask)
 	}
 	return s
+}
+
+// WithoutBodies is a Logger Options.Redact policy: it keeps diagnostic
+// metadata without persisting conversation content. provider.request is
+// logged as unmarshaled JSON (the whole body), not a map with a "body"
+// key — omit it entirely. Response/error maps still drop only their
+// "body" field so status and request_id survive.
+func WithoutBodies(kind string, e any) any {
+	e = Value(e)
+	if kind == "provider.request" {
+		return map[string]any{"omitted": true}
+	}
+	switch v := e.(type) {
+	case map[string]any:
+		delete(v, "body")
+		return v
+	case []json.RawMessage:
+		return map[string]any{"chunks": len(v)}
+	case []any:
+		return map[string]any{"chunks": len(v)}
+	default:
+		return map[string]any{"omitted": true}
+	}
 }

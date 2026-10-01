@@ -28,7 +28,7 @@ distinct invariant, or a meaningful interface boundary.
 | `entity/` | `Message`, `ToolCall`, `Model` |
 | `enum/` | Closed string sets, each with `String()` + `Parse*()` |
 | `event/` | `TurnEvent` + `TurnEventHandler` — per-turn streaming sink for `TextModelService.Send` |
-| `repository/` | Ports only — `Conversation`, `Gateway`, `SecretStore`, `Logger` |
+| `repository/` | Ports only — `Conversation`, `ConversationRepairer`, `Gateway`, `SecretStore`, `Logger` |
 | `service/` | `TextModelService` port — one `Send` attempt; fallback/routing is app-layer work |
 | `valueobject/` | `Usage`, `Pricing`, `ToolSchema`, `Attachment` |
 

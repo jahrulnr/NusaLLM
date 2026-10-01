@@ -36,8 +36,12 @@ type (
 		err    error
 	}
 	// jobDoneMsg ends a worker-bound command — edit, compact — which has
-	// no SendResult to fold back into the REPL.
-	jobDoneMsg struct{ err error }
+	// no SendResult to fold back into the REPL; out carries text the job
+	// emitted (the compact confirmation) to commit ahead of the error.
+	jobDoneMsg struct {
+		out string
+		err error
+	}
 )
 
 // replModel is the Elm-style model for the REPL: a live tail for the
@@ -59,7 +63,7 @@ type replModel struct {
 	turnActive      bool
 	turnCancel      context.CancelFunc
 	spin            spinner.Model
-	phase           string // waiting → thinking → responding → exec <tool>
+	phase           string // waiting → thinking → responding → exec <tool> | <slash job>
 	runtime         *tuiRuntime
 	outbox          []string
 	pendingPrints   int  // scrollback batches not yet taken by the loop
@@ -135,6 +139,9 @@ func (m replModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sendDoneMsg:
 		return m.finishTurn(msg.result, msg.err)
 	case jobDoneMsg:
+		if msg.out != "" {
+			m.println(msg.out)
+		}
 		return m.finishTurn(appconversation.SendResult{}, msg.err)
 	case notifyPing:
 		// A session note queued from another goroutine — pull it into the
@@ -285,9 +292,10 @@ func (m replModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, m.editComposer(msg)
 }
 
-// submit parses the line: slash commands dispatch to the registry — /edit
-// runs as a turn — and text goes to the running conversation. Input typed
-// mid-turn queues and drains when the worker frees up.
+// submit parses the line: slash commands dispatch to the registry —
+// worker-bound ones (/edit, /compact) run as turns — and text goes to
+// the running conversation. Input typed mid-turn queues and drains when
+// the worker frees up.
 func (m replModel) submit(text string) (tea.Model, tea.Cmd) {
 	text = strings.TrimSpace(text)
 	m.textarea.Reset()
@@ -314,8 +322,9 @@ func (m replModel) submit(text string) (tea.Model, tea.Cmd) {
 }
 
 // drain dispatches queued submissions in order until a turn claims the
-// worker — commands run inline, a text submission or /edit launches the
-// turn and the rest stay queued for the next finishTurn boundary.
+// worker — commands run inline, a text submission or a job command
+// (/edit, /compact) launches the turn and the rest stay queued for the
+// next finishTurn boundary.
 func (m *replModel) drain() tea.Cmd {
 	var cmds []tea.Cmd
 	for len(m.queued) > 0 && !m.turnActive && !m.repl.Exit {
@@ -358,11 +367,20 @@ func (m *replModel) dispatch(text string) tea.Cmd {
 		}
 	}
 	switch {
-	case input.command == "edit":
-		return m.beginEdit(input.args)
-	case input.command == "compact":
-		return m.beginCompact()
 	case input.command != "":
+		// Worker-bound commands (/edit, /compact) resolve through the
+		// registry like every other slash command — Job validates and
+		// binds the closure, this loop runs it as a turn so events
+		// stream and ctrl+c interrupts. Inline and unknown commands go
+		// to Execute.
+		job, isJob, err := m.commands.Job(input.command, input.args)
+		if err != nil {
+			m.println("error: " + publicError(err))
+			return nil
+		}
+		if isJob {
+			return m.beginJob(input.command, input.args, job)
+		}
 		return m.runCommand(input.command, input.args)
 	default:
 		// People type "exit" bare at least once; a hint beats a failed turn.
@@ -467,9 +485,6 @@ func (m replModel) renderCommandOutput(command, output string) string {
 // turn resolves — then runs Send off the update loop, pumping turn events
 // back in as messages.
 func (m *replModel) beginTurn(text string) tea.Cmd {
-	if text == "" && len(m.repl.Attachments) == 0 {
-		return nil
-	}
 	// Route/model resolve here on the update loop — auto-selection writes
 	// r.route/r.modelID, and a worker-goroutine write would race the
 	// status line's reads. The turn itself takes them as arguments.
@@ -498,54 +513,33 @@ func (m *replModel) beginTurn(text string) tea.Cmd {
 	return tea.Batch(turn, m.spin.Tick)
 }
 
-// beginEdit runs an edit turn on the update loop. Picker UX for bare /edit
-// lives here; a full "/edit <id> <text>" line goes through cmdedit via runCommand.
-func (m *replModel) beginEdit(args string) tea.Cmd {
-	if m.repl.ConversationID == "" {
-		m.println("error: no active conversation; use /resume <id>")
-		return nil
+// beginJob runs a worker-bound slash command — /edit, /compact — the way
+// a text turn runs: the registry's Job already validated the line and
+// bound the work; this loop echoes it, then runs the closure off the
+// loop with turn events pumped back in and the emitter's text committed
+// when the job lands.
+func (m *replModel) beginJob(command, args string, job commands.JobFunc) tea.Cmd {
+	line := "/" + command
+	if args != "" {
+		line += " " + args
 	}
-	messageID, content, ok := valueobject.NewCommand(args).SplitFirst()
-	if !ok || strings.TrimSpace(content) == "" {
-		m.println("error: usage: /edit <message-id> <replacement text>")
-		return nil
-	}
-	m.println(term.Cyan + term.Bold + "> " + term.Sanitize("/edit "+messageID) + term.Reset)
+	m.println(term.Cyan + term.Bold + "> " + term.Sanitize(line) + term.Reset)
 	m.resetLive()
 	m.turnActive = true
-	m.phase = "waiting"
+	m.phase = command
 
 	turnCtx, cancel := signal.NotifyContext(m.ctx, os.Interrupt)
 	m.turnCancel = cancel
 	m.repl.CancelTurn = cancel
 
 	pump := turnPump{runtime: m.runtime}
-	repl, convID := m.repl, m.repl.ConversationID
+	var block strings.Builder
+	emitter := service.CommandEmitter(func(chunk string) {
+		block.WriteString(chunk)
+	})
 	turn := func() tea.Msg {
-		return jobDoneMsg{err: repl.Edit(turnCtx, convID, messageID, content, pump.Handle)}
-	}
-	return tea.Batch(turn, m.spin.Tick)
-}
-
-// beginCompact runs a manual fold on the room's worker — it produces no
-// turn events, so the live region just carries a marker line.
-func (m *replModel) beginCompact() tea.Cmd {
-	if m.repl.ConversationID == "" {
-		m.println("error: no active conversation; use /resume <id>")
-		return nil
-	}
-	m.resetLive()
-	m.turnActive = true
-	m.phase = "compacting"
-	m.println(term.Dim + "compacting…" + term.Reset)
-
-	turnCtx, cancel := signal.NotifyContext(m.ctx, os.Interrupt)
-	m.turnCancel = cancel
-	m.repl.CancelTurn = cancel
-
-	repl, convID := m.repl, m.repl.ConversationID
-	turn := func() tea.Msg {
-		return jobDoneMsg{err: repl.Conversations.Compact(turnCtx, convID)}
+		err := job(turnCtx, emitter, pump.Handle)
+		return jobDoneMsg{out: block.String(), err: err}
 	}
 	return tea.Batch(turn, m.spin.Tick)
 }

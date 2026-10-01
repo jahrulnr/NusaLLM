@@ -433,10 +433,12 @@ and replaces matches with `"***"`:
 - secret-shaped strings anywhere: `Bearer …` header values, `sk-…` and
   `AIza…` API keys, and `-----BEGIN … PRIVATE KEY-----` PEM blocks.
 
-On top of that, `cmd/nusallm/wire.go` installs a stricter redactor: it
-runs `redact.Value`, then deletes the `body`
-key from map payloads, collapses chunk lists to `{"chunks": n}`, and
-replaces anything else with `{"omitted": true}`. The log retains event kinds
+On top of that, `cmd/nusallm/wire.go` installs a stricter redactor —
+`redact.WithoutBodies`: `provider.request` entries are omitted entirely
+(the normalized payload has no `body` key but would leak `messages`
+content), `redact.Value` runs over the rest, then the `body`
+key is deleted from map payloads, chunk lists collapse to `{"chunks": n}`, and
+anything else becomes `{"omitted": true}`. The log retains event kinds
 and counts without duplicating conversation content.
 
 ### Rotation and resume

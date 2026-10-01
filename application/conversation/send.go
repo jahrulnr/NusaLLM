@@ -2,6 +2,8 @@ package appconversation
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	appjob "github.com/jahrulnr/nusallm/application/job"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
@@ -36,6 +38,9 @@ type SendResult struct {
 // leaves that line in history without an assistant turn; earlier routing
 // or validation failures do not persist it. The room keeps its binding
 // after a persisted failed turn so a retry can reuse route/modelID "".
+//
+// An empty submission — no text and no attachments — is a 400: it would
+// mint an empty room and burn a turn on nothing.
 func (app *ConversationApp) Send(
 	ctx context.Context,
 	convID string,
@@ -46,6 +51,9 @@ func (app *ConversationApp) Send(
 	opts appjob.SendOptions,
 	onEvent event.TurnEventHandler,
 ) (SendResult, error) {
+	if strings.TrimSpace(message) == "" && len(attachments) == 0 {
+		return SendResult{}, apperror.New(400, "empty message", fmt.Errorf("send has no text and no attachments"))
+	}
 	if convID == "" {
 		c, err := aggregate.NewConversation("") // mints c_<base32>
 		if err != nil {

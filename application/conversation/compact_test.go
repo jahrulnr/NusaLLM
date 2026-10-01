@@ -18,7 +18,6 @@ import (
 	repoconversation "github.com/jahrulnr/nusallm/infrastructure/repository/conversation"
 	repogateway "github.com/jahrulnr/nusallm/infrastructure/repository/gateway"
 	reposecret "github.com/jahrulnr/nusallm/infrastructure/repository/secret"
-	toolsummary "github.com/jahrulnr/nusallm/infrastructure/service/tool/summary"
 )
 
 // compactSvc answers the scratch dialogue (the conv carrying the summary
@@ -33,7 +32,7 @@ type environmentCompactSvc struct {
 
 func (s *environmentCompactSvc) Send(ctx context.Context, conv *aggregate.Conversation, gw *aggregate.Gateway, model entity.Model, onEvent event.TurnEventHandler) error {
 	for _, tool := range conv.Tools() {
-		if tool.Name() == toolsummary.Name {
+		if tool.Name() == appjob.SummaryToolName {
 			s.scratchEnvironment = conv.Environment()
 			s.scratchWorkspace = conv.Workspace()
 		}
@@ -77,9 +76,9 @@ func TestManualCompactKeepsEnvironmentAndWorkspace(t *testing.T) {
 func (s *compactSvc) Send(_ context.Context, conv *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, _ event.TurnEventHandler) error {
 	s.calls.Add(1)
 	for _, t := range conv.Tools() {
-		if t.Name() == toolsummary.Name {
+		if t.Name() == appjob.SummaryToolName {
 			m, _ := entity.NewMessage(enum.RoleAssistant, "")
-			tc, err := entity.NewToolCall("sum_1", toolsummary.Name, `{"text":"CHECKPOINT: earlier turns summarized"}`, enum.TooltypeOrigin)
+			tc, err := entity.NewToolCall("sum_1", appjob.SummaryToolName, `{"text":"CHECKPOINT: earlier turns summarized"}`, enum.TooltypeOrigin)
 			if err != nil {
 				return err
 			}
@@ -106,7 +105,7 @@ type overflowSvc struct {
 
 func (s *overflowSvc) Send(ctx context.Context, conv *aggregate.Conversation, gw *aggregate.Gateway, m entity.Model, h event.TurnEventHandler) error {
 	for _, t := range conv.Tools() {
-		if t.Name() == toolsummary.Name {
+		if t.Name() == appjob.SummaryToolName {
 			s.sawCompact.Store(true)
 			return s.inner.Send(ctx, conv, gw, m, h)
 		}
@@ -222,7 +221,7 @@ type deadEndSvc struct {
 
 func (s *deadEndSvc) Send(ctx context.Context, conv *aggregate.Conversation, gw *aggregate.Gateway, m entity.Model, h event.TurnEventHandler) error {
 	for _, t := range conv.Tools() {
-		if t.Name() == toolsummary.Name {
+		if t.Name() == appjob.SummaryToolName {
 			s.sawCompact.Store(true)
 			return s.inner.Send(ctx, conv, gw, m, h)
 		}

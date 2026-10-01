@@ -267,11 +267,12 @@ tool.
 7. **Register it — or don't.** Agent-facing tools go in the `tools` map in
    `cmd/nusallm/wire.go`, keyed by `tool.Schema().Name()` in the existing
    loop. The selected `EnvironmentDriver.ToolSchemas()` catalog is sorted by name
-   every turn. The counterexample is `tool/summary/summary.go`: the
-   compaction job constructs it directly (`application/job/compact.go`) and
-   binds only its schema to the scratch conversation, so it's never in the
-   main map and never offered in ordinary turns. If your capability exists
-   for one use case's private dialogue, that is the pattern.
+   every turn. The counterexample is `application/job/summary.go`: the
+   compaction job owns the contract itself and binds only its schema to
+   the scratch conversation, so it's never in the main map and never
+   offered in ordinary turns. If your capability exists for one use
+   case's private dialogue, that is the pattern — keep the contract in
+   the use case's own package, not in a service adapter.
 
 ## Recipe: a new execution environment
 
@@ -337,12 +338,13 @@ instances.
 5. **Mind the delivery special paths.** Input UX — parsing `/name args`,
    the palette, rendering — lives in `infrastructure/delivery/cli/tui`
    (`input.go` parses, `model.go` dispatches through `m.commands.Execute`).
-   Two commands have dedicated TUI flows, `/edit` and `/compact`, handled in
-   `model.go`'s `dispatch` before the registry sees them. If your command
-   duplicates a user flow the REPL already special-cases, align usage text
-   and invariants on both sides — that's an explicit rule in
-   `infrastructure/service/AGENTS.md`, and the reason `/edit`'s help and the
-   REPL's edit path must agree.
+   Commands whose work belongs on the conversation worker — `/edit`,
+   `/compact` — implement `command.JobCommand`: `Job(args)` validates the
+   line and returns a `JobFunc` closure the TUI runs as a turn
+   (`beginJob`, with turn-event streaming and ctrl+c), while `Execute`
+   runs the same closure inline. Validation, usage text, and the work
+   itself live in the command package once — the TUI only owns the turn
+   lifecycle.
 
 ## Conventions to match
 

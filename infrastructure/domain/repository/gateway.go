@@ -10,11 +10,15 @@ import (
 // gateway hydrated WITHOUT resolving its apiKey — Gateway is nil when
 // the file can't decode at all, so broken records still enumerate
 // instead of hiding. ApiKeyRef is the raw stored value — a literal, an
-// "env:"/"secret:" ref, or "".
+// "env:"/"secret:" ref, or "" — and KeyResolved reports whether that
+// value dereferences to usable key material: refs answer for the
+// environment/SecretStore they point at, literals and "" resolve by
+// construction.
 type GatewaySnapshot struct {
-	ID        string
-	Gateway   *aggregate.Gateway
-	ApiKeyRef string
+	ID          string
+	Gateway     *aggregate.Gateway
+	ApiKeyRef   string
+	KeyResolved bool
 }
 
 // Gateway is a separate aggregate root persisted on its own — credentials,
@@ -38,7 +42,9 @@ type Gateway interface {
 	// key material — ApiKeyRef carries the raw stored value (literal,
 	// "env:NAME", "secret:<key>", or ""), never resolved, so an update to
 	// other fields can carry the ref forward instead of pinning whatever
-	// it resolved to. A record whose credential doesn't resolve still
+	// it resolved to. KeyResolved reports whether that stored value
+	// resolves — ref resolution is the adapter's rule, read here
+	// non-fatally. A record whose credential doesn't resolve still
 	// loads; one that can't even decode returns a snapshot with nil
 	// Gateway. 404 when absent.
 	Inspect(ctx context.Context, id string) (GatewaySnapshot, error)

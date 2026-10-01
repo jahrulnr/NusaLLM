@@ -7,12 +7,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jahrulnr/nusallm/infrastructure/redact"
 	repolog "github.com/jahrulnr/nusallm/infrastructure/repository/log"
 )
 
 func TestRedactWithoutBodiesProviderRequest(t *testing.T) {
 	dir := t.TempDir()
-	l, err := repolog.New(dir, repolog.Options{Redact: redactWithoutBodies})
+	l, err := repolog.New(dir, repolog.Options{Redact: redact.WithoutBodies})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +41,7 @@ func TestRedactWithoutBodiesProviderRequest(t *testing.T) {
 
 func TestRedactWithoutBodiesProviderResponseKeepsMeta(t *testing.T) {
 	dir := t.TempDir()
-	l, err := repolog.New(dir, repolog.Options{Redact: redactWithoutBodies})
+	l, err := repolog.New(dir, repolog.Options{Redact: redact.WithoutBodies})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +63,7 @@ func TestRedactWithoutBodiesProviderResponseKeepsMeta(t *testing.T) {
 
 func TestRedactWithoutBodiesOmitsConversationAndStream(t *testing.T) {
 	dir := t.TempDir()
-	l, err := repolog.New(dir, repolog.Options{Redact: redactWithoutBodies})
+	l, err := repolog.New(dir, repolog.Options{Redact: redact.WithoutBodies})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -28,7 +28,6 @@ import (
 	reposecret "github.com/jahrulnr/nusallm/infrastructure/repository/secret"
 	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
 	textcompletion "github.com/jahrulnr/nusallm/infrastructure/service/core/text/completion"
-	toolsummary "github.com/jahrulnr/nusallm/infrastructure/service/tool/summary"
 )
 
 type sendOutcome struct {
@@ -156,6 +155,22 @@ func TestSendRoundtrip(t *testing.T) {
 	}
 	if conv.Title() != "ping" {
 		t.Fatalf("later user message replaced first-turn title: %q", conv.Title())
+	}
+}
+
+// An empty submission — no text and no attachments — is rejected by the
+// use case itself with 400, before any room is minted or worker posted.
+// Transports share this one decision instead of each gating their own.
+func TestSendRejectsEmpty(t *testing.T) {
+	app, _ := fixture(t, okHandler)
+	for _, msg := range []string{"", "   "} {
+		res, err := app.Send(t.Context(), "", "gw1", "m1", msg, nil, appjob.SendOptions{}, nil)
+		if apperror.As(err).StatusCode() != apperror.StatusBadRequest {
+			t.Fatalf("empty send %q → %v, want 400", msg, err)
+		}
+		if res.ConversationID != "" || res.UserMessagePersisted {
+			t.Fatalf("rejected send must not mint or persist: %+v", res)
+		}
 	}
 }
 
@@ -960,7 +975,7 @@ func TestSendSelectsEnvironmentPerConversationAndResume(t *testing.T) {
 		enum.EnvironmentDocker: appjob.EnvironmentBundle{
 			WorkspaceStore: virtualWorkspace{},
 			Services:       map[enum.Style]dservice.TextModelService{enum.StyleCompletion: environmentService{label: "docker"}},
-			Tools:          map[string]dservice.Tool{"echo": environmentTool{label: "docker"}, "summary": toolsummary.NewSummaryTool()},
+			Tools:          map[string]dservice.Tool{"echo": environmentTool{label: "docker"}, appjob.SummaryToolName: appjob.NewSummaryTool()},
 		},
 	}, config.NewConfig(), nil, "")
 	t.Cleanup(func() { _ = app.Shutdown(context.Background()) })

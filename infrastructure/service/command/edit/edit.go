@@ -7,14 +7,17 @@ import (
 	"unicode"
 
 	appcommand "github.com/jahrulnr/nusallm/application/command"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
+	svccommand "github.com/jahrulnr/nusallm/infrastructure/service/command"
 )
 
-// EditCommand is the /edit command. The TUI also handles bare /edit and
-// picker fills in delivery/cli/tui/model.beginEdit; keep usage text and
-// editability rules aligned with that path.
+// EditCommand is the /edit command. An edit regenerates the turn, so the
+// command is worker-bound: Job validates the line and binds the closure,
+// Registry.Job hands it to transports that run jobs asynchronously, and
+// Execute runs the same closure inline.
 type EditCommand struct{ h appcommand.SlashSession }
 
 // New binds /edit to a session host.
@@ -56,17 +59,30 @@ func (c *EditCommand) Complete(ctx context.Context, arg string) []dservice.Comma
 	return rows
 }
 
-func (c *EditCommand) Execute(ctx context.Context, _ string, emitter dservice.CommandEmitter, args ...string) error {
+// Job validates the arguments and binds the edit turn. The closure takes
+// the transport's event handler because an edit streams like a send.
+func (c *EditCommand) Job(args ...string) (svccommand.JobFunc, error) {
 	raw := ""
 	if len(args) > 0 {
 		raw = args[0]
 	}
 	if c.h.ConversationID() == "" {
-		return errors.New("no active conversation; use /resume <id>")
+		return nil, errors.New("no active conversation; use /resume <id>")
 	}
 	messageID, content, ok := valueobject.NewCommand(raw).SplitFirst()
 	if !ok || strings.TrimSpace(content) == "" {
-		return errors.New("usage: /edit <message-id> <replacement text>")
+		return nil, errors.New("usage: /edit <message-id> <replacement text>")
 	}
-	return c.h.EditConversation(ctx, c.h.ConversationID(), messageID, content, nil)
+	convID := c.h.ConversationID()
+	return func(ctx context.Context, _ dservice.CommandEmitter, onEvent event.TurnEventHandler) error {
+		return c.h.EditConversation(ctx, convID, messageID, content, onEvent)
+	}, nil
+}
+
+func (c *EditCommand) Execute(ctx context.Context, _ string, emitter dservice.CommandEmitter, args ...string) error {
+	job, err := c.Job(args...)
+	if err != nil {
+		return err
+	}
+	return job(ctx, emitter, nil)
 }

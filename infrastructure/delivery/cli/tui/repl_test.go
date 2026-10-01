@@ -335,6 +335,126 @@ func TestAutoSelectNotifyDoesNotDeadlock(t *testing.T) {
 	}
 }
 
+// TestSlashJobValidationComesFromTheRegistry guards the consolidated
+// dispatch: /edit and /compact resolve through the registry's Job seam,
+// so the command's own guard and usage text — not a TUI copy — reaches
+// scrollback, and a rejected line never claims the worker.
+func TestSlashJobValidationComesFromTheRegistry(t *testing.T) {
+	repl := &REPL{Session: &session.Session{}, historyStore: repohistory.NewLocal()}
+	m := newModel(repl, false) // non-interactive: no picker parks the line
+	m.ctx = t.Context()
+
+	for _, tc := range []struct{ line, want string }{
+		{"/edit m_1 replacement", "error: no active conversation; use /resume <id>"},
+		{"/compact", "error: no active conversation; use /resume <id>"},
+		{"/compact extra", "error: usage: /compact"},
+	} {
+		m.outbox = nil
+		m.dispatch(tc.line)
+		if len(m.outbox) != 1 || m.outbox[0] != tc.want {
+			t.Fatalf("%s outbox = %v, want %q", tc.line, m.outbox, tc.want)
+		}
+		if m.turnActive {
+			t.Fatalf("%s must not claim the worker on a validation error", tc.line)
+		}
+	}
+
+	// A bound conversation without replacement text hits the same usage
+	// error the registry's Execute path returns.
+	m.repl.ConversationID = "c1"
+	m.outbox = nil
+	m.dispatch("/edit m_1")
+	if len(m.outbox) != 1 || m.outbox[0] != "error: usage: /edit <message-id> <replacement text>" {
+		t.Fatalf("bare /edit outbox = %v, want the usage error", m.outbox)
+	}
+	if m.turnActive {
+		t.Fatal("a failed /edit validation must not claim the worker")
+	}
+}
+
+// TestCompactJobRunsAsTurnAndConfirms pipes /compact through the TUI: the
+// registry's Job contract runs the fold as a turn, and the command's
+// emitter text — the "compacted <id>" confirmation — commits to
+// scrollback exactly as the synchronous registry path prints it.
+func TestCompactJobRunsAsTurnAndConfirms(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []any{map[string]any{
+				"message":       map[string]any{"role": "assistant", "content": "pong"},
+				"finish_reason": "stop",
+			}},
+			"usage": map[string]any{"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+		})
+	}))
+	defer server.Close()
+
+	storage := t.TempDir()
+	secrets, err := reposecret.New(filepath.Join(storage, "secrets.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = secrets.Close() })
+	gatewayRepository := repogateway.NewGatewayRepository(filepath.Join(storage, "gateways"), secrets)
+	gatewayApplication := appgateway.New(gatewayRepository, secrets, nil)
+	stream := false
+	if err := gatewayApplication.Upsert(t.Context(), appgateway.GatewayInput{
+		ID: "gw1", Name: "Test gateway", Style: enum.StyleCompletion, Endpoint: server.URL,
+		Stream: &stream, Models: []appgateway.ModelInput{{ID: "m1"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	conversationRepository := repoconversation.NewConversationRepository(filepath.Join(storage, "conversations"))
+	conversationApplication := appconversation.New(
+		conversationRepository,
+		gatewayRepository,
+		map[enum.Environment]appjob.EnvironmentDriver{enum.EnvironmentLocal: appjob.EnvironmentBundle{
+			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: textcompletion.New(coretext.Options{FileRoot: t.TempDir(), FileStore: repoworkspace.NewLocal()})},
+		}},
+		config.NewConfig(),
+		nil,
+		"",
+	)
+	t.Cleanup(func() { _ = conversationApplication.Shutdown(context.Background()) })
+
+	var output bytes.Buffer
+	repl, err := NewREPL(Options{
+		Conversations:  conversationApplication,
+		Gateways:       gatewayApplication,
+		Workspace:      t.TempDir(),
+		WorkspaceStore: repoworkspace.NewLocal(),
+		HistoryDir:     filepath.Join(storage, "cli"),
+		HistoryStore:   repohistory.NewLocal(),
+		Stdin:          pipeInput(t, "/route gw1\n/model m1\none\ntwo\nthree\nfour\n/compact\n/exit\n"),
+		Stdout:         &output,
+		Stderr:         io.Discard,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repl.Run(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	_ = repl.Close()
+
+	convID := repl.ConversationID
+	if convID == "" {
+		t.Fatal("sends did not bind a conversation")
+	}
+	plain := ansi.Strip(output.String())
+	for _, want := range []string{"> /compact", "compacted " + convID} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("compact output missing %q:\n%s", want, plain)
+		}
+	}
+	info, err := conversationRepository.Info(t.Context(), convID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.SealedSegments != 1 {
+		t.Fatalf("sealed segments = %d, want 1 — the job must fold", info.SealedSegments)
+	}
+}
+
 // TestPipedCRNeverTriggersPicker guards the non-interactive contract:
 // palette state must not exist off a TTY. A piped "\r" maps to KeyEnter,
 // and if arg-mode rows answered it the submitted text would be the top

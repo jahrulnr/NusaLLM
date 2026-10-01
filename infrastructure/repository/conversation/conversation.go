@@ -26,7 +26,6 @@ import (
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
-	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 )
 
@@ -44,7 +43,11 @@ type ConversationRepository struct {
 	mu   sync.Mutex
 }
 
-func NewConversationRepository(path string) drepo.Conversation {
+// NewConversationRepository returns the concrete store so a caller picks
+// the port it needs: runtime collaborators take drepo.Conversation, while
+// offline tooling may take drepo.ConversationRepairer — a capability the
+// Conversation port deliberately does not expose.
+func NewConversationRepository(path string) *ConversationRepository {
 	return &ConversationRepository{path: path}
 }
 

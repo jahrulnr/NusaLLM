@@ -226,11 +226,19 @@ func TestUnsetRemovesUnknownKeyAndLeaf(t *testing.T) {
 		t.Fatal(err)
 	}
 	app := New(repoconfig.NewLocal(), path)
-	if err := app.Validate(); err == nil {
-		t.Fatal("fixture file must be invalid")
+	// Unknown keys are ignored, not fatal — and any schema write prunes
+	// them, since the file is rewritten from the validated document.
+	if err := app.Validate(); err != nil {
+		t.Fatalf("unknown key must be ignored: %v", err)
 	}
-	if _, err := app.Set("log.max_lines", "1"); err == nil {
-		t.Fatal("set must fail while the file is invalid")
+	if _, err := app.Set("log.max_lines", "1"); err != nil {
+		t.Fatalf("set must work while unknown keys exist: %v", err)
+	}
+	if raw, err := os.ReadFile(path); err != nil || strings.Contains(string(raw), "bogus") {
+		t.Fatalf("set must prune unknown keys: %v %q", err, raw)
+	}
+	if err := os.WriteFile(path, []byte(`{"bogus":true,"log":{"max_files":5}}`), 0o644); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := app.Unset("bogus"); err != nil {
 		t.Fatalf("unset: %v", err)

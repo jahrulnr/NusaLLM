@@ -24,18 +24,40 @@ func (r *GatewayRepository) Load(ctx context.Context, id string) (*aggregate.Gat
 	if err != nil {
 		return nil, err
 	}
-	key := rec.ApiKey
+	key, err := r.resolveKey(ctx, id, rec.ApiKey)
+	if err != nil {
+		return nil, err
+	}
+	return decodeGateway(rec, key)
+}
+
+// resolveKey is the one dispatch over stored apiKey values: "env:NAME"
+// reads the environment, "secret:<key>" hits the SecretStore, anything
+// else — a literal or "" — passes through verbatim. Load treats a
+// failure as fatal; Inspect reads the same decision non-fatally as
+// GatewaySnapshot.KeyResolved.
+func (r *GatewayRepository) resolveKey(ctx context.Context, id, stored string) (string, error) {
+	key := stored
 	if name, ok := strings.CutPrefix(key, valueobject.KeyRefEnv); ok {
 		if key = os.Getenv(name); key == "" {
-			return nil, fmt.Errorf("gateway %q: apiKey references env %q which is unset", id, name)
+			return "", fmt.Errorf("gateway %q: apiKey references env %q which is unset", id, name)
 		}
 	} else if sk, ok := strings.CutPrefix(key, valueobject.KeyRefSecret); ok {
 		if r.secrets == nil {
-			return nil, fmt.Errorf("gateway %q: apiKey references %q but no secret store is configured", id, sk)
+			return "", fmt.Errorf("gateway %q: apiKey references %q but no secret store is configured", id, sk)
 		}
-		if key, err = r.secrets.Get(ctx, sk); err != nil {
-			return nil, fmt.Errorf("gateway %q: %w", id, err)
+		resolved, err := r.secrets.Get(ctx, sk)
+		if err != nil {
+			return "", fmt.Errorf("gateway %q: %w", id, err)
 		}
+		key = resolved
 	}
-	return decodeGateway(rec, key)
+	return key, nil
+}
+
+// keyResolves probes the stored value through resolveKey — Inspect's
+// resolution flag, same decision Load enforces, read without failing.
+func (r *GatewayRepository) keyResolves(ctx context.Context, id, stored string) bool {
+	_, err := r.resolveKey(ctx, id, stored)
+	return err == nil
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 )
 
 func TestRepairOrphanDuplicate(t *testing.T) {
@@ -36,10 +37,10 @@ func TestRepairOrphanDuplicate(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "0.jsonl"), joinLines(messages), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := RepairOrphan(r.path, "c1", "commit"); err == nil {
+	if err := r.RepairOrphan(t.Context(), "c1", drepo.RepairCommit); err == nil {
 		t.Fatal("must not commit a duplicate prefix")
 	}
-	if err := RepairOrphan(r.path, "c1", "discard-duplicate"); err != nil {
+	if err := r.RepairOrphan(t.Context(), "c1", drepo.RepairDiscardDuplicate); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "0.jsonl")); !os.IsNotExist(err) {
@@ -71,10 +72,10 @@ func TestRepairOrphanRejectsPartialMessageOverlap(t *testing.T) {
 	if err := os.WriteFile(segment, orphan, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := RepairOrphan(r.path, "c1", "commit"); err == nil || !strings.Contains(err.Error(), "partial overlap requires manual reconciliation — stop the app, back up the room, then inspect its files or restore from backup") {
+	if err := r.RepairOrphan(t.Context(), "c1", drepo.RepairCommit); err == nil || !strings.Contains(err.Error(), "partial overlap requires manual reconciliation — stop the app, back up the room, then inspect its files or restore from backup") {
 		t.Fatalf("partially overlapping orphan needs manual recovery guidance: %v", err)
 	}
-	if err := RepairOrphan(r.path, "c1", "discard-duplicate"); err == nil || !strings.Contains(err.Error(), "partial overlap requires manual reconciliation — stop the app, back up the room, then inspect its files or restore from backup") {
+	if err := r.RepairOrphan(t.Context(), "c1", drepo.RepairDiscardDuplicate); err == nil || !strings.Contains(err.Error(), "partial overlap requires manual reconciliation — stop the app, back up the room, then inspect its files or restore from backup") {
 		t.Fatalf("partially overlapping orphan must not be discarded: %v", err)
 	}
 	if got, err := os.ReadFile(segment); err != nil || !bytes.Equal(got, orphan) {
@@ -100,7 +101,7 @@ func TestRepairOrphanRejectsOverlapWithCommittedSegment(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "1.jsonl"), oldSegment, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := RepairOrphan(r.path, "c1", "commit"); err == nil || !strings.Contains(err.Error(), "already exists") {
+	if err := r.RepairOrphan(t.Context(), "c1", drepo.RepairCommit); err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("old-era duplicate must be rejected: %v", err)
 	}
 }
@@ -161,7 +162,7 @@ func TestRepairOrphanRejectsMalformedSegments(t *testing.T) {
 				t.Fatal(err)
 			}
 			tc.mutate(t, dir, active)
-			if err := RepairOrphan(r.path, "c1", "commit"); err == nil || !strings.Contains(err.Error(), tc.want) {
+			if err := r.RepairOrphan(t.Context(), "c1", drepo.RepairCommit); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("repair error = %v; want %q", err, tc.want)
 			}
 		})
@@ -226,10 +227,10 @@ func TestRepairOrphanCommittedActiveRewrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := RepairOrphan(r.path, "c1", "discard-duplicate"); err == nil {
+	if err := r.RepairOrphan(t.Context(), "c1", drepo.RepairDiscardDuplicate); err == nil {
 		t.Fatal("must not discard unique history")
 	}
-	if err := RepairOrphan(r.path, "c1", "commit"); err != nil {
+	if err := r.RepairOrphan(t.Context(), "c1", drepo.RepairCommit); err != nil {
 		t.Fatal(err)
 	}
 	after, err := os.ReadFile(segment)

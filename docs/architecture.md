@@ -96,13 +96,11 @@ The application layer speaks almost only to those ports.
 `application/job.Deps` (`application/job/job.go`) is the whole reach of a
 use case: two repository ports, a map of environment drivers, and
 normalized config. Each driver bundles its workspace repository, provider
-adapters, and tool executors. The single concrete inbound dependency is deliberate
-and covered by the layer's own rules — `application/job/compact.go`
-imports `infrastructure/service/tool/summary` because compaction's
-scratch dialogue is itself the use case, and "explicit use-case
-collaborators" are allowed where a port would be indirection for its own
-sake. Everything else in `application/` is port-shaped: nothing there
-knows what JSONL is or what SSE stands for.
+adapters, and tool executors. Compaction's scratch dialogue is itself the
+use case, so its contract — the `summary` tool the model must answer
+through — lives in the layer (`application/job/summary.go`) rather than
+behind a port or in a service adapter. Everything else in `application/`
+is port-shaped: nothing there knows what JSONL is or what SSE stands for.
 
 Everything concrete meets in `cmd/nusallm`. `run` and `serve` load
 config and open the sqlite secret store through `admin.LoadBoot`;
@@ -160,10 +158,11 @@ there" — and the per-layer files refine it:
 - **Repositories** (`infrastructure/repository/AGENTS.md`) own storage
   mechanics — record shapes, hydration, atomic writes, segment surgery —
   and may re-guard storage constraints (an id about to become a path
-  segment is revalidated), but never restate a business rule. The file is
-  candid about the debt: `rewriteCut` currently duplicates the
-  editability check in `Conversation.RewriteFrom`, and the instruction is
-  to align them, or better, push the shared decision down into domain.
+  segment is revalidated), but never restate a business rule. Shared
+  decisions live in domain: `rewriteCut` applies the editability rule by
+  calling `entity.EditableMessage` on the storage tuple — the same
+  function `Message.Editable` delegates to — so the check has one owner
+  even though the repository runs it pre-hydration.
 - **Services** (`infrastructure/service/AGENTS.md`) own protocol
   translation and side effects: one request/response leg on the wire,
   one tool execution, one slash command. Route selection, retries,
@@ -197,23 +196,26 @@ In `replModel.submit` (`tui/model.go`), an Enter keypress trims the line
 and pushes it onto `m.queued`. A turn in progress defers the line
 ("queued — runs after this turn"); `/cancel` is the exception, dispatched
 immediately because it is an interrupt, not work. `drain` pops the queue
-and `dispatch` classifies it: `/edit` and `/compact` get dedicated turn
-paths (`beginEdit`, `beginCompact`), other `/name` lines go to the slash
-registry, and plain text becomes `beginTurn`.
+and `dispatch` classifies it: every `/name` line resolves through the
+slash registry — worker-bound commands (`/edit`, `/compact`) satisfy
+`command.JobCommand`, so `Registry.Job` validates and binds the closure
+and `beginJob` runs it as a turn — and plain text becomes `beginTurn`.
 
 `beginTurn` resolves routing *on the update loop* via
 `Session.ResolveRoute` — explicit `/route` + `/model` picks, then the
-conversation's stored binding, then an auto-selection when exactly one
-ready gateway or model exists. The turn goroutine receives the resolved
+conversation's stored binding, then the gateway app's auto-selection
+(`GatewayApp.ResolveSelection`: the sole usable gateway, then its sole
+listed model). The turn goroutine receives the resolved
 pair as arguments so nothing races the status line's reads. It then
 launches a `tea.Cmd` calling `Session.Send` with a `turnPump` handler
 that funnels `TurnEvent`s back into the loop as `turnEventMsg`s.
 
-`Session.Send` (`cli/session/session.go`) adds the transport-specific
-guards: refuse a `Broken` gateway, confirm the model is in the gateway
-catalog, and warn (via `Notify`, never fail) when a pending attachment's
-modality exceeds `Model.AcceptsInput`. Then it calls
-`ConversationApp.Send`.
+`Session.Send` (`cli/session/session.go`) keeps only the
+transport-specific UX: warn (via `Notify`, never fail) when a pending
+attachment's modality exceeds `Model.AcceptsInput`. Validation —
+an empty submission, a broken or missing gateway, a model outside the
+catalog — is the use case's call in `ConversationApp.Send`/`job.Send`.
+Then it calls `ConversationApp.Send`.
 
 ### 2. Broker: the conversation is a room with one worker
 

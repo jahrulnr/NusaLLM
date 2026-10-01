@@ -120,8 +120,8 @@ func (a *SettingApp) Set(key, rawValue string) ([]byte, error) {
 }
 
 // Unset removes one dotted key — including unknown keys, which is the
-// repair path when the file no longer validates. The result is
-// validated before writing; the file keeps schema order.
+// cleanup path for leftovers and comment-as-field additions. The result
+// is validated before writing; the file keeps schema order.
 func (a *SettingApp) Unset(key string) ([]byte, error) {
 	doc, err := a.doc(false)
 	if err != nil {

@@ -261,14 +261,12 @@ func TestTurnSendValidation(t *testing.T) {
 		{"send with afterSeq", `{"type":"turn.send","requestId":"r","afterSeq":3,"payload":{"content":"x"}}`, "invalid_argument", "r"},
 		{"missing payload", `{"type":"turn.send","requestId":"r"}`, "invalid_argument", "r"},
 		{"payload unknown field", `{"type":"turn.send","requestId":"r","payload":{"content":"x","extra":1}}`, "invalid_argument", "r"},
-		{"empty content", `{"type":"turn.send","requestId":"r","payload":{"content":"  "}}`, "invalid_argument", "r"},
 		{"unknown environment", `{"type":"turn.send","requestId":"r","payload":{"content":"x","environment":"cloud"}}`, "invalid_argument", "r"},
 		{"bad conversationId", `{"type":"turn.send","requestId":"r","conversationId":"a/b","payload":{"content":"x"}}`, "invalid_argument", "r"},
 		{"dotdot conversationId", `{"type":"turn.send","requestId":"r","conversationId":"..","payload":{"content":"x"}}`, "invalid_argument", "r"},
 		{"unknown command", `{"type":"convo.list","requestId":"r"}`, "invalid_argument", "r"},
 		{"edit missing convId", `{"type":"turn.edit","requestId":"r","payload":{"messageId":"m_1","content":"x"}}`, "invalid_argument", "r"},
 		{"edit bad msgId", `{"type":"turn.edit","requestId":"r","conversationId":"c_1","payload":{"messageId":"a/b","content":"x"}}`, "invalid_argument", "r"},
-		{"edit empty content", `{"type":"turn.edit","requestId":"r","conversationId":"c_1","payload":{"messageId":"m_1","content":""}}`, "invalid_argument", "r"},
 		{"cancel missing convId", `{"type":"turn.cancel","requestId":"r","turnId":"t_1"}`, "invalid_argument", "r"},
 		{"cancel bad turnId", `{"type":"turn.cancel","requestId":"r","conversationId":"c_1","turnId":"a/b"}`, "invalid_argument", "r"},
 		{"watch missing afterSeq", `{"type":"turn.watch","requestId":"r","conversationId":"c_1","turnId":"t_1"}`, "invalid_argument", "r"},
@@ -349,6 +347,44 @@ func TestTurnFailedClassification(t *testing.T) {
 				t.Fatalf("cause leaked into message: %q", p.Message)
 			}
 		})
+	}
+}
+
+// Empty content is not an envelope error — the turn is admitted and the
+// use case's 400 lands as turn.failed/invalid_argument (the app owns the
+// submittable rule for both send and edit).
+func TestEmptyContentRunsAsFailedTurn(t *testing.T) {
+	bad := apperror.New(400, "empty message", fmt.Errorf("no content"))
+	h := newHub(t, stubSender{
+		fn: func(_ context.Context, convID, _, _, _ string,
+			_ event.TurnEventHandler) (appconversation.SendResult, error) {
+			return appconversation.SendResult{ConversationID: convID}, bad
+		},
+		efn: func(_ context.Context, _, _, _ string, _ event.TurnEventHandler) error {
+			return bad
+		},
+	})
+	ws := dial(t, h)
+
+	for _, cmd := range []string{
+		`{"type":"turn.send","requestId":"r","payload":{"content":""}}`,
+		`{"type":"turn.send","requestId":"r","payload":{"content":"   "}}`,
+		`{"type":"turn.edit","requestId":"r","conversationId":"c_1","payload":{"messageId":"m_1","content":""}}`,
+	} {
+		sendCommand(t, ws, cmd)
+		var f frame
+		for f = readFrame(t, ws); f.Type != "turn.failed"; f = readFrame(t, ws) {
+			if f.Type == "error" {
+				t.Fatalf("empty content must run as a failed turn, got sync error: %+v", f)
+			}
+		}
+		var p terminalPayload
+		if err := json.Unmarshal(f.Payload, &p); err != nil {
+			t.Fatal(err)
+		}
+		if p.Status != 400 || p.Code != "invalid_argument" {
+			t.Fatalf("terminal %+v, want 400/invalid_argument", p)
+		}
 	}
 }
 

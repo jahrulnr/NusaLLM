@@ -18,8 +18,10 @@ import (
 	"github.com/jahrulnr/nusallm/application/setting"
 	"github.com/jahrulnr/nusallm/application/setup"
 	"github.com/jahrulnr/nusallm/infrastructure/config"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 	repoconfig "github.com/jahrulnr/nusallm/infrastructure/repository/config"
+	repoconversation "github.com/jahrulnr/nusallm/infrastructure/repository/conversation"
 	repogateway "github.com/jahrulnr/nusallm/infrastructure/repository/gateway"
 	reposecret "github.com/jahrulnr/nusallm/infrastructure/repository/secret"
 	"github.com/jahrulnr/nusallm/infrastructure/service/core/text/catalog"
@@ -134,6 +136,16 @@ func LoadBoot(strict bool) (*Boot, error) {
 			secrets, catalog.New(nil)),
 		settings: setting.New(repoconfig.NewLocal(), configPath),
 	}, nil
+}
+
+// conversationStore wires the conversation repository for the command
+// that works on it alone. Repair is offline recovery — it deliberately
+// skips LoadBoot so a wedged or missing secret store can never block it,
+// and it must not create the vault as a side effect. The storage layout
+// ("conversations" under storage.dir) stays here with the rest of the
+// admin wiring, out of the handler.
+func conversationStore(cfg config.Config) drepo.ConversationRepairer {
+	return repoconversation.NewConversationRepository(filepath.Join(cfg.Storage.Dir, "conversations"))
 }
 
 // loadEnvFile reads KEY=VALUE pairs into the process env. This step is a

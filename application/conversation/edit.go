@@ -2,6 +2,8 @@ package appconversation
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	appjob "github.com/jahrulnr/nusallm/application/job"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
@@ -25,6 +27,9 @@ func (app *ConversationApp) Edit(
 	content string,
 	onEvent event.TurnEventHandler,
 ) error {
+	if strings.TrimSpace(content) == "" {
+		return apperror.New(400, "empty edit", fmt.Errorf("edit has no replacement text"))
+	}
 	res := make(chan error, 1)
 	j := &appjob.Edit{
 		Ctx:     ctx,

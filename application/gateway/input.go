@@ -1,10 +1,7 @@
 package appgateway
 
 import (
-	"context"
 	"fmt"
-	"os"
-	"strings"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
@@ -201,10 +198,10 @@ func (app *GatewayApp) derefInt(v *int) int {
 // toInfo projects a snapshot for transport reads. The stored apiKey value
 // crosses only when it has ref shape — a literal sitting in the record is
 // key material, so it collapses to KeySet=true with no ref. Broken marks
-// both an undecodable record and a ref that won't resolve: "env:" checks
-// the variable, "secret:" hits the vault, anything else resolves verbatim
-// by construction.
-func (app *GatewayApp) toInfo(ctx context.Context, snap drepo.GatewaySnapshot) GatewayInfo {
+// an undecodable record or a stored key that won't resolve — ref
+// resolution is the repository adapter's rule, consumed here as
+// GatewaySnapshot.KeyResolved.
+func (app *GatewayApp) toInfo(snap drepo.GatewaySnapshot) GatewayInfo {
 	info := GatewayInfo{
 		ID:     snap.ID,
 		KeySet: snap.ApiKeyRef != "",
@@ -222,14 +219,28 @@ func (app *GatewayApp) toInfo(ctx context.Context, snap drepo.GatewaySnapshot) G
 	info.Endpoint = gw.Endpoint()
 	info.Stream = gw.StreamMode()
 	info.Models = gw.Models()
-	if name, ok := strings.CutPrefix(snap.ApiKeyRef, valueobject.KeyRefEnv); ok {
-		info.Broken = name == "" || os.Getenv(name) == ""
-	} else if key, ok := strings.CutPrefix(snap.ApiKeyRef, valueobject.KeyRefSecret); ok {
-		if app.secrets == nil {
-			info.Broken = true
-		} else if _, err := app.secrets.Get(ctx, key); err != nil {
-			info.Broken = true
+	info.Broken = !snap.KeyResolved
+	return info
+}
+
+// ListedModels returns the catalog entries a user may select — Models
+// filtered by the picker floor.
+func (g GatewayInfo) ListedModels() []entity.Model {
+	return ListedModels(g.Models)
+}
+
+// CatalogContains reports whether the gateway advertises model id.
+func (g GatewayInfo) CatalogContains(id string) bool {
+	return ModelCatalogContains(g.Models, id)
+}
+
+// ModelListed reports whether id resolves to a listed catalog entry —
+// advertised by the gateway and over the picker floor.
+func (g GatewayInfo) ModelListed(id string) bool {
+	for _, m := range g.ListedModels() {
+		if m.ID() == id {
+			return true
 		}
 	}
-	return info
+	return false
 }

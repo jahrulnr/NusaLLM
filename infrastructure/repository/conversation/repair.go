@@ -2,24 +2,29 @@ package repoconversation
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 )
 
 // RepairOrphan recovers the one extra segment left by an interrupted Compact.
 // The operator must stop other processes using the store before calling it.
 // A duplicate prefix can only be discarded; a unique prefix can only be
 // committed after validating the full history and recalculating counters.
-func RepairOrphan(root, convID, action string) error {
+func (r *ConversationRepository) RepairOrphan(ctx context.Context, convID string, action drepo.RepairAction) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := validID(convID); err != nil {
 		return err
 	}
-	if action != "discard-duplicate" && action != "commit" {
+	if action != drepo.RepairDiscardDuplicate && action != drepo.RepairCommit {
 		return fmt.Errorf("repair %s: choose discard-duplicate or commit", convID)
 	}
-	r := &ConversationRepository{path: root}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	meta, err := r.readMetaUnvalidated(convID)
@@ -95,7 +100,7 @@ func RepairOrphan(root, convID, action string) error {
 	}
 	duplicate := matched == len(orphanLines)
 	if duplicate {
-		if action != "discard-duplicate" {
+		if action != drepo.RepairDiscardDuplicate {
 			return fmt.Errorf("repair %s: orphan duplicates active prefix; use discard-duplicate", convID)
 		}
 		if err := os.Remove(orphan); err != nil {
@@ -132,7 +137,7 @@ func RepairOrphan(root, convID, action string) error {
 		}
 		seen[message.ID()] = struct{}{}
 	}
-	if action != "commit" {
+	if action != drepo.RepairCommit {
 		return fmt.Errorf("repair %s: orphan is not an active prefix; inspect it, then use commit if it contains the missing history", convID)
 	}
 	// Validate both streams before publishing the segment. No archive byte is

@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	appcommand "github.com/jahrulnr/nusallm/application/command"
-	appgateway "github.com/jahrulnr/nusallm/application/gateway"
 	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 )
 
@@ -39,7 +38,7 @@ func (c *NewCommand) Execute(ctx context.Context, _ string, emitter dservice.Com
 		if c.h.ModelID() == "" {
 			if c.h.Route() == info.Route {
 				c.h.SetModelID(info.ModelID)
-			} else if gateway, err := c.h.GetGateway(ctx, c.h.Route()); err == nil && !gateway.Broken && appgateway.ModelCatalogContains(gateway.Models, info.ModelID) {
+			} else if gateway, err := c.h.GetGateway(ctx, c.h.Route()); err == nil && !gateway.Broken && gateway.CatalogContains(info.ModelID) {
 				c.h.SetModelID(info.ModelID)
 			}
 		}

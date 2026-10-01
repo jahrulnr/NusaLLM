@@ -53,13 +53,18 @@ func TestLoadZeroMeansDefault(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsUnknownKeys(t *testing.T) {
+func TestLoadIgnoresUnknownKeys(t *testing.T) {
 	var c Config
-	if err := c.Load(testStore{}, writeConfig(t, `{"conversation":{"mailbox_cap":8},"bogus":true}`)); err == nil {
-		t.Fatal("unknown key must fail loudly")
+	// Leftover keys from removed fields and comment-as-field additions
+	// must not block boot — only the known keys are read.
+	if err := c.Load(testStore{}, writeConfig(t, `{"conversation":{"mailbox_cap":8},"bogus":true,"_note":"x"}`)); err != nil {
+		t.Fatalf("unknown keys must be ignored: %v", err)
 	}
-	if err := c.Load(testStore{}, writeConfig(t, `{"conversation":{"mailbox_cap":8,"typo":1}}`)); err == nil {
-		t.Fatal("unknown nested key must fail loudly")
+	if c.Conversation.MailboxCap != 8 {
+		t.Fatalf("known key must still apply, got %d", c.Conversation.MailboxCap)
+	}
+	if err := c.Load(testStore{}, writeConfig(t, `{"conversation":{"mailbox_cap":8,"typo":1}}`)); err != nil {
+		t.Fatalf("unknown nested key must be ignored: %v", err)
 	}
 }
 

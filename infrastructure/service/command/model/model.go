@@ -8,7 +8,6 @@ import (
 	"unicode"
 
 	appcommand "github.com/jahrulnr/nusallm/application/command"
-	appgateway "github.com/jahrulnr/nusallm/application/gateway"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 )
@@ -43,7 +42,7 @@ func (c *ModelCommand) Complete(ctx context.Context, arg string) []dservice.Comm
 	}
 	arg = strings.ToLower(arg)
 	var rows []service.CommandCompletion
-	for _, model := range appgateway.ListedModels(gateway.Models) {
+	for _, model := range gateway.ListedModels() {
 		id := model.ID()
 		if arg != "" && !strings.Contains(strings.ToLower(id), arg) {
 			continue
@@ -90,7 +89,7 @@ func (c *ModelCommand) Execute(ctx context.Context, _ string, emitter dservice.C
 	}
 	id := strings.TrimSpace(raw)
 	if id == "" {
-		listed := appgateway.ListedModels(gateway.Models)
+		listed := gateway.ListedModels()
 		if len(listed) == 0 {
 			c.h.Write(emitter, "gateway %s has no listed models\n", route)
 			return nil
@@ -107,17 +106,11 @@ func (c *ModelCommand) Execute(ctx context.Context, _ string, emitter dservice.C
 	if strings.IndexFunc(id, unicode.IsSpace) >= 0 {
 		return errors.New("usage: /model [model-id]")
 	}
-	if !appgateway.ModelCatalogContains(gateway.Models, id) {
+	if !gateway.CatalogContains(id) {
 		return fmt.Errorf("model %q is not in gateway %q; use /model to list", id, route)
 	}
-	for _, m := range gateway.Models {
-		if m.ID() != id {
-			continue
-		}
-		if !appgateway.ModelListedInPicker(m) {
-			return fmt.Errorf("model %q is not listed (context below %d tokens)", id, appgateway.MinListedContextWindow)
-		}
-		break
+	if !gateway.ModelListed(id) {
+		return fmt.Errorf("model %q is not listed (context below %d tokens)", id, appcommand.MinListedContextWindow)
 	}
 	c.h.SetModelID(id)
 	c.h.Write(emitter, "model set to %s on %s\n", id, route)

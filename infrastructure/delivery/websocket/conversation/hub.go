@@ -222,10 +222,6 @@ func (h *Hub) turnSend(c *conn, cmd command) {
 		c.push(errorFrame(cmd.RequestID, "invalid_argument", "turn.send payload is invalid"))
 		return
 	}
-	if strings.TrimSpace(payload.Content) == "" {
-		c.push(errorFrame(cmd.RequestID, "invalid_argument", "turn.send requires nonempty payload.content"))
-		return
-	}
 	convID := ""
 	if cmd.ConversationID != nil {
 		convID = strings.TrimSpace(*cmd.ConversationID)
@@ -280,10 +276,6 @@ func (h *Hub) turnEdit(c *conn, cmd command) {
 	}
 	if valueobject.ValidID(payload.MessageID) != nil {
 		c.push(errorFrame(cmd.RequestID, "invalid_argument", "turn.edit requires a valid payload.messageId"))
-		return
-	}
-	if strings.TrimSpace(payload.Content) == "" {
-		c.push(errorFrame(cmd.RequestID, "invalid_argument", "turn.edit requires nonempty payload.content"))
 		return
 	}
 	h.admitAndRun(c, cmd.RequestID, convID, turn{

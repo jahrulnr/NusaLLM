@@ -100,3 +100,29 @@ type Conversation interface {
 	// tool output, while leaving other conversations untouched.
 	Delete(ctx context.Context, convID string) error
 }
+
+// RepairAction selects how RepairOrphan resolves an uncommitted sealed
+// segment: discard it as a duplicate of the live tail, or commit it as
+// recovered history.
+type RepairAction string
+
+const (
+	RepairDiscardDuplicate RepairAction = "discard-duplicate"
+	RepairCommit           RepairAction = "commit"
+)
+
+func (a RepairAction) String() string { return string(a) }
+
+// ConversationRepairer is the offline recovery port for the conversation
+// store — separate from Conversation on purpose: repair rewrites storage
+// invariants that runtime operations assume hold, so jobs and brokers
+// holding Conversation must never see the verb. Only operator tooling
+// obtains it, and only while no other process uses the store.
+type ConversationRepairer interface {
+	// RepairOrphan reconciles the one extra sealed segment an interrupted
+	// Compact can leave between publishing the segment and its metadata
+	// counter: RepairDiscardDuplicate removes a segment whose messages
+	// still lead the live tail; RepairCommit publishes a unique one and
+	// recomputes the stored counters. Callers stop the application first.
+	RepairOrphan(ctx context.Context, convID string, action RepairAction) error
+}

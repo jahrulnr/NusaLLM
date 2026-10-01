@@ -8,7 +8,6 @@ import (
 	"unicode"
 
 	appcommand "github.com/jahrulnr/nusallm/application/command"
-	appgateway "github.com/jahrulnr/nusallm/application/gateway"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 )
@@ -108,7 +107,7 @@ func (c *RouteCommand) Execute(ctx context.Context, _ string, emitter dservice.C
 		return fmt.Errorf("gateway %q is broken and cannot be selected", id)
 	}
 	c.h.SetRoute(gateway.ID)
-	if c.h.ModelID() != "" && !appgateway.ModelCatalogContains(gateway.Models, c.h.ModelID()) {
+	if c.h.ModelID() != "" && !gateway.CatalogContains(c.h.ModelID()) {
 		c.h.SetModelID("")
 	}
 	c.h.Write(emitter, "route set to %s (%s)\n", gateway.ID, gateway.Name)

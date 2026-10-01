@@ -13,5 +13,5 @@ func (app *GatewayApp) Get(ctx context.Context, id string) (GatewayInfo, error) 
 	if err != nil {
 		return GatewayInfo{}, err
 	}
-	return app.toInfo(ctx, snap), nil
+	return app.toInfo(snap), nil
 }
