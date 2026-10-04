@@ -139,6 +139,13 @@ type toolOutputPayload struct {
 	Text   string `json:"text"`
 }
 
+// steerPayload is one bounded chunk of a user steering line folded into
+// the running turn — the text landed in history as an ordinary user
+// message; the frame carries no message id because ids persist later.
+type steerPayload struct {
+	Text string `json:"text"`
+}
+
 type stepFinishedPayload struct {
 	FinishReason string `json:"finishReason"`
 	Usage        any    `json:"usage"`

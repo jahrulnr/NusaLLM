@@ -83,9 +83,10 @@ func (a *SettingApp) Set(key, rawValue string) ([]byte, error) {
 			fmt.Errorf("config key %q: use `config unset` to remove a setting", key))
 	}
 	if jsonType(value) != jsonType(schemaLeaf) {
+		example, _ := json.Marshal(schemaLeaf) // schema values came from JSON
 		return nil, apperror.New(400, "invalid value",
 			fmt.Errorf("config key %q expects a %s value like %s",
-				key, jsonType(schemaLeaf), lit(schemaLeaf)))
+				key, jsonType(schemaLeaf), string(example)))
 	}
 
 	doc, err := a.doc(true)
@@ -254,15 +255,6 @@ func jsonType(v any) string {
 	default:
 		return "object"
 	}
-}
-
-// lit renders a schema leaf as a JSON literal for error messages.
-func lit(v any) string {
-	raw, err := json.Marshal(v)
-	if err != nil {
-		return fmt.Sprint(v)
-	}
-	return string(raw)
 }
 
 // causeOf unwraps an AppError to its internal cause for re-wrapping

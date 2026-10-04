@@ -288,10 +288,15 @@ A turn works like this: your message persists first, then the agent loop
 runs — provider call, tool calls if the model requests them, another
 provider call — until the model stops calling tools or the step cap
 (`conversation.max_turn_steps`) hits. Text you type while a turn runs is
-queued and drains in order when the turn lands; only `/cancel` jumps the
-line. If the estimate reaches `compact_budget_pct` of the model's input
-allowance, or the provider answers 413, the turn compacts history once
-and retries rather than failing.
+queued and drains in order when the turn lands; `/steer <text>` injects
+into the running turn instead — it lands as an ordinary user message at
+the next safe point, after a tool result persists and before the
+following provider call. A steer that misses the turn (it ended first)
+queues as a new message rather than vanishing, and `Esc` recalls a
+pending steer or queued line back into the composer. Only `/cancel`
+interrupts outright. If the estimate reaches `compact_budget_pct` of the
+model's input allowance, or the provider answers 413, the turn compacts
+history once and retries rather than failing.
 
 When you submit your first message in a session with no active
 conversation, a fresh `c_<random>` conversation id is minted; the id
@@ -302,7 +307,7 @@ shows up in the footer and in `/status`.
 | Key | Effect |
 |---|---|
 | `Ctrl+C` | dismiss the palette → clear the draft → cancel the running turn → quit |
-| `Esc` | dismiss the palette, else cancel the running turn |
+| `Esc` | dismiss the palette → recall a pending steer/queued line into the composer → cancel the running turn |
 | `Ctrl+D` | quit when the composer is empty and no turn is running |
 | `Tab` | accept the highlighted palette row |
 | `Enter` | submit the buffer (or run the selected palette row) |
@@ -358,6 +363,7 @@ table in-session.
 | `/resume [id]` | resume a saved conversation and show its last 20 messages |
 | `/route [id]` | list or select a gateway |
 | `/status` | session state: conversation, counts, route, model, workspace |
+| `/steer <text>` | inject into the running turn after the next tool result |
 | `/title <text>` | rename the conversation |
 | `/tools` | list the tools the model may call |
 | `/usage` | cumulative token accounting for the conversation |

@@ -82,55 +82,48 @@ func New(
 	}
 }
 
-// post enqueues a job on the room's worker, spawning one on demand.
-// Preempt jobs (edit, delete) cut the line and interrupt whatever runs;
-// ordinary jobs append FIFO. Posting stays under app.mu through Submit so
-// Shutdown has a clear boundary between accepted and rejected work. A
-// submit racing a worker's teardown gets ErrClosed — respawn and retry.
-func (app *ConversationApp) reloadConfigLocked() {
-	if app.configPath == "" {
-		return
-	}
-	var fresh config.Config
-	if err := fresh.Load(app.configStore, app.configPath); err != nil {
-		return
-	}
-	ccfg := fresh.Conversation
-	ccfg.Normalize()
-	app.cfg = ccfg
-	app.deps.Config = ccfg
-}
-
 // depsSnapshot returns a shallow copy of deps under app.mu so entry points
-// do not read app.deps concurrently with reloadConfigLocked.
+// do not read app.deps concurrently with the reload inside post.
 func (app *ConversationApp) depsSnapshot() appjob.Deps {
 	app.mu.Lock()
 	defer app.mu.Unlock()
 	return app.deps
 }
 
-func setJobDeps(j queuedJob, deps appjob.Deps) {
-	switch x := j.(type) {
-	case *appjob.Send:
-		x.Deps = deps
-	case *appjob.Edit:
-		x.Deps = deps
-	case *appjob.Delete:
-		x.Deps = deps
-	case *appjob.Compact:
-		x.Deps = deps
-	case *appjob.Rename:
-		x.Deps = deps
-	}
-}
-
+// post enqueues a job on the room's worker, spawning one on demand.
+// Preempt jobs (edit, delete) cut the line and interrupt whatever runs;
+// ordinary jobs append FIFO. Posting stays under app.mu through Submit so
+// Shutdown has a clear boundary between accepted and rejected work. A
+// submit racing a worker's teardown gets ErrClosed — respawn and retry.
 func (app *ConversationApp) post(convID string, j queuedJob) {
 	for {
 		app.mu.Lock()
-		app.reloadConfigLocked()
+		// Live config rides each post — a settings change reaches the
+		// next submitted job without restarting the broker; a failed
+		// reload keeps the last good values.
+		if app.configPath != "" {
+			var fresh config.Config
+			if err := fresh.Load(app.configStore, app.configPath); err == nil {
+				ccfg := fresh.Conversation
+				ccfg.Normalize()
+				app.cfg = ccfg
+				app.deps.Config = ccfg
+			}
+		}
 		deps := app.deps
 		cfg := app.cfg
-		setJobDeps(j, deps)
+		switch x := j.(type) {
+		case *appjob.Send:
+			x.Deps = deps
+		case *appjob.Edit:
+			x.Deps = deps
+		case *appjob.Delete:
+			x.Deps = deps
+		case *appjob.Compact:
+			x.Deps = deps
+		case *appjob.Rename:
+			x.Deps = deps
+		}
 		j.Bind(convID)
 		if app.shuttingDown {
 			app.mu.Unlock()
@@ -143,7 +136,21 @@ func (app *ConversationApp) post(convID string, j queuedJob) {
 				QueueCap: cfg.MailboxCap,
 				OnIdle:   func(idle *worker.Worker) { app.evict(convID, idle) },
 				OnTerminate: func(term *worker.Worker, drained []worker.Job) {
-					app.onTerminated(convID, term, drained)
+					// A self-terminated worker (a delete job retired it):
+					// queued jobs die with the room — 410 Gone — and the
+					// map entry goes, so the next post spawns a fresh
+					// worker.
+					gone := apperror.New(410, "conversation deleted", fmt.Errorf("room %s removed", convID))
+					for _, j := range drained {
+						if aj, ok := j.(queuedJob); ok {
+							aj.Reply(gone)
+						}
+					}
+					app.mu.Lock()
+					if app.workers[convID] == term {
+						delete(app.workers, convID)
+					}
+					app.mu.Unlock()
 				},
 			})
 			app.workerWG.Add(1)
@@ -190,21 +197,4 @@ func (app *ConversationApp) evict(convID string, w *worker.Worker) {
 			app.post(convID, aj) // IsPreempt rides on the job, not the call site
 		}
 	}
-}
-
-// onTerminated runs when a worker self-terminates (a delete job retired
-// it): queued jobs die with the room — 410 Gone — and the map entry goes,
-// so the next post spawns a fresh worker.
-func (app *ConversationApp) onTerminated(convID string, w *worker.Worker, drained []worker.Job) {
-	gone := apperror.New(410, "conversation deleted", fmt.Errorf("room %s removed", convID))
-	for _, j := range drained {
-		if aj, ok := j.(queuedJob); ok {
-			aj.Reply(gone)
-		}
-	}
-	app.mu.Lock()
-	if app.workers[convID] == w {
-		delete(app.workers, convID)
-	}
-	app.mu.Unlock()
 }

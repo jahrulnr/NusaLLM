@@ -44,6 +44,13 @@ func NewToolOutputEvent(call entity.ToolCall, chunk string) TurnEvent {
 	return TurnEvent{kind: enum.TurnEventToolOutput, toolCall: call, delta: chunk}
 }
 
+// NewSteerEvent reports a user steering message folded into the turn —
+// emitted at the point it lands in history, so a frontend renders it in
+// position rather than at submit time. The text rides in Delta().
+func NewSteerEvent(text string) TurnEvent {
+	return TurnEvent{kind: enum.TurnEventSteer, delta: text}
+}
+
 func NewFinishedEvent(reason enum.FinishReason, usage valueobject.Usage) TurnEvent {
 	return TurnEvent{kind: enum.TurnEventFinished, finishReason: reason, usage: usage}
 }

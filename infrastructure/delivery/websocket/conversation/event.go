@@ -79,6 +79,17 @@ func (h *Hub) onEvent(t *turn, ev event.TurnEvent) {
 				break
 			}
 		}
+	case enum.TurnEventSteer:
+		// A folded steering line is user input landing mid-turn —
+		// subscribers see it in position rather than on a history
+		// re-read after the terminal.
+		t.inReasoning = false
+		for _, chunk := range splitDelta(ev.Delta(), outboundChunkBytes) {
+			if !h.emitLocked(t, "turn.steer", steerPayload{Text: chunk}, false) {
+				h.markOverflowedLocked(t)
+				break
+			}
+		}
 	case enum.TurnEventFinished:
 		t.inReasoning = false
 		if !h.emitLocked(t, "turn.step_finished", stepFinishedPayload{

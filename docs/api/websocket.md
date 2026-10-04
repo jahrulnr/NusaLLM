@@ -360,6 +360,24 @@ is normalized by JSON encoding and is not promised byte-exact.
 }
 ```
 
+`turn.steer` — a user steering line folded into the running turn at an
+inference safe point (after a tool result persisted, before the next
+provider call). The text lands in history as an ordinary user message;
+the frame carries no message id because ids persist later. Reassemble
+by concatenating `text` fields in `seq` order like any chunked content.
+Steering is submitted out of band — the CLI's `/steer` — not through a
+`turn.*` command on this socket.
+
+```json
+{
+  "type": "turn.steer",
+  "conversationId": "c_k4j9xm2p8q1vz7w0t6nb5r3yhd",
+  "turnId": "t_3kd9xm2p8q1vz7w0t6nb5r4yhf",
+  "seq": 5,
+  "payload": { "text": "also check the migration path" }
+}
+```
+
 `turn.step_finished` — one provider call ended. This maps the domain's
 `TurnEventFinished`, which is **per provider call, not per turn** — a
 tool-using turn emits several of these. `finishReason` is one of `stop`,

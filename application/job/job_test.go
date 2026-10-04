@@ -51,7 +51,7 @@ func TestRunTurnStepCap(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := &loopSvc{}
-	err := d.runTurn(t.Context(), "room", conv, EnvironmentBundle{}, nil, entity.Model{}, svc, nil)
+	err := d.runTurn(t.Context(), "room", conv, EnvironmentBundle{}, nil, entity.Model{}, svc, nil, nil)
 	if apperror.As(err).StatusCode() != 500 {
 		t.Fatalf("step cap → %v, want 500", err)
 	}
@@ -100,7 +100,7 @@ func TestRunTurn413WithAppendedMessagePropagates(t *testing.T) {
 		}
 	}
 	svc := &partial413Svc{}
-	err := d.runTurn(t.Context(), "room", conv, EnvironmentBundle{}, nil, entity.Model{}, svc, nil)
+	err := d.runTurn(t.Context(), "room", conv, EnvironmentBundle{}, nil, entity.Model{}, svc, nil, nil)
 	if apperror.As(err).StatusCode() != 413 {
 		t.Fatalf("appended-message 413 must propagate, got %v", err)
 	}

@@ -19,6 +19,14 @@ type Info = service.CommandCompletion
 // update loop runs it as a turn with live event streaming.
 type JobFunc = svccommand.JobFunc
 
+// SteerInfo advertises the terminal-local /steer command — the REPL
+// input path handles it, not the service registry, so palette and /help
+// need this manual row for discoverability.
+var SteerInfo = service.CommandCompletion{
+	Usage: "/steer <message>",
+	Desc:  "inject input into the running turn after the next tool result",
+}
+
 type sessionBindings struct{ s *session.Session }
 
 func (b *sessionBindings) ConversationID() string                    { return b.s.ConversationID }

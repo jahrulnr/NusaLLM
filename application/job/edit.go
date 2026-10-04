@@ -22,7 +22,16 @@ type Edit struct {
 	MsgID   string
 	Content string
 	OnEvent event.TurnEventHandler
+
+	steers steerInbox
 }
+
+// Steer buffers user input for the regenerated turn — same contract as
+// Send.Steer.
+func (j *Edit) Steer(text string) { j.steers.push(text) }
+
+// RecallSteer withdraws the newest un-fired steering input.
+func (j *Edit) RecallSteer() (string, bool) { return j.steers.popLast() }
 
 // IsPreempt marks edit as a control job — it cuts the queue and
 // interrupts whatever is running.
@@ -79,7 +88,7 @@ func (j *Edit) Execute(execCtx context.Context) (err error) {
 				conv.SetSystemPrompt(prompt.SystemPrompt("conversation"))
 			}
 		}
-		return d.runTurn(ctx, convID, conv, driver, gw, model, svc, j.OnEvent)
+		return d.runTurn(ctx, convID, conv, driver, gw, model, svc, j.OnEvent, &j.steers)
 	}()
 	return err
 }

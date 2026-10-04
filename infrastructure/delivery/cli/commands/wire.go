@@ -61,7 +61,7 @@ func New(s *session.Session) *Registry {
 	quit := cmdquit.New(h)
 	help := cmdhelp.New(h, func() []dservice.CommandCompletion {
 		withHelp := append(append([]dservice.SlashCommand{}, base...), quit)
-		return svccommand.Describe(withHelp)
+		return append(svccommand.Describe(withHelp), SteerInfo)
 	})
 	return svccommand.NewRegistry(append(base, help, quit)...)
 }

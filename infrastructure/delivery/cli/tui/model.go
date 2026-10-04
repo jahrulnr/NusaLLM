@@ -56,6 +56,7 @@ type replModel struct {
 	historyIdx      int    // -1 while editing the live draft
 	draft           string // live draft stashed while browsing history
 	queued          []string
+	pendingSteer    []string         // steering input submitted but not yet folded into the turn
 	live            *strings.Builder // in-flight assistant delta not yet sealed
 	liveTimeline    []livePiece      // turn transcript in TurnEvent arrival order
 	contextEstimate int              // footer ~estimate/total input budget
@@ -102,11 +103,18 @@ func newModel(r *REPL, interactive bool) replModel {
 	spin := spinner.New()
 	spin.Spinner = spinner.Dot
 	return replModel{
-		repl:        r,
-		commands:    registry,
-		textarea:    ta,
-		spin:        spin,
-		palette:     slashPalette{describe: registry.Describe, complete: registry.Complete},
+		repl:     r,
+		commands: registry,
+		textarea: ta,
+		spin:     spin,
+		palette: slashPalette{
+			describe: func() []commands.Info {
+				// /steer is handled by the input path, not the service
+				// registry — it needs a manual row for discoverability.
+				return append(registry.Describe(), commands.SteerInfo)
+			},
+			complete: registry.Complete,
+		},
 		history:     r.historyStore.Load(r.historyFile),
 		historyIdx:  -1,
 		live:        &strings.Builder{},
@@ -209,6 +217,9 @@ func (m replModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch {
 		case rows != nil:
 			m.palette.dismiss(value)
+		case value == "" && m.recallPending():
+			// A pending steer or queued message came back to the
+			// composer — Esc is take-back, not delete.
 		case m.turnActive:
 			if m.turnCancel != nil {
 				m.turnCancel()
@@ -306,11 +317,15 @@ func (m replModel) submit(text string) (tea.Model, tea.Cmd) {
 	}
 	m.pushHistory(text)
 	// /cancel is an interrupt, not work — it must reach the registry while
-	// a turn is active; everything else waits for the drain boundary.
+	// a turn is active; /steer injects into the running turn; everything
+	// else waits for the drain boundary.
 	if m.turnActive {
-		if input := parseInput(text); input.command == "cancel" {
+		switch input := parseInput(text); input.command {
+		case "cancel":
 			cmd := m.runCommand("cancel", input.args)
 			return m, tea.Sequence(cmd, m.flush())
+		case "steer":
+			return m.submitSteer(input.args)
 		}
 		m.queued = append(m.queued, text)
 		m.println(term.Dim + "queued — runs after this turn" + term.Reset)
@@ -319,6 +334,71 @@ func (m replModel) submit(text string) (tea.Model, tea.Cmd) {
 	m.queued = append(m.queued, text)
 	cmd := m.drain() // drain before returning — it mutates the queue
 	return m, cmd
+}
+
+// submitSteer injects input into the running turn — it lands after the
+// next tool result as an ordinary user message. The line stays in
+// pendingSteer until the fold event confirms it reached history; a turn
+// that ends first leaves it for finishTurn to queue, and Esc can recall
+// it while it is still pending.
+func (m replModel) submitSteer(text string) (tea.Model, tea.Cmd) {
+	if strings.TrimSpace(text) == "" {
+		m.println(term.Dim + "usage: /steer <message>" + term.Reset)
+		return m, m.flush()
+	}
+	if err := m.repl.Steer(m.ctx, text); err != nil {
+		// The turn ended between submit and delivery — queue the text
+		// as the next message instead of dropping the line.
+		m.queued = append(m.queued, text)
+		m.println(term.Dim + "steer missed the turn — queued as a new message" + term.Reset)
+		return m, m.flush()
+	}
+	m.pendingSteer = append(m.pendingSteer, text)
+	m.println(term.Dim + "steering — lands after the next tool result · esc recalls" + term.Reset)
+	return m, m.flush()
+}
+
+// recallPending withdraws the newest un-fired input — a pending steer
+// first, then the latest queued message — and restores it to the
+// composer. Called only with an empty composer so a live draft is never
+// clobbered. The inbox pop leads and the matching tracking entry is
+// removed: entries above it already folded into history, so tracking
+// can hold stale rows the worker no longer has.
+func (m *replModel) recallPending() bool {
+	if text, ok := m.repl.RecallSteer(); ok {
+		for i := len(m.pendingSteer) - 1; i >= 0; i-- {
+			if m.pendingSteer[i] == text {
+				m.pendingSteer = append(m.pendingSteer[:i:i], m.pendingSteer[i+1:]...)
+				break
+			}
+		}
+		m.restoreComposer(text)
+		return true
+	}
+	if len(m.queued) > 0 {
+		text := m.queued[len(m.queued)-1]
+		m.queued = m.queued[:len(m.queued)-1]
+		m.restoreComposer(text)
+		return true
+	}
+	return false
+}
+
+func (m *replModel) restoreComposer(text string) {
+	m.textarea.SetValue(text)
+	m.textarea.CursorEnd()
+	m.fitComposer()
+}
+
+// steerLanded marks the matching pending steer consumed — the fold
+// event confirms it reached history, so Esc can no longer recall it.
+func (m *replModel) steerLanded(text string) {
+	for i, s := range m.pendingSteer {
+		if s == text {
+			m.pendingSteer = append(m.pendingSteer[:i:i], m.pendingSteer[i+1:]...)
+			return
+		}
+	}
 }
 
 // drain dispatches queued submissions in order until a turn claims the
@@ -367,6 +447,14 @@ func (m *replModel) dispatch(text string) tea.Cmd {
 		}
 	}
 	switch {
+	case input.command == "steer":
+		// No running turn to inject — the steering text degrades to an
+		// ordinary message so the intent still reaches the model.
+		if input.args == "" {
+			m.println(term.Dim + "usage: /steer <message>" + term.Reset)
+			return nil
+		}
+		return m.beginTurn(input.args)
 	case input.command != "":
 		// Worker-bound commands (/edit, /compact) resolve through the
 		// registry like every other slash command — Job validates and
@@ -565,6 +653,14 @@ func (m replModel) finishTurn(result appconversation.SendResult, err error) (tea
 		m.println(block)
 	}
 	m.resetLive()
+	if len(m.pendingSteer) > 0 {
+		// The turn ended before a safe point — the steer never landed in
+		// history. Queue it as an ordinary message instead of dropping
+		// the line.
+		m.queued = append(m.queued, m.pendingSteer...)
+		m.pendingSteer = nil
+		m.println(term.Dim + "steer missed the turn — queued as a new message" + term.Reset)
+	}
 	if err != nil {
 		m.println("error: " + publicError(err))
 	}
@@ -682,6 +778,10 @@ func (m *replModel) applyEvent(e event.TurnEvent) {
 				toolOutput: text, toolCallID: call.ID(), toolName: call.Name(),
 			})
 		}
+	case enum.TurnEventSteer:
+		m.steerLanded(e.Delta())
+		m.sealLiveMarkdown()
+		m.appendLiveLine(term.Cyan + term.Bold + "» steer:" + term.Reset + " " + term.Sanitize(e.Delta()))
 	case enum.TurnEventFinished:
 		m.sealLiveMarkdown()
 		m.appendLiveLine(term.Dim + "↳ " + formatUsage(e.Usage()) + term.Reset)

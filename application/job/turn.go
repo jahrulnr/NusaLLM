@@ -15,8 +15,12 @@ import (
 
 // runTurn is the agent loop shared by send and edit: provider call →
 // persist → execute pending tool calls → provider call — until the model
-// stops requesting tools or the step cap is hit.
-func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conversation, driver EnvironmentDriver, gw *aggregate.Gateway, model entity.Model, svc dservice.TextModelService, onEvent event.TurnEventHandler) error {
+// stops requesting tools or the step cap is hit. steers carries mid-turn
+// user input buffered by the worker's out-of-band path; the loop folds
+// it at the top of each step — after the last tool result persisted,
+// before the next provider call — so injected text never bisects a
+// tool-call/result pair or interleaves with a streaming reply.
+func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conversation, driver EnvironmentDriver, gw *aggregate.Gateway, model entity.Model, svc dservice.TextModelService, onEvent event.TurnEventHandler, steers *steerInbox) error {
 	// Hand-built Deps may carry a zero or invalid config — normalize
 	// clamps and tag defaults fill it.
 	ccfg := d.Config
@@ -35,15 +39,39 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 		if err := ctx.Err(); err != nil {
 			return apperror.New(408, "turn canceled", err)
 		}
+		// Steering becomes an ordinary user message in history — the
+		// model answers it on this call. Input arriving while the turn
+		// ends without another step (no pending tools) never folds; the
+		// caller decides what the undelivered text becomes.
+		if steers != nil {
+			for _, text := range steers.drain() {
+				user, err := entity.NewMessage(enum.RoleUser, text)
+				if err != nil {
+					return err
+				}
+				conv.Append(user)
+				if _, err := d.Convs.AppendMessage(ctx, convID, user); err != nil {
+					return err
+				}
+				if onEvent != nil {
+					onEvent(event.NewSteerEvent(text))
+				}
+			}
+		}
 		if !didCompact {
 			// One compaction per turn: a fat tail that still overflows
 			// after folding is the provider's call — refiring every step
-			// would summarize the previous checkpoint at full cost.
-			shrank, err := d.maybeCompact(ctx, convID, conv, gw, model, svc, ccfg.CompactBudgetPct, ccfg.CompactKeepTail)
-			if err != nil {
-				return err
+			// would summarize the previous checkpoint at full cost. The
+			// budget is a share of the model's window so headroom stays
+			// reserved for the reply; a checkpoint that would drop zero
+			// messages is noise in history, not headroom.
+			if conv.NeedCompaction(model.CompactionBudgetTokens(ccfg.CompactBudgetPct)) &&
+				conv.CanManualCompact(ccfg.CompactKeepTail) {
+				if err := d.compact(ctx, convID, conv, gw, model, svc, ccfg.CompactKeepTail); err != nil {
+					return err
+				}
+				didCompact = true
 			}
-			didCompact = shrank
 		}
 		before := len(conv.Messages())
 		var parts []entity.MessagePart
@@ -154,7 +182,62 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 				}
 				return apperror.New(408, "turn canceled", err)
 			}
-			if err := d.execTool(ctx, convID, driver, onEvent, conv, last, call); err != nil {
+			// Resolve and run one call, then record the result twice: on
+			// the in-memory message (so the next provider call sees it)
+			// and as a patch record in the repository (so a reload
+			// restores it). Executor failures become tool output — the
+			// model deserves honest results — while context
+			// cancellation aborts the whole turn.
+			err := func() error {
+				out := ""
+				var outAtts []valueobject.Attachment
+				permitted := false
+				for _, s := range conv.Tools() {
+					if s.Name() == call.Name() && s.CallableByAgent() {
+						permitted = true
+						break
+					}
+				}
+				// Live chunks flow to the frontend scoped by call id —
+				// they are a preview, never history; only the Execute
+				// result lands in output.
+				emit := func(chunk string) {
+					if onEvent != nil {
+						onEvent(event.NewToolOutputEvent(call, chunk))
+					}
+				}
+				tool, registered := driver.Tool(call.Name())
+				switch {
+				case !permitted:
+					out = "error: tool not permitted"
+				case !registered:
+					out = "error: unknown tool " + call.Name()
+				default:
+					res, err := tool.Execute(ctx, call, emit)
+					switch {
+					case err == nil:
+						out, outAtts = res.Text, res.Attachments
+					case ctx.Err() != nil:
+						return apperror.New(408, "turn canceled", ctx.Err())
+					default:
+						out = "error: " + err.Error()
+					}
+				}
+				if err := last.SetToolOutput(call.ID(), out); err != nil {
+					return apperror.New(500, "tool output lost", err)
+				}
+				// Attachments land alongside the recorded result.
+				if err := last.SetToolOutputAttachments(call.ID(), outAtts); err != nil {
+					return apperror.New(500, "tool output lost", err)
+				}
+				for _, tc := range last.ToolCalls() {
+					if tc.ID() == call.ID() {
+						return d.Convs.UpdateToolCallOutput(ctx, convID, tc)
+					}
+				}
+				return apperror.New(500, "tool output lost", fmt.Errorf("call %s vanished after update", call.ID()))
+			}()
+			if err != nil {
 				if ctx.Err() != nil {
 					if stampErr := d.persistInterrupted(ctx, convID, last); stampErr != nil {
 						return stampErr
@@ -227,15 +310,13 @@ func (d Deps) persistInterrupted(ctx context.Context, convID string, msg *entity
 	if msg == nil {
 		return nil
 	}
-	for _, tc := range msg.ToolCalls() {
-		if tc.Type() != enum.TooltypeOrigin || tc.HasOutput() {
-			continue
-		}
-		if err := msg.SetToolOutput(tc.ID(), "interrupted by user"); err != nil {
-			return err
-		}
+	pending := pendingCalls(*msg)
+	if err := stampInterrupted(msg); err != nil {
+		return err
+	}
+	for _, pc := range pending {
 		for _, cur := range msg.ToolCalls() {
-			if cur.ID() == tc.ID() {
+			if cur.ID() == pc.ID() {
 				if err := d.Convs.UpdateToolCallOutput(ctx, convID, cur); err != nil {
 					return err
 				}
@@ -256,58 +337,4 @@ func pendingCalls(m entity.Message) []entity.ToolCall {
 		}
 	}
 	return out
-}
-
-// execTool resolves and runs one call, then records the result twice: on
-// the in-memory message (so the next provider call sees it) and as a patch
-// record in the repository (so a reload restores it). Executor failures
-// become tool output — the model deserves honest results — while context
-// cancellation aborts the whole turn.
-func (d Deps) execTool(ctx context.Context, convID string, driver EnvironmentDriver, onEvent event.TurnEventHandler, conv *aggregate.Conversation, msg *entity.Message, call entity.ToolCall) error {
-	out := ""
-	var outAtts []valueobject.Attachment
-	permitted := false
-	for _, s := range conv.Tools() {
-		if s.Name() == call.Name() && s.CallableByAgent() {
-			permitted = true
-			break
-		}
-	}
-	// Live chunks flow to the frontend scoped by call id — they are a
-	// preview, never history; only the Execute result lands in output.
-	emit := func(chunk string) {
-		if onEvent != nil {
-			onEvent(event.NewToolOutputEvent(call, chunk))
-		}
-	}
-	tool, registered := driver.Tool(call.Name())
-	switch {
-	case !permitted:
-		out = "error: tool not permitted"
-	case !registered:
-		out = "error: unknown tool " + call.Name()
-	default:
-		res, err := tool.Execute(ctx, call, emit)
-		switch {
-		case err == nil:
-			out, outAtts = res.Text, res.Attachments
-		case ctx.Err() != nil:
-			return apperror.New(408, "turn canceled", ctx.Err())
-		default:
-			out = "error: " + err.Error()
-		}
-	}
-	if err := msg.SetToolOutput(call.ID(), out); err != nil {
-		return apperror.New(500, "tool output lost", err)
-	}
-	// Attachments land alongside the recorded result.
-	if err := msg.SetToolOutputAttachments(call.ID(), outAtts); err != nil {
-		return apperror.New(500, "tool output lost", err)
-	}
-	for _, tc := range msg.ToolCalls() {
-		if tc.ID() == call.ID() {
-			return d.Convs.UpdateToolCallOutput(ctx, convID, tc)
-		}
-	}
-	return apperror.New(500, "tool output lost", fmt.Errorf("call %s vanished after update", call.ID()))
 }

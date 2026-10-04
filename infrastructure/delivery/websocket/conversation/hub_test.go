@@ -149,6 +149,7 @@ func TestTurnSendHappyPath(t *testing.T) {
 		onEvent(event.NewToolCallEvent(toolCall))
 		outCall, _ := entity.NewToolCall("call_1", "read_file", "{}", enum.TooltypeOrigin)
 		onEvent(event.NewToolOutputEvent(outCall, "SECRET-TOOL-OUTPUT"))
+		onEvent(event.NewSteerEvent("USER-STEER-LINE"))
 		usage, _ := valueobject.NewUsage(10, 0, 0, 5)
 		onEvent(event.NewFinishedEvent(enum.FinishReasonStop, usage))
 		onEvent(event.NewErrorEvent(fmt.Errorf("transient retry — never crosses")))
@@ -195,7 +196,7 @@ func TestTurnSendHappyPath(t *testing.T) {
 		}
 	}
 
-	want := []string{"turn.opened", "turn.delta", "turn.phase", "turn.reasoning", "turn.reasoning", "turn.reasoning", "turn.tool_call", "turn.tool_input", "turn.tool_output", "turn.step_finished", "turn.completed"}
+	want := []string{"turn.opened", "turn.delta", "turn.phase", "turn.reasoning", "turn.reasoning", "turn.reasoning", "turn.tool_call", "turn.tool_input", "turn.tool_output", "turn.steer", "turn.step_finished", "turn.completed"}
 	if fmt.Sprint(types) != fmt.Sprint(want) {
 		t.Fatalf("frame types %v, want %v", types, want)
 	}
@@ -226,6 +227,7 @@ func TestTurnSendHappyPath(t *testing.T) {
 		!strings.Contains(sawRaw.String(), `"name":"read_file"`) ||
 		!strings.Contains(sawRaw.String(), `"text":"{\"path\":\"/secret/x\"}"`) ||
 		!strings.Contains(sawRaw.String(), `"text":"SECRET-TOOL-OUTPUT"`) ||
+		!strings.Contains(sawRaw.String(), `"text":"USER-STEER-LINE"`) ||
 		!strings.Contains(sawRaw.String(), `"finishReason":"stop"`) ||
 		!strings.Contains(sawRaw.String(), `"totalTokens":15`) {
 		t.Fatalf("expected projection fields missing: %s", sawRaw.String())

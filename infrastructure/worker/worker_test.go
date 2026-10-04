@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -190,6 +191,98 @@ func TestOnIdleFires(t *testing.T) {
 	case <-idle:
 	case <-time.After(2 * time.Second):
 		t.Fatal("OnIdle never fired")
+	}
+}
+
+// steerableJob is a blocking job with the optional mid-run input
+// contract — the worker delivers Steer out of band and never interrupts
+// Execute for it.
+type steerableJob struct {
+	started     chan struct{}
+	interrupted chan struct{}
+	mu          sync.Mutex
+	steers      []string
+}
+
+func (j *steerableJob) Execute(ctx context.Context) error {
+	close(j.started)
+	select {
+	case <-j.interrupted:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+func (j *steerableJob) Interrupt() { close(j.interrupted) }
+func (j *steerableJob) Steer(text string) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.steers = append(j.steers, text)
+}
+func (j *steerableJob) RecallSteer() (string, bool) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if len(j.steers) == 0 {
+		return "", false
+	}
+	last := j.steers[len(j.steers)-1]
+	j.steers = j.steers[:len(j.steers)-1]
+	return last, true
+}
+func (j *steerableJob) steerCount() int {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return len(j.steers)
+}
+
+// Steer buffers input on the running job — delivery is confirmed by the
+// return value; the job folds it at its own safe point.
+func TestSteerDeliveredToRunningJob(t *testing.T) {
+	w := New(Options{})
+	defer w.Terminate()
+	j := &steerableJob{started: make(chan struct{}), interrupted: make(chan struct{})}
+	if err := w.Submit(j); err != nil {
+		t.Fatal(err)
+	}
+	waitClosed(t, j.started, "steerable job")
+	if !w.Steer("hold on") || !w.Steer("and this") {
+		t.Fatal("steer to a running steerable job must deliver")
+	}
+	if j.steerCount() != 2 {
+		t.Fatalf("job buffered %d steers, want 2", j.steerCount())
+	}
+	if got, ok := w.RecallSteer(); !ok || got != "and this" {
+		t.Fatalf("recall returns the newest pending input: %q,%v", got, ok)
+	}
+	if got, ok := w.RecallSteer(); !ok || got != "hold on" {
+		t.Fatalf("recall drains LIFO: %q,%v", got, ok)
+	}
+	if _, ok := w.RecallSteer(); ok {
+		t.Fatal("recall on an empty inbox must report nothing")
+	}
+}
+
+// An idle worker and a job without the contract both refuse delivery —
+// the caller decides what the undelivered text becomes.
+func TestSteerRefused(t *testing.T) {
+	w := New(Options{})
+	defer w.Terminate()
+	if w.Steer("nothing running") {
+		t.Fatal("steer on an idle worker must refuse")
+	}
+	if _, ok := w.RecallSteer(); ok {
+		t.Fatal("recall on an idle worker must report nothing")
+	}
+	j := &blockingJob{started: make(chan struct{}), interrupted: make(chan struct{})}
+	if err := w.Submit(j); err != nil {
+		t.Fatal(err)
+	}
+	waitClosed(t, j.started, "non-steerable job")
+	if w.Steer("no inbox") {
+		t.Fatal("steer to a job without the contract must refuse")
+	}
+	if _, ok := w.RecallSteer(); ok {
+		t.Fatal("recall from a job without the contract must report nothing")
 	}
 }
 

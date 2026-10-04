@@ -69,7 +69,17 @@ type Send struct {
 	Attachments []valueobject.Attachment
 	Opts        SendOptions
 	OnEvent     event.TurnEventHandler
+
+	steers steerInbox
 }
+
+// Steer buffers user input for the running turn — the worker's
+// out-of-band control path. The turn loop folds it at the next safe
+// point; it never interrupts the in-flight provider call.
+func (j *Send) Steer(text string) { j.steers.push(text) }
+
+// RecallSteer withdraws the newest un-fired steering input.
+func (j *Send) RecallSteer() (string, bool) { return j.steers.popLast() }
 
 // Execute runs the whole turn end-to-end on the worker's goroutine.
 func (j *Send) Execute(execCtx context.Context) (err error) {
@@ -171,7 +181,7 @@ func (j *Send) Execute(execCtx context.Context) (err error) {
 			return err
 		}
 
-		if err := d.runTurn(ctx, convID, conv, driver, gw, model, svc, j.OnEvent); err != nil {
+		if err := d.runTurn(ctx, convID, conv, driver, gw, model, svc, j.OnEvent, &j.steers); err != nil {
 			return err
 		}
 		conv.SetRoute(route)     // existing rooms re-bind only on success —

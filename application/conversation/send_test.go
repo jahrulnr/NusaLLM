@@ -843,8 +843,8 @@ func TestSendToolLoop(t *testing.T) {
 	)
 	var evs []event.TurnEvent
 	onEvent := func(e event.TurnEvent) { evs = append(evs, e) }
-	// The room advertises the echo tool — execTool fails closed on calls
-	// whose name isn't in the offered catalog.
+	// The room advertises the echo tool — the turn loop fails closed on
+	// calls whose name isn't in the offered catalog.
 	seed, _ := aggregate.NewConversation("loop")
 	seed.SetTools([]valueobject.ToolSchema{echoTool{}.Schema()})
 	if err := convs.Save(t.Context(), seed); err != nil {

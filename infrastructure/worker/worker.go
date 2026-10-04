@@ -31,6 +31,16 @@ type Job interface {
 	Interrupt()
 }
 
+// Steerable is the optional mid-run input contract a Job may implement.
+// The worker delivers input out of band — it never interrupts Execute to
+// deliver, so the job folds input at its own safe point. RecallSteer
+// withdraws the newest un-fired input so the caller can take it back
+// before it lands; ok=false means nothing was pending.
+type Steerable interface {
+	Steer(text string)
+	RecallSteer() (text string, ok bool)
+}
+
 var (
 	// ErrClosed rejects Submit/Preempt on a terminated worker — the
 	// caller respawns or re-routes.
@@ -125,6 +135,33 @@ func (w *Worker) Preempt(j Job) error {
 		running.Interrupt()
 	}
 	return nil
+}
+
+// Steer delivers mid-run input to the running job. False means nothing
+// is running or the job takes no input — the caller decides what the
+// undelivered text becomes. Delivery only buffers; the job folds input
+// at its own safe point, so Steer never races the job's execution.
+func (w *Worker) Steer(text string) bool {
+	w.mu.Lock()
+	running := w.running
+	w.mu.Unlock()
+	if s, ok := running.(Steerable); ok {
+		s.Steer(text)
+		return true
+	}
+	return false
+}
+
+// RecallSteer withdraws the newest un-fired input from the running job.
+// ok=false — nothing pending (or already consumed, or nothing running).
+func (w *Worker) RecallSteer() (string, bool) {
+	w.mu.Lock()
+	running := w.running
+	w.mu.Unlock()
+	if s, ok := running.(Steerable); ok {
+		return s.RecallSteer()
+	}
+	return "", false
 }
 
 // Interrupt asks the running job to stop early — the job's own hook runs.

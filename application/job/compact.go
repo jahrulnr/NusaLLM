@@ -19,21 +19,6 @@ import (
 // forever.
 const compactAttempts = 3
 
-// maybeCompact runs compaction when the estimated context reaches the
-// model's window share — caller derives the budget so headroom stays
-// reserved for the reply. It reports whether history actually shrank:
-// a turn that already compacted must not compact again on a provider
-// 413 (one over-sized message would loop forever).
-func (d Deps) maybeCompact(ctx context.Context, convID string, conv *aggregate.Conversation, gw *aggregate.Gateway, model entity.Model, svc dservice.TextModelService, budgetPct, keepTail int) (compacted bool, err error) {
-	budget := model.CompactionBudgetTokens(budgetPct)
-	if !conv.NeedCompaction(budget) || !conv.CanManualCompact(keepTail) {
-		// Nothing foldable: a checkpoint that drops zero messages is
-		// noise in history, not headroom.
-		return false, nil
-	}
-	return true, d.compact(ctx, convID, conv, gw, model, svc, keepTail)
-}
-
 // compact folds the live history into a checkpoint: the model writes the
 // handoff on a scratch conversation (its own transcript plus the summary
 // tool — never persisted), then the sealed prefix drops and the continue
@@ -60,7 +45,44 @@ func (d Deps) compact(ctx context.Context, convID string, conv *aggregate.Conver
 	summary := NewSummaryTool()
 	scratch.SetTools([]valueobject.ToolSchema{summary.Schema()})
 
-	checkpoint, err := d.writeCheckpoint(ctx, scratch, gw, model, svc, summary)
+	// The scratch dialogue should answer with a single summary tool call,
+	// but a plain-text answer is accepted — a model that ignores the
+	// mandate still produced a checkpoint, which beats failing into a
+	// 413 loop.
+	checkpoint, err := func() (string, error) {
+		for attempt := 0; attempt < compactAttempts; attempt++ {
+			if err := ctx.Err(); err != nil {
+				return "", apperror.New(408, "compaction canceled", err)
+			}
+			before := len(scratch.Messages())
+			if err := svc.Send(ctx, scratch, gw, model.ApplyUnknownContextDefaults(), nil); err != nil {
+				return "", err
+			}
+			msgs := scratch.Messages()
+			if len(msgs) == before {
+				return "", apperror.New(500, "compaction adapter produced no message", fmt.Errorf("service appended 0 messages"))
+			}
+			last := &msgs[len(msgs)-1]
+			pending := pendingCalls(*last)
+			if len(pending) == 0 {
+				if text := strings.TrimSpace(last.Content()); text != "" {
+					return text, nil
+				}
+				continue // an empty message deserves another attempt, not a checkpoint
+			}
+			for _, call := range pending {
+				if call.Name() != SummaryToolName {
+					_ = last.SetToolOutput(call.ID(), "error: only the summary tool is available")
+					continue
+				}
+				if res, err := summary.Execute(ctx, call, nil); err == nil {
+					return res.Text, nil
+				}
+				_ = last.SetToolOutput(call.ID(), "error: the text field must hold the checkpoint")
+			}
+		}
+		return "", apperror.New(500, "compaction failed", fmt.Errorf("model produced no checkpoint in %d attempts", compactAttempts))
+	}()
 	if err != nil {
 		return err
 	}
@@ -93,43 +115,4 @@ func (d Deps) compact(ctx context.Context, convID string, conv *aggregate.Conver
 		return err
 	}
 	return nil
-}
-
-// writeCheckpoint drives the scratch dialogue: the model should answer
-// with a single summary tool call, but a plain-text answer is accepted —
-// a model that ignores the mandate still produced a checkpoint, which
-// beats failing into a 413 loop.
-func (d Deps) writeCheckpoint(ctx context.Context, scratch *aggregate.Conversation, gw *aggregate.Gateway, model entity.Model, svc dservice.TextModelService, summary *SummaryTool) (string, error) {
-	for attempt := 0; attempt < compactAttempts; attempt++ {
-		if err := ctx.Err(); err != nil {
-			return "", apperror.New(408, "compaction canceled", err)
-		}
-		before := len(scratch.Messages())
-		if err := svc.Send(ctx, scratch, gw, model.ApplyUnknownContextDefaults(), nil); err != nil {
-			return "", err
-		}
-		msgs := scratch.Messages()
-		if len(msgs) == before {
-			return "", apperror.New(500, "compaction adapter produced no message", fmt.Errorf("service appended 0 messages"))
-		}
-		last := &msgs[len(msgs)-1]
-		pending := pendingCalls(*last)
-		if len(pending) == 0 {
-			if text := strings.TrimSpace(last.Content()); text != "" {
-				return text, nil
-			}
-			continue // an empty message deserves another attempt, not a checkpoint
-		}
-		for _, call := range pending {
-			if call.Name() != SummaryToolName {
-				_ = last.SetToolOutput(call.ID(), "error: only the summary tool is available")
-				continue
-			}
-			if res, err := summary.Execute(ctx, call, nil); err == nil {
-				return res.Text, nil
-			}
-			_ = last.SetToolOutput(call.ID(), "error: the text field must hold the checkpoint")
-		}
-	}
-	return "", apperror.New(500, "compaction failed", fmt.Errorf("model produced no checkpoint in %d attempts", compactAttempts))
 }

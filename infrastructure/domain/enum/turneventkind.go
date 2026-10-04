@@ -16,6 +16,9 @@ const (
 	// TurnEventToolOutput carries a live output chunk from a running tool
 	// call — the call id rides in ToolCall(), the chunk in Delta().
 	TurnEventToolOutput TurnEventKind = "tool_output"
+	// TurnEventSteer carries a user steering message folded into the
+	// running turn — the text rides in Delta().
+	TurnEventSteer TurnEventKind = "steer"
 	// TurnEventFinished is the terminal event: finish reason plus usage.
 	TurnEventFinished TurnEventKind = "finished"
 	// TurnEventError reports a mid-stream failure.
@@ -28,7 +31,7 @@ func (k TurnEventKind) String() string {
 
 func ParseTurnEventKind(v string) (TurnEventKind, bool) {
 	switch k := TurnEventKind(v); k {
-	case TurnEventDelta, TurnEventReasoning, TurnEventReasoningSummary, TurnEventToolCall, TurnEventToolOutput, TurnEventFinished, TurnEventError:
+	case TurnEventDelta, TurnEventReasoning, TurnEventReasoningSummary, TurnEventToolCall, TurnEventToolOutput, TurnEventSteer, TurnEventFinished, TurnEventError:
 		return k, true
 	}
 	return "", false

@@ -187,6 +187,19 @@ func (s *Session) Send(ctx context.Context, text, route, modelID string, onEvent
 	return s.Conversations.Send(ctx, s.ConversationID, route, modelID, text, s.Attachments, appjob.SendOptions{}, onEvent)
 }
 
+// Steer injects input into the bound conversation's running turn — it
+// lands after the next tool result as an ordinary user message. Errors
+// when no turn is running.
+func (s *Session) Steer(ctx context.Context, text string) error {
+	return s.Conversations.Steer(ctx, s.ConversationID, text)
+}
+
+// RecallSteer withdraws the newest unconsumed steering input — the
+// composer restore path on Esc.
+func (s *Session) RecallSteer() (string, bool) {
+	return s.Conversations.RecallSteer(s.ConversationID)
+}
+
 // Write emits formatted output through the command emitter.
 func (s *Session) Write(emitter service.CommandEmitter, format string, args ...any) {
 	if emitter != nil {
