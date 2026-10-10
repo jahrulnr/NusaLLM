@@ -31,8 +31,16 @@ const (
 	journalMaxAge      = 2 * time.Minute
 	outboundChunkBytes = 32 << 10 // max bytes of text per turn.delta frame
 	maxFrameBytes      = 1 << 20  // hard cap on any single outbound frame
-	shutdownTurnGrace  = 10 * time.Second
-	shutdownDrainGrace = 5 * time.Second
+	// maxSteerInputs bounds a send turn's lifetime web steering
+	// submissions — the receipt snapshot stays a small fixed-size
+	// document, and rejected submissions never truncate.
+	maxSteerInputs = 32
+	// maxControlRequestIDBytes bounds requestIds on turn.steer and
+	// turn.steer_recall — the steer command's requestId becomes the
+	// input's inputId and rides every snapshot entry.
+	maxControlRequestIDBytes = 128
+	shutdownTurnGrace        = 10 * time.Second
+	shutdownDrainGrace       = 5 * time.Second
 )
 
 // Sender is the conversation send/edit use case — the same application
@@ -94,6 +102,19 @@ type turn struct {
 	// suppressed, and runTurn emits the sanitized 413 terminal carrying
 	// the job's real persistence receipt.
 	overflowed bool
+
+	// steering is the send turn's exact-turn mailbox — bound through
+	// opts into the job, so submissions land on this turn even while it
+	// is still queued on the room worker. steerRecords is the bounded
+	// submission list (order = submission), steerByInput the requestId
+	// index for dedup and recall. Only turnSend carries these.
+	steering     *appjob.SteeringInput
+	steerRecords []*steerRecord
+	steerByInput map[string]*steerRecord
+	// outcome records the emitted terminal verdict so a late
+	// resync_required can replay the stored outcome instead of a bare
+	// frame.
+	outcome *turnOutcome
 }
 
 // Hub owns the process-scoped conversation protocol: every admitted
@@ -189,6 +210,10 @@ func (h *Hub) handleCommand(c *conn, raw []byte) {
 		h.turnCancelCommand(c, cmd)
 	case "turn.watch":
 		h.turnWatch(c, cmd)
+	case "turn.steer":
+		h.turnSteer(c, cmd)
+	case "turn.steer_recall":
+		h.turnSteerRecall(c, cmd)
 	default:
 		c.push(errorFrame(cmd.RequestID, "invalid_argument", "unknown command type "+cmd.Type))
 	}
@@ -253,8 +278,13 @@ func (h *Hub) turnSend(c *conn, cmd command) {
 		// host filesystem check here would reject remote workspaces.
 		opts.Workspace = ws
 	}
+	// Every admitted send owns an exact-turn mailbox: turn.steer
+	// submissions land on this turn whether the job is running or still
+	// queued on the room worker — never on whatever ran before.
+	opts.Steering = appjob.NewSteeringInput()
 	h.admitAndRun(c, cmd.RequestID, convID, turn{
 		kind: turnSend, route: payload.Route, modelID: payload.ModelID, content: payload.Content, opts: opts,
+		steering: opts.Steering, steerByInput: map[string]*steerRecord{},
 	})
 }
 
@@ -363,64 +393,64 @@ func (h *Hub) runTurn(t *turn) {
 	if t.terminal {
 		return // already terminated
 	}
+	var typ string
+	var p terminalPayload
 	switch {
 	case t.overflowed:
 		// A stream frame exceeded the outbound bound — the turn dies
 		// with a sanitized 413 and the job's real receipt, never a
 		// fabricated persistence claim.
-		p := terminalPayload{
+		typ = "turn.failed"
+		p = terminalPayload{
 			Status:         http.StatusRequestEntityTooLarge,
 			Code:           "input_too_large",
 			Message:        "stream frame exceeded the outbound bound",
 			ResyncRequired: true,
 		}
-		if t.kind == turnSend {
-			p.UserMessagePersisted = &persisted
-		}
-		h.emitLocked(t, "turn.failed", p, true)
 	case err == nil && t.kind == turnSend && !persisted:
 		// A send that reports success without a committed user line is
 		// an engine bug — never let it look like a persisted success.
-		h.emitLocked(t, "turn.failed", terminalPayload{
+		typ = "turn.failed"
+		p = terminalPayload{
 			Status:               http.StatusInternalServerError,
 			Code:                 "internal",
 			Message:              "send completed without a persistence receipt",
 			UserMessagePersisted: &persisted,
 			ResyncRequired:       true,
-		}, true)
-	case err == nil:
-		p := terminalPayload{ResyncRequired: true}
-		if t.kind == turnSend {
-			p.UserMessagePersisted = &persisted
 		}
-		h.emitLocked(t, "turn.completed", p, true)
+	case err == nil:
+		typ = "turn.completed"
+		p = terminalPayload{ResyncRequired: true}
 	case h.shutting:
 		// Graceful shutdown canceled the turn — classify 503 so the tab
 		// knows the turn died with the server. The receipt's real
 		// persistence state rides along, never fabricated.
-		p := terminalPayload{
+		typ = "turn.failed"
+		p = terminalPayload{
 			Status:         http.StatusServiceUnavailable,
 			Code:           "unavailable",
 			Message:        "server shutting down",
 			ResyncRequired: true,
 		}
-		if t.kind == turnSend {
-			p.UserMessagePersisted = &persisted
-		}
-		h.emitLocked(t, "turn.failed", p, true)
 	default:
 		status, code, message := classifyError(err)
-		p := terminalPayload{
+		typ = "turn.failed"
+		p = terminalPayload{
 			Status:         status,
 			Code:           code,
 			Message:        message,
 			ResyncRequired: true,
 		}
-		if t.kind == turnSend {
-			p.UserMessagePersisted = &persisted
-		}
-		h.emitLocked(t, "turn.failed", p, true)
 	}
+	if t.kind == turnSend {
+		p.UserMessagePersisted = &persisted
+	}
+	// The bounded receipt snapshot rides every terminal — accepted was
+	// never consumed, so the client reconciles each submitted input by
+	// state rather than guessing.
+	p.Steering = t.steeringSnapshotLocked()
+	t.outcome = &turnOutcome{typ: strings.TrimPrefix(typ, "turn."), payload: p}
+	h.emitLocked(t, typ, p, true)
 	h.finishLocked(t)
 }
 
@@ -482,18 +512,27 @@ func (h *Hub) turnWatch(c *conn, cmd command) {
 	// evicted here, not only at the next admission.
 	h.evictJournalsLocked(time.Now())
 	t, found := h.turns[cmd.TurnID]
-	// Unknown, evicted, foreign-conversation, or newer-than-latest
-	// afterSeq: nothing honest to replay.
-	if !found || t.conversationID != convID || after > t.seq-1 {
+	// Unknown, evicted, or foreign-conversation turnId: nothing honest
+	// to replay — an unknown outcome the client must reconcile over
+	// HTTP, never an implicit resend.
+	if !found || t.conversationID != convID {
 		h.mu.Unlock()
-		c.push(resyncFrame(cmd.RequestID, convID, cmd.TurnID))
+		c.push(resyncFrame(cmd.RequestID, convID, cmd.TurnID, resyncPayload{Turn: "unknown"}))
+		return
+	}
+	// Newer-than-latest afterSeq: nothing honest to replay, but the
+	// retained verdict and receipt snapshot still cross.
+	if after > t.seq-1 {
+		p := h.resyncForLocked(t)
+		h.mu.Unlock()
+		c.push(resyncFrame(cmd.RequestID, convID, cmd.TurnID, p))
 		return
 	}
 	// Journal truncation check: the earliest retained seq must cover
 	// the requested window start (afterSeq -1 asks for everything).
 	if t.journalStart > after+1 {
 		// Gap — the client must re-read persisted state regardless.
-		c.push(resyncFrame(cmd.RequestID, convID, t.id))
+		c.push(resyncFrame(cmd.RequestID, convID, t.id, h.resyncForLocked(t)))
 		if t.terminal {
 			h.mu.Unlock()
 			return // finished turns with gaps get no attach

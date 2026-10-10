@@ -21,8 +21,13 @@ export function el(tag, attrs = {}, children = []) {
   return node;
 }
 
-export function emit(host, type, detail = {}) {
-  host.dispatchEvent(new CustomEvent(type, { detail, bubbles: true, composed: true }));
+export function emit(host, type, detail = {}, options = {}) {
+  // options.cancelable lets a listener veto the emit — dispatchEvent
+  // then returns false to the caller.
+  return host.dispatchEvent(new CustomEvent(type, {
+    detail, bubbles: true, composed: true,
+    cancelable: !!options.cancelable,
+  }));
 }
 
 export function clear(node) {

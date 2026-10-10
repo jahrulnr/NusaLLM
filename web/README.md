@@ -15,8 +15,10 @@ via `embed.go` and served by the same Gin origin as the HTTP API and the
   (`APIClient`, `APIError`), `socket-client.js` (`TurnSocket`),
   `markdown.js` (pure block/inline Markdown → AST + `sanitizeLink`),
   `highlight.js` (pure syntax tokenizer), `turn-projection.js` (pure
-  websocket-frame → ordered-segment projection), `mermaid-runtime.js`
-  (init-once + serialized render queue for the vendored bundle).
+  websocket-frame → ordered-segment projection), `pending-queue.js`
+  (pure room-bound local queue + steering receipt tracker),
+  `mermaid-runtime.js` (init-once + serialized render queue for the
+  vendored bundle).
   All are DOM-free and unit tested under `web/test/`
   (`node --test web/test/*.test.mjs`).
 - `vendor/mermaid/` — pinned **Mermaid 11.17.2** standalone bundle
@@ -64,6 +66,42 @@ via `embed.go` and served by the same Gin origin as the HTTP API and the
   panel for estimated and total tokens. `/api/context` refreshes on room
   load, selection change, and turn completion. The message field grows with
   the draft, and the send button enables when a message can be sent.
+- **Queue, Steer, Stop.** A turn never blocks typing: while a turn
+  runs, the queue is paused/backlogged, or a post-terminal history
+  refresh is still outstanding, Enter (IME `isComposing`-aware —
+  composition Enter never submits) sends the draft to a **local,
+  room-bound queue** and the primary button reads Queue; the pending
+  panel above the input shows a count header, every entry's state
+  (`Queued`, `Waiting for next step`, `Delivery unknown`), its owning
+  room, and its full text in a bounded scroll area. Queued lines keep
+  global submission order, dispatch oldest-first for the *visible*
+  view only — a fresh (un-minted) view is its own queue key, so a
+  second "New thread" never hijacks another's lines — and only after
+  the previous turn's history refresh succeeded; the refresh is a
+  per-room barrier, so nothing — Enter, Resume, navigation, a fresh
+  view — sends into a room whose history is still settling. A failed
+  or canceled turn, a socket drop, or a failed refresh pauses the
+  queue until an explicit Resume. `Restore` returns local text to the
+  draft (appended after a newline, never overwriting); `Remove` drops
+  a local line. Entries owned by another room or fresh view show
+  **Open** — they never mutate this draft — and **Delivery unknown**
+  rows offer Check history, an explicit Copy-to-draft decision, and
+  Dismiss instead of an automatic retry. **Steer** is a separate
+  action visible only while the viewed room owns an opened send turn —
+  it submits `turn.steer` to that exact turn, joins at the next model
+  step (otherwise the input waits as pending until the turn ends), and
+  its receipt (`steer_ack` → fold frame or terminal snapshot) drives
+  the panel state; a still-pending input can be withdrawn via
+  `turn.steer_recall` which restores the text, and Recall stays
+  disabled while the socket can't carry it. **Stop** is a separate
+  visible control scoped to the current room's turn — never a hidden
+  global target, and the shell ignores a cancel that isn't in the
+  owning room. Pre-open drafts survive until `turn.opened`; a send
+  whose terminal reports `userMessagePersisted: false` returns its
+  text to the owning draft or room queue — persistence is taken from
+  the payload, never inferred. The queue is **in-memory only** — a
+  reload forgets pending items by design, and nothing is written to
+  web storage.
 
 ## Rendering
 
@@ -161,9 +199,16 @@ provider replay artifacts in `optionalContent`, attachment bytes or
 
 `app-shell` delegates all stream interpretation to `turn-projection.js`:
 each command owns a projection whose `segments` array records the turn
-*in arrival order* — thinking segments, markdown text segments, and tool
-segments interleave exactly as the server emitted them, and output text
-never concatenates across a thinking/tool boundary. `message-thread`
+*in arrival order* — thinking segments, markdown text segments, tool
+segments, and user **steer** segments interleave exactly as the server
+emitted them, and output text never concatenates across a
+thinking/tool/steer boundary. A `turn.steer` fold renders as ordered
+plain user text (keyed by `inputId`, chunked chunks reassembled, a
+`final` marker separating identical consecutive inputs) — it finishes
+thinking and settles unresolved tools like any other boundary, and is
+never mistaken for tool content. Replayed or doubled `seq` numbers are
+dropped before any mutation, so a reconnect re-watch never re-appends
+text. `message-thread`
 keys one widget per `segment.id`, appends completed Markdown blocks while
 rerendering the unfinished tail, and leaves earlier widgets in place. At completion, matching
 widgets move into the persisted history without losing open details or
@@ -196,7 +241,7 @@ I/O text is never announced. Screen readers get a stable hidden live region fed 
 projection's incremental announcements (`Thinking`, delta text,
 `<name> requested/output activity/settled`) — never a replayed subtree.
 
-## Known limitation
+## Known limitations
 
 If the socket drops after a `turn.send`/`turn.edit` was issued but
 before its `turn.opened` arrived, delivery is unknowable — the command
@@ -205,8 +250,61 @@ before retrying. Mid-turn drops are safe: the socket re-watches open
 turns from their last `seq` and terminals refresh the authoritative
 state from HTTP.
 
+The same honesty applies to the pending queue and steering receipts:
+
+- Local queued lines were never transmitted, so they survive a
+  transient reconnect unchanged — but they live only in memory: a page
+  reload forgets them.
+- A `turn.steer`/`turn.steer_recall` whose ack never arrived is shown
+  as **Delivery unknown** with a Check-history action — the outcome is
+  resolved by the journaled ack replay, the `steering` snapshot on
+  `turn.resync_required`/terminal frames, and the HTTP re-read. Nothing
+  is auto-resent: an input the server may already hold is never
+  submitted twice.
+- Snapshot meaning depends on the verdict: in an **active** resync
+  (`payload.turn === "active"`), `pending`/`claimed` inputs are still
+  owned by the server — the receipt stays bound to the turn and its
+  text is never requeued (the turn may yet fold it). Only a **terminal**
+  snapshot treats `pending`/`claimed` as "ended uncommitted", falling
+  the text back into the local queue at its original submission
+  ordinal; `recalled` restores it to the draft; `persisted` drops the
+  tracked entry (the message is in history). An input absent from an
+  active snapshot stays **Delivery unknown** for a later frame.
+- A `turn.resync_required` verdict of `completed`/`failed` replays the
+  retained terminal payload through the normal terminal path; a
+  verdict of `unknown` retires the command honestly, keeps every
+  receipt unknown, and pauses for an explicit user decision.
+
 ## Development
 
 Static checks only: `node --check` every `*.js`. The production path is
 `GOPROXY=off go build ./...` + `nusallm serve`; there is no separate dev
 server requirement.
+
+Unit tests run via `make test-web` (node:test, DOM-free helpers plus
+projection/socket harnesses — no browser needed).
+
+Browser integration lives in `web/test-e2e/steer-flow.mjs`: isolated
+per-scenario pages over a fully mocked backend (`page.route` for
+`/api/*`, `routeWebSocket` for a scripted turn hub — truthful
+`userMessagePersisted` terminals, active/terminal/unknown resync
+verdicts, delayed and failing GETs, multi-room and fresh-view state).
+It needs a locally installed Playwright + a Chrome/Chromium channel —
+nothing is downloaded by the script:
+
+```sh
+# standard resolution (a local @playwright/test install)
+node web/test-e2e/steer-flow.mjs
+
+# or point at any playwright module explicitly
+PLAYWRIGHT_MODULE=/path/to/@playwright/test/index.mjs \
+  node web/test-e2e/steer-flow.mjs
+
+# knobs: E2E_PORT (default 0 = auto-assigned),
+#        E2E_ARTIFACTS (default /tmp/steer-web-artifacts)
+```
+
+Artifacts (screenshots per scenario, failure traces under
+`fail-*.zip`) land in `E2E_ARTIFACTS`. The harness is intentionally not
+wired into `make test-web` — it requires a browser channel the repo
+does not vendor.

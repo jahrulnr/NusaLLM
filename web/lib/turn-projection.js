@@ -21,6 +21,7 @@
 const STREAM_FRAMES = new Set([
   'turn.phase', 'turn.reasoning', 'turn.delta', 'turn.tool_call',
   'turn.tool_input', 'turn.tool_output', 'turn.step_finished',
+  'turn.steer',
 ]);
 
 export function createTurnProjection(id) {
@@ -89,10 +90,16 @@ function ensureThinking(p, clock) {
 
 // Applies one stream frame. Terminal frames are NOT handled here —
 // call settleTurnProjection so the caller picks the honest label.
+// Sequenced frames dedupe before any mutation: a replayed or doubled
+// seq (reconnect re-watch) never re-appends text or re-opens segments.
 export function applyTurnFrame(p, frame, clock = { wall: Date.now(), mono: performance.now() }) {
   if (!p || !p.active) return p;
   const payload = (frame && frame.payload) || {};
   if (!STREAM_FRAMES.has(frame && frame.type)) return p;
+  if (typeof frame.seq === 'number') {
+    if (typeof p.lastSeq === 'number' && frame.seq <= p.lastSeq) return p;
+    p.lastSeq = frame.seq;
+  }
 
   switch (frame.type) {
     case 'turn.phase':
@@ -173,6 +180,34 @@ export function applyTurnFrame(p, frame, clock = { wall: Date.now(), mono: perfo
         }
         bump(seg);
       }
+      break;
+    }
+
+    case 'turn.steer': {
+      // A folded steering line is USER input landing mid-turn — it
+      // splits every boundary (thinking finishes, unresolved tools
+      // settle) and renders as its own ordered plain-text user
+      // segment, never as markdown or tool content. Chunks reassemble
+      // by inputId; receipt-free folds (no inputId — e.g. CLI origin)
+      // group consecutive chunks until the final marker so identical
+      // consecutive inputs stay separate segments.
+      const inputId = payload.inputId || null;
+      finishThinking(p, clock);
+      settleTools(p);
+      let seg = null;
+      if (inputId) {
+        seg = p.segments.find((s) => s.type === 'steer' && s.inputId === inputId) || null;
+      } else {
+        const last = p.segments[p.segments.length - 1];
+        if (last && last.type === 'steer' && last.inputId === null && !last.final) seg = last;
+      }
+      if (!seg) {
+        seg = pushSegment(p, { type: 'steer', inputId, final: false, text: '' });
+        announce(p, 'Your input folded into the turn');
+      }
+      seg.text += payload.text || '';
+      if (payload.final) seg.final = true;
+      bump(seg);
       break;
     }
 

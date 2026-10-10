@@ -119,7 +119,9 @@
 @media (max-width: 760px) {
   :host {
     position: fixed;
-    top: 0; left: 0; bottom: 0;
+    /* Below the header band (46px + its border) — the drawer must
+       never cover the toggle that dismisses it. */
+    top: 47px; left: 0; bottom: 0;
     z-index: 60;
     width: var(--shell-nav);
     transition: transform 180ms ease;

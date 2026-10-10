@@ -1,7 +1,9 @@
 # WebSocket protocol — turn transport
 
-**Status: implemented.** All four commands are live: `turn.send` and
+**Status: implemented.** All six commands are live: `turn.send` and
 `turn.edit` open server-scoped turns on the hub's own context;
+`turn.steer` submits steering input into an exact send turn's mailbox
+and `turn.steer_recall` withdraws one still-pending input;
 `turn.cancel` cancels an exact live turn by `turnId` (never the
 room-wide worker interrupt); `turn.watch` replays the bounded journal
 under the hub lock and attaches for live frames, answering
@@ -160,6 +162,67 @@ Common envelope fields:
 - An unknown, finished, or foreign `turnId` answers an `error` frame
   (`code: "not_found"`), not an ack.
 
+### `turn.steer` — submit steering input into an exact turn
+
+```json
+{
+  "type": "turn.steer",
+  "requestId": "req-06",
+  "conversationId": "c_k4j9xm2p8q1vz7w0t6nb5r3yhd",
+  "turnId": "t_3kd9xm2p8q1vz7w0t6nb5r4yhf",
+  "payload": { "content": "also check the migration path" }
+}
+```
+
+- Submits `content` into the **mailbox of the exact `turnId` named** —
+  never implicitly "the current turn". The turn must be a live
+  `turn.send` turn owned by this hub: unknown, finished, or
+  foreign-conversation ids answer `error`/`not_found`; edit turns
+  answer `error`/`invalid_argument` (`"that turn does not take
+  steering"`).
+- The command's `requestId` **is the input's `inputId`** — every ack,
+  recall, fold frame, and snapshot names it. `requestId` is bounded to
+  128 bytes on steering controls (a hard `invalid_argument` past it).
+- A journaled `turn.steer_ack` replies on acceptance — **accepted is
+  never consumed**. The input is consumed only when the turn folds it
+  at an inference safe point and persists it as an ordinary user
+  message (surfacing as a `turn.steer` stream chunk).
+- **Idempotent dedup:** the same `requestId` + same `content` against
+  the same turn re-acks without a second submission; the same
+  `requestId` with *different* content is `invalid_argument`. Same
+  `content` under a *new* `requestId` is a distinct input — identical
+  texts are never ambiguous because correlation is by `inputId`.
+- **Bounded:** at most 32 steering submissions per turn lifetime — past
+  the cap the command is rejected before acceptance with
+  `error`/`queue_full`; nothing is silently truncated.
+- An unconsumed input (still `pending` when the turn ends) is never
+  delivered to a *later* turn — the terminal snapshot reports its
+  state and the client decides what to do with the text.
+
+### `turn.steer_recall` — withdraw a pending steering input
+
+```json
+{
+  "type": "turn.steer_recall",
+  "requestId": "req-07",
+  "conversationId": "c_k4j9xm2p8q1vz7w0t6nb5r3yhd",
+  "turnId": "t_3kd9xm2p8q1vz7w0t6nb5r4yhf",
+  "payload": { "inputId": "req-06" }
+}
+```
+
+- Withdraws the input `inputId` **only while it is still pending** —
+  not yet claimed at a safe point. Success emits the journaled
+  `turn.steer_recalled`; the client owns the text again.
+- A claimed or persisted input answers `error`/`not_found`
+  (`"steering input already consumed"`) — consumed input is never
+  restored by recall.
+- Re-recalling an already-recalled input re-emits
+  `turn.steer_recalled` — recall is idempotent, so a lost ack
+  reconciles safely on retry.
+- `payload.inputId` must be the `requestId` of a `turn.steer`
+  previously accepted on this turn; anything else is `not_found`.
+
 ### `turn.watch` — attach / reattach to a turn
 
 ```json
@@ -228,14 +291,71 @@ reply to the cancel command, not part of the turn stream):
 }
 ```
 
-`turn.resync_required` — a `turn.watch` could not be satisfied:
+`turn.steer_ack` — a `turn.steer` submission was accepted into the
+turn's mailbox. It is a **journaled turn frame** (it carries `seq` and
+replays on `turn.watch`), so a lost live ack recovers on reattach —
+unlike `turn.cancel_ack` it is part of the turn's ordered record.
+Accepted is never consumed: the receipt resolves at the fold or the
+terminal snapshot.
+
+```json
+{
+  "type": "turn.steer_ack",
+  "conversationId": "c_k4j9xm2p8q1vz7w0t6nb5r3yhd",
+  "turnId": "t_3kd9xm2p8q1vz7w0t6nb5r4yhf",
+  "seq": 4,
+  "payload": { "inputId": "req-06" }
+}
+```
+
+`turn.steer_recalled` — a `turn.steer_recall` withdrew the input while
+it was still pending. Journaled and sequenced like the ack; emitted
+both on a first recall and on an idempotent re-recall, so the client
+can always converge on "this input is withdrawn".
+
+```json
+{
+  "type": "turn.steer_recalled",
+  "conversationId": "c_k4j9xm2p8q1vz7w0t6nb5r3yhd",
+  "turnId": "t_3kd9xm2p8q1vz7w0t6nb5r3yhd",
+  "seq": 6,
+  "payload": { "inputId": "req-06" }
+}
+```
+
+`turn.resync_required` — a `turn.watch` could not be satisfied. The
+payload reports what the hub still knows about the turn: `turn` is
+`"active"` while the turn runs, the terminal verdict (`"completed"` /
+`"failed"`) for a retained finished turn — with the stored terminal
+body replayed under `terminal` — and `"unknown"` for an evicted or
+never-seen id. `steering` is the same bounded receipt snapshot the
+terminal frame carries, so a client whose ack or recall result was
+lost reconciles submitted inputs against it and against history —
+never by resending an unknown outcome.
+
+The same receipt state means different things by `turn` verdict. In an
+`"active"` snapshot, `pending` and `claimed` inputs are **still owned
+by the server** — the turn may yet fold them, so the client keeps the
+receipt and must not requeue the text. Only in a terminal context (a
+`completed`/`failed` verdict or a terminal frame's own `steering`
+array) do `pending`/`claimed` act as the fallback signal "the turn
+ended without committing this input — the text is the client's to
+restore or requeue". An input absent from an active snapshot is
+*unknown*; its receipt stays open for a later frame to resolve.
 
 ```json
 {
   "type": "turn.resync_required",
   "requestId": "req-04",
   "conversationId": "c_k4j9xm2p8q1vz7w0t6nb5r3yhd",
-  "turnId": "t_3kd9xm2p8q1vz7w0t6nb5r4yhf"
+  "turnId": "t_3kd9xm2p8q1vz7w0t6nb5r4yhf",
+  "payload": {
+    "turn": "active",
+    "steering": [
+      { "inputId": "req-06", "state": "pending" },
+      { "inputId": "req-08", "state": "persisted" }
+    ]
+  }
 }
 ```
 
@@ -362,11 +482,16 @@ is normalized by JSON encoding and is not promised byte-exact.
 
 `turn.steer` — a user steering line folded into the running turn at an
 inference safe point (after a tool result persisted, before the next
-provider call). The text lands in history as an ordinary user message;
-the frame carries no message id because ids persist later. Reassemble
-by concatenating `text` fields in `seq` order like any chunked content.
-Steering is submitted out of band — the CLI's `/steer` — not through a
-`turn.*` command on this socket.
+provider call). The text lands in history as an ordinary user message
+**before** this frame emits — the fold persists first — so the frame
+deliberately carries no message id: a `resyncRequired` history re-read
+supplies persisted ids, and correlating by `inputId` is enough to tell
+the client's own inputs apart. Reassemble
+by concatenating `text` fields in `seq` order like any chunked
+content. `inputId` correlates the fold to the `turn.steer` command
+that submitted it — absent for receipt-free input (the CLI's
+`/steer`). `final` marks the last chunk of one input, so identical
+consecutive inputs render as separate segments, never concatenated.
 
 ```json
 {
@@ -374,7 +499,7 @@ Steering is submitted out of band — the CLI's `/steer` — not through a
   "conversationId": "c_k4j9xm2p8q1vz7w0t6nb5r3yhd",
   "turnId": "t_3kd9xm2p8q1vz7w0t6nb5r4yhf",
   "seq": 5,
-  "payload": { "text": "also check the migration path" }
+  "payload": { "text": "also check the migration path", "inputId": "req-06", "final": true }
 }
 ```
 
@@ -420,13 +545,27 @@ only the job's return ends the turn.
   "conversationId": "c_k4j9xm2p8q1vz7w0t6nb5r3yhd",
   "turnId": "t_3kd9xm2p8q1vz7w0t6nb5r4yhf",
   "seq": 9,
-  "payload": { "userMessagePersisted": true, "resyncRequired": true }
+  "payload": {
+    "userMessagePersisted": true,
+    "steering": [
+      { "inputId": "req-06", "state": "persisted" },
+      { "inputId": "req-08", "state": "pending" }
+    ],
+    "resyncRequired": true
+  }
 }
 ```
 
 - `userMessagePersisted` — present on send turns, always `true` at
   `turn.completed` (a send cannot complete without committing the user
   line). Absent on edit turns.
+- `steering` — on send turns, the bounded terminal receipt snapshot:
+  every input submitted to this turn's mailbox with its final state —
+  `persisted` (folded and committed), `claimed` (drained but never
+  committed), `pending` (never drained), or `recalled`. Content never
+  re-crosses — the client owns the text it submitted; the snapshot only
+  says what happened to it. An unconsumed input is never silently
+  delivered to a later turn.
 - `resyncRequired` — **always `true`** on an accepted turn's terminal
   frame. Live frames never carry persisted message ids, tool results, or
   rewritten history, so a client MUST re-read `GET
@@ -473,6 +612,9 @@ allocation gets `error`, not this frame — there is no turn to fail.)
   committed before the failure (`true` = it is in history even though
   the turn died — the failed-send receipt). On edit turns it is absent
   or `false`, never claimed.
+- `steering` — on send turns, the same terminal receipt snapshot as
+  `turn.completed`: a `claimed` or `pending` state here means the input
+  never committed — the text is the client's to restore or requeue.
 - `resyncRequired` — always `true`, same as `turn.completed`: re-read
   persisted state over HTTP after every terminal frame.
 
@@ -530,9 +672,11 @@ outbound frames per socket, a hard 1 MiB cap on any single outbound
 frame (a frame that can't fit — e.g. oversized provider-originated
 metadata — terminates that turn with a sanitized `turn.failed` `413`),
 a journal of 512 frames / 4 MiB / 2 minutes post-terminal retention,
-pings every 25 s with a 60 s pong deadline, a 10 s write deadline, and
-`turn.delta`, `turn.reasoning`, `turn.tool_input`, and
-`turn.tool_output` text chunks of at most 32 KiB.
+pings every 25 s with a 60 s pong deadline, a 10 s write deadline,
+32 steering submissions per turn lifetime, requestIds of at most 128
+bytes on `turn.steer` and `turn.steer_recall`, and
+`turn.delta`, `turn.reasoning`, `turn.tool_input`, `turn.tool_output`,
+and `turn.steer` text chunks of at most 32 KiB.
 
 ## Lifecycle races, catalogued
 
@@ -553,6 +697,18 @@ pings every 25 s with a 60 s pong deadline, a 10 s write deadline, and
 - **Failed send with a committed user line.** `turn.failed` may carry
   `userMessagePersisted: true` — the message is in history; render from
   `GET .../messages`, not from the frame stream.
+- **Steering ack lost in a disconnect.** `turn.steer_ack` and
+  `turn.steer_recalled` are journaled — a `turn.watch` replay re-emits
+  them. A submission whose outcome stays unknowable (socket dropped
+  before the ack, journal expired) resolves through the steering
+  snapshot on `turn.resync_required`/terminal frames plus the HTTP
+  history re-read. An input absent from every snapshot and history is
+  *unknown* — the client surfaces it and lets the user decide; it never
+  auto-resends.
+- **Recall racing the safe point.** A `turn.steer_recall` landing after
+  the input was claimed answers `not_found` — the input is already on
+  its way into history and the fold's `turn.steer` chunk arrives like
+  any other stream frame.
 - **Shutdown.** A graceful shutdown ends live turns `turn.failed` `503`
   before closing sockets — best-effort only: on an abrupt process exit
   (crash, `SIGKILL`) no terminal frame is guaranteed. After a restart

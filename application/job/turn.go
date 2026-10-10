@@ -20,7 +20,7 @@ import (
 // it at the top of each step — after the last tool result persisted,
 // before the next provider call — so injected text never bisects a
 // tool-call/result pair or interleaves with a streaming reply.
-func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conversation, driver EnvironmentDriver, gw *aggregate.Gateway, model entity.Model, svc dservice.TextModelService, onEvent event.TurnEventHandler, steers *steerInbox) error {
+func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conversation, driver EnvironmentDriver, gw *aggregate.Gateway, model entity.Model, svc dservice.TextModelService, onEvent event.TurnEventHandler, steers *SteeringInput) error {
 	// Hand-built Deps may carry a zero or invalid config — normalize
 	// clamps and tag defaults fill it.
 	ccfg := d.Config
@@ -42,19 +42,27 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 		// Steering becomes an ordinary user message in history — the
 		// model answers it on this call. Input arriving while the turn
 		// ends without another step (no pending tools) never folds; the
-		// caller decides what the undelivered text becomes.
+		// caller decides what the undelivered text becomes. The claim is
+		// one atomic drain; persistence marks each receipt by the
+		// committed bool — even when the append also returned an error —
+		// while claimed-but-uncommitted entries stay claimed so a
+		// terminal snapshot reports them unconsumed.
 		if steers != nil {
-			for _, text := range steers.drain() {
-				user, err := entity.NewMessage(enum.RoleUser, text)
+			for _, input := range steers.claim() {
+				user, err := entity.NewMessage(enum.RoleUser, input.text)
 				if err != nil {
 					return err
 				}
 				conv.Append(user)
-				if _, err := d.Convs.AppendMessage(ctx, convID, user); err != nil {
+				committed, err := d.Convs.AppendMessage(ctx, convID, user)
+				if input.receipt != nil && committed {
+					input.receipt.markPersisted()
+				}
+				if err != nil {
 					return err
 				}
 				if onEvent != nil {
-					onEvent(event.NewSteerEvent(text))
+					onEvent(event.NewSteerEvent(input.text))
 				}
 			}
 		}

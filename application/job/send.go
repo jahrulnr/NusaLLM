@@ -51,6 +51,10 @@ type SendOptions struct {
 	Upstream    string           // aggregator backend name; "" = the gateway decides
 	Workspace   string           // absolute dir; "" = keep the room's binding
 	Environment enum.Environment // "" = keep the room's binding (local for a new room)
+	// Steering binds an exact-turn input mailbox owned by the caller —
+	// a transport can submit steering into a send that is still queued
+	// on the room worker without touching whatever job is running.
+	Steering *SteeringInput
 }
 
 // Send is one user turn as a queued command: it validates routing,
@@ -70,16 +74,25 @@ type Send struct {
 	Opts        SendOptions
 	OnEvent     event.TurnEventHandler
 
-	steers steerInbox
+	steers SteeringInput
+}
+
+// mailbox is the turn's input mailbox — the caller-supplied
+// Opts.Steering when bound, else the job's internal one.
+func (j *Send) mailbox() *SteeringInput {
+	if j.Opts.Steering != nil {
+		return j.Opts.Steering
+	}
+	return &j.steers
 }
 
 // Steer buffers user input for the running turn — the worker's
 // out-of-band control path. The turn loop folds it at the next safe
 // point; it never interrupts the in-flight provider call.
-func (j *Send) Steer(text string) { j.steers.push(text) }
+func (j *Send) Steer(text string) { j.mailbox().push(text) }
 
 // RecallSteer withdraws the newest un-fired steering input.
-func (j *Send) RecallSteer() (string, bool) { return j.steers.popLast() }
+func (j *Send) RecallSteer() (string, bool) { return j.mailbox().popLast() }
 
 // Execute runs the whole turn end-to-end on the worker's goroutine.
 func (j *Send) Execute(execCtx context.Context) (err error) {
@@ -181,7 +194,7 @@ func (j *Send) Execute(execCtx context.Context) (err error) {
 			return err
 		}
 
-		if err := d.runTurn(ctx, convID, conv, driver, gw, model, svc, j.OnEvent, &j.steers); err != nil {
+		if err := d.runTurn(ctx, convID, conv, driver, gw, model, svc, j.OnEvent, j.mailbox()); err != nil {
 			return err
 		}
 		conv.SetRoute(route)     // existing rooms re-bind only on success —

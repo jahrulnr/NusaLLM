@@ -1,6 +1,7 @@
 package wsconversation
 
 import (
+	appjob "github.com/jahrulnr/nusallm/application/job"
 	dtransport "github.com/jahrulnr/nusallm/infrastructure/delivery/transport"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
@@ -82,10 +83,28 @@ func (h *Hub) onEvent(t *turn, ev event.TurnEvent) {
 	case enum.TurnEventSteer:
 		// A folded steering line is user input landing mid-turn —
 		// subscribers see it in position rather than on a history
-		// re-read after the terminal.
+		// re-read after the terminal. The fold claims one submitted
+		// record: only a persisted, not-yet-projected receipt carrying
+		// exactly this text matches — a same-text CLI line never adopts
+		// a web receipt that has not consumed, and each record projects
+		// once so identical consecutive inputs keep their own segment.
 		t.inReasoning = false
-		for _, chunk := range splitDelta(ev.Delta(), outboundChunkBytes) {
-			if !h.emitLocked(t, "turn.steer", steerPayload{Text: chunk}, false) {
+		inputID := ""
+		for _, rec := range t.steerRecords {
+			if rec.projected || rec.receipt.State() != appjob.SteeringPersisted || rec.content != ev.Delta() {
+				continue
+			}
+			rec.projected = true
+			inputID = rec.inputID
+			break
+		}
+		chunks := splitDelta(ev.Delta(), outboundChunkBytes)
+		for i, chunk := range chunks {
+			if !h.emitLocked(t, "turn.steer", steerPayload{
+				Text:    chunk,
+				InputID: inputID,
+				Final:   i == len(chunks)-1,
+			}, false) {
 				h.markOverflowedLocked(t)
 				break
 			}

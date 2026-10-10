@@ -105,6 +105,18 @@
 }
 .edit-btn:hover { color: var(--accent); }
 
+/* A folded steer is user input mid-turn — same bubble, small provenance
+   label instead of the edit affordance. */
+.steer-msg { padding-top: 6px; }
+.steer-label {
+  margin: 0 14px 3px 0;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
 .user-msg.editing { width: min(72ch, 100%); }
 .edit-input {
   box-sizing: border-box;

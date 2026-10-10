@@ -20,6 +20,8 @@ class MessageThread extends Widget {
     this._historyNotice = false;
     this._compactState = null;
     this._editingId = null;
+    this._editDraft = null; // typed edit kept when the shell vetoes dispatch
+    this._commandsBusy = false;
     this._pinned = true; // pinned to bottom until the user scrolls up
     this._lastScrollTop = 0;
     // Live-stream widget instances keyed by segment.id — preserved
@@ -45,7 +47,12 @@ class MessageThread extends Widget {
     const next = list || [];
     const previous = this._messages;
     this._messages = next;
-    this._editingId = null;
+    // A live edit survives history rewrites while its message still
+    // exists — a vetoed edit (barrier/offline) must be retryable.
+    if (!next.some((m) => m.id === this._editingId)) {
+      this._editingId = null;
+      this._editDraft = null;
+    }
     // A completed turn usually replaces one pending user record and
     // appends assistant records. Keep the existing conversation DOM.
     if (!this._loading && this._hasConversation && this.streamEl &&
@@ -98,6 +105,15 @@ class MessageThread extends Widget {
   set compactState(state) {
     this._compactState = state;
     if (this.compactEl) this._renderCompactState();
+  }
+  // While a command is in flight, edit affordances hide — an edit must
+  // never overwrite the in-flight command's sequencing.
+  set commandsBusy(v) {
+    if (this._commandsBusy === !!v) return;
+    this._commandsBusy = !!v;
+    this._editingId = null;
+    this._editDraft = null;
+    this._render();
   }
 
   _renderCompactState() {
@@ -210,7 +226,7 @@ class MessageThread extends Widget {
       kids.push(el('div', { class: 'attachments' }, m.attachments.map((a) => this._attachmentChip(a))));
     }
     const block = el('div', { class: 'user-msg' }, kids);
-    if (m.userType === 'origin' || m.userType === '' || !m.userType) {
+    if (!this._commandsBusy && (m.userType === 'origin' || m.userType === '' || !m.userType)) {
       block.append(el('button', {
         class: 'edit-btn', type: 'button', 'aria-label': 'Edit message',
         onclick: () => { this._editingId = m.id; this._render(); },
@@ -220,14 +236,23 @@ class MessageThread extends Widget {
   }
 
   _editBlock(m) {
-    const input = el('textarea', { class: 'edit-input', value: m.content, 'aria-label': 'Edit message content' });
-    const cancel = () => { this._editingId = null; this._render(); };
+    const draft = this._editDraft && this._editDraft.id === m.id
+      ? this._editDraft.content : m.content;
+    const input = el('textarea', { class: 'edit-input', value: draft, 'aria-label': 'Edit message content' });
+    const cancel = () => { this._editingId = null; this._editDraft = null; this._render(); };
     const commit = () => {
       const content = input.value.trim();
       if (content && content !== m.content) {
-        emit(this, 'message-edit', { messageId: m.id, content });
+        // The shell can veto (running turn, offline, refresh barrier):
+        // the editor stays open with the typed text for retry.
+        if (!emit(this, 'message-edit', { messageId: m.id, content }, { cancelable: true })) {
+          this._editDraft = { id: m.id, content };
+          this._render();
+          return;
+        }
       }
       this._editingId = null;
+      this._editDraft = null;
       this._render();
     };
     input.addEventListener('keydown', (e) => {
@@ -349,10 +374,23 @@ class MessageThread extends Widget {
       present.add(seg.id);
       let w = this._segmentWidgets.get(seg.id);
       if (!w) {
-        w = seg.type === 'markdown' ? document.createElement('nusa-markdown-view')
-          : seg.type === 'thinking' ? document.createElement('nusa-thinking-block')
-          : document.createElement('nusa-tool-activity');
-        if (seg.type === 'markdown') w.classList.add('streaming-md');
+        if (seg.type === 'markdown') {
+          w = document.createElement('nusa-markdown-view');
+          w.classList.add('streaming-md');
+        } else if (seg.type === 'thinking') {
+          w = document.createElement('nusa-thinking-block');
+        } else if (seg.type === 'steer') {
+          // Folded user input is plain text in a user bubble — an
+          // explicit user segment, never markdown or tool markup.
+          const content = el('div', { class: 'user-content', text: seg.text });
+          w = el('div', { class: 'user-msg steer-msg' }, [
+            el('div', { class: 'steer-label', text: 'You steered this turn' }),
+            content,
+          ]);
+          w._steerContent = content;
+        } else {
+          w = document.createElement('nusa-tool-activity');
+        }
         this._segmentWidgets.set(seg.id, w);
         this.streamEl.append(w);
       }
@@ -372,6 +410,8 @@ class MessageThread extends Widget {
             status: seg.status, startedAt: seg.startedAt,
             elapsedMs: seg.elapsedMs, text: seg.text || '',
           };
+        } else if (seg.type === 'steer') {
+          w._steerContent.textContent = seg.text;
         } else w.tool = seg.tool;
       }
       if (seg.type === 'markdown' && (!s.active || index < segments.length - 1)) {

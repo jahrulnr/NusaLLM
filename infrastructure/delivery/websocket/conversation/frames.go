@@ -104,14 +104,27 @@ func cancelAckFrame(requestID, convID, turnID string) serverFrame {
 	}
 }
 
+// resyncPayload is the turn.resync_required body. Turn is "active"
+// while the turn still runs, the terminal verdict "completed"/"failed"
+// for a retained finished turn (with the stored terminal body replayed
+// under terminal), and "unknown" for an evicted or never-seen id — the
+// client reconciles submitted steering against the snapshot and against
+// history, and never auto-resends an unknown outcome.
+type resyncPayload struct {
+	Turn     string              `json:"turn"`
+	Steering []steerStatePayload `json:"steering,omitempty"`
+	Terminal *terminalPayload    `json:"terminal,omitempty"`
+}
+
 // resyncFrame answers a turn.watch that can't be satisfied from the
 // bounded journal — the client re-reads persisted state over HTTP.
-func resyncFrame(requestID, convID, turnID string) serverFrame {
+func resyncFrame(requestID, convID, turnID string, payload resyncPayload) serverFrame {
 	return serverFrame{
 		Type:           "turn.resync_required",
 		RequestID:      requestID,
 		ConversationID: convID,
 		TurnID:         turnID,
+		Payload:        payload,
 	}
 }
 
@@ -142,8 +155,39 @@ type toolOutputPayload struct {
 // steerPayload is one bounded chunk of a user steering line folded into
 // the running turn — the text landed in history as an ordinary user
 // message; the frame carries no message id because ids persist later.
+// InputId correlates the fold back to the turn.steer requestId that
+// submitted it (absent for receipt-free input, e.g. the CLI); Final
+// marks the last chunk of one input so identical consecutive inputs
+// never concatenate into one render segment.
 type steerPayload struct {
-	Text string `json:"text"`
+	Text    string `json:"text"`
+	InputID string `json:"inputId,omitempty"`
+	Final   bool   `json:"final"`
+}
+
+// steerCommandPayload is the turn.steer request body.
+type steerCommandPayload struct {
+	Content string `json:"content"`
+}
+
+// steerRecallCommandPayload is the turn.steer_recall request body — the
+// inputId is the requestId that originally submitted the input.
+type steerRecallCommandPayload struct {
+	InputID string `json:"inputId"`
+}
+
+// steerInputPayload is the journal payload for turn.steer_ack and
+// turn.steer_recalled — the inputId is the turn.steer requestId.
+type steerInputPayload struct {
+	InputID string `json:"inputId"`
+}
+
+// steerStatePayload is one submitted input's receipt state — the bounded
+// snapshot carried by turn.completed, turn.failed, and
+// turn.resync_required. Content never re-crosses: the browser owns it.
+type steerStatePayload struct {
+	InputID string `json:"inputId"`
+	State   string `json:"state"`
 }
 
 type stepFinishedPayload struct {
@@ -154,13 +198,17 @@ type stepFinishedPayload struct {
 // terminalPayload is the completed/failed body — ResyncRequired is
 // always true because live frames never carry persisted ids.
 // UserMessagePersisted is a *bool: send terminals always carry it, edit
-// terminals omit it (a rewrite never appends a user line).
+// terminals omit it (a rewrite never appends a user line). Steering is
+// the bounded terminal receipt snapshot for send turns — every input
+// submitted, with its state: persisted, claimed (drained but
+// unconsumed), pending (never drained), or recalled.
 type terminalPayload struct {
-	Status               int    `json:"status,omitempty"`
-	Code                 string `json:"code,omitempty"`
-	Message              string `json:"message,omitempty"`
-	UserMessagePersisted *bool  `json:"userMessagePersisted,omitempty"`
-	ResyncRequired       bool   `json:"resyncRequired"`
+	Status               int                 `json:"status,omitempty"`
+	Code                 string              `json:"code,omitempty"`
+	Message              string              `json:"message,omitempty"`
+	UserMessagePersisted *bool               `json:"userMessagePersisted,omitempty"`
+	Steering             []steerStatePayload `json:"steering,omitempty"`
+	ResyncRequired       bool                `json:"resyncRequired"`
 }
 
 // marshalFrame serializes a frame and enforces the outbound size cap —

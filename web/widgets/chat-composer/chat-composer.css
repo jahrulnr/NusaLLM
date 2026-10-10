@@ -68,6 +68,135 @@
 .send:disabled { background: var(--hairline-strong); color: var(--text-faint); cursor: not-allowed; }
 .send.cancel { background: var(--panel-2); color: var(--danger); border: 1px solid var(--hairline-strong); }
 .send.cancel:hover { border-color: var(--danger); }
+.send.queue {
+  grid-auto-flow: column;
+  gap: 5px;
+  width: auto;
+  padding: 0 11px;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.steer {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 34px;
+  flex-shrink: 0;
+  padding: 0 11px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 9px;
+  background: var(--panel-2);
+  color: var(--text-dim);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.steer:hover:not(:disabled) { color: var(--text); border-color: var(--accent-dim); }
+.steer:disabled { color: var(--text-faint); cursor: not-allowed; }
+
+/* Pending queue/steer panel — the rows scroll inside a bound while the
+   header and actions stay pinned; every row keeps its full text. */
+.pending {
+  margin: -2px 0 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: var(--bg);
+}
+.pending-rows {
+  max-height: 9.6em;
+  overflow-y: auto;
+}
+.pending-title {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--hairline);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.pending-notice {
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--hairline);
+  font-size: 11px;
+  color: var(--warn, #e0b34c);
+}
+.pending-item {
+  padding: 7px 10px 8px;
+  border-bottom: 1px solid var(--hairline);
+}
+.pending-item:last-of-type { border-bottom: 0; }
+.pending-head { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
+.pending-state {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.pending-steering, .pending-submitting, .pending-recalling { color: var(--accent-dim); }
+.pending-unknown { color: var(--warn, #e0b34c); }
+.pending-room {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--text-faint);
+}
+.pending-text {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.pending-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 5px; }
+.pending-action {
+  min-height: 32px;
+  padding: 3px 12px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 7px;
+  background: var(--panel-2);
+  color: var(--text-dim);
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.pending-action:hover:not(:disabled) { color: var(--text); border-color: var(--accent-dim); }
+.pending-action:disabled { color: var(--text-faint); cursor: not-allowed; }
+.pending-foot { padding: 7px 10px; border-top: 1px solid var(--hairline); }
+.pending-resume {
+  min-height: 32px;
+  padding: 4px 12px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--bg);
+  font-size: 10.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.pending-resume:hover:not(:disabled) { background: #dafb8c; }
+.pending-resume:disabled {
+  background: var(--panel-2);
+  color: var(--text-faint);
+  cursor: not-allowed;
+}
+/* Visible steer guidance — a title tooltip never reaches touch. */
+.steer-hint {
+  max-width: 210px;
+  overflow: hidden;
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: var(--text-faint);
+}
+/* Keyboard focus stays visible on every actionable control. */
+.send:focus-visible, .steer:focus-visible,
+.pending-action:focus-visible, .pending-resume:focus-visible,
+.context-trigger:focus-visible, .context-close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 
 .context { position: relative; }
 .context-trigger {
@@ -113,4 +242,22 @@
   :host { padding: 8px 10px 10px; }
   .composer { padding: 10px 11px 8px; }
   .shortcut { display: none; }
+  /* The footer reflows instead of clipping — Context, Steer, Stop, and
+     Queue stay reachable at 320px. */
+  .footer { flex-wrap: wrap; row-gap: 8px; }
+  .footer-right {
+    flex-shrink: 1;
+    min-width: 0;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+  .steer-hint { flex-basis: 100%; max-width: none; text-align: right; }
+  /* Touch targets at 44px on the affected controls. */
+  .send, .steer { height: 44px; }
+  .send { min-width: 44px; }
+  .send.queue { padding: 0 12px; }
+  .steer { padding: 0 12px; }
+  .pending-action, .pending-resume { min-height: 44px; padding: 6px 14px; }
+  .context-trigger { padding: 8px 12px; }
 }

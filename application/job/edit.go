@@ -23,7 +23,7 @@ type Edit struct {
 	Content string
 	OnEvent event.TurnEventHandler
 
-	steers steerInbox
+	steers SteeringInput
 }
 
 // Steer buffers user input for the regenerated turn — same contract as

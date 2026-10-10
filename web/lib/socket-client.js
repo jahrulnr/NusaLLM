@@ -6,7 +6,7 @@
 const BASE_DELAY_MS = 500;
 const MAX_DELAY_MS = 15000;
 
-function requestId() {
+export function requestId() {
   if (crypto.randomUUID) return crypto.randomUUID();
   return 'req_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
@@ -21,6 +21,9 @@ export class TurnSocket extends EventTarget {
     this.intentionalClose = false;
     // turnId -> { conversationId, lastSeq } for turns still in flight.
     this.turns = new Map();
+    // turnId -> terminal seq for finished turns — bounded so a replayed
+    // or re-watched terminal frame is dropped like any duplicate.
+    this.terminals = new Map();
   }
 
   url() {
@@ -102,6 +105,35 @@ export class TurnSocket extends EventTarget {
     });
   }
 
+  // turn.steer submits input into the exact turn's mailbox. The
+  // command's requestId becomes the input's inputId — returned so the
+  // caller can track the receipt's state (accepted ≠ consumed; the
+  // terminal snapshot reconciles). Same requestId + same content re-acks
+  // idempotently server-side.
+  steerTurn({ conversationId, turnId, content }) {
+    const inputId = requestId();
+    this._command({
+      type: 'turn.steer',
+      requestId: inputId,
+      conversationId,
+      turnId,
+      payload: { content },
+    });
+    return inputId;
+  }
+
+  // turn.steer_recall withdraws one submitted input while it is still
+  // pending — claimed/persisted answers not_found server-side.
+  steerRecall({ conversationId, turnId, inputId }) {
+    return this._command({
+      type: 'turn.steer_recall',
+      requestId: requestId(),
+      conversationId,
+      turnId,
+      payload: { inputId },
+    });
+  }
+
   _command(cmd) {
     this._send(cmd);
     return cmd.requestId;
@@ -125,19 +157,54 @@ export class TurnSocket extends EventTarget {
     } catch {
       return; // unparseable frame — nothing safe to surface
     }
-    // Track in-flight turns by seq so reconnect can watch from the last
-    // known position; terminal frames retire the entry.
-    if (frame.turnId) {
-      if (frame.type === 'turn.opened') {
-        this.turns.set(frame.turnId, { conversationId: frame.conversationId, lastSeq: -1 });
+    if (frame.turnId && !this._accept(frame)) return;
+    this.dispatchEvent(new CustomEvent('frame', { detail: { frame } }));
+  }
+
+  // One dedup point for every sequenced frame: the projection AND the
+  // queue/shell both rely on it, so dropping must happen before the
+  // frame event, not inside each consumer. Returns false for
+  // duplicates/replays — a replayed turn.opened must never reset the
+  // tracked cursor, and an old frame must never regress it.
+  _accept(frame) {
+    const t = this.turns.get(frame.turnId);
+    const terminalSeq = this.terminals.get(frame.turnId);
+    const seen = t ? t.lastSeq : terminalSeq;
+    if (typeof frame.seq === 'number') {
+      if (typeof seen === 'number' && frame.seq <= seen) return false;
+      if (t) t.lastSeq = frame.seq;
+    }
+    if (frame.type === 'turn.opened') {
+      if (!t) {
+        this.turns.set(frame.turnId, {
+          conversationId: frame.conversationId,
+          lastSeq: typeof frame.seq === 'number' ? frame.seq : -1,
+        });
+        this.terminals.delete(frame.turnId); // a live turn outranks a stale marker
       }
-      const tracked = this.turns.get(frame.turnId);
-      if (tracked && typeof frame.seq === 'number') tracked.lastSeq = frame.seq;
-      if (frame.type === 'turn.completed' || frame.type === 'turn.failed') {
+      return true;
+    }
+    if (frame.type === 'turn.completed' || frame.type === 'turn.failed') {
+      this.turns.delete(frame.turnId);
+      this._markTerminal(frame.turnId, typeof frame.seq === 'number' ? frame.seq : seen);
+    } else if (frame.type === 'turn.resync_required') {
+      // The hub's verdict retires tracking too: a finished or unknown
+      // turn is never re-watched, and its seq marker keeps deduping.
+      const turn = frame.payload && frame.payload.turn;
+      if (turn && turn !== 'active') {
         this.turns.delete(frame.turnId);
+        this._markTerminal(frame.turnId, typeof frame.seq === 'number' ? frame.seq : seen);
       }
     }
-    this.dispatchEvent(new CustomEvent('frame', { detail: { frame } }));
+    return true;
+  }
+
+  _markTerminal(turnId, seq) {
+    this.terminals.delete(turnId);
+    this.terminals.set(turnId, typeof seq === 'number' ? seq : -1);
+    while (this.terminals.size > 64) {
+      this.terminals.delete(this.terminals.keys().next().value);
+    }
   }
 
   _retry() {
