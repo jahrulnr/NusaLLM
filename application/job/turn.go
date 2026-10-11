@@ -38,6 +38,9 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 	// model invents names it was never offered.
 	conv.SetTools(driver.ToolSchemas())
 	didCompact := false
+	// pinnedID is the workspace record this turn appended — a kept tail
+	// that already carries it must not take a second copy after a fold.
+	pinnedID := ""
 	for step := 0; step < ccfg.MaxTurnStep; step++ {
 		if err := ctx.Err(); err != nil {
 			return apperror.New(408, "turn canceled", err)
@@ -69,6 +72,7 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 				}
 			}
 		}
+		compacted := false
 		if !didCompact {
 			// One compaction per turn: a fat tail that still overflows
 			// after folding is the provider's call — refiring every step
@@ -82,16 +86,21 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 					return err
 				}
 				didCompact = true
+				compacted = true
 			}
 		}
-		if last := conv.Last(); last != nil && last.Editable() {
-			// An editable message just entered history — the submitted
-			// line or a folded steer — so pin the turn's workspace
-			// behind it: the record the provider reads cites the
-			// current path, while the system prompt stays untouched.
+		if last := conv.Last(); last != nil && (last.Editable() || compacted) {
+			// The pin follows an editable line — the submitted message
+			// or a folded steer — or a just-run fold: after compaction
+			// the tail can end on a non-editable message and any
+			// earlier workspace record may be sealed inside the
+			// checkpoint, so re-pin the current path for the rest of
+			// the turn. The record the provider reads cites the current
+			// path, while the system prompt stays untouched.
 			if err := d.appendWorkspaceContext(ctx, convID, conv, dir); err != nil {
 				return err
 			}
+			pinnedID = conv.Last().ID()
 		}
 		before := len(conv.Messages())
 		var parts []entity.MessagePart
@@ -135,6 +144,16 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 				return err
 			}
 			didCompact = true
+			// Same blind spot as the proactive fold: the kept tail can
+			// end on a non-editable message the pin check skips —
+			// re-pin the workspace for the retry unless the tail
+			// already carries this turn's record.
+			if last := conv.Last(); last != nil && !last.Editable() && last.ID() != pinnedID {
+				if err := d.appendWorkspaceContext(ctx, convID, conv, dir); err != nil {
+					return err
+				}
+				pinnedID = conv.Last().ID()
+			}
 			continue
 		}
 		if err != nil && !canceled {

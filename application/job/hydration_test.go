@@ -427,3 +427,206 @@ func TestTurnWorkspaceBindingFallbackAndExecution(t *testing.T) {
 	}
 	requireWorkspaceContext(t, conv2.Messages()[1], "/bound/dir")
 }
+
+// fatTool answers with an oversized result — enough context weight to
+// trip the next step's budget check inside a tiny model window.
+type fatTool struct{ schema valueobject.ToolSchema }
+
+func (t fatTool) Schema() valueobject.ToolSchema { return t.schema }
+func (t fatTool) Execute(context.Context, entity.ToolCall, dservice.ToolEmitter) (dservice.ToolResult, error) {
+	return dservice.ToolResult{Text: strings.Repeat("x", 4000)}, nil
+}
+
+// foldWatchSvc serves the compaction scratch call (the summary tool is
+// offered only there), asks for "push" on the first real call — whose
+// fat result is what trips the budget — and on the second real call
+// records whether a workspace record sat at the tail it was handed,
+// proving the pin lands ahead of the provider call it feeds. failAt
+// numbers a real call to fail with a bare 413 — the provider's own
+// overflow verdict — appending nothing.
+type foldWatchSvc struct {
+	realCalls atomic.Int32
+	failAt    int32 // real call number to 413; 0 = never
+	tailWS    bool
+}
+
+func (s *foldWatchSvc) Send(_ context.Context, conv *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, _ event.TurnEventHandler) error {
+	for _, tool := range conv.Tools() {
+		if tool.Name() == SummaryToolName {
+			m, _ := entity.NewMessage(enum.RoleAssistant, "")
+			tc, err := entity.NewToolCall("sum_1", SummaryToolName, `{"text":"CHECKPOINT"}`, enum.TooltypeOrigin)
+			if err != nil {
+				return err
+			}
+			m.AddToolCall(tc)
+			m.SetFinishReason(enum.FinishReasonToolCalls)
+			conv.Append(m)
+			return nil
+		}
+	}
+	n := s.realCalls.Add(1)
+	if n == s.failAt {
+		return apperror.New(413, "context overflow", errors.New("too long"))
+	}
+	var m entity.Message
+	if n == 1 {
+		m, _ = entity.NewMessage(enum.RoleAssistant, "need a tool")
+		tc, err := entity.NewToolCall("call_1", "push", `{}`, enum.TooltypeOrigin)
+		if err != nil {
+			return err
+		}
+		m.AddToolCall(tc)
+		m.SetFinishReason(enum.FinishReasonToolCalls)
+	} else {
+		if last := conv.Last(); last != nil {
+			for _, tc := range last.ToolCalls() {
+				if tc.Type() == enum.TooltypeInjection && tc.Name() == "workspace" {
+					s.tailWS = true
+				}
+			}
+		}
+		m, _ = entity.NewMessage(enum.RoleAssistant, "done")
+		m.SetFinishReason(enum.FinishReasonStop)
+	}
+	conv.Append(m)
+	return nil
+}
+
+// The fold fires mid-turn on a tail that ends with the answered
+// assistant call — the user line's record is sealed inside the
+// checkpoint — so the turn re-pins the workspace for the provider call
+// that follows: [checkpoint, answered call, fresh record, reply].
+func TestRunTurnCompactRepinsWorkspaceContext(t *testing.T) {
+	d := Deps{
+		Convs:  repoconversation.NewConversationRepository(t.TempDir()),
+		Config: config.ConversationConfig{MaxTurnStep: 4, CompactBudgetPct: 100, CompactKeepTail: 1},
+	}
+	conv := seedRoom(t, d.Convs, "room", "go")
+	conv.SetWorkspace("/ws/repin")
+	if err := d.Convs.Save(t.Context(), conv); err != nil {
+		t.Fatal(err)
+	}
+	// A window barely over the output reserve leaves a 500-token input
+	// allowance: the seed turn fits, the fat tool result overflows it.
+	model := entity.Model{}
+	model.SetContextWindow(entity.DefaultUnknownMaxOutputTokens + 500)
+	schema, _ := valueobject.NewToolSchema("push", "test tool", nil, true, enum.ToolPermissionAgent)
+	driver := EnvironmentBundle{Tools: map[string]dservice.Tool{"push": fatTool{schema: schema}}}
+	svc := &foldWatchSvc{}
+	if err := d.runTurn(t.Context(), "room", conv, driver, nil, model, svc, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	msgs := conv.Messages()
+	if len(msgs) != 4 {
+		t.Fatalf("history = %d msgs, want checkpoint+call+record+answer: %+v", len(msgs), msgs)
+	}
+	if msgs[0].UserType() != enum.LLMUserTypeSystem || len(msgs[0].ToolCalls()) != 0 {
+		t.Fatalf("head = %+v, want the compaction checkpoint", msgs[0])
+	}
+	if msgs[1].Role() != enum.RoleAssistant || !msgs[1].ToolCalls()[0].HasOutput() {
+		t.Fatalf("kept tail = %+v, want the answered assistant call", msgs[1])
+	}
+	requireWorkspaceContext(t, msgs[2], "/ws/repin")
+	if msgs[3].Content() != "done" {
+		t.Fatalf("final answer = %q", msgs[3].Content())
+	}
+	if !svc.tailWS {
+		t.Fatal("the post-fold provider call saw no workspace record at the tail — the model ran blind")
+	}
+	if got := countWorkspaceContexts(msgs); got != 1 {
+		t.Fatalf("workspace records = %d, want 1 — the sealed one stays inside the checkpoint", got)
+	}
+	stored, err := d.Convs.Load(t.Context(), "room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Messages()) != 4 || countWorkspaceContexts(stored.Messages()) != 1 {
+		t.Fatalf("persisted history = %d msgs %d records", len(stored.Messages()), countWorkspaceContexts(stored.Messages()))
+	}
+	requireWorkspaceContext(t, stored.Messages()[2], "/ws/repin")
+}
+
+// The provider's own 413 verdict folds mid-turn onto the same kind of
+// non-editable tail — the kept assistant call — so the retried call
+// must find the workspace re-pinned exactly as after a budget fold:
+// [checkpoint, answered call, fresh record, reply].
+func TestRunTurn413FoldRepinsWorkspaceContext(t *testing.T) {
+	d := Deps{
+		Convs:  repoconversation.NewConversationRepository(t.TempDir()),
+		Config: config.ConversationConfig{MaxTurnStep: 4, CompactKeepTail: 1},
+	}
+	conv := seedRoom(t, d.Convs, "room", "go")
+	conv.SetWorkspace("/ws/repin")
+	if err := d.Convs.Save(t.Context(), conv); err != nil {
+		t.Fatal(err)
+	}
+	schema, _ := valueobject.NewToolSchema("push", "test tool", nil, true, enum.ToolPermissionAgent)
+	driver := EnvironmentBundle{Tools: map[string]dservice.Tool{"push": pushTool{schema: schema}}}
+	// The second real call 413s into a fold whose kept tail is the
+	// answered assistant call — the seed line's record is sealed.
+	svc := &foldWatchSvc{failAt: 2}
+	if err := d.runTurn(t.Context(), "room", conv, driver, nil, entity.Model{}, svc, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	msgs := conv.Messages()
+	if len(msgs) != 4 {
+		t.Fatalf("history = %d msgs, want checkpoint+call+record+answer: %+v", len(msgs), msgs)
+	}
+	if msgs[0].UserType() != enum.LLMUserTypeSystem || len(msgs[0].ToolCalls()) != 0 {
+		t.Fatalf("head = %+v, want the compaction checkpoint", msgs[0])
+	}
+	if msgs[1].Role() != enum.RoleAssistant || !msgs[1].ToolCalls()[0].HasOutput() {
+		t.Fatalf("kept tail = %+v, want the answered assistant call", msgs[1])
+	}
+	requireWorkspaceContext(t, msgs[2], "/ws/repin")
+	if msgs[3].Content() != "done" {
+		t.Fatalf("retried reply = %q", msgs[3].Content())
+	}
+	if !svc.tailWS {
+		t.Fatal("the retried provider call saw no workspace record at the tail — the model ran blind")
+	}
+	if got := countWorkspaceContexts(msgs); got != 1 {
+		t.Fatalf("workspace records = %d, want 1 — the sealed one stays inside the checkpoint", got)
+	}
+	stored, err := d.Convs.Load(t.Context(), "room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Messages()) != 4 || countWorkspaceContexts(stored.Messages()) != 1 {
+		t.Fatalf("persisted history = %d msgs %d records", len(stored.Messages()), countWorkspaceContexts(stored.Messages()))
+	}
+	requireWorkspaceContext(t, stored.Messages()[2], "/ws/repin")
+}
+
+// The same loop shape without a fold keeps the old contract: a bare
+// assistant tail is not pinned — the record stays behind the editable
+// line that earned it.
+func TestRunTurnNoFoldLeavesNonEditableTailUnpinned(t *testing.T) {
+	d := Deps{
+		Convs:  repoconversation.NewConversationRepository(t.TempDir()),
+		Config: config.ConversationConfig{MaxTurnStep: 4, CompactBudgetPct: 100, CompactKeepTail: 1},
+	}
+	conv := seedRoom(t, d.Convs, "room", "go")
+	schema, _ := valueobject.NewToolSchema("push", "test tool", nil, true, enum.ToolPermissionAgent)
+	driver := EnvironmentBundle{Tools: map[string]dservice.Tool{"push": fatTool{schema: schema}}}
+	svc := &foldWatchSvc{}
+	// The default window is wide enough that the fat result never
+	// reaches the budget — the fold branch never fires.
+	if err := d.runTurn(t.Context(), "room", conv, driver, nil, entity.Model{}, svc, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	msgs := conv.Messages()
+	if len(msgs) != 4 {
+		t.Fatalf("history = %d msgs, want user+record+call+answer", len(msgs))
+	}
+	requireWorkspaceContext(t, msgs[1], "")
+	if msgs[2].Role() != enum.RoleAssistant || msgs[3].Content() != "done" {
+		t.Fatalf("tail = %+v, want the call then the answer with no record between", msgs[2:])
+	}
+	if svc.tailWS {
+		t.Fatal("a non-editable tail was pinned without a fold — the re-pin belongs to the fold only")
+	}
+	if got := countWorkspaceContexts(msgs); got != 1 {
+		t.Fatalf("workspace records = %d, want the 1 behind the user line", got)
+	}
+}
