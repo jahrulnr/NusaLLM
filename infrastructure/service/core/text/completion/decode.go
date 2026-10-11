@@ -78,20 +78,22 @@ func decodeUsage(u *UsageBody) (valueobject.Usage, error) {
 }
 
 // statusError builds the routing-facing error for a non-200 response via
-// the shared convention (context_length 400 → 413 remap included). The
-// upstream message is safe to surface; the raw body stays in Cause.
+// the shared convention — context_length 400 → 413 remap and the
+// message-less fallback both live in wire.StatusError. The upstream
+// message is safe to surface; the raw body stays in Cause.
 func statusError(status int, body []byte) error {
 	return wire.StatusError(status, upstreamMessage(body), upstreamCode(body), body)
 }
 
 // upstreamMessage extracts the provider's message when it is plain text —
-// it describes request/parameter problems and is safe to surface.
+// it describes request/parameter problems and is safe to surface. A body
+// without one yields ""; wire owns the fallback wording.
 func upstreamMessage(body []byte) string {
 	var env struct {
 		Error ErrorBody `json:"error"`
 	}
-	if err := json.Unmarshal(body, &env); err != nil || env.Error.Message == "" {
-		return "upstream request failed"
+	if err := json.Unmarshal(body, &env); err != nil {
+		return ""
 	}
 	return env.Error.Message
 }

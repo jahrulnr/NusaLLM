@@ -135,11 +135,9 @@ func (s *Service) unaryResponse(ctx context.Context, resp *http.Response, conv *
 		return apperror.New(502, "malformed upstream body", err)
 	}
 	if rb.Status == "failed" {
-		msg := "upstream response failed"
-		if rb.Error != nil && rb.Error.Message != "" {
-			msg = rb.Error.Message
-		}
-		return apperror.New(502, msg, wire.UpstreamError(raw))
+		// Same payload shape as the streamed response.failed event —
+		// streamFailure owns the routing remaps for both.
+		return streamFailure(&rb, raw)
 	}
 	msg, meta, err := decodeResponse(&rb)
 	if err != nil {

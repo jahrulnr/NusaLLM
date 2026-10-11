@@ -581,6 +581,35 @@ func TestErrorMapping(t *testing.T) {
 	}
 }
 
+// A rejection body with no error.message still tells the user something —
+// the shared fallback in wire.StatusError names the HTTP status, and a
+// code-only body names the code.
+func TestStatusErrorFallbackMessage(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{"no error object", `{"model":"x"}`, "provider rejected the request (HTTP 400)"},
+		{"code only", `{"error":{"code":"MissingSessionID"}}`, "provider rejected the request (MissingSessionID)"},
+		{"provider message", `{"error":{"message":"bad model"}}`, "bad model"},
+	} {
+		svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(tc.body))
+		})
+		conv := newConv(t)
+		model, _ := entity.NewModel("m", "test")
+		err := svc.Send(t.Context(), conv, gw, model, nil)
+		if err == nil {
+			t.Fatalf("%s: expected send to fail", tc.name)
+		}
+		if got := apperror.As(err).Error(); got != tc.want {
+			t.Fatalf("%s: message = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestStreamSendsIncludeUsage(t *testing.T) {
 	var captured RequestBody
 	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {

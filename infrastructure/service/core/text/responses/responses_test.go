@@ -489,6 +489,80 @@ func TestStreamMidError(t *testing.T) {
 	}
 }
 
+// A response.failed event with no message still names the provider's
+// error code — the shared FailureMessage fallback wording.
+func TestStreamFailedEventFallback(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"id\":\"r1\",\"status\":\"failed\",\"error\":{\"code\":\"internal_error\"}}}\n\n"))
+	})
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(m)
+	model, _ := entity.NewModel("gpt-x", "test")
+	err := svc.Send(context.Background(), conv, gw, model, nil)
+	ae, ok := err.(apperror.IAppError)
+	if !ok || ae.StatusCode() != 502 {
+		t.Fatalf("want 502, got %v", err)
+	}
+	if got := ae.Error(); got != "provider rejected the request (internal_error)" {
+		t.Fatalf("message = %q", got)
+	}
+}
+
+// A failed unary response with no error message surfaces the same
+// fallback — the provider's code becomes the parenthetical.
+func TestUnaryFailedFallback(t *testing.T) {
+	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": "r1", "status": "failed",
+			"error": map[string]any{"code": "server_error"},
+		})
+	})
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(m)
+	model, _ := entity.NewModel("gpt-x", "test")
+	err := svc.Send(context.Background(), conv, gw, model, nil)
+	ae, ok := err.(apperror.IAppError)
+	if !ok || ae.StatusCode() != 502 {
+		t.Fatalf("want 502, got %v", err)
+	}
+	if got := ae.Error(); got != "provider rejected the request (server_error)" {
+		t.Fatalf("message = %q", got)
+	}
+}
+
+// A failed unary response routes like the streamed response.failed
+// event — the provider's own code/message remaps to the status the
+// application routes on.
+func TestUnaryFailedRemaps(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  map[string]any
+		want int
+	}{
+		{"rate limit", map[string]any{"code": "rate_limit_exceeded", "message": "slow down"}, 429},
+		{"context overflow", map[string]any{"code": "context_length_exceeded", "message": "input exceeds the maximum context"}, 413},
+	} {
+		svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+			json.NewEncoder(w).Encode(map[string]any{
+				"id": "r1", "status": "failed",
+				"error": tc.err,
+			})
+		})
+		conv := newConv(t)
+		m, _ := entity.NewMessage(enum.RoleUser, "hi")
+		conv.Append(m)
+		model, _ := entity.NewModel("gpt-x", "test")
+		err := svc.Send(context.Background(), conv, gw, model, nil)
+		ae, ok := err.(apperror.IAppError)
+		if !ok || ae.StatusCode() != tc.want {
+			t.Fatalf("%s: want %d, got %v", tc.name, tc.want, err)
+		}
+	}
+}
+
 func TestEncodeAttachmentRejectsPinnedRemoteFileURL(t *testing.T) {
 	a, _ := valueobject.NewAttachment("https://example.com/doc.pdf", "application/pdf")
 	a.SetSHA256(strings.Repeat("a", 64))

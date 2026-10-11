@@ -632,7 +632,7 @@ allocation gets `error`, not this frame — there is no turn to fail.)
   "payload": {
     "status": 502,
     "code": "upstream_error",
-    "message": "upstream request failed",
+    "message": "provider rejected the request (HTTP 502)",
     "userMessagePersisted": true,
     "resyncRequired": true
   }

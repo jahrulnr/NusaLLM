@@ -136,15 +136,15 @@ func decodeUsage(u *UsageBody) (valueobject.Usage, error) {
 
 // statusError builds the routing-facing error for a non-200 response —
 // the envelope is {error:{code,message,status}} with gRPC-style names.
+// The overflow check runs on the untruncated message; wire.StatusError
+// owns the surfaced wording.
 func statusError(status int, body []byte) error {
 	var env struct {
 		Error ErrorBody `json:"error"`
 	}
-	msg, status_ := "upstream request failed", ""
+	msg, status_ := "", ""
 	if err := json.Unmarshal(body, &env); err == nil {
-		if env.Error.Message != "" {
-			msg = env.Error.Message
-		}
+		msg = env.Error.Message
 		status_ = env.Error.Status
 	}
 	if contextOverflow(msg, status_) {
@@ -164,7 +164,9 @@ func contextOverflow(msg, status string) bool {
 }
 
 // streamError maps a mid-stream error payload — the stream carries the
-// same envelope; status name drives the routing code.
+// same envelope; status name drives the routing code, the overflow check
+// reads the untruncated message, and FailureMessage owns the surfaced
+// wording (a message-less error names the status string).
 func streamError(e *ErrorBody, raw []byte) error {
 	code := e.Code
 	if code == 0 {
@@ -181,9 +183,5 @@ func streamError(e *ErrorBody, raw []byte) error {
 	if contextOverflow(e.Message, e.Status) {
 		code = 413
 	}
-	msg := e.Message
-	if msg == "" {
-		msg = "upstream stream failed"
-	}
-	return apperror.New(code, msg, wire.UpstreamError(raw))
+	return apperror.FromStatus(code, wire.FailureMessage(code, e.Message, e.Status), wire.UpstreamError(raw))
 }

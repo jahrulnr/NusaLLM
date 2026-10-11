@@ -125,16 +125,16 @@ func decodeUsage(u *UsageBody) (valueobject.Usage, error) {
 
 // statusError builds the routing-facing error for a non-200 response. The
 // envelope carries {error:{message,type,code,param}}; context overflow on
-// this surface arrives as a 400 whose code/param names the window.
+// this surface arrives as a 400 whose code/param names the window — the
+// check runs on the untruncated message, wire.StatusError owns the
+// surfaced wording.
 func statusError(status int, body []byte) error {
 	var env struct {
 		Error ErrorBody `json:"error"`
 	}
-	msg, code := "upstream request failed", ""
+	msg, code := "", ""
 	if err := json.Unmarshal(body, &env); err == nil {
-		if env.Error.Message != "" {
-			msg = env.Error.Message
-		}
+		msg = env.Error.Message
 		code = errorCode(env.Error)
 	}
 	if status == 400 && contextOverflow(msg, code) {

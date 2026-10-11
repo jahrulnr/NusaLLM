@@ -272,22 +272,21 @@ func (s *Service) commitStream(conv *aggregate.Conversation, onEvent event.TurnE
 
 // streamFailure builds the error for a response.failed terminal event —
 // the response object's error field carries the cause when populated.
+// Routing checks read the untruncated provider text; FailureMessage owns
+// the surfaced wording.
 func streamFailure(rb *ResponseBody, raw []byte) error {
-	msg := "upstream response failed"
-	code := ""
+	msg, code := "", ""
 	if rb != nil && rb.Error != nil {
-		if rb.Error.Message != "" {
-			msg = rb.Error.Message
-		}
+		msg = rb.Error.Message
 		code = errorCode(*rb.Error)
 	}
 	if code == "rate_limit_exceeded" {
-		return apperror.FromStatus(429, msg, wire.UpstreamError(raw))
+		return apperror.FromStatus(429, wire.FailureMessage(429, msg, code), wire.UpstreamError(raw))
 	}
 	if contextOverflow(msg, code) {
 		return apperror.FromStatus(413, "context length exceeded", wire.UpstreamError(raw))
 	}
-	return apperror.FromStatus(502, msg, wire.UpstreamError(raw))
+	return apperror.FromStatus(502, wire.FailureMessage(502, msg, code), wire.UpstreamError(raw))
 }
 
 // readSSE pumps named SSE event payloads until EOF — this wire ends on

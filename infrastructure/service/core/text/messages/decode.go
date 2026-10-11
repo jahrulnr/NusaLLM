@@ -109,16 +109,15 @@ func decodeUsage(u *UsageBody) (valueobject.Usage, error) {
 
 // statusError builds the routing-facing error for a non-200 response.
 // Anthropic names context overflow in the message text rather than a code,
-// so the compact-triggering 413 remap happens here, not in wire.StatusError.
+// so the compact-triggering 413 remap happens here on the untruncated
+// message — wire.StatusError owns truncation and the fallback wording.
 func statusError(status int, body []byte) error {
 	var env struct {
 		Error ErrorBody `json:"error"`
 	}
-	msg, code := "upstream request failed", ""
+	msg, code := "", ""
 	if err := json.Unmarshal(body, &env); err == nil {
-		if env.Error.Message != "" {
-			msg = env.Error.Message
-		}
+		msg = env.Error.Message
 		code = env.Error.Type
 	}
 	if status == 400 && contextOverflow(msg) {

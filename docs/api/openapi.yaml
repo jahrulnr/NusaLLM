@@ -1485,7 +1485,7 @@ components:
             title: "Bad Gateway"
             status: 502
             code: "upstream_error"
-            detail: "upstream request failed"
+            detail: "provider rejected the request (HTTP 502)"
     Unavailable:
       description: The application is shutting down.
       content:

@@ -491,6 +491,33 @@ func TestStreamMidError(t *testing.T) {
 	if !ok || ae.StatusCode() != 429 {
 		t.Fatalf("want 429, got %v", err)
 	}
+	if !ae.IsUpstream() {
+		t.Fatal("provider failure must be marked upstream")
+	}
+}
+
+// A mid-stream error with no message still names the provider status —
+// the shared FailureMessage fallback wording.
+func TestStreamMidErrorFallback(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: {\"error\":{\"code\":500,\"status\":\"INTERNAL\"}}\n\n"))
+	})
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(m)
+	model, _ := entity.NewModel("gemini-3-flash", "test")
+	err := svc.Send(context.Background(), conv, gw, model, nil)
+	ae, ok := err.(apperror.IAppError)
+	if !ok || ae.StatusCode() != 500 {
+		t.Fatalf("want 500, got %v", err)
+	}
+	if got := ae.Error(); got != "provider rejected the request (INTERNAL)" {
+		t.Fatalf("message = %q", got)
+	}
+	if !ae.IsUpstream() {
+		t.Fatal("provider failure must be marked upstream")
+	}
 }
 
 func TestEncodeAttachmentRejectsPinnedRemoteURL(t *testing.T) {
