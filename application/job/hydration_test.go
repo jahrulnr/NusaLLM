@@ -24,7 +24,8 @@ import (
 // requireWorkspaceContext asserts msg is the workspace context record the
 // turn loop appends after an editable user line: a non-editable system
 // user message carrying one injection-typed `workspace` call whose JSON
-// input names dir and whose stored output cites it — no measured latency.
+// input names dir and whose stored output is exactly `workspace changed
+// to <dir-or-(unset)>` — no measured latency.
 func requireWorkspaceContext(t *testing.T, msg entity.Message, dir string) {
 	t.Helper()
 	if msg.Role() != enum.RoleUser || msg.Editable() {
@@ -46,8 +47,12 @@ func requireWorkspaceContext(t *testing.T, msg entity.Message, dir string) {
 	if input.Path != dir {
 		t.Fatalf("workspace input path = %q, want %q", input.Path, dir)
 	}
-	if !strings.Contains(calls[0].Output(), dir) && dir != "" {
-		t.Fatalf("workspace output = %q, want it to cite %q", calls[0].Output(), dir)
+	shown := dir
+	if shown == "" {
+		shown = "(unset)"
+	}
+	if want := "workspace changed to " + shown; calls[0].Output() != want {
+		t.Fatalf("workspace output = %q, want %q", calls[0].Output(), want)
 	}
 	if calls[0].OutputLatency() != "" {
 		t.Fatalf("injection latency = %q, want empty — a stored record, not an execution", calls[0].OutputLatency())

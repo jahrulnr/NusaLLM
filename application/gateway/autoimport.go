@@ -8,6 +8,12 @@ import (
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
+// catalogListTimeout bounds one provider catalog fetch inside a
+// management call. The catalog client's own http.Client deadline stays
+// the outer ceiling, but a hung provider must not hold a gateway save
+// or an import pass hostage for that long.
+const catalogListTimeout = 15 * time.Second
+
 // AutoImportResult reports one gateway's refresh outcome to the caller's
 // diagnostics sink. Added lists newly imported model ids; Error carries a
 // per-gateway failure — one bad credential never aborts the pass.
@@ -105,7 +111,9 @@ func (app *GatewayApp) importModels(ctx context.Context, id string) ([]string, e
 	if err != nil {
 		return nil, err
 	}
-	ids, err := app.catalog.ListModels(ctx, loaded)
+	listCtx, cancel := context.WithTimeout(ctx, catalogListTimeout)
+	ids, err := app.catalog.ListModels(listCtx, loaded)
+	cancel()
 	if err != nil {
 		return nil, err
 	}

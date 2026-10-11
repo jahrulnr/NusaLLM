@@ -1,4 +1,4 @@
-.PHONY: build cli serve test fmt-check test-web gateway-add
+.PHONY: build cli serve test fmt-check test-web e2e-web gateway-add
 
 build:
 	mkdir -p ./bin
@@ -20,6 +20,12 @@ fmt-check:
 
 test-web:
 	node --test web/test/*.test.mjs
+
+# Headless browser suite; needs @playwright/test installed locally or
+# PLAYWRIGHT_MODULE=/abs/path/to/@playwright/test/index.mjs, and a
+# Chrome channel on PATH.
+e2e-web:
+	node web/test-e2e/steer-flow.mjs
 
 gateway-add: build
 	./bin/nusallm gateway add \

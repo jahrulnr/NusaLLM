@@ -118,7 +118,7 @@ func TestExportRendersContextRecord(t *testing.T) {
 	if !strings.Contains(got, want) {
 		t.Fatalf("context heading %q missing:\n%s", want, got)
 	}
-	if !strings.Contains(got, "The active workspace is /srv/ws.") {
+	if !strings.Contains(got, "workspace changed to /srv/ws") {
 		t.Fatalf("context output missing:\n%s", got)
 	}
 	if strings.Contains(got, "## user · "+contextMsg.ID()) || strings.Contains(got, "[tool workspace") {
@@ -187,7 +187,7 @@ func workspaceContextRecord(t *testing.T, dir string) entity.Message {
 	if err != nil {
 		t.Fatal(err)
 	}
-	call.SetStoredOutput("The active workspace is "+dir+".", "")
+	call.SetStoredOutput("workspace changed to "+dir, "")
 	msg.AddToolCall(call)
 	return msg
 }

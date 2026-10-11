@@ -241,8 +241,9 @@ class ProviderManager extends Widget {
       el('div', { class: 'import-actions' }, [
         this._importBtn = el('button', {
           class: 'btn', type: 'button', disabled: !g || this._importing,
+          text: this._importing ? 'Importing…' : 'Refresh models from provider',
           onclick: () => this._importModels(g.id),
-        }, [el('span', { text: this._importing ? 'Importing…' : 'Refresh models from provider' })]),
+        }),
         g
           ? el('span', { class: 'hint', text: 'Re-reads the provider catalog with the saved endpoint and key.' })
           : el('span', { class: 'hint', text: 'Save the gateway to import its models.' }),

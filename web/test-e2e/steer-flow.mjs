@@ -1061,31 +1061,34 @@ await scenarioRun('edit-barrier-retry', async (s) => {
   check('retry dispatches the edit after the barrier clears', true);
 });
 
-// Real mobile proof at 320px: dismiss the sidebar through the ACTUAL
-// header toggle, wait for the transform to carry it fully offscreen,
+// Real mobile proof at 320px: dismiss the open drawer through its REAL
+// close button (the full-height drawer + scrim cover the header toggle
+// by design), wait for the transform to carry it fully offscreen,
 // then hit-test every control through the shadow roots and click for
 // real — bounding boxes alone can lie.
 await scenarioRun('mobile-320-real-controls', async (s) => {
   await s.page.setViewportSize({ width: 320, height: 800 });
   await open(s, '#conversation=c1');
-  // Force the sidebar open, then dismiss it via the real toggle click.
+  // Force the sidebar open through the shell's own sync so the drawer
+  // and scrim take their real state, then dismiss it via a real click
+  // on the drawer's close button — a hit-test, not a state poke.
   await s.page.evaluate(() => {
     const app = document.querySelector('nusa-app');
     app.sidebarOpen = true;
-    app.sidebar.open = true;
+    app._syncSidebar();
   });
   await poll(() => s.page.evaluate(() => {
     const sb = document.querySelector('nusa-app').shadowRoot
       .querySelector('nusa-nav-sidebar');
     return sb.getBoundingClientRect().right > 0;
   }));
-  await s.page.locator('nusa-conversation-header .sidebar-toggle').click();
+  await s.page.locator('nusa-nav-sidebar .close-btn').click();
   await poll(() => s.page.evaluate(() => {
     const app = document.querySelector('nusa-app');
     const sb = app.shadowRoot.querySelector('nusa-nav-sidebar');
     return !app.sidebarOpen && sb.getBoundingClientRect().right <= 0;
   }), { timeout: 8000 });
-  check('sidebar fully offscreen after real toggle', true);
+  check('sidebar fully offscreen after real close click', true);
   // Busy + queued + draft filled: Steer, Queue, Stop all rendered.
   await typeEnter(s, 'busy task');
   await poll(() => s.hub().find('turn.send'));

@@ -507,7 +507,7 @@ func TestMessagesInjectionCallType(t *testing.T) {
 	msg, _ := entity.NewMessage(enum.RoleUser, "")
 	msg.SetUserType(enum.LLMUserTypeSystem)
 	call, _ := entity.NewToolCall("call_ws", "workspace", `{"path":"/srv/ws"}`, enum.TooltypeInjection)
-	call.SetStoredOutput("The active workspace is /srv/ws.", "")
+	call.SetStoredOutput("workspace changed to /srv/ws", "")
 	msg.AddToolCall(call)
 	h := newTestHandler(t, Deps{Conversations: &fakeConversations{
 		infos:   []drepo.ConversationInfo{{ID: "c_1", MessageCount: 1}},
@@ -519,7 +519,7 @@ func TestMessagesInjectionCallType(t *testing.T) {
 	}
 	msgs := decodeBody(t, rec)["messages"].([]any)
 	got := msgs[0].(map[string]any)["toolCalls"].([]any)[0].(map[string]any)
-	if got["type"] != "injection" || got["output"] != "The active workspace is /srv/ws." {
+	if got["type"] != "injection" || got["output"] != "workspace changed to /srv/ws" {
 		t.Fatalf("injection call projection wrong: %v", got)
 	}
 	if msgs[0].(map[string]any)["userType"] != "system" {

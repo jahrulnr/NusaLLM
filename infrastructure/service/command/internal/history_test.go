@@ -36,7 +36,7 @@ func workspaceContextRecord(t *testing.T, dir string) entity.Message {
 	if err != nil {
 		t.Fatal(err)
 	}
-	call.SetStoredOutput("The active workspace is "+dir+".", "")
+	call.SetStoredOutput("workspace changed to "+dir, "")
 	msg.AddToolCall(call)
 	return msg
 }
@@ -64,7 +64,7 @@ func TestWriteRendersInjectionContextLines(t *testing.T) {
 
 	for _, want := range []string{
 		"\\> hi",
-		"The active workspace is /srv/ws.",
+		"workspace changed to /srv/ws",
 		"answer",
 		"⏺ `read_file` `{\"path\":\"x\"}`",
 		"\\> earlier turns summarized",
