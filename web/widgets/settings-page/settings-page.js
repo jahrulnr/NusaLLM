@@ -11,7 +11,7 @@ class SettingsPage extends Widget {
   }
 
   set gateways(value) { this.providers.gateways = value || []; }
-  set discoveredModels(value) { this.providers.discoveredModels = value; }
+  set gatewayImportResult(value) { this.providers.gatewayImportResult = value; }
   set gatewaySaveResult(value) { this.providers.gatewaySaveResult = value; }
   set settings(value) { this.editor.settings = value || {}; }
 

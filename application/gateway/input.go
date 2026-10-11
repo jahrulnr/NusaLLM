@@ -78,6 +78,18 @@ type GatewayInfo struct {
 	Models   []entity.Model
 }
 
+// UpsertOutcome reports what a write or refresh did beyond storing the
+// record: Added lists the provider-catalog ids the post-write import
+// merged in (empty when nothing new came or no catalog is wired), and
+// CatalogError carries the fetch/merge failure when one happened. The
+// record is already committed when the import runs, so a catalog
+// failure is data, not an error — a caller must never retry the write
+// itself on a non-empty CatalogError.
+type UpsertOutcome struct {
+	Added        []string
+	CatalogError string
+}
+
 // InputFromInfo rebuilds the write document from a sanitized read
 // projection — the read-modify-write codec for edits like "rename" or
 // "rotate the key" where the caller sees GatewayInfo, not the record.

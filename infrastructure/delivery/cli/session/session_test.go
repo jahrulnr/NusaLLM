@@ -65,7 +65,7 @@ func TestResolveRouteAutoSelectsAndNotifies(t *testing.T) {
 	gateways := repogateway.NewGatewayRepository(t.TempDir(), secrets)
 	gwApp := appgateway.New(gateways, secrets, nil)
 	off := false
-	if err := gwApp.Upsert(t.Context(), appgateway.GatewayInput{
+	if _, err := gwApp.Upsert(t.Context(), appgateway.GatewayInput{
 		ID: "gw1", Name: "n", Style: enum.StyleCompletion, Endpoint: "http://x",
 		Stream: &off, Models: []appgateway.ModelInput{{ID: "m1"}},
 	}); err != nil {

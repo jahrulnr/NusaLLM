@@ -33,10 +33,22 @@
 }
 .main > nusa-message-thread { flex: 1; min-height: 0; }
 
+/* Below the drawer (60), above the header (10); toasts stay topmost. */
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  background: rgba(0, 0, 0, 0.45);
+}
+
 @media (max-width: 760px) {
   /* Both drawers are fixed overlays — the grid has ONE in-flow track
      and <main> must fill it. */
   .grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (min-width: 761px) {
+  .scrim { display: none !important; }
 }
 
 @media (prefers-reduced-motion: reduce) {

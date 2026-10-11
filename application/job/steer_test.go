@@ -20,11 +20,13 @@ import (
 )
 
 // steerFoldSvc asks for the "push" tool on the first provider call and
-// answers "done" on the second, recording the last message it saw —
-// proving where the folded steer sits relative to the tool result.
+// answers "done" on the second, recording the last two message contents
+// it saw — proving where the folded steer sits relative to the tool
+// result and the workspace record that trails it.
 type steerFoldSvc struct {
 	calls    int32
 	lastSeen string
+	prevSeen string
 }
 
 func (s *steerFoldSvc) Send(_ context.Context, conv *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, _ event.TurnEventHandler) error {
@@ -39,7 +41,9 @@ func (s *steerFoldSvc) Send(_ context.Context, conv *aggregate.Conversation, _ *
 		m.AddToolCall(tc)
 		m.SetFinishReason(enum.FinishReasonToolCalls)
 	} else {
-		s.lastSeen = conv.Last().Content()
+		msgs := conv.Messages()
+		s.lastSeen = msgs[len(msgs)-1].Content()
+		s.prevSeen = msgs[len(msgs)-2].Content()
 		m, _ = entity.NewMessage(enum.RoleAssistant, "done")
 		m.SetFinishReason(enum.FinishReasonStop)
 	}
@@ -91,18 +95,23 @@ func TestRunTurnFoldsSteerAfterToolResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	msgs := conv.Messages()
-	// user "go" / assistant+push call / folded steer / assistant "done"
-	if len(msgs) != 4 {
-		t.Fatalf("folded history = %d msgs, want 4", len(msgs))
+	// user "go" / workspace record / assistant+push call / folded steer /
+	// workspace record / assistant "done"
+	if len(msgs) != 6 {
+		t.Fatalf("folded history = %d msgs, want 6", len(msgs))
 	}
-	if msgs[2].Role() != enum.RoleUser || msgs[2].Content() != "also handle X" {
-		t.Fatalf("steer message = %v %q", msgs[2].Role(), msgs[2].Content())
+	if msgs[3].Role() != enum.RoleUser || msgs[3].Content() != "also handle X" {
+		t.Fatalf("steer message = %v %q", msgs[3].Role(), msgs[3].Content())
 	}
-	if !msgs[1].ToolCalls()[0].HasOutput() {
+	if !msgs[2].ToolCalls()[0].HasOutput() {
 		t.Fatal("the tool result must be recorded before the steer folded")
 	}
-	if svc.lastSeen != "also handle X" {
-		t.Fatalf("provider call 2 saw last=%q, want the folded steer", svc.lastSeen)
+	requireWorkspaceContext(t, msgs[1], "")
+	requireWorkspaceContext(t, msgs[4], "")
+	// The second provider call saw the steer with its fresh context
+	// record trailing it — the record is the new tail, not the answer.
+	if svc.prevSeen != "also handle X" || svc.lastSeen != "" {
+		t.Fatalf("provider call 2 saw prev=%q last=%q, want the steer then its context record", svc.prevSeen, svc.lastSeen)
 	}
 	if !slices.Contains(kinds, enum.TurnEventSteer) {
 		t.Fatalf("no steer event emitted: %v", kinds)
@@ -111,17 +120,27 @@ func TestRunTurnFoldsSteerAfterToolResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(stored.Messages()) != 4 || stored.Messages()[2].Content() != "also handle X" {
+	if len(stored.Messages()) != 6 || stored.Messages()[3].Content() != "also handle X" {
 		t.Fatalf("persisted history missing the fold: %d msgs", len(stored.Messages()))
 	}
 }
 
-// captureSvc records the last message the provider call saw — used to
-// prove a pre-start steer was already in history at call one.
-type captureSvc struct{ lastSeen string }
+// captureSvc records the tail the provider call saw — the last two
+// message contents plus the system prompt — used to prove what sat in
+// history at call time.
+type captureSvc struct {
+	lastSeen  string
+	prevSeen  string
+	sawPrompt string
+}
 
 func (s *captureSvc) Send(_ context.Context, conv *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, _ event.TurnEventHandler) error {
-	s.lastSeen = conv.Last().Content()
+	msgs := conv.Messages()
+	s.lastSeen = msgs[len(msgs)-1].Content()
+	if len(msgs) > 1 {
+		s.prevSeen = msgs[len(msgs)-2].Content()
+	}
+	s.sawPrompt = conv.SystemPrompt()
 	m, _ := entity.NewMessage(enum.RoleAssistant, "done")
 	m.SetFinishReason(enum.FinishReasonStop)
 	conv.Append(m)
@@ -150,13 +169,15 @@ func TestRunTurnFoldsSteerBeforeFirstCall(t *testing.T) {
 	if err := d.runTurn(t.Context(), "room", conv, EnvironmentBundle{}, nil, entity.Model{}, svc, nil, steers); err != nil {
 		t.Fatal(err)
 	}
-	if svc.lastSeen != "early input" {
-		t.Fatalf("provider call 1 saw last=%q, want the pre-folded steer", svc.lastSeen)
+	// Call 1 saw the folded steer with its context record trailing it.
+	if svc.prevSeen != "early input" || svc.lastSeen != "" {
+		t.Fatalf("provider call 1 saw prev=%q last=%q, want the steer then its context record", svc.prevSeen, svc.lastSeen)
 	}
 	msgs := conv.Messages()
-	if len(msgs) != 3 || msgs[1].Role() != enum.RoleUser || msgs[1].Content() != "early input" {
+	if len(msgs) != 4 || msgs[1].Role() != enum.RoleUser || msgs[1].Content() != "early input" {
 		t.Fatalf("pre-start steer did not fold: %+v", msgs)
 	}
+	requireWorkspaceContext(t, msgs[2], "")
 }
 
 // doneSvc answers immediately; its onSend hook runs inside the single
@@ -195,7 +216,7 @@ func TestRunTurnLeavesUnconsumedSteer(t *testing.T) {
 	if err := d.runTurn(t.Context(), "room", conv, EnvironmentBundle{}, nil, entity.Model{}, svc, nil, steers); err != nil {
 		t.Fatal(err)
 	}
-	if len(conv.Messages()) != 2 {
+	if len(conv.Messages()) != 3 {
 		t.Fatalf("unconsumed steer entered history: %+v", conv.Messages())
 	}
 	if got, ok := steers.popLast(); !ok || got != "too late" {
@@ -365,7 +386,7 @@ func TestRunTurnSteerIdenticalTextBothPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	msgs := conv.Messages()
-	if len(msgs) != 4 || msgs[1].Content() != "same text" || msgs[2].Content() != "same text" {
+	if len(msgs) != 5 || msgs[1].Content() != "same text" || msgs[2].Content() != "same text" {
 		t.Fatalf("identical steer lines must both fold: %+v", msgs)
 	}
 	if receipt.State() != SteeringPersisted {

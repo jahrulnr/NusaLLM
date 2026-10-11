@@ -68,14 +68,6 @@
 .send:disabled { background: var(--hairline-strong); color: var(--text-faint); cursor: not-allowed; }
 .send.cancel { background: var(--panel-2); color: var(--danger); border: 1px solid var(--hairline-strong); }
 .send.cancel:hover { border-color: var(--danger); }
-.send.queue {
-  grid-auto-flow: column;
-  gap: 5px;
-  width: auto;
-  padding: 0 11px;
-  font-size: 11.5px;
-  font-weight: 600;
-}
 .steer {
   display: inline-flex;
   align-items: center;
@@ -182,14 +174,6 @@
   color: var(--text-faint);
   cursor: not-allowed;
 }
-/* Visible steer guidance — a title tooltip never reaches touch. */
-.steer-hint {
-  max-width: 210px;
-  overflow: hidden;
-  font-size: 10.5px;
-  line-height: 1.35;
-  color: var(--text-faint);
-}
 /* Keyboard focus stays visible on every actionable control. */
 .send:focus-visible, .steer:focus-visible,
 .pending-action:focus-visible, .pending-resume:focus-visible,
@@ -242,8 +226,8 @@
   :host { padding: 8px 10px 10px; }
   .composer { padding: 10px 11px 8px; }
   .shortcut { display: none; }
-  /* The footer reflows instead of clipping — Context, Steer, Stop, and
-     Queue stay reachable at 320px. */
+  /* The footer reflows instead of clipping — Context, Steer, and Stop
+     stay reachable at 320px. */
   .footer { flex-wrap: wrap; row-gap: 8px; }
   .footer-right {
     flex-shrink: 1;
@@ -252,11 +236,9 @@
     justify-content: flex-end;
     gap: 8px;
   }
-  .steer-hint { flex-basis: 100%; max-width: none; text-align: right; }
   /* Touch targets at 44px on the affected controls. */
   .send, .steer { height: 44px; }
   .send { min-width: 44px; }
-  .send.queue { padding: 0 12px; }
   .steer { padding: 0 12px; }
   .pending-action, .pending-resume { min-height: 44px; padding: 6px 14px; }
   .context-trigger { padding: 8px 12px; }

@@ -52,6 +52,10 @@ class NavSidebar extends Widget {
       el('div', { class: 'brand' }, [
         el('span', { class: 'brand-mark', text: 'N' }),
         el('span', { class: 'brand-name', text: 'NusaLLM' }),
+        el('button', {
+          class: 'icon-btn close-btn', type: 'button', 'aria-label': 'Close sidebar',
+          onclick: () => emit(this, 'sidebar-close'),
+        }, [icon('x', 14)]),
       ]),
       el('button', {
         class: 'new-btn', type: 'button',

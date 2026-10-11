@@ -8,8 +8,8 @@ import (
 )
 
 // DiscoverModels reads the provider catalog using the gateway's current
-// endpoint and resolved credential. It leaves the configured catalog alone;
-// the caller chooses which IDs to add through Upsert.
+// endpoint and resolved credential. It is read-only — Upsert and
+// ImportModels own merging ids into the record.
 func (app *GatewayApp) DiscoverModels(ctx context.Context, id string) ([]string, error) {
 	if app.catalog == nil {
 		return nil, apperror.NewInternalError("model discovery unavailable", nil)

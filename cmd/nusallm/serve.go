@@ -117,6 +117,7 @@ func serve(args []string) (serveErr error) {
 		// a client that abandons a request can't cancel them, but
 		// shutdown does.
 		Jobs:        ctx,
+		LiveTurns:   hub,
 		WS:          wsdelivery.NewHandler(hub, authorities).Serve,
 		Authorities: authorities,
 		WebAssets:   web.Assets,

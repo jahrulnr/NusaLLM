@@ -18,6 +18,9 @@ import (
 // application never mixes ports from different registered environments.
 type EnvironmentDriver interface {
 	Workspace() drepo.Workspace
+	// FallbackRoot is the working directory a turn reports and executes
+	// in when the room binds no workspace — "" means unset.
+	FallbackRoot() string
 	TextService(enum.Style) (dservice.TextModelService, bool)
 	Tool(string) (dservice.Tool, bool)
 	ToolSchemas() []valueobject.ToolSchema
@@ -27,11 +30,19 @@ type EnvironmentDriver interface {
 // may implement EnvironmentDriver directly when they need custom lifecycle.
 type EnvironmentBundle struct {
 	WorkspaceStore drepo.Workspace
-	Services       map[enum.Style]dservice.TextModelService
-	Tools          map[string]dservice.Tool
+	// DefaultRoot feeds FallbackRoot — the directory a room with no bound
+	// workspace resolves file tools and exec against (the CLI wires its
+	// launch directory).
+	DefaultRoot string
+	Services    map[enum.Style]dservice.TextModelService
+	Tools       map[string]dservice.Tool
 }
 
 func (b EnvironmentBundle) Workspace() drepo.Workspace { return b.WorkspaceStore }
+
+// FallbackRoot reports the driver's default working directory — "" when the
+// composition wired none.
+func (b EnvironmentBundle) FallbackRoot() string { return b.DefaultRoot }
 
 func (b EnvironmentBundle) TextService(style enum.Style) (dservice.TextModelService, bool) {
 	s, ok := b.Services[style]
@@ -52,6 +63,17 @@ func (b EnvironmentBundle) ToolSchemas() []valueobject.ToolSchema {
 		return strings.Compare(a.Name(), b.Name())
 	})
 	return schemas
+}
+
+// TurnWorkspace resolves the working directory one turn binds into context:
+// the room's bound workspace wins; an empty binding falls back to the
+// driver's default root so file tools, exec, and the workspace context
+// record all cite the same path.
+func TurnWorkspace(conv *aggregate.Conversation, driver EnvironmentDriver) string {
+	if dir := conv.Workspace(); dir != "" {
+		return dir
+	}
+	return driver.FallbackRoot()
 }
 
 func (d Deps) environment(conv *aggregate.Conversation) (EnvironmentDriver, error) {

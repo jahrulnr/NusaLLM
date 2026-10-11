@@ -105,6 +105,10 @@ type modelInputBody struct {
 // put replaces the whole readable document at :id — Upsert owns apiKey
 // tri-state, model validation, and the server-owned hidden
 // optionalContent preservation; the transport only shapes the input.
+// The response carries the import outcome alongside the projection:
+// provider ids the merge added, or the catalog failure that left the
+// saved record as written — either way the write succeeded, so the
+// status is 200 in both cases.
 func (s *server) put(c *gin.Context) {
 	id, ok := transport.PathID(c)
 	if !ok {
@@ -120,7 +124,8 @@ func (s *server) put(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	if err := s.writes.Upsert(ctx, in); err != nil {
+	outcome, err := s.writes.Upsert(ctx, in)
+	if err != nil {
 		transport.RespondError(c, err)
 		return
 	}
@@ -129,7 +134,31 @@ func (s *server) put(c *gin.Context) {
 		transport.RespondError(c, err)
 		return
 	}
-	c.JSON(200, toGateway(info))
+	c.JSON(200, toGatewayWrite(info, outcome))
+}
+
+// importModels reruns the provider-catalog merge against the stored
+// record — the same import a save performs — for the Refresh button:
+// no document to resend, the stored endpoint and key do the fetch. A
+// catalog failure still answers 200 with catalogError because the
+// record is intact; a missing id is 404.
+func (s *server) importModels(c *gin.Context) {
+	id, ok := transport.PathID(c)
+	if !ok {
+		return
+	}
+	ctx := c.Request.Context()
+	outcome, err := s.writes.ImportModels(ctx, id)
+	if err != nil {
+		transport.RespondError(c, err)
+		return
+	}
+	info, err := s.reads.Get(ctx, id)
+	if err != nil {
+		transport.RespondError(c, err)
+		return
+	}
+	c.JSON(200, toGatewayWrite(info, outcome))
 }
 
 func (s *server) delete(c *gin.Context) {

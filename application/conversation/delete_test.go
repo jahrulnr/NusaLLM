@@ -145,7 +145,7 @@ func TestSendAfterDeleteMintsFreshRoom(t *testing.T) {
 		t.Fatal(err)
 	}
 	msgs := conv.Messages()
-	if len(msgs) != 2 || msgs[0].Content() != "new life" || msgs[0].Role() != enum.RoleUser {
+	if len(msgs) != 3 || msgs[0].Content() != "new life" || msgs[0].Role() != enum.RoleUser {
 		t.Fatalf("resurrected room carries old history: %+v", msgs)
 	}
 }

@@ -31,12 +31,14 @@ import (
 
 // gatedToolSvc parks inside the first provider call until released,
 // then asks for the echo tool — the deterministic live window for a
-// steer. Later calls record the last message they saw.
+// steer. Later calls record the last two message contents they saw —
+// the folded steer and the context record that trails it.
 type gatedToolSvc struct {
 	entered  chan struct{}
 	release  chan struct{}
 	calls    int32
 	lastSeen string
+	prevSeen string
 }
 
 func (s *gatedToolSvc) Send(ctx context.Context, conv *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, _ event.TurnEventHandler) error {
@@ -57,7 +59,9 @@ func (s *gatedToolSvc) Send(ctx context.Context, conv *aggregate.Conversation, _
 		m.AddToolCall(tc)
 		m.SetFinishReason(enum.FinishReasonToolCalls)
 	} else {
-		s.lastSeen = conv.Last().Content()
+		msgs := conv.Messages()
+		s.lastSeen = msgs[len(msgs)-1].Content()
+		s.prevSeen = msgs[len(msgs)-2].Content()
 		m, _ = entity.NewMessage(enum.RoleAssistant, "done")
 		m.SetFinishReason(enum.FinishReasonStop)
 	}
@@ -67,12 +71,14 @@ func (s *gatedToolSvc) Send(ctx context.Context, conv *aggregate.Conversation, _
 
 // gatedTextSvc parks inside the first provider call until released and
 // answers "done" — the turn ends without a tool step, so a steer pushed
-// during the gate is never consumed.
+// during the gate is never consumed. Each call records the last two
+// message contents — a fresh user line always trails a context record.
 type gatedTextSvc struct {
 	entered  chan struct{}
 	release  chan struct{}
 	calls    int32
 	lastSeen string
+	prevSeen string
 }
 
 func (s *gatedTextSvc) Send(ctx context.Context, conv *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, _ event.TurnEventHandler) error {
@@ -85,7 +91,11 @@ func (s *gatedTextSvc) Send(ctx context.Context, conv *aggregate.Conversation, _
 			return ctx.Err()
 		}
 	}
-	s.lastSeen = conv.Last().Content()
+	msgs := conv.Messages()
+	s.lastSeen = msgs[len(msgs)-1].Content()
+	if len(msgs) > 1 {
+		s.prevSeen = msgs[len(msgs)-2].Content()
+	}
 	m, _ := entity.NewMessage(enum.RoleAssistant, "done")
 	m.SetFinishReason(enum.FinishReasonStop)
 	conv.Append(m)
@@ -270,12 +280,13 @@ func TestSteerFoldsThroughSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	msgs := conv.Messages()
-	// user "go" / assistant+echo call / folded steer / assistant "done"
-	if len(msgs) != 4 || msgs[2].Role() != enum.RoleUser || msgs[2].Content() != "check X" {
+	// user "go" / workspace record / assistant+echo call / folded steer /
+	// workspace record / assistant "done"
+	if len(msgs) != 6 || msgs[3].Role() != enum.RoleUser || msgs[3].Content() != "check X" {
 		t.Fatalf("steer not in history: %d msgs", len(msgs))
 	}
-	if svc.lastSeen != "check X" {
-		t.Fatalf("provider saw last=%q, want the folded steer", svc.lastSeen)
+	if svc.prevSeen != "check X" || svc.lastSeen != "" {
+		t.Fatalf("provider saw prev=%q last=%q, want the steer then its context record", svc.prevSeen, svc.lastSeen)
 	}
 
 	// finishTurn drains nothing — the landed steer must not requeue.
@@ -366,8 +377,8 @@ func TestSteerMissQueuesAsMessage(t *testing.T) {
 	if _, ok := next.(sendDoneMsg); !ok {
 		t.Fatalf("requeued turn ended with %T", next)
 	}
-	if svc.lastSeen != "late input" {
-		t.Fatalf("requeued steer reached provider as %q, want the text", svc.lastSeen)
+	if svc.prevSeen != "late input" || svc.lastSeen != "" {
+		t.Fatalf("requeued steer reached provider as prev=%q last=%q, want the text then its context record", svc.prevSeen, svc.lastSeen)
 	}
 }
 
@@ -384,8 +395,8 @@ func TestSteerWithoutTurnDegrades(t *testing.T) {
 	if out.err != nil {
 		t.Fatalf("degraded steer send: %v", out.err)
 	}
-	if svc.lastSeen != "hello there" {
-		t.Fatalf("provider saw %q, want the steered text as a message", svc.lastSeen)
+	if svc.prevSeen != "hello there" || svc.lastSeen != "" {
+		t.Fatalf("provider saw prev=%q last=%q, want the steered text then its context record", svc.prevSeen, svc.lastSeen)
 	}
 
 	m.outbox = nil

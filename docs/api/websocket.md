@@ -7,7 +7,9 @@ and `turn.steer_recall` withdraws one still-pending input;
 `turn.cancel` cancels an exact live turn by `turnId` (never the
 room-wide worker interrupt); `turn.watch` replays the bounded journal
 under the hub lock and attaches for live frames, answering
-`turn.resync_required` when the journal can't satisfy the window. The
+`turn.resync_required` when the journal can't satisfy the window. A
+`conversation.activity` notice is broadcast to every socket when a
+room gains or loses a live turn. The
 OpenAPI spec in [`openapi.yaml`](./openapi.yaml) covers only the HTTP
 upgrade — it does not define frames.
 
@@ -24,9 +26,21 @@ upgrade — it does not define frames.
 - **One user, many tabs:** the server accepts multiple concurrent
   sockets (the browser may hold several tabs). Turn events are delivered
   to the socket that owns the turn plus any socket that has attached via
-  `turn.watch` — there are no room-wide broadcasts in the initial
-  contract. A second tab does not passively observe another tab's turn;
-  it sees persisted state through HTTP reads.
+  `turn.watch` — turn streams are never broadcast room-wide. The one
+  room-wide notice is `conversation.activity`: an unsequenced,
+  unjournaled frame sent to every socket when a room gains or loses a
+  live turn, so a second tab discovers the activity (a new room, an
+  attachable turn, a settled room) without re-opening it. It still does
+  not passively observe the turn's stream; it sees persisted state
+  through HTTP reads.
+- **Reloading a room.** `GET /api/conversations/{id}` and each item of
+  `GET /api/conversations` include
+  `activeTurnId` and `activeTurnKind` (`send` or `edit`) while this
+  process has a non-terminal transport turn for that room. A client that
+  loads or selects the room attaches with `turn.watch` and `afterSeq: -1`,
+  then re-reads HTTP on the terminal frame. The fields are absent when
+  the room is idle. A journal gap still answers `turn.resync_required`;
+  missing deltas are not invented.
 - **Disconnects are not cancels.** Turn commands run under a
   server-scoped cancellable context, not the socket's — closing the
   socket never aborts a running or queued turn. Recovery is
@@ -375,6 +389,36 @@ nothing was allocated — and no turn frames follow.
 }
 ```
 
+### Room activity
+
+`conversation.activity` — a room-level notice **broadcast to every
+connected socket** when a turn opens or reaches its terminal. It is not
+part of the turn's ordered record: it carries no `seq`, is never
+journaled, and a `turn.watch` replay never reproduces it. The `opened`
+notice is enqueued under the same lock as `turn.opened`, so on each
+socket it provably follows that turn's `seq: 0`; the terminal notice
+likewise follows the terminal frame. Broadcasts are emitted only on
+these two edges — command replies (`turn.cancel_ack`, watch attach,
+resync) change no room state and send nothing.
+
+```json
+{
+  "type": "conversation.activity",
+  "conversationId": "c_k4j9xm2p8q1vz7w0t6nb5r3yhd",
+  "turnId": "t_3kd9xm2p8q1vz7w0t6nb5r4yhf",
+  "payload": { "state": "opened", "kind": "send", "requestId": "req-01" }
+}
+```
+
+- `state` — `"opened"` when the room gained a live turn; `"completed"`
+  or `"failed"` mirroring the turn's terminal type when it ended.
+- `kind` — `"send"` or `"edit"`, the command that opened the turn.
+- `payload.requestId` — the **opening command's** requestId. The
+  issuing tab receives the same notice and recognizes its own by this
+  field — its send/edit flow already refreshes, so only foreign
+  notices drive discovery work. Opaque to every other tab. The frame
+  itself carries no top-level `requestId` — it answers no command.
+
 ### Stream frames
 
 One turn's frames, in order. Every stream frame carries `conversationId`,
@@ -623,7 +667,8 @@ allocation gets `error`, not this frame — there is no turn to fail.)
 - `seq` is **per turn**, starting at `0` (`turn.opened`) and strictly
   increasing by one for every subsequent frame of that turn, terminal
   frame last. `turn.cancel_ack`, `turn.resync_required`, and `error`
-  are command replies and carry no `seq`.
+  are command replies and carry no `seq`; `conversation.activity` is a
+  room-level broadcast and likewise carries none.
 - Frames of one turn are totally ordered. **There is no cross-turn
   ordering guarantee** — interleaved frames of two turns are valid, and
   clients correlate by `turnId`, never by arrival position.
@@ -721,7 +766,8 @@ and `turn.steer` text chunks of at most 32 KiB.
 - Tool approval prompts or policy questions to the browser — tool
   permission is decided by the domain schema, not negotiated per call.
 - Settings or gateway change events — poll the HTTP endpoints.
-- Room-wide presence/broadcast events — delivery is owner + watchers only.
+- Room-wide presence events — the only broadcast is the
+  `conversation.activity` notice; turn streams stay owner + watchers.
 - Attachments of any kind on `turn.send`.
 - Binary frames, subprotocols, per-message compression — plain JSON text
   frames only.

@@ -47,12 +47,17 @@ func (f *fakeConvWrites) Compact(ctx context.Context, id string) error {
 type fakeGwWrites struct {
 	lastIn  appgateway.GatewayInput
 	deleted []string
+	outcome appgateway.UpsertOutcome
 	err     error
 }
 
-func (f *fakeGwWrites) Upsert(_ context.Context, in appgateway.GatewayInput) error {
+func (f *fakeGwWrites) Upsert(_ context.Context, in appgateway.GatewayInput) (appgateway.UpsertOutcome, error) {
 	f.lastIn = in
-	return f.err
+	return f.outcome, f.err
+}
+
+func (f *fakeGwWrites) ImportModels(context.Context, string) (appgateway.UpsertOutcome, error) {
+	return appgateway.UpsertOutcome{}, f.err
 }
 
 func (f *fakeGwWrites) Delete(_ context.Context, id string) error {

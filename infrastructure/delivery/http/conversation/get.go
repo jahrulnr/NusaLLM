@@ -23,6 +23,12 @@ func (s *server) get(c *gin.Context) {
 	}
 	out := toConversation(info)
 	out.CanCompact = &available
+	if s.live != nil {
+		if turnID, kind, ok := s.live.ActiveTurn(info.ID); ok {
+			out.ActiveTurnID = turnID
+			out.ActiveTurnKind = kind
+		}
+	}
 	c.JSON(200, out)
 }
 

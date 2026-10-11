@@ -3,8 +3,9 @@ import { icon } from '../../lib/icons.js';
 
 // Composer: autosizing textarea, Enter sends / Shift+Enter newline.
 // While a turn runs anywhere — or the view's queue is paused,
-// backlogged, or behind a refresh barrier — the primary button is
-// Queue and Enter captures the line locally. The pending panel lists
+// backlogged, or behind a refresh barrier — Enter captures the line
+// locally. The send control stays an icon; its accessible name and the
+// shortcut say queue. The pending panel lists
 // room-bound queue entries and steering receipts; foreign rooms show
 // an Open action instead of mutating this draft. Steer is a separate
 // control, visible only while this view owns the running send turn;
@@ -101,10 +102,6 @@ class ChatComposer extends Widget {
       }
     });
     this.button = el('button', { class: 'send', type: 'button' });
-    this.steerHint = el('span', {
-      class: 'steer-hint', hidden: true,
-      text: 'Steer joins at the next model step; otherwise queued for the next turn',
-    });
     this.steerButton = el('button', { class: 'steer', type: 'button', hidden: true });
     this.steerButton.addEventListener('click', () => this._steer());
     this.stopButton = el('button', {
@@ -158,7 +155,6 @@ class ChatComposer extends Widget {
           this.statusEl,
         ]),
         el('div', { class: 'footer-right' }, [
-          this.steerHint,
           this.shortcutEl,
           this.steerButton,
           this.stopButton,
@@ -264,21 +260,19 @@ class ChatComposer extends Widget {
     if (!this.button) return;
     const empty = !this.input.value.trim();
     this.button.replaceChildren();
+    // The control is icon-only in every state. Queue mode changes the
+    // accessible name and when Enter captures locally; it does not add
+    // a caption.
+    this.button.className = 'send';
+    this.button.append(icon('arrow-up', 16));
     if (this._queueMode) {
-      // Queue is the honest label whenever dispatch can't happen now:
-      // busy, paused, backlogged, or behind a refresh barrier.
-      this.button.className = 'send queue';
       this.button.setAttribute('aria-label', 'Queue message');
       this.button.disabled = !this._canSend || empty;
-      this.button.onclick = () => this._send();
-      this.button.append(icon('arrow-up', 14), el('span', { text: 'Queue' }));
     } else {
-      this.button.className = 'send';
       this.button.setAttribute('aria-label', 'Send message');
       this.button.disabled = !this._canSend || this._connection !== 'open' || empty;
-      this.button.onclick = () => this._send();
-      this.button.append(icon('arrow-up', 16));
     }
+    this.button.onclick = () => this._send();
     // Steer exists only as an armed exact-turn action — busy in a
     // foreign room hides it entirely, never a disabled global.
     const steerVisible = this._busy && this._canSteer;
@@ -288,7 +282,6 @@ class ChatComposer extends Widget {
       icon('chevron', 12),
       el('span', { text: 'Steer' }),
     );
-    this.steerHint.hidden = !steerVisible;
     this.stopButton.hidden = !this._canStop;
     const reason = this._busy ? 'Responding…'
       : !this._canSend ? 'Select a model to send'

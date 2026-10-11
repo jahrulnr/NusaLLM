@@ -284,6 +284,17 @@ is reused. Each iteration:
   CompactBudgetPct)`. The budget is computed per call so a mid-session
   model switch applies immediately. At most one compaction per turn; a
   tail that still overflows after folding is "the provider's call."
+- **Pin the workspace behind editable input.** One directory rules a
+  turn — `TurnWorkspace` resolves the room's bound workspace, else the
+  driver's `FallbackRoot()` — and `runTurn` binds it into
+  `dservice.WithWorkspaceDir` for file tools and the `exec` cwd. When
+  the latest history message is editable (the submitted line or a folded
+  steer), `runTurn` appends a workspace context record before the call:
+  a system user message with no text and one injection-typed `workspace`
+  tool call — `{"path":…}` input, stored output citing the active path,
+  `(unset)` when neither source supplies one. It persists like any
+  message; adapters replay it as untrusted evidence alongside tool
+  results; the system prompt never carries it.
 - **Call the provider.** `svc.Send(ctx, conv, gw, wireModel, onEvent)` —
   one attempt. Before the loop, `conv.SetTools(driver.ToolSchemas())` reapplies
   the live tool catalog every turn because a stored conversation can
@@ -459,7 +470,10 @@ one choice.
 
 **The system prompt is code.** Because it is applied per turn and never
 persisted, upgrading the binary upgrades every room's prompt; because it
-is embedded, a room file is fully user-owned data.
+is embedded, a room file is fully user-owned data. Workspace context
+never enters it — the turn injects the active path as a persisted
+`workspace` record behind the user's message instead, so history
+carries what the room actually saw.
 
 ## Composition root specifics
 
@@ -491,7 +505,10 @@ map (all four `enum.Style` values — `StyleCompletion` → `textcompletion`,
 `appconversation.New` and `tui.NewREPL`. Workspace root for tools and
 attachments is the process cwd — `os.Root`-confined for file tools and
 `file://` resolution; `exec` is intentionally unsandboxed, gated instead
-by the `ToolPermissionAgent` check in `execTool`.
+by the `ToolPermissionAgent` check in `execTool`. The same cwd is wired
+as the local driver's `FallbackRoot`, so a room with no bound workspace
+runs its tools there — and the injected `workspace` context record
+cites it.
 
 Config resolves as `CONFIG_PATH` env → JSON file → `default` struct tags;
 a `.env` in cwd can set `CONFIG_PATH` itself (real env wins). When

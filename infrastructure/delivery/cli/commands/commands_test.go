@@ -62,7 +62,7 @@ func newCommandFixture(t *testing.T) *commandFixture {
 	gatewayRepository := repogateway.NewGatewayRepository(filepath.Join(storage, "gateways"), secrets)
 	gatewayApplication := appgateway.New(gatewayRepository, secrets, nil)
 	stream := false
-	if err := gatewayApplication.Upsert(t.Context(), appgateway.GatewayInput{
+	if _, err := gatewayApplication.Upsert(t.Context(), appgateway.GatewayInput{
 		ID: "gw1", Name: "Test gateway", Style: enum.StyleCompletion, Endpoint: server.URL,
 		Stream: &stream, Models: []appgateway.ModelInput{{ID: "m1"}},
 	}); err != nil {
@@ -151,7 +151,7 @@ func TestExportAndTitleAndDeleteLifecycle(t *testing.T) {
 		t.Fatal("send did not bind a conversation")
 	}
 
-	if out := f.run(t, "/status"); !strings.Contains(out, convID) || !strings.Contains(out, "messages    4") {
+	if out := f.run(t, "/status"); !strings.Contains(out, convID) || !strings.Contains(out, "messages    6") {
 		t.Fatalf("status = %q, want conversation + message count", out)
 	}
 	if out := f.run(t, "/title renamed room"); !strings.Contains(out, "title set") {
@@ -163,7 +163,7 @@ func TestExportAndTitleAndDeleteLifecycle(t *testing.T) {
 	if out := f.run(t, "/usage"); !strings.Contains(out, "total        12") {
 		t.Fatalf("usage = %q, want two turns of tokens", out)
 	}
-	if out := f.run(t, "/export transcript.md"); !strings.Contains(out, "exported 4 messages") {
+	if out := f.run(t, "/export transcript.md"); !strings.Contains(out, "exported 6 messages") {
 		t.Fatalf("export = %q", out)
 	}
 	raw, err := os.ReadFile(filepath.Join(f.workspace, "transcript.md"))

@@ -48,7 +48,7 @@ func TestUpsertGetRoundtrip(t *testing.T) {
 			Pricing:         &valueobject.Pricing{},
 		}},
 	}
-	if err := app.Upsert(t.Context(), in); err != nil {
+	if _, err := app.Upsert(t.Context(), in); err != nil {
 		t.Fatal(err)
 	}
 
@@ -93,13 +93,13 @@ func TestUpsertKeepKeyPreservesEnvRef(t *testing.T) {
 		ID: "g", Name: "n", Style: enum.StyleMessages,
 		Endpoint: "https://x", ApiKey: strptr("env:TEST_GW_KEY"),
 	}
-	if err := app.Upsert(t.Context(), in); err != nil {
+	if _, err := app.Upsert(t.Context(), in); err != nil {
 		t.Fatal(err)
 	}
 
 	in.ApiKey = nil // keep — rename only
 	in.Name = "renamed"
-	if err := app.Upsert(t.Context(), in); err != nil {
+	if _, err := app.Upsert(t.Context(), in); err != nil {
 		t.Fatal(err)
 	}
 
@@ -123,12 +123,12 @@ func TestUpsertRotateAndClearKey(t *testing.T) {
 		ID: "g", Name: "n", Style: enum.StyleMessages,
 		Endpoint: "https://x", ApiKey: strptr("sk-v1"),
 	}
-	if err := app.Upsert(t.Context(), in); err != nil {
+	if _, err := app.Upsert(t.Context(), in); err != nil {
 		t.Fatal(err)
 	}
 
 	in.ApiKey = strptr("sk-v2")
-	if err := app.Upsert(t.Context(), in); err != nil {
+	if _, err := app.Upsert(t.Context(), in); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := secrets.Get(t.Context(), "gateway/g/api_key"); got != "sk-v2" {
@@ -140,7 +140,7 @@ func TestUpsertRotateAndClearKey(t *testing.T) {
 	}
 
 	in.ApiKey = strptr("")
-	if err := app.Upsert(t.Context(), in); err != nil {
+	if _, err := app.Upsert(t.Context(), in); err != nil {
 		t.Fatal(err)
 	}
 	info, _ = app.Get(t.Context(), "g")
@@ -158,28 +158,28 @@ func TestUpsertValidation(t *testing.T) {
 
 	bad := base
 	bad.Style = enum.Style("bogus")
-	if err := app.Upsert(t.Context(), bad); apperror.As(err).StatusCode() != 400 {
+	if _, err := app.Upsert(t.Context(), bad); apperror.As(err).StatusCode() != 400 {
 		t.Fatalf("bad style → %v, want 400", err)
 	}
 
 	bad = base
 	bad.Style = enum.StyleMessages
 	bad.Endpoint = ""
-	if err := app.Upsert(t.Context(), bad); apperror.As(err).StatusCode() != 400 {
+	if _, err := app.Upsert(t.Context(), bad); apperror.As(err).StatusCode() != 400 {
 		t.Fatalf("missing endpoint → %v, want 400", err)
 	}
 
 	bad = base
 	bad.Style = enum.StyleMessages
 	bad.Models = []ModelInput{{ID: "a"}, {ID: "a"}}
-	if err := app.Upsert(t.Context(), bad); apperror.As(err).StatusCode() != 400 {
+	if _, err := app.Upsert(t.Context(), bad); apperror.As(err).StatusCode() != 400 {
 		t.Fatalf("dup model ids → %v, want 400", err)
 	}
 
 	bad = base
 	bad.Style = enum.StyleMessages
 	bad.Models = []ModelInput{{ID: "a", InputModalities: []enum.Modality{enum.Modality("bogus")}}}
-	if err := app.Upsert(t.Context(), bad); apperror.As(err).StatusCode() != 400 {
+	if _, err := app.Upsert(t.Context(), bad); apperror.As(err).StatusCode() != 400 {
 		t.Fatalf("bad modality → %v, want 400", err)
 	}
 }
@@ -188,7 +188,7 @@ func TestList(t *testing.T) {
 	app, _, _ := newApp(t)
 	for _, id := range []string{"b", "a"} {
 		in := GatewayInput{ID: id, Name: "n", Style: enum.StyleMessages, Endpoint: "https://x"}
-		if err := app.Upsert(t.Context(), in); err != nil {
+		if _, err := app.Upsert(t.Context(), in); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -228,11 +228,11 @@ func TestTransitionToEnvCleansVault(t *testing.T) {
 		ID: "g", Name: "n", Style: enum.StyleMessages,
 		Endpoint: "https://x", ApiKey: strptr("sk-v1"),
 	}
-	if err := app.Upsert(t.Context(), in); err != nil {
+	if _, err := app.Upsert(t.Context(), in); err != nil {
 		t.Fatal(err)
 	}
 	in.ApiKey = strptr("env:TEST_GW_ENV")
-	if err := app.Upsert(t.Context(), in); err != nil {
+	if _, err := app.Upsert(t.Context(), in); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := secrets.Get(t.Context(), "gateway/g/api_key"); apperror.As(err).StatusCode() != apperror.StatusNotFound {
@@ -254,7 +254,7 @@ func TestSecretRefPassthroughAndBroken(t *testing.T) {
 		ID: "g", Name: "n", Style: enum.StyleMessages,
 		Endpoint: "https://x", ApiKey: strptr("secret:custom/key"),
 	}
-	if err := app.Upsert(t.Context(), in); err != nil {
+	if _, err := app.Upsert(t.Context(), in); err != nil {
 		t.Fatal(err)
 	}
 	info, err := app.Get(t.Context(), "g")
@@ -284,7 +284,7 @@ func TestBrokenGatewaysSurface(t *testing.T) {
 		ID: "sick", Name: "n", Style: enum.StyleMessages,
 		Endpoint: "https://x", ApiKey: strptr("env:DEFINITELY_UNSET_APP"),
 	}
-	if err := app.Upsert(t.Context(), in); err != nil {
+	if _, err := app.Upsert(t.Context(), in); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(dir+"/dead.json", []byte("{nope"), 0o600); err != nil {
@@ -323,7 +323,7 @@ func TestEmptyRefRejected(t *testing.T) {
 			ID: "g", Name: "n", Style: enum.StyleMessages,
 			Endpoint: "https://x", ApiKey: &key,
 		}
-		if err := app.Upsert(t.Context(), in); apperror.As(err).StatusCode() != 400 {
+		if _, err := app.Upsert(t.Context(), in); apperror.As(err).StatusCode() != 400 {
 			t.Fatalf("apiKey %q → %v, want 400", key, err)
 		}
 	}
@@ -339,7 +339,7 @@ func TestGetDeleteNotFound(t *testing.T) {
 	}
 
 	in := GatewayInput{ID: "g", Name: "n", Style: enum.StyleMessages, Endpoint: "https://x"}
-	if err := app.Upsert(t.Context(), in); err != nil {
+	if _, err := app.Upsert(t.Context(), in); err != nil {
 		t.Fatal(err)
 	}
 	if err := app.Delete(t.Context(), "g"); err != nil {
@@ -364,13 +364,13 @@ func TestUpsertPreservesOptionalContent(t *testing.T) {
 		Models: []ModelInput{{ID: "m1", OptionalContent: map[string]string{
 			"gemini.thought_signature": "sig-1"}}},
 	}
-	if err := app.Upsert(ctx, in); err != nil {
+	if _, err := app.Upsert(ctx, in); err != nil {
 		t.Fatal(err)
 	}
 
 	// A full replace omitting the field preserves it.
 	in.Models = []ModelInput{{ID: "m1"}}
-	if err := app.Upsert(ctx, in); err != nil {
+	if _, err := app.Upsert(ctx, in); err != nil {
 		t.Fatal(err)
 	}
 	info, err := app.Get(ctx, "g")
@@ -383,7 +383,7 @@ func TestUpsertPreservesOptionalContent(t *testing.T) {
 
 	// A non-nil map is an explicit override — an empty one clears.
 	in.Models = []ModelInput{{ID: "m1", OptionalContent: map[string]string{}}}
-	if err := app.Upsert(ctx, in); err != nil {
+	if _, err := app.Upsert(ctx, in); err != nil {
 		t.Fatal(err)
 	}
 	info, _ = app.Get(ctx, "g")
@@ -395,15 +395,15 @@ func TestUpsertPreservesOptionalContent(t *testing.T) {
 	// re-adding the id later starts empty.
 	in.Models = []ModelInput{{ID: "m1", OptionalContent: map[string]string{
 		"gemini.thought_signature": "sig-2"}}, {ID: "m2"}}
-	if err := app.Upsert(ctx, in); err != nil {
+	if _, err := app.Upsert(ctx, in); err != nil {
 		t.Fatal(err)
 	}
 	in.Models = []ModelInput{{ID: "m2"}} // m1's record is gone here
-	if err := app.Upsert(ctx, in); err != nil {
+	if _, err := app.Upsert(ctx, in); err != nil {
 		t.Fatal(err)
 	}
 	in.Models = []ModelInput{{ID: "m2"}, {ID: "m1"}}
-	if err := app.Upsert(ctx, in); err != nil {
+	if _, err := app.Upsert(ctx, in); err != nil {
 		t.Fatal(err)
 	}
 	info, _ = app.Get(ctx, "g")

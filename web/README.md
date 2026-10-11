@@ -39,12 +39,17 @@ via `embed.go` and served by the same Gin origin as the HTTP API and the
 - `#settings` is a full workspace page with collapsible provider, model import,
   and application settings. Gateway editing uses a scrollable dialog with
   persistent Save and Cancel actions; application leaves auto-save on change.
-  Manual import lives inside the gateway editor — "Fetch models from provider" reads the provider's model catalog
-  through `/api/gateways/<id>/available-models`; selected IDs join the
-  gateway's searchable, read-only model list and persist through its normal
-  `PUT` save. The fetched catalog shows already configured ids too, so it
-  can be searched to check current provider availability. Searching never
-  changes the gateway's model catalog.
+  Model import is automatic — `PUT /api/gateways/<id>` merges the
+  provider's advertised model ids into the saved record: existing
+  entries keep their parameters, new ids append, and the response
+  carries an `added` array plus an optional `catalogError` when the
+  catalog fetch failed (the save still succeeds). The editor's
+  "Refresh models from provider" button calls `POST
+  /api/gateways/<id>/import-models` against the stored record and
+  reports the imported count or error inside the open dialog. The
+  model list stays a searchable, read-only list of stored ids —
+  searching never changes it. `/api/gateways/<id>/available-models`
+  remains read-only and unused by the editor.
   `serve` additionally auto-imports on boot and hourly, merging newly
   advertised model ids into each gateway record (existing entries keep
   their parameters; the stored key reference is never rewritten).
@@ -70,7 +75,8 @@ via `embed.go` and served by the same Gin origin as the HTTP API and the
   runs, the queue is paused/backlogged, or a post-terminal history
   refresh is still outstanding, Enter (IME `isComposing`-aware —
   composition Enter never submits) sends the draft to a **local,
-  room-bound queue** and the primary button reads Queue; the pending
+  room-bound queue** and the shortcut reads Enter to queue; the send
+  control stays an icon whose accessible name is Queue message. The pending
   panel above the input shows a count header, every entry's state
   (`Queued`, `Waiting for next step`, `Delivery unknown`), its owning
   room, and its full text in a bounded scroll area. Queued lines keep

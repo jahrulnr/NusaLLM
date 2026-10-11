@@ -272,8 +272,11 @@ func TestTurnSendEndToEnd(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	if len(body.Messages) != 2 || body.Messages[0].Role != "user" || body.Messages[0].Content != "ping" ||
-		body.Messages[1].Role != "assistant" || body.Messages[1].Content != "pong" {
+	// user "ping" / workspace context record / assistant "pong" — the
+	// hydration record trails every editable line as an empty user message.
+	if len(body.Messages) != 3 || body.Messages[0].Role != "user" || body.Messages[0].Content != "ping" ||
+		body.Messages[1].Role != "user" || body.Messages[1].Content != "" ||
+		body.Messages[2].Role != "assistant" || body.Messages[2].Content != "pong" {
 		t.Fatalf("history: %+v", body.Messages)
 	}
 
@@ -327,8 +330,9 @@ func TestTurnSendEndToEnd(t *testing.T) {
 	if err := json.NewDecoder(resp2.Body).Decode(&body2); err != nil {
 		t.Fatal(err)
 	}
-	if len(body2.Messages) != 2 || body2.Messages[0].Content != "second" ||
-		body2.Messages[1].Role != "assistant" {
+	if len(body2.Messages) != 3 || body2.Messages[0].Content != "second" ||
+		body2.Messages[1].Role != "user" || body2.Messages[1].Content != "" ||
+		body2.Messages[2].Role != "assistant" {
 		t.Fatalf("post-edit history: %+v", body2.Messages)
 	}
 }

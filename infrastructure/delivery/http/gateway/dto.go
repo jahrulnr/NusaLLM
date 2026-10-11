@@ -111,3 +111,26 @@ func toGateway(i appgateway.GatewayInfo) gatewayDTO {
 	}
 	return out
 }
+
+// gatewayWriteDTO is the mutation response — the sanitized projection
+// plus the import outcome of the write that just ran. `added` always
+// serializes (an empty array when nothing merged); `catalogError`
+// appears only when the post-write catalog merge failed — the record
+// itself saved, so the status stays 200.
+type gatewayWriteDTO struct {
+	gatewayDTO
+	Added        []string `json:"added"`
+	CatalogError string   `json:"catalogError,omitempty"`
+}
+
+func toGatewayWrite(i appgateway.GatewayInfo, out appgateway.UpsertOutcome) gatewayWriteDTO {
+	d := gatewayWriteDTO{
+		gatewayDTO:   toGateway(i),
+		Added:        out.Added,
+		CatalogError: out.CatalogError,
+	}
+	if d.Added == nil {
+		d.Added = []string{}
+	}
+	return d
+}

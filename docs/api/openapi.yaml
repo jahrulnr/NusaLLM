@@ -409,8 +409,9 @@ paths:
       summary: Discover models from a configured provider
       description: |
         Uses the gateway's stored endpoint, API style, and resolved key to
-        read every page of the provider model list. This is read-only;
-        selected IDs are merged into the gateway with PUT.
+        read every page of the provider model list. Read-only: saving a
+        gateway (`PUT`) and `POST .../import-models` are what merge
+        provider ids into the record.
       responses:
         "200":
           description: Provider model IDs in provider order, deduplicated.
@@ -468,6 +469,34 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "502": { $ref: "#/components/responses/UpstreamError" }
 
+  /api/gateways/{gatewayId}/import-models:
+    parameters:
+      - $ref: "#/components/parameters/GatewayId"
+    post:
+      operationId: importGatewayModels
+      tags: [gateways]
+      summary: Merge the provider catalog into a stored gateway
+      description: |
+        Re-runs the model import against the stored record — the same
+        merge `PUT` performs after writing — without resending the
+        document. The stored endpoint, style, and credential do the
+        fetch: ids the provider advertises that the record lacks are
+        appended, and entries already present keep their parameters. A
+        catalog fetch or merge failure still answers `200` with
+        `catalogError` set, because the record itself is intact.
+        Requires a same-origin `Origin` header.
+      responses:
+        "200":
+          description: The merged gateway projection plus the import outcome.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GatewayWriteResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/ForbiddenOrigin" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
   /api/gateways/{gatewayId}:
     parameters:
       - $ref: "#/components/parameters/GatewayId"
@@ -510,9 +539,18 @@ paths:
           reference; an `"env:NAME"`/`"secret:<key>"` value persists
           as-is for callers managing their own indirection.
 
+        After the replace is written, the provider catalog merges into
+        the record: ids the provider advertises that the document did not
+        carry are appended, while entries already present keep their
+        stored parameters. A catalog fetch or merge failure does not
+        change the write's success — the response stays `200` and carries
+        the failure text in `catalogError`.
+
         Key material is never returned — the response is the same
-        sanitized projection as `GET`. Requires a same-origin `Origin`
-        header.
+        sanitized projection as `GET`, plus the import outcome: `added`
+        (always present) lists the newly merged ids, `catalogError`
+        appears only when the merge failed. Requires a same-origin
+        `Origin` header.
       requestBody:
         required: true
         content:
@@ -532,10 +570,10 @@ paths:
                   outputModalities: ["text"]
       responses:
         "200":
-          description: Upsert applied (create or replace); returns the sanitized projection.
+          description: Upsert applied (create or replace) and the provider catalog merged; returns the projection plus the import outcome.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Gateway" }
+              schema: { $ref: "#/components/schemas/GatewayWriteResult" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/ForbiddenOrigin" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -899,6 +937,13 @@ components:
         canCompact:
           type: boolean
           description: Present on detail and completed-compaction responses; whether manual compaction can fold new live history.
+        activeTurnId:
+          type: string
+          description: Present on detail and on list items while this process has a non-terminal transport turn for the room. A client attaches with turn.watch. Omitted when the room is idle and never part of persisted state.
+        activeTurnKind:
+          type: string
+          enum: [send, edit]
+          description: Command that opened activeTurnId. Present only together with that field.
       additionalProperties: false
 
     Page:
@@ -985,6 +1030,7 @@ components:
       properties:
         id: { type: string, description: "Provider-issued call id.", example: "call_9f2a" }
         name: { type: string, example: "read_file" }
+        type: { type: string, enum: [injection, origin], description: "`origin` = a call the model issued; `injection` = a call the application inserted as context (e.g. workspace hydration)." }
         status:
           type: string
           enum: [pending, completed]
@@ -1099,6 +1145,56 @@ components:
         models:
           type: array
           items: { $ref: "#/components/schemas/Model" }
+      additionalProperties: false
+
+    GatewayWriteResult:
+      type: object
+      required: [id, name, style, endpoint, keySet, keyState, broken, stream, models, added]
+      description: |
+        The gateway projection plus the import outcome of the write that
+        produced it — the response shape of `PUT /api/gateways/{id}` and
+        `POST /api/gateways/{id}/import-models`. `GET` never returns it.
+      properties:
+        id: { type: string, example: "openrouter" }
+        name: { type: string, description: "Display name; may be empty." }
+        style:
+          type: string
+          enum: [completion, responses, messages, generatecontent]
+          description: Wire paradigm the route speaks.
+        endpoint: { type: string, format: uri, example: "https://openrouter.ai/api/v1" }
+        keySet:
+          type: boolean
+          description: A credential is configured in some form (ref or server-held material).
+        keyState:
+          type: string
+          enum: [unset, env, vaulted, broken]
+          description: |
+            Credential projection, derived from the stored reference:
+
+            - `unset` — nothing stored.
+            - `env` — an `env:NAME` indirection that currently resolves.
+            - `vaulted` — key material held server-side: a resolvable
+              `secret:<key>` vault ref or inline material in the record.
+            - `broken` — a credential is configured but cannot resolve
+              (missing env var, absent vault entry).
+
+            The raw reference string is never exposed.
+        broken:
+          type: boolean
+          description: The record can't be decoded, or its credential ref can't resolve — the management view surfaces it instead of hiding it.
+        stream:
+          type: boolean
+          description: Whether the route streams (SSE upstream — internal only; never leaks to this API's clients).
+        models:
+          type: array
+          items: { $ref: "#/components/schemas/Model" }
+        added:
+          type: array
+          items: { type: string }
+          description: Provider model ids the post-write import merged into the catalog — always present, empty when nothing new merged or no catalog is wired.
+        catalogError:
+          type: string
+          description: Present only when the post-write provider-catalog import failed — the record itself saved.
       additionalProperties: false
 
     Model:

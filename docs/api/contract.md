@@ -164,8 +164,11 @@ following never leave the server on any endpoint or frame:
 - **What intentionally crosses: tool I/O.** This is a single-user
   loopback UI for its owner — tool `input` (exact argument string) and
   `output` (live chunks over WS; plain result text over HTTP) are part of
-  the contract. The provider still receives the stored untrusted-evidence
-  envelope; its delimiter and latency tag are not sent to the UI.
+  the contract. Each `toolCalls[]` entry carries `type`: `origin` for a
+  model-issued call, `injection` for an application-inserted context
+  record (e.g. the workspace line). The provider still receives the
+  stored untrusted-evidence envelope; its delimiter and latency tag are
+  not sent to the UI.
   They are untrusted data — can contain paths, commands, secrets — and
   must render as escaped text, never markup. Any loopback process can
   reach the API; SOP/Host checks guard browsers, they are not OS-user
@@ -189,16 +192,17 @@ Full schemas, typed errors, and examples live in
 | Method & path | Purpose |
 |---|---|
 | `GET /api/health` | Liveness — `200 {"status":"ok"}`. |
-| `GET /api/conversations?offset&limit` | List projections, `updatedAt` desc (best-effort). `limit` default 30, max 100. |
-| `GET /api/conversations/{id}` | One projection. |
+| `GET /api/conversations?offset&limit` | List projections, `updatedAt` desc (best-effort). Items include `activeTurnId` / `activeTurnKind` while a transport turn is in progress. `limit` default 30, max 100. |
+| `GET /api/conversations/{id}` | One projection. Detail adds `canCompact`, and `activeTurnId` / `activeTurnKind` while a transport turn is in progress. |
 | `GET /api/conversations/{id}/messages?start&limit` | Ranged history; `start >= 0` absolute, negative counts back from the end. `limit` max 100. |
 | `PATCH /api/conversations/{id}` | Rename — body `{title}`. |
 | `DELETE /api/conversations/{id}` | Delete the room and its storage; queued jobs on it die `410`. |
 | `POST /api/conversations/{id}/compactions` | Queue a manual compaction on the room's worker; `200` with the updated conversation when it finishes. |
 | `GET /api/gateways?offset&limit` · `GET /api/gateways/{id}` | Sanitized gateway projections (paged list, sorted by id), including broken records. |
-| `GET /api/gateways/{id}/available-models` | Fetch all model IDs advertised by the configured provider endpoint; returns `{ "data": ["model-id", ...] }` without changing the gateway. The UI selects IDs and saves the merged catalog through `PUT`. |
+| `GET /api/gateways/{id}/available-models` | Fetch all model IDs advertised by the configured provider endpoint; returns `{ "data": ["model-id", ...] }` without changing the gateway. Read-only — the merge lives in `PUT` and `import-models`. |
 | `GET /api/gateways/{id}/providers?model={modelId}` | Upstream backends an aggregator route can serve the model through — `{ "data": [{ "name", "slug" }] }`, empty for direct providers. `model` is required (`400` without it). The picker echoes `slug` back as `payload.provider` on `turn.send`. |
-| `PUT /api/gateways/{id}` | Full-replace upsert — the path id is authoritative (a body `id` is `400`); `apiKey` is tri-state write-only. |
+| `PUT /api/gateways/{id}` | Full-replace upsert — the path id is authoritative (a body `id` is `400`); `apiKey` is tri-state write-only. After the replace, the provider catalog merges into the record: advertised ids the document lacked are appended, entries already present keep their parameters. The response carries `added` (always present) plus `catalogError` when the merge failed — a catalog failure never fails the write. |
+| `POST /api/gateways/{id}/import-models` | Re-runs that same merge against the stored record — endpoint, style, and credential come from the record, not the request — and answers the same `added`/`catalogError` shape. `404` when the gateway is absent. |
 | `DELETE /api/gateways/{id}` | Remove gateway + vaulted key; `404` when absent. |
 | `GET /api/settings` | Effective settings document (projected — see below). |
 | `PATCH /api/settings` | One leaf write — body `{key, value}`. |
@@ -301,6 +305,11 @@ settings, `PUT` gateway — upsert is idempotent so there is no `201`),
 `204` for deletes, `101` for the WS upgrade. Conversation detail includes
 `canCompact`; it is true when the live tail is longer than the configured
 keep-tail, including after a checkpoint when that tail still exceeds it.
+The same response — and each item of the list projection — includes
+`activeTurnId` and `activeTurnKind` (`send` or `edit`) when this
+process's turn hub has a non-terminal turn for the room, so a client
+can attach with `turn.watch`. Both fields are omitted when the room is
+idle. They are not persisted conversation state.
 
 ## WebSocket surface
 

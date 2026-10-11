@@ -117,6 +117,20 @@
   color: var(--text-faint);
 }
 
+/* Application-injected context records (the workspace binding): plain
+   lines, no bubble — provenance the model read, not the user's words. */
+.context-lines { margin: -6px 0 14px; }
+.context-line {
+  padding-left: 12px;
+  border-left: 2px solid var(--hairline);
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.context-line + .context-line { margin-top: 2px; }
+
 .user-msg.editing { width: min(72ch, 100%); }
 .edit-input {
   box-sizing: border-box;

@@ -110,7 +110,22 @@ func dial(t *testing.T, h *Hub) *websocket.Conn {
 	return ws
 }
 
+// readFrame reads the next turn-stream or command frame, stepping over
+// conversation.activity broadcasts — they interleave freely with the
+// frames a test waits on, and asserting stream order must not depend on
+// the room-level notices.
 func readFrame(t *testing.T, ws *websocket.Conn) frame {
+	t.Helper()
+	for {
+		f := readAnyFrame(t, ws)
+		if f.Type != "conversation.activity" {
+			return f
+		}
+	}
+}
+
+// readAnyFrame reads the next frame verbatim — broadcasts included.
+func readAnyFrame(t *testing.T, ws *websocket.Conn) frame {
 	t.Helper()
 	_ = ws.SetReadDeadline(time.Now().Add(5 * time.Second))
 	_, raw, err := ws.ReadMessage()
@@ -175,6 +190,14 @@ func TestTurnSendHappyPath(t *testing.T) {
 			t.Fatalf("frame not JSON: %v", err)
 		}
 		types = append(types, f.Type)
+		if f.Type == "conversation.activity" {
+			// The room-level broadcast rides the same socket —
+			// unsequenced, outside the turn's ordered record.
+			if f.Seq != nil {
+				t.Fatalf("broadcast carried seq: %+v", f)
+			}
+			continue
+		}
 		if f.Type != "error" {
 			if f.Seq == nil {
 				t.Fatalf("%s frame missing seq", f.Type)
@@ -196,7 +219,7 @@ func TestTurnSendHappyPath(t *testing.T) {
 		}
 	}
 
-	want := []string{"turn.opened", "turn.delta", "turn.phase", "turn.reasoning", "turn.reasoning", "turn.reasoning", "turn.tool_call", "turn.tool_input", "turn.tool_output", "turn.steer", "turn.step_finished", "turn.completed"}
+	want := []string{"turn.opened", "conversation.activity", "turn.delta", "turn.phase", "turn.reasoning", "turn.reasoning", "turn.reasoning", "turn.tool_call", "turn.tool_input", "turn.tool_output", "turn.steer", "turn.step_finished", "turn.completed"}
 	if fmt.Sprint(types) != fmt.Sprint(want) {
 		t.Fatalf("frame types %v, want %v", types, want)
 	}
@@ -724,15 +747,179 @@ func TestNoPostTerminalStream(t *testing.T) {
 	var last frame
 	for last = readFrame(t, ws); last.Type != "turn.completed"; last = readFrame(t, ws) {
 	}
-	// A late event after the terminal must not reach the socket.
+	// A late event after the terminal must not reach the socket. The
+	// room-activity broadcast is the one legitimate follower — it is
+	// not turn stream data.
 	mu.Lock()
 	if handler != nil {
 		handler(event.NewDeltaEvent("late"))
 	}
 	mu.Unlock()
 	_ = ws.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-	_, raw, err := ws.ReadMessage()
-	if err == nil {
-		t.Fatalf("post-terminal frame arrived: %s", raw)
+	for {
+		_, raw, err := ws.ReadMessage()
+		if err != nil {
+			return
+		}
+		var f frame
+		if json.Unmarshal(raw, &f) != nil || f.Type != "conversation.activity" {
+			t.Fatalf("post-terminal stream frame arrived: %s", raw)
+		}
 	}
+}
+
+func TestActiveTurnOldestLive(t *testing.T) {
+	release := make(chan struct{})
+	h := newHub(t, stubSender{fn: func(ctx context.Context, id, _, _, _ string, _ event.TurnEventHandler) (appconversation.SendResult, error) {
+		select {
+		case <-release:
+			return appconversation.SendResult{ConversationID: id, UserMessagePersisted: true}, nil
+		case <-ctx.Done():
+			return appconversation.SendResult{}, ctx.Err()
+		}
+	}})
+	ws := dial(t, h)
+	sendCommand(t, ws, `{"type":"turn.send","requestId":"r1","conversationId":"c_room","payload":{"content":"one"}}`)
+	first := readFrame(t, ws)
+	if first.Type != "turn.opened" {
+		t.Fatalf("first: %+v", first)
+	}
+	sendCommand(t, ws, `{"type":"turn.send","requestId":"r2","conversationId":"c_room","payload":{"content":"two"}}`)
+	second := readFrame(t, ws)
+	if second.Type != "turn.opened" {
+		t.Fatalf("second: %+v", second)
+	}
+	id, kind, ok := h.ActiveTurn("c_room")
+	if !ok || id != first.TurnID || kind != "send" {
+		t.Fatalf("active = %q %q %v, want %s send", id, kind, ok, first.TurnID)
+	}
+	if _, _, other := h.ActiveTurn("c_other"); other {
+		t.Fatal("other room reported a turn")
+	}
+	close(release)
+	got := 0
+	for got < 2 {
+		f := readFrame(t, ws)
+		if f.Type == "turn.completed" {
+			got++
+			continue
+		}
+		if f.Type == "turn.failed" || f.Type == "error" {
+			t.Fatalf("terminal: %+v", f)
+		}
+	}
+	if _, _, still := h.ActiveTurn("c_room"); still {
+		t.Fatal("finished turn still reported")
+	}
+}
+
+func TestActiveTurnEditKind(t *testing.T) {
+	release := make(chan struct{})
+	h := newHub(t, stubSender{
+		fn: func(context.Context, string, string, string, string, event.TurnEventHandler) (appconversation.SendResult, error) {
+			return appconversation.SendResult{UserMessagePersisted: true}, nil
+		},
+		efn: func(ctx context.Context, _, _, _ string, _ event.TurnEventHandler) error {
+			select {
+			case <-release:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		},
+	})
+	ws := dial(t, h)
+	sendCommand(t, ws, `{"type":"turn.edit","requestId":"e","conversationId":"c_room","payload":{"messageId":"m_1","content":"rewritten"}}`)
+	opened := readFrame(t, ws)
+	if opened.Type != "turn.opened" {
+		t.Fatalf("opened: %+v", opened)
+	}
+	id, kind, ok := h.ActiveTurn("c_room")
+	if !ok || id != opened.TurnID || kind != "edit" {
+		t.Fatalf("active = %q %q %v, want %s edit", id, kind, ok, opened.TurnID)
+	}
+	close(release)
+	if f := readFrame(t, ws); f.Type != "turn.completed" {
+		t.Fatalf("terminal: %+v", f)
+	}
+}
+
+// assertActivity validates one conversation.activity broadcast: the
+// envelope names the room and turn, the payload reports the edge and
+// the opening command's requestId — and nothing sequenced or
+// command-correlated leaks (no seq, no top-level requestId).
+func assertActivity(t *testing.T, f frame, state, kind, requestID string, opened frame) {
+	t.Helper()
+	if f.Type != "conversation.activity" {
+		t.Fatalf("activity frame: %+v", f)
+	}
+	if f.Seq != nil {
+		t.Fatalf("broadcast must be unsequenced: %+v", f)
+	}
+	if f.RequestID != "" {
+		t.Fatalf("top-level requestId must stay off the broadcast: %+v", f)
+	}
+	if f.ConversationID != opened.ConversationID || f.TurnID != opened.TurnID {
+		t.Fatalf("activity envelope %+v, want conv=%s turn=%s",
+			f, opened.ConversationID, opened.TurnID)
+	}
+	var p activityPayload
+	if err := json.Unmarshal(f.Payload, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.State != state || p.Kind != kind || p.RequestID != requestID {
+		t.Fatalf("activity payload %+v, want %s/%s/%s", p, state, kind, requestID)
+	}
+}
+
+// The room-activity notice fans out to every socket on the turn's open
+// and terminal edges — never journaled, never seq-numbered — so a tab
+// that never opened or watched the room still learns it is live.
+func TestActivityBroadcast(t *testing.T) {
+	release := make(chan struct{})
+	h := newHub(t, stubSender{fn: func(_ context.Context, convID, _, _, _ string,
+		onEvent event.TurnEventHandler) (appconversation.SendResult, error) {
+		<-release
+		onEvent(event.NewDeltaEvent("x"))
+		return appconversation.SendResult{ConversationID: convID, UserMessagePersisted: true}, nil
+	}})
+	owner := dial(t, h)
+	observer := dial(t, h)
+
+	sendCommand(t, owner, `{"type":"turn.send","requestId":"req-send","payload":{"content":"hi"}}`)
+	opened := readAnyFrame(t, owner)
+	if opened.Type != "turn.opened" || opened.Seq == nil || *opened.Seq != 0 {
+		t.Fatalf("opened: %+v", opened)
+	}
+	// The issuing socket hears its own notice right after seq 0 — the
+	// payload's requestId is how it tells the echo from foreign work.
+	assertActivity(t, readAnyFrame(t, owner), "opened", "send", "req-send", opened)
+	// A socket that never touched the command hears the same notice.
+	assertActivity(t, readAnyFrame(t, observer), "opened", "send", "req-send", opened)
+
+	// The notice is not journaled: a watcher replaying the whole
+	// journal sees turn frames only — a replayed broadcast must never
+	// come back.
+	late := dial(t, h)
+	sendCommand(t, late, fmt.Sprintf(`{"type":"turn.watch","requestId":"w","conversationId":%q,"turnId":%q,"afterSeq":-1}`,
+		opened.ConversationID, opened.TurnID))
+	f := readAnyFrame(t, late)
+	if f.Type != "turn.opened" || f.Seq == nil || *f.Seq != 0 {
+		t.Fatalf("replay: %+v", f)
+	}
+	close(release)
+	// The first stream frame after the broadcast still owns seq 1 —
+	// the notice consumed no turn sequence.
+	f = readAnyFrame(t, late)
+	if f.Type != "turn.delta" || f.Seq == nil || *f.Seq != 1 {
+		t.Fatalf("post-broadcast seq: %+v", f)
+	}
+	// The terminal mirrors into a "completed" notice — after the
+	// journaled terminal on every socket, watcher or not.
+	f = readAnyFrame(t, late)
+	if f.Type != "turn.completed" {
+		t.Fatalf("terminal: %+v", f)
+	}
+	assertActivity(t, readAnyFrame(t, late), "completed", "send", "req-send", opened)
+	assertActivity(t, readAnyFrame(t, observer), "completed", "send", "req-send", opened)
 }

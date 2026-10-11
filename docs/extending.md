@@ -287,6 +287,15 @@ again for each room. A missing bundle returns an error instead of selecting
 local. Keep conversation metadata and config storage in the application's
 own repositories; these are distinct from the agent's workspace.
 
+Each driver also reports `FallbackRoot()` — the directory a room with no
+bound workspace should run in. `TurnWorkspace` prefers the room's stored
+binding and falls back to that root; the resolved path is bound into
+`dservice.WithWorkspaceDir` for file tools and `exec`, and the turn
+injects it as a `workspace` context record behind the user's message so
+the model hears where it is working. A remote driver should return its
+own default root, not leak the CLI's cwd — the composition root wires
+the local driver's fallback to the process working directory.
+
 ## Recipe: a new slash command
 
 Slash commands live behind a hard boundary: handlers depend on

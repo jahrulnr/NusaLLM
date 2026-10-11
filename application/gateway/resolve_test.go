@@ -12,14 +12,14 @@ import (
 func TestResolveSelectionAutoSelects(t *testing.T) {
 	app, _, _ := newApp(t)
 	off := false
-	if err := app.Upsert(t.Context(), GatewayInput{
+	if _, err := app.Upsert(t.Context(), GatewayInput{
 		ID: "gw1", Name: "n", Style: enum.StyleMessages, Endpoint: "https://x",
 		Stream: &off, Models: []ModelInput{{ID: "m1"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	// A broken sibling must not count against "the only usable gateway".
-	if err := app.Upsert(t.Context(), GatewayInput{
+	if _, err := app.Upsert(t.Context(), GatewayInput{
 		ID: "sick", Name: "n", Style: enum.StyleMessages, Endpoint: "https://x",
 		ApiKey: strptr("env:DEFINITELY_UNSET_RESOLVE"),
 	}); err != nil {
@@ -69,7 +69,7 @@ func TestResolveSelectionAmbiguous(t *testing.T) {
 	app, _, _ := newApp(t)
 	off := false
 	for _, id := range []string{"a", "b"} {
-		if err := app.Upsert(t.Context(), GatewayInput{
+		if _, err := app.Upsert(t.Context(), GatewayInput{
 			ID: id, Name: "n", Style: enum.StyleMessages, Endpoint: "https://x",
 			Stream: &off, Models: []ModelInput{{ID: "m1"}, {ID: "m2"}},
 		}); err != nil {

@@ -82,14 +82,19 @@ class AppShell extends Widget {
     this.composer = el('nusa-chat-composer');
     this.settingsPage = el('nusa-settings-page');
     this.toasts = el('nusa-toast-stack');
+    this.scrim = el('div', { class: 'scrim', hidden: true });
     this.main = el('main', { class: 'main' }, [this.header, this.thread, this.composer]);
     this.workspace = el('div', { class: 'workspace' }, [this.main, this.settingsPage]);
     this.settingsPage.hidden = true;
+    // The scrim sits beside .grid, never inside it — the grid
+    // children's entrance transform would become its fixed
+    // containing block.
     this.root.append(
       el('div', { class: 'grid' }, [this.sidebar, this.workspace]),
+      this.scrim,
       this.toasts,
     );
-    this.sidebar.open = this.sidebarOpen;
+    this._syncSidebar();
   }
 
   _listen() {
@@ -98,8 +103,10 @@ class AppShell extends Widget {
     on(this.sidebar, 'conversation-select', ({ id }) => this.select(id));
     on(this.sidebar, 'conversation-new', () => this.newConversation());
     on(this.sidebar, 'conversation-search', ({ query }) => this._filter(query));
+    on(this.sidebar, 'sidebar-close', () => { this.sidebarOpen = false; this._syncSidebar(); });
+    on(this.scrim, 'click', () => { this.sidebarOpen = false; this._syncSidebar(); });
 
-    on(this.header, 'sidebar-toggle', () => { this.sidebarOpen = !this.sidebarOpen; this.sidebar.open = this.sidebarOpen; });
+    on(this.header, 'sidebar-toggle', () => { this.sidebarOpen = !this.sidebarOpen; this._syncSidebar(); });
     on(this.header, 'settings-open', () => this.openSettings());
     on(this.header, 'model-change', (d) => this._setSelection(d));
     on(this.header, 'workspace-change', (d) => this._setWorkspace(d.workspace));
@@ -141,11 +148,19 @@ class AppShell extends Widget {
     on(this.settingsPage, 'settings-close', () => this.closeSettings());
     on(this.settingsPage, 'gateway-save', ({ id, body }) => this._saveGateway(id, body));
     on(this.settingsPage, 'gateway-delete', ({ id }) => this._deleteGateway(id));
-    on(this.settingsPage, 'gateway-model-discover', ({ id }) => this._discoverGatewayModels(id));
+    on(this.settingsPage, 'gateway-import', ({ id }) => this._importGatewayModels(id));
     on(this.settingsPage, 'setting-change', ({ key, value }) => this._patchSetting(key, value));
 
     this.socket.addEventListener('connection', (e) => this._onConnection(e.detail.state));
     this.socket.addEventListener('frame', (e) => this._onFrame(e.detail.frame));
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && this.sidebarOpen &&
+          matchMedia('(max-width: 760px)').matches) {
+        this.sidebarOpen = false;
+        this._syncSidebar();
+      }
+    });
   }
 
   async _boot() {
@@ -306,7 +321,7 @@ class AppShell extends Widget {
     this.sidebar.activeId = id;
     if (matchMedia('(max-width: 760px)').matches) {
       this.sidebarOpen = false;
-      this.sidebar.open = false;
+      this._syncSidebar();
     }
     this.thread.loading = true;
     this.thread.hasConversation = true;
@@ -341,6 +356,7 @@ class AppShell extends Widget {
       // the dispatch barrier the same way a refresh does.
       g.required = false;
       g.failed = false;
+      this._attachLiveTurn(conv);
     } catch (err) {
       if (gen !== this.generation) return;
       // A superseded writer's failure belongs to the newer load that
@@ -353,20 +369,23 @@ class AppShell extends Widget {
       this.newConversation();
       return;
     } finally {
+      // pending drops before the composer reads the gate. Syncing while
+      // this load was still counted left an idle room in queue mode.
+      const settled = --g.pending === 0;
       if (gen === this.generation) {
         this.viewLoading = false;
         this.thread.loading = false;
         // The view-finalization syncs must also run for an epoch-stale
         // response — the loading state froze the composer and only this
         // finally re-arms it once the room's newest writer has landed.
-        this._syncComposer();
         this._syncStream();
         this._syncContext();
       }
+      if (gen === this.generation || settled) this._syncComposer();
       // The last outstanding history writer re-evaluates the drain —
       // a newer refresh may have cleared the barrier while this one
       // was still in flight.
-      if (--g.pending === 0) this._drainQueue();
+      if (settled) this._drainQueue();
     }
   }
 
@@ -406,6 +425,14 @@ class AppShell extends Widget {
     const q = (query || '').trim().toLowerCase();
     this.sidebar.conversations = !q ? this.allConversations
       : this.allConversations.filter((c) => (c.title || c.id).toLowerCase().includes(q));
+  }
+
+  // The scrim belongs to the mobile overlay only — on desktop the
+  // rail is a grid track and there is nothing to dismiss through.
+  _syncSidebar() {
+    this.sidebar.open = this.sidebarOpen;
+    this.scrim.hidden = !this.sidebarOpen ||
+      matchMedia('(min-width: 761px)').matches;
   }
 
   _syncComposer() {
@@ -450,7 +477,7 @@ class AppShell extends Widget {
     this.composer.resumeVisible = resumable;
     this.composer.canResume = resumable && !this.command &&
       !this.viewLoading && this.socket.state === 'open' && !g.pending;
-    // Enter/primary is "Queue" whenever dispatch can't happen now:
+    // Enter captures locally whenever dispatch can't happen now:
     // busy, paused, backed-up, or a refresh barrier for this view.
     this.composer.queueMode = !!this.command || this.queue.paused ||
       hasQueuedForRoom(this.queue, viewKey) ||
@@ -490,9 +517,30 @@ class AppShell extends Widget {
   // committed it — it is re-appended only while the owning command is
   // alive and the new page doesn't already hold the committed line.
   _assignHistory(page) {
+    let pageMessages = page.messages || [];
+    const edit = this.command;
+    // An in-flight edit's optimistic cut survives a refresh that still
+    // shows the pre-commit tail. A page that already dropped that tail
+    // — or grew messages the cut did not remove — is the newer history
+    // and is left alone.
+    if (edit && edit.kind === 'edit' && edit.editMessageId && this._commandOwnsView(edit)) {
+      const idx = pageMessages.findIndex((m) => m.id === edit.editMessageId);
+      if (idx >= 0) {
+        const removed = new Set(edit.removedIds || []);
+        const after = pageMessages.slice(idx + 1);
+        const hasNew = after.some((m) => !removed.has(m.id));
+        const hasOldTail = after.some((m) => removed.has(m.id));
+        const contentStale = pageMessages[idx].content !== edit.content;
+        if (!hasNew && (hasOldTail || contentStale)) {
+          pageMessages = pageMessages.slice(0, idx).concat([
+            { ...pageMessages[idx], content: edit.content },
+          ]);
+        }
+      }
+    }
     const optimistic = this.messages.filter((m) =>
       typeof m.id === 'string' && m.id.startsWith('pending-'));
-    this.messages = page.messages || [];
+    this.messages = pageMessages;
     for (const m of optimistic) {
       const owned = this.command &&
         this.command.turnId === m.id.slice('pending-'.length);
@@ -770,6 +818,13 @@ class AppShell extends Widget {
       this._toast('warn', 'Edit', 'Wait for the room to finish refreshing before editing.');
       return false;
     }
+    const prior = this.messages.slice();
+    const idx = prior.findIndex((m) => m.id === messageId);
+    const removedIds = idx >= 0 ? prior.slice(idx + 1).map((m) => m.id) : [];
+    if (idx >= 0) {
+      this.messages = prior.slice(0, idx).concat([{ ...prior[idx], content }]);
+      this.thread.messages = this.messages;
+    }
     const requestId = this.socket.editTurn({
       conversationId: this.activeId, messageId, content,
     });
@@ -778,11 +833,45 @@ class AppShell extends Widget {
       conversationId: this.activeId, queueRoom: this._viewRoomKey(),
       content, ephemeral: false,
       cancelRequested: false, claimFreshView: false,
+      editMessageId: messageId,
+      priorMessages: prior,
+      removedIds,
       stream: createTurnProjection(requestId),
     };
-    this.composer.busy = true;
+    this._syncComposer();
     this._syncStream();
     return true;
+  }
+
+  // A pre-open edit failure puts the cut history back. Once the turn
+  // has opened, the terminal HTTP read is authoritative instead.
+  _restoreUnopenedEdit(cmd) {
+    if (!cmd || cmd.kind !== 'edit' || cmd.turnId || !cmd.priorMessages) return;
+    if (this.activeId !== cmd.conversationId) return;
+    this.messages = cmd.priorMessages;
+    this.thread.messages = this.messages;
+  }
+
+  // A room loaded while a transport turn is still running attaches to
+  // it. This tab's own in-flight command is left alone — it is already
+  // subscribed, and replacing it would drop that turn's client state.
+  _attachLiveTurn(conv) {
+    const turnId = conv && conv.activeTurnId;
+    if (!turnId || !conv.id || this.command) return;
+    const kind = conv.activeTurnKind === 'edit' ? 'edit' : 'send';
+    const requestId = this.socket.watchTurn({
+      conversationId: conv.id, turnId, afterSeq: -1,
+    });
+    this.command = {
+      kind, requestId, turnId,
+      conversationId: conv.id, queueRoom: conv.id,
+      content: '', ephemeral: true,
+      cancelRequested: false, claimFreshView: false,
+      watched: true,
+      stream: createTurnProjection(requestId),
+    };
+    this._syncComposer();
+    this._syncStream();
   }
 
   _onFrame(f) {
@@ -907,9 +996,17 @@ class AppShell extends Widget {
           // Expired or never-seen: the turn's outcome is unknowable.
           // Retire the command honestly — the stream settles as-is —
           // and surface the send's text as unknown rather than guessing
-          // persistence from content.
+          // persistence from content. A turn this tab only watched has
+          // no text to park; HTTP history is the record.
           markTurnUnknown(this.queue, f.turnId);
           const cmd = this.command;
+          if (cmd && cmd.turnId === f.turnId && cmd.watched) {
+            this.command = null;
+            this._syncComposer();
+            this._syncStream();
+            if (cmd.conversationId) this._refresh(cmd.conversationId);
+            break;
+          }
           if (cmd && cmd.turnId === f.turnId) {
             settleTurnProjection(cmd.stream);
             this.settledStream = {
@@ -943,6 +1040,31 @@ class AppShell extends Widget {
           });
         }
         this._refreshList();
+        break;
+      }
+      case 'conversation.activity': {
+        // A room-level notice every socket hears — unsequenced,
+        // unjournaled. payload.requestId is the opening command's own
+        // correlation id: the issuing tab's send/edit flow already
+        // refreshes, so only foreign notices act — and a foreign
+        // notice never touches this tab's in-flight command.
+        const own = cmd && f.payload?.requestId === cmd.requestId;
+        if (own) break;
+        this._refreshList();
+        if (f.conversationId !== this.activeId || this.command) break;
+        if (f.payload?.state === 'opened') {
+          // The room on screen gained a live turn — attach like a
+          // fresh room load that found it.
+          this._attachLiveTurn({
+            id: f.conversationId,
+            activeTurnId: f.turnId,
+            activeTurnKind: f.payload?.kind,
+          });
+        } else {
+          // A foreign turn ended in the open room — the same
+          // authoritative history re-read a resync'd terminal drives.
+          this._refresh(f.conversationId);
+        }
         break;
       }
       case 'error':
@@ -984,7 +1106,7 @@ class AppShell extends Widget {
       // Persistence is authoritative: only userMessagePersisted ===
       // false means the send never committed — never infer from
       // ephemeral or stream state.
-      if (cmd.kind === 'send' && f.payload?.userMessagePersisted === false) {
+      if (cmd.kind === 'send' && !cmd.watched && f.payload?.userMessagePersisted === false) {
         // The owning room is the minted conversation when the send
         // opened one — not the stale fresh token. A dispatched queue
         // entry rejoins paused at its ordinal; a direct send returns to
@@ -1047,10 +1169,11 @@ class AppShell extends Widget {
 
   _onError(f) {
     // A command rejected before turn.opened: the send draft is still in
-    // the composer (nothing cleared it); an edit leaves the persisted
-    // original untouched. Only matching requestIds retire the command.
+    // the composer (nothing cleared it); an edit puts back the history
+    // the optimistic cut replaced. Only matching requestIds retire the command.
     if (this.command && f.requestId === this.command.requestId) {
       const cmd = this.command;
+      this._restoreUnopenedEdit(cmd);
       if (cmd.fromQueue) {
         // A queue dispatch rejected pre-open returns to the local
         // queue — paused, so nothing retries the rejected item
@@ -1123,7 +1246,10 @@ class AppShell extends Widget {
         // The command never reached turn.opened — delivery is unknowable.
         // Never auto-resend: surface it in the panel as unknown, owned
         // by the room/token captured at submit — not the mutable view.
+        // An edit's optimistic cut is undone; the parked text is the
+        // draft that may not have reached the server.
         const cmd = this.command;
+        this._restoreUnopenedEdit(cmd);
         if (cmd.fromQueue) {
           requeue(this.queue, cmd.fromQueue);
           cmd.fromQueue.state = UNKNOWN;
@@ -1201,6 +1327,7 @@ class AppShell extends Widget {
             this._assignHistory(page);
             this.thread.messages = this.messages;
             this.thread.historyNotice = page.effectiveStart > 0;
+            this._attachLiveTurn(conv);
           }
           // Drop the live projection only after history has the
           // persisted turn — and only when this refresh observed that
@@ -1292,10 +1419,16 @@ class AppShell extends Widget {
 
   async _saveGateway(id, body) {
     try {
-      await this.api.saveGateway(id, body);
+      const doc = await this.api.saveGateway(id, body);
+      // The record saved before the catalog merge ran — refresh the
+      // list behind the dialog either way, then hand the outcome back:
+      // a catalogError keeps the editor open with the failure text.
       await this._refreshGateways();
-      this.settingsPage.gatewaySaveResult = { id };
-      this._toast('info', 'Gateway', `${id} saved.`);
+      const catalogError = (doc && doc.catalogError) || '';
+      this.settingsPage.gatewaySaveResult = {
+        id, models: doc.models || [], added: doc.added || [], catalogError,
+      };
+      if (!catalogError) this._toast('info', 'Gateway', `${id} saved.`);
     } catch (err) {
       const message = this._errText(err);
       this.settingsPage.gatewaySaveResult = { id, error: message };
@@ -1311,12 +1444,16 @@ class AppShell extends Widget {
     } catch (err) { this._toast('error', 'Gateway', this._errText(err)); }
   }
 
-  async _discoverGatewayModels(id) {
+  async _importGatewayModels(id) {
     try {
-      const result = await this.api.discoverGatewayModels(id);
-      this.settingsPage.discoveredModels = { id, models: result.data || [] };
+      const doc = await this.api.importGatewayModels(id);
+      await this._refreshGateways();
+      this.settingsPage.gatewayImportResult = {
+        id, models: doc.models || [], added: doc.added || [],
+        catalogError: doc.catalogError || '',
+      };
     } catch (err) {
-      this.settingsPage.discoveredModels = { id, error: this._errText(err) };
+      this.settingsPage.gatewayImportResult = { id, error: this._errText(err) };
     }
   }
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	appcommand "github.com/jahrulnr/nusallm/application/command"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 )
@@ -42,11 +43,38 @@ func (c *ExportCommand) Execute(ctx context.Context, _ string, emitter dservice.
 	var out strings.Builder
 	fmt.Fprintf(&out, "# conversation %s\n", c.h.ConversationID())
 	for _, message := range messages {
+		// A pure injection message — user role, no text, every call an
+		// application context record — exports as a context block: one
+		// line per stored output, no empty user heading or tool dumps.
+		injections := 0
+		for _, call := range message.ToolCalls() {
+			if call.Type() == enum.TooltypeInjection {
+				injections++
+			}
+		}
+		if message.Role() == enum.RoleUser && message.Content() == "" &&
+			injections > 0 && injections == len(message.ToolCalls()) {
+			fmt.Fprintf(&out, "\n## context · %s\n\n", message.ID())
+			for _, call := range message.ToolCalls() {
+				if call.HasOutput() {
+					fmt.Fprintf(&out, "%s\n", call.Output())
+				}
+			}
+			continue
+		}
 		fmt.Fprintf(&out, "\n## %s · %s\n\n%s\n", message.Role(), message.ID(), message.Content())
 		for _, a := range message.Attachments() {
 			fmt.Fprintf(&out, "[attachment %s %s]\n", a.Name(), a.Modality())
 		}
 		for _, call := range message.ToolCalls() {
+			if call.Type() == enum.TooltypeInjection {
+				// Only a recorded output earns a context line — a bare
+				// injection call must not export an empty line.
+				if call.HasOutput() {
+					fmt.Fprintf(&out, "%s\n", call.Output())
+				}
+				continue
+			}
 			fmt.Fprintf(&out, "[tool %s %s] %s\n", call.Name(), call.ID(), call.Input())
 			if call.HasOutput() {
 				fmt.Fprintf(&out, "[tool result %s] %s\n", call.ID(), call.Output())

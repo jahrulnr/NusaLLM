@@ -68,7 +68,7 @@ func Onboard(stdin *os.File, stdout, stderr io.Writer) int {
 	if err != nil {
 		return promptAborted(out, err)
 	}
-	modelsRaw, err := promptField(in, out, "  models    (comma-separated)", "")
+	modelsRaw, err := promptField(in, out, "  models    (comma-separated, empty to import the provider catalog)", "")
 	if err != nil {
 		return promptAborted(out, err)
 	}
@@ -93,12 +93,18 @@ func Onboard(stdin *os.File, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintln(out)
 	fmt.Fprint(out, "  Writing gateway... ")
-	if err := b.gateways.Upsert(context.Background(), in2); err != nil {
+	gwOut, err := b.gateways.Upsert(context.Background(), in2)
+	if err != nil {
 		fmt.Fprintln(out, "FAILED")
 		fmt.Fprintln(stderr, "nusallm:", err)
 		return 1
 	}
 	fmt.Fprintln(out, "OK")
+	if gwOut.CatalogError != "" {
+		// The record saved — a catalog failure is a warning, never a
+		// failed onboard.
+		fmt.Fprintf(stderr, "nusallm: warning: model catalog import failed — %s\n", gwOut.CatalogError)
+	}
 
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "╔══════════════════════════════════════════╗")
@@ -109,7 +115,17 @@ func Onboard(stdin *os.File, stdout, stderr io.Writer) int {
 	if key != "" {
 		keyNote = " · key vaulted"
 	}
-	fmt.Fprintf(out, "  gateway  %s (%s) · %d model(s)%s\n", id, style, len(in2.Models), keyNote)
+	// The summary counts the stored catalog after the save-time merge —
+	// imported provider ids included — not just the ids the operator
+	// typed.
+	modelCount := len(in2.Models) + len(gwOut.Added)
+	if info, err := b.gateways.Get(context.Background(), id); err == nil {
+		modelCount = len(info.Models)
+	}
+	fmt.Fprintf(out, "  gateway  %s (%s) · %d model(s)%s\n", id, style, modelCount, keyNote)
+	if len(gwOut.Added) > 0 {
+		fmt.Fprintf(out, "           imported %d model(s) from the provider catalog\n", len(gwOut.Added))
+	}
 	fmt.Fprintln(out, "  next:    "+CLIName+"           — start the REPL")
 	fmt.Fprintf(out, "           /route %s then /model <id> — inside the session\n", id)
 	return 0

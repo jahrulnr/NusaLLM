@@ -104,6 +104,7 @@ func compose(cfg config.Config, secrets *reposecret.Store, configPath string) (*
 	environments := map[enum.Environment]appjob.EnvironmentDriver{
 		enum.EnvironmentLocal: appjob.EnvironmentBundle{
 			WorkspaceStore: workspaceStore,
+			DefaultRoot:    wd,
 			Services:       services,
 			Tools:          tools,
 		},

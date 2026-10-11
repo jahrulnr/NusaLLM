@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
 // AutoImportResult reports one gateway's refresh outcome to the caller's
@@ -71,6 +72,26 @@ func (app *GatewayApp) RefreshModels(ctx context.Context) []AutoImportResult {
 		results = append(results, r)
 	}
 	return results
+}
+
+// ImportModels reruns the catalog merge for one stored gateway without
+// the Upsert write first — the refresh path behind the import-models
+// endpoint. A missing record propagates its 404 (the gateway itself is
+// absent, not the catalog); every other import-side failure reports
+// through CatalogError because the record is intact. catalog == nil is
+// a wiring error, same contract as DiscoverModels.
+func (app *GatewayApp) ImportModels(ctx context.Context, id string) (UpsertOutcome, error) {
+	if app.catalog == nil {
+		return UpsertOutcome{}, apperror.NewInternalError("model import unavailable", nil)
+	}
+	added, err := app.importModels(ctx, id)
+	if err != nil {
+		if apperror.As(err).StatusCode() == apperror.StatusNotFound {
+			return UpsertOutcome{}, err
+		}
+		return UpsertOutcome{CatalogError: err.Error()}, nil
+	}
+	return UpsertOutcome{Added: added}, nil
 }
 
 // importModels fetches the provider catalog for one gateway and appends

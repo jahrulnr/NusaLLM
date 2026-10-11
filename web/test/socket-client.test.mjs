@@ -220,3 +220,75 @@ test('steer ack/recalled/snapshot frames pass through for the shell to reconcile
     ['turn.opened', 'turn.steer_ack', 'turn.steer_recalled', 'turn.resync_required']);
   assert.equal(s.turns.get('t1').lastSeq, 4); // replay resumes past them
 });
+
+test('conversation.activity broadcasts pass through without touching turn tracking', () => {
+  const { s, ws, frames } = makeSocket();
+  s.connect();
+  ws()._open();
+  // A notice for a turn this tab never saw dispatches without minting
+  // tracking state — it is a room-level signal, not a stream frame.
+  ws()._message({
+    type: 'conversation.activity', conversationId: 'c9', turnId: 't9',
+    payload: { state: 'opened', kind: 'edit', requestId: 'r-foreign' },
+  });
+  assert.equal(s.turns.has('t9'), false);
+  ws()._message({ type: 'turn.opened', requestId: 'r1', conversationId: 'c1', turnId: 't1', seq: 0 });
+  ws()._message({ type: 'turn.delta', conversationId: 'c1', turnId: 't1', seq: 1, payload: { text: 'x' } });
+  // The notice rides a tracked turnId but no seq — it must not move
+  // the cursor, and the "completed" state must not retire the turn:
+  // only the journaled terminal does that.
+  ws()._message({
+    type: 'conversation.activity', conversationId: 'c1', turnId: 't1',
+    payload: { state: 'opened', kind: 'send', requestId: 'r1' },
+  });
+  ws()._message({ type: 'turn.delta', conversationId: 'c1', turnId: 't1', seq: 2, payload: { text: 'y' } });
+  ws()._message({
+    type: 'conversation.activity', conversationId: 'c1', turnId: 't1',
+    payload: { state: 'completed', kind: 'send', requestId: 'r1' },
+  });
+  assert.equal(s.turns.get('t1').lastSeq, 2);
+  assert.equal(s.turns.has('t1'), true); // still live until the real terminal
+  ws()._message({ type: 'turn.completed', conversationId: 'c1', turnId: 't1', seq: 3, payload: {} });
+  assert.deepEqual(frames.map((f) => f.type), [
+    'conversation.activity', 'turn.opened', 'turn.delta',
+    'conversation.activity', 'turn.delta', 'conversation.activity',
+    'turn.completed',
+  ]);
+  assert.equal(s.turns.has('t1'), false);
+  // Reconnect — neither notice ever created or retired tracking, so
+  // nothing re-watches.
+  ws()._close();
+  s.connect();
+  const fresh = ws();
+  fresh._open();
+  assert.equal(fresh.sent.find((f) => f.type === 'turn.watch'), undefined);
+});
+
+test('watchTurn attaches from afterSeq and reconnects from the cursor', () => {
+  const { s, ws, frames } = makeSocket();
+  s.connect();
+  ws()._open();
+  const rid = s.watchTurn({ conversationId: 'c1', turnId: 't9', afterSeq: -1 });
+  const watch = ws().sent.find((f) => f.type === 'turn.watch');
+  assert.equal(watch.requestId, rid);
+  assert.equal(watch.turnId, 't9');
+  assert.equal(watch.conversationId, 'c1');
+  assert.equal(watch.afterSeq, -1);
+  assert.equal(s.turns.get('t9').lastSeq, -1);
+  ws()._message({ type: 'turn.delta', conversationId: 'c1', turnId: 't9', seq: 4, payload: { text: 'a' } });
+  assert.equal(frames[frames.length - 1].type, 'turn.delta');
+  assert.equal(s.turns.get('t9').lastSeq, 4);
+  // A second attach must not rewind the cursor.
+  s.watchTurn({ conversationId: 'c1', turnId: 't9', afterSeq: -1 });
+  const again = ws().sent.filter((f) => f.type === 'turn.watch');
+  assert.equal(again[again.length - 1].afterSeq, 4);
+  ws()._message({ type: 'turn.delta', conversationId: 'c1', turnId: 't9', seq: 4, payload: { text: 'a' } });
+  assert.equal(frames.filter((f) => f.type === 'turn.delta').length, 1);
+  ws()._close();
+  s.connect();
+  const fresh = ws();
+  fresh._open();
+  const resumed = fresh.sent.find((f) => f.type === 'turn.watch');
+  assert.equal(resumed.turnId, 't9');
+  assert.equal(resumed.afterSeq, 4);
+});

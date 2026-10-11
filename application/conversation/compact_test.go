@@ -241,20 +241,24 @@ func TestSend413DoesNotLoop(t *testing.T) {
 	if svc.sawCompact.Load() {
 		t.Fatal("no compaction may run on a single message")
 	}
-	// A 413 never appends an assistant message — after two sends the
-	// room holds two user lines, still at keepTail → no fold yet.
-	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "two", nil, appjob.SendOptions{}, nil); err == nil {
-		t.Fatal("expected 413")
+	// Each failed send leaves a user line plus its context record — the
+	// second send crosses keepTail → exactly one fold, then the retried
+	// call still 413s and must surface, not re-compact.
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "two", nil, appjob.SendOptions{}, nil); err == nil || apperror.As(err).StatusCode() != 413 {
+		t.Fatalf("persistent overflow must surface the provider's 413: %v", err)
 	}
-	// Third send: 3 messages > keepTail → exactly one compact, then
-	// the retried send still 413s and must surface, not re-compact.
+	if !svc.sawCompact.Load() {
+		t.Fatal("the second send must force exactly one compaction")
+	}
+	// Third send: the history crosses keepTail again → one more fold —
+	// each turn folds at most once, never loop-compacts within a turn.
 	_, err := app.Send(t.Context(), "room", "gw1", "m1", "three", nil, appjob.SendOptions{}, nil)
 	if err == nil || apperror.As(err).StatusCode() != 413 {
 		t.Fatalf("persistent overflow must surface the provider's 413: %v", err)
 	}
 	info, _ := convs.Info(t.Context(), "room")
-	if info.SealedSegments != 1 {
-		t.Fatalf("exactly one segment may seal — no compact loop: %+v", info)
+	if info.SealedSegments != 2 {
+		t.Fatalf("one segment per failed send may seal — no compact loop: %+v", info)
 	}
 }
 

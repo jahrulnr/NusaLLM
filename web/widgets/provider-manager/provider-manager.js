@@ -6,8 +6,8 @@ const STYLES = ['completion', 'responses', 'messages', 'generatecontent'];
 // Provider CRUD. The editor keeps the wire body honest: apiKey is a
 // tri-state (Keep omits it, Replace sends the string, Clear sends ""),
 // and editing preserves every advanced field of surviving models.
-// Models are viewed through a searchable list; only explicit imports
-// can add ids. The stored key or ref is never
+// The server merges the provider's advertised model ids into the
+// record on save and on Refresh — the stored key or ref is never
 // rendered.
 class ProviderManager extends Widget {
   static stylesheet = new URL('./provider-manager.css', import.meta.url);
@@ -18,7 +18,7 @@ class ProviderManager extends Widget {
     this._editing = null;   // existing gateway object being edited
     this._creating = false;
     this._confirmId = null; // gateway id awaiting delete confirmation
-    this._discovery = null;
+    this._importing = false;
     this._saving = false;
     this._pendingSaveId = null;
     this._render();
@@ -29,12 +29,6 @@ class ProviderManager extends Widget {
     if (!this._editing && !this._creating) this._render();
   }
 
-  set discoveredModels(result) {
-    if (!result || result.id !== this._editing?.id) return;
-    this._discovery = result;
-    this._renderDiscovery();
-  }
-
   set gatewaySaveResult(result) {
     if (!result || result.id !== this._pendingSaveId) return;
     this._saving = false;
@@ -43,10 +37,47 @@ class ProviderManager extends Widget {
       if (this._formError) this._formError.textContent = result.error;
       return;
     }
+    // The record saved even when the provider catalog would not merge —
+    // adopt the stored catalog, keep the dialog open, and show the
+    // failure where save errors render.
+    if (result.models) {
+      this._modelIds = new Set(result.models.map((m) => m.id));
+      if (this._editing) this._editing = { ...this._editing, models: result.models };
+      this._renderModels();
+    }
+    if (result.catalogError) {
+      if (this._formError) this._formError.textContent = result.catalogError;
+      return;
+    }
     this._editing = null;
     this._creating = false;
-    this._discovery = null;
     this._render();
+  }
+
+  // Refresh answer: the import runs server-side against the stored
+  // endpoint and key. The response's post-merge catalog replaces the
+  // form's id list in place — the dialog stays open.
+  set gatewayImportResult(result) {
+    if (!result || !this._editing || result.id !== this._editing.id) return;
+    this._importing = false;
+    this._syncImportState();
+    if (result.error) {
+      this._noteImport(result.error, true);
+      return;
+    }
+    if (result.models) {
+      this._editing = { ...this._editing, models: result.models };
+      this._modelIds = new Set(result.models.map((m) => m.id));
+      this._renderModels();
+    }
+    if (result.catalogError) {
+      this._noteImport(result.catalogError, true);
+      return;
+    }
+    const n = (result.added || []).length;
+    this._noteImport(n
+      ? `Imported ${n} new model${n === 1 ? '' : 's'} from the provider catalog.`
+      : 'No new models from the provider.', false);
   }
 
   _render() {
@@ -95,7 +126,7 @@ class ProviderManager extends Widget {
         el('div', { class: 'row-actions' }, [
           el('button', {
             class: 'icon-btn', type: 'button', 'aria-label': `Edit ${g.id}`,
-            onclick: () => { this._editing = g; this._discovery = null; this._render(); },
+            onclick: () => { this._editing = g; this._importing = false; this._render(); },
           }, [icon('pencil', 12)]),
           el('button', {
             class: 'icon-btn danger', type: 'button', 'aria-label': `Delete ${g.id}`,
@@ -115,7 +146,7 @@ class ProviderManager extends Widget {
       if (this._saving) return;
       this._editing = null;
       this._creating = false;
-      this._discovery = null;
+      this._importing = false;
       this._render();
     };
     dialog.addEventListener('cancel', (event) => {
@@ -208,13 +239,15 @@ class ProviderManager extends Widget {
         this._modelList,
       ]),
       el('div', { class: 'import-actions' }, [
-        el('button', {
-          class: 'btn', type: 'button', disabled: !g,
-          onclick: () => this._fetchModels(g.id),
-        }, [el('span', { text: 'Fetch models from provider' })]),
-        !g ? el('span', { class: 'hint', text: 'Save the gateway first to use its endpoint and key.' }) : null,
+        this._importBtn = el('button', {
+          class: 'btn', type: 'button', disabled: !g || this._importing,
+          onclick: () => this._importModels(g.id),
+        }, [el('span', { text: this._importing ? 'Importing…' : 'Refresh models from provider' })]),
+        g
+          ? el('span', { class: 'hint', text: 'Re-reads the provider catalog with the saved endpoint and key.' })
+          : el('span', { class: 'hint', text: 'Save the gateway to import its models.' }),
       ]),
-      this.discoveryHost = el('div', { class: 'discovery' }),
+      this._importNote = el('div'),
       field('api key', keyMode),
       keyField,
       error,
@@ -235,7 +268,6 @@ class ProviderManager extends Widget {
     dialog.showModal();
     this._renderModels();
     this._formError = error;
-    this._renderDiscovery();
   }
 
   _renderModels() {
@@ -251,56 +283,26 @@ class ProviderManager extends Widget {
     for (const id of visible) this._modelList.append(el('div', { class: 'model-item', role: 'listitem', text: id }));
   }
 
-  _fetchModels(id) {
-    this._discovery = { id, loading: true };
-    this._renderDiscovery();
-    emit(this, 'gateway-model-discover', { id });
+  // The import runs server-side against the stored record — a field the
+  // user edited but never saved (endpoint, key) does NOT apply here.
+  _importModels(id) {
+    this._importing = true;
+    this._syncImportState();
+    this._noteImport('Importing the provider catalog…', false);
+    emit(this, 'gateway-import', { id });
   }
 
-  _renderDiscovery() {
-    if (!this.discoveryHost) return;
-    clear(this.discoveryHost);
-    const result = this._discovery;
-    if (!result || result.id !== this._editing?.id) return;
-    if (result.loading) {
-      this.discoveryHost.append(el('p', { class: 'hint', text: 'Fetching provider models…' }));
-      return;
-    }
-    if (result.error) {
-      this.discoveryHost.append(el('p', { class: 'form-error', text: result.error }));
-      return;
-    }
-    const catalog = result.models || [];
-    if (!catalog.length) {
-      this.discoveryHost.append(el('p', { class: 'hint', text: 'Provider returned no models.' }));
-      return;
-    }
-    const newCount = catalog.filter((id) => !this._modelIds.has(id)).length;
-    const search = el('input', { class: 'in', type: 'search', placeholder: 'Search provider models', 'aria-label': 'Search provider models' });
-    const select = el('select', { class: 'in discovered-list', multiple: true, size: '10', 'aria-label': 'Discovered models' },
-      catalog.map((id) => el('option', {
-        value: id,
-        text: this._modelIds.has(id) ? `${id} · configured` : id,
-        disabled: this._modelIds.has(id),
-      })));
-    search.addEventListener('input', () => {
-      const q = search.value.toLowerCase();
-      for (const option of select.options) option.hidden = !option.value.toLowerCase().includes(q);
-    });
-    this.discoveryHost.append(
-      el('div', { class: 'discovery-head', text: `${catalog.length} available from provider · ${newCount} new` }),
-      search,
-      select,
-      el('button', {
-        class: 'btn accent', type: 'button', disabled: !newCount,
-        onclick: () => {
-          const chosen = [...select.selectedOptions].filter((option) => !option.hidden).map((option) => option.value);
-          for (const id of chosen) this._modelIds.add(id);
-          this._renderModels();
-          this._renderDiscovery();
-        },
-      }, [el('span', { text: 'Add selected to gateway' })]),
-    );
+  _syncImportState() {
+    if (!this._importBtn) return;
+    this._importBtn.disabled = !this._editing || this._importing;
+    this._importBtn.textContent = this._importing
+      ? 'Importing…' : 'Refresh models from provider';
+  }
+
+  _noteImport(text, isError) {
+    if (!this._importNote) return;
+    this._importNote.textContent = text;
+    this._importNote.className = isError ? 'form-error' : 'hint';
   }
 }
 

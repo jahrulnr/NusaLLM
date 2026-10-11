@@ -220,6 +220,16 @@ class MessageThread extends Widget {
   }
 
   _userMessage(m) {
+    const calls = m.toolCalls || [];
+    const injected = calls.filter((tc) => tc.type === 'injection');
+    const contextLines = () => el('div', { class: 'context-lines' },
+      injected.map((tc) => el('div', { class: 'context-line', text: tc.output || '' })));
+    // An injection-only user record with no text is an application
+    // context entry (the workspace binding): one plain line per call —
+    // never an editable bubble.
+    if (m.content === '' && calls.length > 0 && injected.length === calls.length) {
+      return contextLines();
+    }
     if (this._editingId === m.id) return this._editBlock(m);
     const kids = [el('div', { class: 'user-content', text: m.content })];
     if ((m.attachments || []).length) {
@@ -232,7 +242,10 @@ class MessageThread extends Widget {
         onclick: () => { this._editingId = m.id; this._render(); },
       }, [icon('pencil', 11)]));
     }
-    return block;
+    if (!injected.length) return block;
+    // A mixed record still shows the bubble; injected context rides
+    // below it as plain lines, never inside the user's words.
+    return el('div', {}, [block, contextLines()]);
   }
 
   _editBlock(m) {

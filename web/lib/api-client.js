@@ -69,8 +69,8 @@ export class APIClient {
     return request('GET', `/api/gateways/${encodeURIComponent(id)}`);
   }
 
-  discoverGatewayModels(id) {
-    return request('GET', `/api/gateways/${encodeURIComponent(id)}/available-models`);
+  importGatewayModels(id) {
+    return request('POST', `/api/gateways/${encodeURIComponent(id)}/import-models`);
   }
 
   discoverGatewayProviders(id, modelId) {

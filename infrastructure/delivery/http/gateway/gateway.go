@@ -21,10 +21,11 @@ type Reader interface {
 	DiscoverProviders(ctx context.Context, id, modelID string) ([]dservice.UpstreamProvider, error)
 }
 
-// Writer is the mutation surface — full-document upsert and removal.
-// *appgateway.GatewayApp satisfies it.
+// Writer is the mutation surface — full-document upsert, catalog
+// re-import, and removal. *appgateway.GatewayApp satisfies it.
 type Writer interface {
-	Upsert(ctx context.Context, in appgateway.GatewayInput) error
+	Upsert(ctx context.Context, in appgateway.GatewayInput) (appgateway.UpsertOutcome, error)
+	ImportModels(ctx context.Context, id string) (appgateway.UpsertOutcome, error)
 	Delete(ctx context.Context, id string) error
 }
 
@@ -46,6 +47,7 @@ func Register(api *gin.RouterGroup, d Deps) {
 	}
 	if d.Writes != nil {
 		api.PUT("/gateways/:id", s.put)
+		api.POST("/gateways/:id/import-models", s.importModels)
 		api.DELETE("/gateways/:id", s.delete)
 	}
 }

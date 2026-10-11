@@ -44,6 +44,9 @@ type Deps struct {
 	// (delete, compact) — decoupled from any single request so a client
 	// disconnect can't cancel accepted work; nil means Background.
 	Jobs context.Context
+	// LiveTurns is the hub's in-progress transport turn, projected onto
+	// conversation detail. Nil omits the field.
+	LiveTurns conversation.LiveTurn
 	// Authorities are configured host:port pairs accepted in Host and
 	// Origin headers. The listener address remains a separate loopback bind.
 	Authorities []string
@@ -71,9 +74,10 @@ func NewHandler(d Deps) *gin.Engine {
 	api := r.Group("/api")
 	system.Register(api)
 	conversation.Register(api, conversation.Deps{
-		Reads:  d.Conversations,
-		Writes: d.ConversationWrites,
-		Jobs:   d.Jobs,
+		Reads:     d.Conversations,
+		Writes:    d.ConversationWrites,
+		Jobs:      d.Jobs,
+		LiveTurns: d.LiveTurns,
 	})
 	gateway.Register(api, gateway.Deps{Reads: d.Gateways, Writes: d.GatewayWrites})
 	setting.Register(api, setting.Deps{Reads: d.Settings, Writes: d.SettingsWriter})

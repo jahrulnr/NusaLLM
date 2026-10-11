@@ -221,6 +221,14 @@ class Hub {
       });
       if (this.autoOpen) this._emit(turnId, 'turn.opened', {}, cmd.requestId);
       else this.pendingSends.push(turnId);
+    } else if (cmd.type === 'turn.edit') {
+      const turnId = `t${this.serverState.nextTurn++}`;
+      this.turns.set(turnId, {
+        seq: 0, convId: cmd.conversationId, requestId: cmd.requestId,
+        terminal: null, receipts: new Map(),
+      });
+      if (this.autoOpen) this._emit(turnId, 'turn.opened', {}, cmd.requestId);
+      else this.pendingSends.push(turnId);
     } else if (cmd.type === 'turn.steer') {
       const t = this.turns.get(cmd.turnId);
       if (t && !t.terminal) {
@@ -363,7 +371,11 @@ async function scenarioRun(name, fn) {
   await page.route('**/api/**', apiMock(fixture));
   await page.routeWebSocket(/api\/ws/, (ws) => { hubs.push(new Hub(ws, fixture, serverState)); });
   const before = failures;
-  const s = { page, ctx, fixture, hubs, hub: () => hubs[hubs.length - 1], allCmds: (t) => hubs.flatMap((h) => h.all(t)) };
+  const s = {
+    page, ctx, fixture, hubs, serverState,
+    hub: () => hubs[hubs.length - 1],
+    allCmds: (t) => hubs.flatMap((h) => h.all(t)),
+  };
   try {
     await fn(s);
   } catch (err) {
@@ -463,6 +475,7 @@ await scenarioRun('steer-fold-recall', async (s) => {
   await poll(() => s.hub().find('turn.opened') || s.hub().find('turn.send'));
   await poll(async () => await steerBtn(s).isVisible());
   check('steer visible in owning room', true);
+  check('no steer hint in the footer', (await s.page.locator('.steer-hint').count()) === 0);
   // Steer joins the running turn.
   await input(s).fill('prefer bullets');
   await steerBtn(s).click();
@@ -681,18 +694,24 @@ await scenarioRun('multi-room-fresh-ownership', async (s) => {
 
 await scenarioRun('composer-ux-states', async (s) => {
   await open(s, '#conversation=c1');
+  check('idle primary is send', (await sendBtn(s).getAttribute('aria-label')) === 'Send message');
+  check('idle primary has no caption', (await sendBtn(s).innerText()).trim() === '');
+  check('idle shortcut sends',
+    (await s.page.locator('.shortcut').textContent()).includes('Enter to send'));
   await typeEnter(s, 'busy task');
   await poll(() => s.hub().find('turn.send'));
-  // Panel header + Queue label + steer hint while busy.
+  // Panel header + queue mode while busy. The button stays an icon.
   await typeEnter(s, 'queued a');
   await typeEnter(s, 'queued b');
   await poll(async () => (await rows(s).count()) === 2);
   check('panel header shows count',
     (await s.page.locator('.pending-title').textContent()).includes('Pending (2)'));
-  check('primary says Queue', (await sendBtn(s).textContent()).includes('Queue'));
+  check('busy primary is queue', (await sendBtn(s).getAttribute('aria-label')) === 'Queue message');
+  check('busy primary has no caption', (await sendBtn(s).innerText()).trim() === '');
+  check('pending row still says Queued',
+    (await s.page.locator('.pending-state').first().textContent()) === 'Queued');
   check('enter hint says queue',
     (await s.page.locator('.shortcut').textContent()).includes('Enter to queue'));
-  check('visible steer hint', await s.page.locator('.steer-hint').isVisible());
   check('stop visible in owning room', await stopBtn(s).isVisible());
   // A failed turn pauses — Resume waits for the queue's eligibility.
   s.hub().complete('t1', { failed: true, message: 'x', persistedUser: true });
@@ -1290,6 +1309,162 @@ await scenarioRun('optimistic-repeated-text', async (s) => {
   check('old identical line still in history', await s.page.evaluate(
     () => document.querySelector('nusa-app').messages.some((m) => m.id === 'u-old')));
   s.hub().complete('t1', {});
+});
+
+await scenarioRun('idle-after-completed-turn', async (s) => {
+  await open(s, '#conversation=c1');
+  await typeEnter(s, 'done soon');
+  await poll(() => s.hub().find('turn.send'));
+  s.fixture.messages.get('c1').push(
+    { id: 'u1', role: 'user', userType: 'origin', content: 'done soon' });
+  s.hub().complete('t1', {});
+  await poll(() => s.page.evaluate(() => document.querySelector('nusa-app').command === null));
+  await poll(async () => (await sendBtn(s).getAttribute('aria-label')) === 'Send message');
+  check('settled primary is send', true);
+  check('settled primary has no caption', (await sendBtn(s).innerText()).trim() === '');
+  check('settled shortcut sends',
+    (await s.page.locator('.shortcut').textContent()).includes('Enter to send'));
+});
+
+const threadHas = (s, text) => s.page.locator('nusa-message-thread').getByText(text, { exact: true });
+
+async function editFirst(s, text) {
+  await s.page.locator('nusa-message-thread .edit-btn').first().click();
+  const editInput = s.page.locator('nusa-message-thread .edit-input');
+  await editInput.fill(text);
+  await s.page.locator('nusa-message-thread .edit-save').click();
+}
+
+await scenarioRun('optimistic-edit-cut', async (s) => {
+  s.fixture.messages.get('c1').push(
+    { id: 'u1', role: 'user', userType: 'origin', content: 'original text' },
+    { id: 'a1', role: 'assistant', content: 'old answer' },
+    { id: 'u2', role: 'user', userType: 'origin', content: 'later question' },
+  );
+  await open(s, '#conversation=c1');
+  await poll(async () => (await threadHas(s, 'later question').count()) > 0);
+  await editFirst(s, 'rewritten line');
+  await poll(() => s.hub().find('turn.edit'));
+  await poll(async () => (await threadHas(s, 'rewritten line').count()) > 0);
+  check('edited text shows immediately', true);
+  check('assistant after the edit is gone', (await threadHas(s, 'old answer').count()) === 0);
+  check('later user message is gone', (await threadHas(s, 'later question').count()) === 0);
+  check('edit hidden while the turn runs',
+    (await s.page.locator('nusa-message-thread .edit-btn').count()) === 0);
+  const order = await s.page.evaluate(() => {
+    const thread = document.querySelector('nusa-app').shadowRoot.querySelector('nusa-message-thread');
+    const root = thread.shadowRoot;
+    return [...root.querySelectorAll('.user-content, .assistant-msg, .stream')].map((n) =>
+      n.classList.contains('user-content') ? 'user' : n.classList.contains('stream') ? 'stream' : 'assistant');
+  });
+  check('stream sits after the edited message', order.join(',') === 'user,stream', order.join(','));
+  s.hub().delta('t1', 'LIVE-DELTA');
+  await poll(async () => (await threadHas(s, 'LIVE-DELTA').count()) > 0);
+  check('live delta renders in place of the cut tail', (await threadHas(s, 'old answer').count()) === 0);
+  s.fixture.messages.set('c1', [
+    { id: 'u1', role: 'user', userType: 'origin', content: 'rewritten line' },
+    { id: 'a2', role: 'assistant', content: 'fresh answer' },
+  ]);
+  s.hub().complete('t1', {});
+  await poll(async () => (await threadHas(s, 'fresh answer').count()) > 0);
+  check('terminal history keeps the rewrite', (await threadHas(s, 'rewritten line').count()) > 0);
+  check('terminal history drops the old tail', (await threadHas(s, 'old answer').count()) === 0);
+});
+
+await scenarioRun('edit-preopen-restores', async (s) => {
+  s.fixture.messages.get('c1').push(
+    { id: 'u1', role: 'user', userType: 'origin', content: 'original text' },
+    { id: 'a1', role: 'assistant', content: 'old answer' },
+  );
+  await open(s, '#conversation=c1');
+  await poll(async () => (await threadHas(s, 'old answer').count()) > 0);
+  s.hub().autoOpen = false;
+  await editFirst(s, 'rewritten line');
+  await poll(() => s.hub().find('turn.edit'));
+  await poll(async () => (await threadHas(s, 'rewritten line').count()) > 0);
+  check('cut is visible before the server opens', (await threadHas(s, 'old answer').count()) === 0);
+  s.hub().rejectSend(s.hub().find('turn.edit').requestId, 'rejected');
+  await poll(async () => (await threadHas(s, 'old answer').count()) > 0);
+  check('pre-open error restores the tail', (await threadHas(s, 'original text').count()) > 0);
+  check('rejected edit is not parked for resend', (await rows(s).count()) === 0);
+  check('no second edit', s.allCmds('turn.edit').length === 1);
+});
+
+await scenarioRun('edit-drop-restores', async (s) => {
+  s.fixture.messages.get('c1').push(
+    { id: 'u1', role: 'user', userType: 'origin', content: 'original text' },
+    { id: 'a1', role: 'assistant', content: 'old answer' },
+  );
+  await open(s, '#conversation=c1');
+  await poll(async () => (await threadHas(s, 'old answer').count()) > 0);
+  s.hub().autoOpen = false;
+  await editFirst(s, 'rewritten line');
+  await poll(async () => (await threadHas(s, 'rewritten line').count()) > 0);
+  // Hold the reconnect refresh so the restored tail cannot be the HTTP page.
+  const held = stall(s.fixture, '/api/conversations/c1/messages');
+  s.hub().ws.close();
+  await poll(async () => (await threadHas(s, 'old answer').count()) > 0);
+  release(held);
+  check('socket drop restores the tail', (await threadHas(s, 'original text').count()) > 0);
+  await poll(async () => (await s.page.locator('text=Delivery unknown').count()) > 0);
+  check('dropped edit is parked, not resent', s.allCmds('turn.edit').length === 1);
+  await poll(() => s.hubs.length === 2, { timeout: 8000 });
+  check('reconnect does not resend the edit', s.allCmds('turn.edit').length === 1);
+});
+
+await scenarioRun('reload-watches-live-turn', async (s) => {
+  s.fixture.messages.get('c1').push(
+    { id: 'u1', role: 'user', userType: 'origin', content: 'already sent' });
+  s.fixture.convs.get('c1').activeTurnId = 't-live';
+  s.fixture.convs.get('c1').activeTurnKind = 'send';
+  s.serverState.turns.set('t-live', {
+    seq: 0, convId: 'c1', requestId: 'orig', terminal: null, receipts: new Map(),
+  });
+  await open(s, '#conversation=c1');
+  await poll(() => s.hub().find('turn.watch', (c) => c.turnId === 't-live' && c.afterSeq === -1));
+  check('reload attaches with turn.watch', true);
+  await poll(() => s.page.evaluate(() => {
+    const app = document.querySelector('nusa-app');
+    const g = app._gate('c1');
+    return app.command?.turnId === 't-live' && app.command.watched === true && !g.pending;
+  }));
+  check('stop armed in the owning room', await stopBtn(s).isVisible());
+  s.hub().delta('t-live', 'STILL-RUNNING');
+  await poll(async () => (await threadHas(s, 'STILL-RUNNING').count()) > 0);
+  check('live delta arrives after reload', true);
+  await s.page.locator('nusa-nav-sidebar').getByText('Room Two').click();
+  await poll(async () => !(await stopBtn(s).isVisible()));
+  check('stop hidden in another room', true);
+  await s.page.locator('nusa-nav-sidebar').getByText('Room One').click();
+  await poll(async () => await stopBtn(s).isVisible());
+  delete s.fixture.convs.get('c1').activeTurnId;
+  delete s.fixture.convs.get('c1').activeTurnKind;
+  s.fixture.messages.set('c1', [
+    { id: 'u1', role: 'user', userType: 'origin', content: 'already sent' },
+    { id: 'a1', role: 'assistant', content: 'finished answer' },
+  ]);
+  await stopBtn(s).click();
+  await poll(() => s.hub().find('turn.cancel')?.turnId === 't-live');
+  check('stop cancels the reattached turn', true);
+  await poll(async () => (await threadHas(s, 'finished answer').count()) > 0);
+  check('terminal refresh shows persisted history', true);
+});
+
+await scenarioRun('select-watches-live-turn', async (s) => {
+  s.fixture.convs.get('c1').activeTurnId = 't-live';
+  s.fixture.convs.get('c1').activeTurnKind = 'edit';
+  s.serverState.turns.set('t-live', {
+    seq: 0, convId: 'c1', requestId: 'orig', terminal: null, receipts: new Map(),
+  });
+  await open(s, '#conversation=c2');
+  check('other room does not watch', !s.hub().find('turn.watch'));
+  await s.page.locator('nusa-nav-sidebar').getByText('Room One').click();
+  await poll(() => s.hub().find('turn.watch', (c) => c.turnId === 't-live'));
+  check('selecting the room attaches', true);
+  await poll(() => s.page.evaluate(
+    () => document.querySelector('nusa-app').command?.kind === 'edit'));
+  check('edit turn does not offer steer', !(await steerBtn(s).isVisible()));
+  check('stop armed for the reattached edit', await stopBtn(s).isVisible());
 });
 
 // --- teardown --------------------------------------------------------------

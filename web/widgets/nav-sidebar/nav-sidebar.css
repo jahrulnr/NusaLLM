@@ -116,18 +116,22 @@
 }
 .icon-btn:hover { color: var(--text); background: var(--panel-2); }
 
+.close-btn { display: none; }
+
 @media (max-width: 760px) {
   :host {
     position: fixed;
-    /* Below the header band (46px + its border) — the drawer must
-       never cover the toggle that dismisses it. */
-    top: 47px; left: 0; bottom: 0;
+    /* Full-height overlay — the drawer carries its own close
+       affordance, so it no longer clears the header band. */
+    top: 0; left: 0; bottom: 0;
+    height: auto;
     z-index: 60;
     width: var(--shell-nav);
     transition: transform 180ms ease;
     box-shadow: 8px 0 28px rgba(0, 0, 0, 0.55);
   }
   :host(.closed) { width: var(--shell-nav); transform: translateX(-100%); box-shadow: none; }
+  .close-btn { display: grid; }
 }
 
 @media (prefers-reduced-motion: reduce) {

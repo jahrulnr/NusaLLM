@@ -128,7 +128,7 @@ func TestSendRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(conv.Messages()) != 2 || conv.Last().Content() != "pong" {
+	if len(conv.Messages()) != 3 || conv.Last().Content() != "pong" {
 		t.Fatalf("turns: %+v", conv.Messages())
 	}
 	if conv.Route() != "gw1" || conv.ModelID() != "m1" || conv.Usage().Total() != 15 {
@@ -245,7 +245,7 @@ func TestSendFailedKeepsUserTurn(t *testing.T) {
 		t.Fatal("failed provider send must report its committed user line")
 	}
 	conv, _ := app.deps.Convs.Load(t.Context(), "c2")
-	if len(conv.Messages()) != 1 || conv.Last().Role() != enum.RoleUser {
+	if len(conv.Messages()) != 2 || conv.Last().Role() != enum.RoleUser {
 		t.Fatal("failed send must persist user turn without an assistant reply")
 	}
 	if conv.Title() != "ping" {
@@ -308,8 +308,8 @@ func TestSendSerializesPerConv(t *testing.T) {
 	close(release)
 	wg.Wait()
 	conv, _ := app.deps.Convs.Load(t.Context(), "ser")
-	if len(conv.Messages()) != 4 { // 2 serialized pairs
-		t.Fatalf("want 4 turns, got %d", len(conv.Messages()))
+	if len(conv.Messages()) != 6 { // 2 serialized turns of user+context+answer
+		t.Fatalf("want 6 messages, got %d", len(conv.Messages()))
 	}
 }
 
@@ -514,10 +514,10 @@ func TestCancelPersistsArrivedDeltasAndCompleteTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	msgs := conv.Messages()
-	if len(msgs) != 2 || msgs[1].Role() != enum.RoleAssistant || msgs[1].Content() != "hello" {
+	if len(msgs) != 3 || msgs[2].Role() != enum.RoleAssistant || msgs[2].Content() != "hello" {
 		t.Fatalf("history: %+v", msgs)
 	}
-	asst := msgs[1]
+	asst := msgs[2]
 	var sawReason bool
 	for _, part := range asst.Parts() {
 		if part.Kind == entity.MessagePartReasoning && part.Text == "think" {
@@ -572,9 +572,9 @@ func TestCancelRunningSend(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Cancel did not reach the running send")
 	}
-	// User turn stays; no assistant reply.
+	// User turn and its workspace record stay; no assistant reply.
 	conv, _ := app.deps.Convs.Load(t.Context(), "run")
-	if len(conv.Messages()) != 1 || conv.Last().Role() != enum.RoleUser {
+	if len(conv.Messages()) != 2 || conv.Last().Role() != enum.RoleUser {
 		t.Fatal("canceled send must keep the user turn only")
 	}
 }
@@ -716,7 +716,7 @@ func TestCancelLeavesQueuedSend(t *testing.T) {
 		t.Fatal("queued send never ran after the cancel")
 	}
 	conv, _ := app.deps.Convs.Load(t.Context(), "q")
-	if len(conv.Messages()) != 3 { // user1 + user2 + assistant2 — no assistant1
+	if len(conv.Messages()) != 5 { // user1+context, user2+context+assistant2 — no assistant1
 		t.Fatalf("queued turn must land after canceled one: %d msgs", len(conv.Messages()))
 	}
 }
@@ -804,8 +804,8 @@ func TestAdapterNoAppendIsInternalError(t *testing.T) {
 		t.Fatal("adapter failure must still report the persisted user line")
 	}
 	conv, _ := app.deps.Convs.Load(t.Context(), result.ConversationID)
-	if len(conv.Messages()) != 1 {
-		t.Fatal("only the user turn may persist when the adapter adds nothing")
+	if len(conv.Messages()) != 2 {
+		t.Fatal("only the user turn and its context record may persist when the adapter adds nothing")
 	}
 }
 
@@ -881,10 +881,10 @@ func TestSendToolLoop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(conv.Messages()) != 3 {
-		t.Fatalf("want user+toolcall+final, got %d msgs", len(conv.Messages()))
+	if len(conv.Messages()) != 4 {
+		t.Fatalf("want user+context+toolcall+final, got %d msgs", len(conv.Messages()))
 	}
-	tc := conv.Messages()[1].ToolCalls()[0]
+	tc := conv.Messages()[2].ToolCalls()[0]
 	if tc.Output() == "" || !strings.Contains(tc.Output(), "echoed:") {
 		t.Fatalf("tool output not patched through: %q", tc.Output())
 	}
@@ -1023,7 +1023,7 @@ func TestSendSelectsEnvironmentPerConversationAndResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lastUser := beforeEdit.Messages()[len(beforeEdit.Messages())-3]
+	lastUser := beforeEdit.Messages()[len(beforeEdit.Messages())-4]
 	if err := app.Edit(t.Context(), "docker-room", lastUser.ID(), "edited", nil); err != nil {
 		t.Fatal(err)
 	}

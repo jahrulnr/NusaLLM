@@ -95,7 +95,7 @@ add/set flags:
   --style <s>         completion | responses | messages | generatecontent
   --endpoint <url>    provider base URL
   --name <name>       display name (default: id)
-  --models a,b,c      replace the model catalog (route = model id)
+  --models a,b,c      model ids to store; provider ids merge on save (route = model id)
   --model <m>         same as --models with one entry
   --stream            enable streaming
   --no-stream         disable streaming
@@ -313,7 +313,7 @@ func gatewayWrite(b *Boot, edit bool, args []string, stdout, stderr io.Writer, s
 			in.Endpoint = v
 		}
 		if !modelsSet {
-			v, err := promptField(prompt, bufio.NewWriter(stderr), "  models (comma-separated, empty to skip)", "")
+			v, err := promptField(prompt, bufio.NewWriter(stderr), "  models (comma-separated, empty to import the provider catalog)", "")
 			if err != nil {
 				fmt.Fprintln(stderr, "cancelled.")
 				return 1
@@ -337,7 +337,8 @@ func gatewayWrite(b *Boot, edit bool, args []string, stdout, stderr io.Writer, s
 		fmt.Fprintln(stderr, "nusallm: --endpoint is required — e.g. https://api.openai.com/v1 (or run: nusallm onboard)")
 		return 2
 	}
-	if err := b.gateways.Upsert(context.Background(), in); err != nil {
+	out, err := b.gateways.Upsert(context.Background(), in)
+	if err != nil {
 		printErr(stderr, err)
 		return 1
 	}
@@ -346,6 +347,14 @@ func gatewayWrite(b *Boot, edit bool, args []string, stdout, stderr io.Writer, s
 		verb = "updated"
 	}
 	fmt.Fprintf(stdout, "%s gateway %s\n", verb, id)
+	if len(out.Added) > 0 {
+		fmt.Fprintf(stdout, "imported %d model(s) from the provider catalog\n", len(out.Added))
+	}
+	if out.CatalogError != "" {
+		// The record saved — the import failure is a warning, not a
+		// failure of the command itself.
+		fmt.Fprintf(stderr, "nusallm: warning: model catalog import failed — %s\n", out.CatalogError)
+	}
 	return 0
 }
 

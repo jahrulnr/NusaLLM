@@ -63,14 +63,14 @@ func TestREPLSendsListsAndResumesConversation(t *testing.T) {
 	gatewayApplication := appgateway.New(gatewayRepository, secrets, nil)
 	key := "local-test-key"
 	stream := false
-	if err := gatewayApplication.Upsert(t.Context(), appgateway.GatewayInput{
+	if _, err := gatewayApplication.Upsert(t.Context(), appgateway.GatewayInput{
 		ID: "gw1", Name: "Test gateway", Style: enum.StyleCompletion, Endpoint: server.URL,
 		ApiKey: &key, Stream: &stream,
 		Models: []appgateway.ModelInput{{ID: "m1"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := gatewayApplication.Upsert(t.Context(), appgateway.GatewayInput{
+	if _, err := gatewayApplication.Upsert(t.Context(), appgateway.GatewayInput{
 		ID: "gw2", Name: "Alternate gateway", Style: enum.StyleCompletion, Endpoint: server.URL,
 		Stream: &stream, Models: []appgateway.ModelInput{{ID: "m2", InputModalities: []enum.Modality{enum.ModalityText}}},
 	}); err != nil {
@@ -137,7 +137,7 @@ func TestREPLSendsListsAndResumesConversation(t *testing.T) {
 	if request := string(<-requests); !strings.Contains(request, "data:image/png;base64,") {
 		t.Fatalf("attached image not materialized in provider request: %s", request)
 	}
-	for _, want := range []string{"route set to gw1", "model set to m1", "attached shot.png", "private chain of thought", "pong", "messages=2", "> hello", "10 in · 5 out · 15 total"} {
+	for _, want := range []string{"route set to gw1", "model set to m1", "attached shot.png", "private chain of thought", "pong", "messages=3", "> hello", "10 in · 5 out · 15 total"} {
 		if !strings.Contains(output.String(), want) {
 			t.Errorf("REPL output missing %q:\n%s", want, output.String())
 		}
@@ -247,7 +247,7 @@ func TestAutoSelectNotifyDoesNotDeadlock(t *testing.T) {
 	stream := false
 	// Exactly one gateway with one model — the first send auto-selects
 	// both, firing Notify twice on the update loop.
-	if err := gatewayApplication.Upsert(t.Context(), appgateway.GatewayInput{
+	if _, err := gatewayApplication.Upsert(t.Context(), appgateway.GatewayInput{
 		ID: "gw1", Name: "Test gateway", Style: enum.StyleCompletion, Endpoint: server.URL,
 		ApiKey: &key, Stream: &stream,
 		Models: []appgateway.ModelInput{{ID: "m1"}},
@@ -397,7 +397,7 @@ func TestCompactJobRunsAsTurnAndConfirms(t *testing.T) {
 	gatewayRepository := repogateway.NewGatewayRepository(filepath.Join(storage, "gateways"), secrets)
 	gatewayApplication := appgateway.New(gatewayRepository, secrets, nil)
 	stream := false
-	if err := gatewayApplication.Upsert(t.Context(), appgateway.GatewayInput{
+	if _, err := gatewayApplication.Upsert(t.Context(), appgateway.GatewayInput{
 		ID: "gw1", Name: "Test gateway", Style: enum.StyleCompletion, Endpoint: server.URL,
 		Stream: &stream, Models: []appgateway.ModelInput{{ID: "m1"}},
 	}); err != nil {
@@ -482,7 +482,7 @@ func TestPipedCRNeverTriggersPicker(t *testing.T) {
 	gatewayRepository := repogateway.NewGatewayRepository(filepath.Join(storage, "gateways"), secrets)
 	gatewayApplication := appgateway.New(gatewayRepository, secrets, nil)
 	stream := false
-	if err := gatewayApplication.Upsert(t.Context(), appgateway.GatewayInput{
+	if _, err := gatewayApplication.Upsert(t.Context(), appgateway.GatewayInput{
 		ID: "gw1", Name: "Test gateway", Style: enum.StyleCompletion, Endpoint: server.URL,
 		Stream: &stream, Models: []appgateway.ModelInput{{ID: "m1"}},
 	}); err != nil {
@@ -609,7 +609,7 @@ func TestConversationArgPicker(t *testing.T) {
 	gatewayRepository := repogateway.NewGatewayRepository(filepath.Join(storage, "gateways"), secrets)
 	gatewayApplication := appgateway.New(gatewayRepository, secrets, nil)
 	stream := false
-	if err := gatewayApplication.Upsert(t.Context(), appgateway.GatewayInput{
+	if _, err := gatewayApplication.Upsert(t.Context(), appgateway.GatewayInput{
 		ID: "gw1", Name: "Test gateway", Style: enum.StyleCompletion, Endpoint: server.URL,
 		Stream: &stream, Models: []appgateway.ModelInput{{ID: "m1"}},
 	}); err != nil {
@@ -789,7 +789,7 @@ func TestToolCallLoopRunsEndToEnd(t *testing.T) {
 	gatewayApplication := appgateway.New(gatewayRepository, secrets, nil)
 	key := "local-test-key"
 	stream := false
-	if err := gatewayApplication.Upsert(t.Context(), appgateway.GatewayInput{
+	if _, err := gatewayApplication.Upsert(t.Context(), appgateway.GatewayInput{
 		ID: "gw1", Name: "Test gateway", Style: enum.StyleCompletion, Endpoint: server.URL,
 		ApiKey: &key, Stream: &stream,
 		Models: []appgateway.ModelInput{{ID: "m1"}},

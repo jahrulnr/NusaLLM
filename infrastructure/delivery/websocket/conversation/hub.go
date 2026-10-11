@@ -72,6 +72,15 @@ const (
 	turnEdit
 )
 
+// String is the wire word naming the opening command — "send" or
+// "edit" — shared by the room-activity notice and ActiveTurn.
+func (k turnKind) String() string {
+	if k == turnEdit {
+		return "edit"
+	}
+	return "send"
+}
+
 // turn is one admitted command: its bounded frame journal, the live
 // subscriber set, and the job's own server-scoped context — disconnected
 // sockets never cancel it.
@@ -79,9 +88,13 @@ type turn struct {
 	id             string
 	kind           turnKind
 	conversationID string
-	requestID      string
-	turnCtx        context.Context
-	turnCancel     context.CancelFunc
+	// admitted orders non-terminal turns for one room. The hub is the
+	// only owner of "a transport turn is running"; it is not conversation
+	// state.
+	admitted   int64
+	requestID  string
+	turnCtx    context.Context
+	turnCancel context.CancelFunc
 	// job arguments — convID already on the turn.
 	route, modelID, msgID, content string
 	opts                           appjob.SendOptions
@@ -128,6 +141,7 @@ type Hub struct {
 
 	mu         sync.Mutex
 	turns      map[string]*turn
+	admitSeq   int64
 	sockets    map[*conn]struct{}
 	wg         sync.WaitGroup
 	shutting   bool
@@ -355,6 +369,8 @@ func (h *Hub) admitAndRun(c *conn, requestID, convID string, job turn) {
 	t.id = tid.String()
 	t.conversationID = convID
 	t.requestID = requestID
+	h.admitSeq++
+	t.admitted = h.admitSeq
 	t.subscribed = map[*conn]struct{}{c: {}}
 	t.turnCtx, t.turnCancel = context.WithCancel(h.ctx)
 	h.turns[t.id] = t
@@ -363,6 +379,9 @@ func (h *Hub) admitAndRun(c *conn, requestID, convID string, job turn) {
 	// so seq 0 provably precedes every stream frame.
 	h.wg.Add(1)
 	h.emitLocked(t, "turn.opened", nil, true)
+	// The room-activity notice enqueues on every socket under the same
+	// lock — it provably follows seq 0 on each wire.
+	h.broadcastLocked(activityFrame(t, "opened"))
 	h.mu.Unlock()
 
 	go h.runTurn(t)
@@ -451,6 +470,9 @@ func (h *Hub) runTurn(t *turn) {
 	p.Steering = t.steeringSnapshotLocked()
 	t.outcome = &turnOutcome{typ: strings.TrimPrefix(typ, "turn."), payload: p}
 	h.emitLocked(t, typ, p, true)
+	// The terminal mirrors into the room-level notice before the turn
+	// seals — every socket learns the room went idle.
+	h.broadcastLocked(activityFrame(t, strings.TrimPrefix(typ, "turn.")))
 	h.finishLocked(t)
 }
 
@@ -592,6 +614,19 @@ func (h *Hub) emitLocked(t *turn, typ string, payload any, withRequest bool) boo
 	return true
 }
 
+// broadcastLocked delivers one unsequenced, unjournaled room-level
+// frame to every socket — the conversation.activity notice. A marshal
+// failure drops the notice, never the turn. Callers hold h.mu.
+func (h *Hub) broadcastLocked(f serverFrame) {
+	raw, ok := marshalFrame(f)
+	if !ok {
+		return
+	}
+	for c := range h.sockets {
+		c.enqueue(raw)
+	}
+}
+
 // finishLocked seals a turn after its terminal frame: subscribers
 // detach, the context releases, and the journal enters retention.
 // Callers hold h.mu.
@@ -600,6 +635,27 @@ func (h *Hub) finishLocked(t *turn) {
 	t.closedAt = time.Now()
 	t.subscribed = nil
 	t.turnCancel()
+}
+
+// ActiveTurn is the oldest non-terminal transport turn for a room, the
+// one a client that loaded the room should watch. A finished journal is
+// not a turn in progress. kind is "send" or "edit".
+func (h *Hub) ActiveTurn(conversationID string) (turnID, kind string, ok bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var best *turn
+	for _, t := range h.turns {
+		if t.terminal || t.conversationID != conversationID {
+			continue
+		}
+		if best == nil || t.admitted < best.admitted {
+			best = t
+		}
+	}
+	if best == nil {
+		return "", "", false
+	}
+	return best.id, best.kind.String(), true
 }
 
 // dropConn removes a socket from every turn's subscriber set — turns

@@ -70,18 +70,23 @@ func (g *gatedTool) Execute(ctx context.Context, _ entity.ToolCall, _ dservice.T
 }
 
 // scriptSvc demands the scripted tool by call number, "done" otherwise,
-// and records the last message each call saw — where a folded steer
-// must sit relative to the next provider call.
+// and records the last two message contents each call saw — where a
+// folded steer must sit relative to the context record trailing it.
 type scriptSvc struct {
 	calls   int32
 	toolFor map[int32]string
 	seen    map[int32]string
+	prev    map[int32]string
 }
 
 func (s *scriptSvc) Send(_ context.Context, conv *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, _ event.TurnEventHandler) error {
 	n := atomic.AddInt32(&s.calls, 1)
 	if s.seen != nil {
-		s.seen[n] = conv.Last().Content()
+		msgs := conv.Messages()
+		s.seen[n] = msgs[len(msgs)-1].Content()
+		if s.prev != nil && len(msgs) > 1 {
+			s.prev[n] = msgs[len(msgs)-2].Content()
+		}
 	}
 	var m entity.Message
 	if name, ok := s.toolFor[n]; ok {
@@ -410,7 +415,7 @@ func TestResyncCarriesOutcomeAndSnapshot(t *testing.T) {
 // recall, and the terminal snapshot reports every input's state.
 func TestSteerExactTurnLifecycle(t *testing.T) {
 	gate1, gate2 := newGatedTool("gate1"), newGatedTool("gate2")
-	svc := &scriptSvc{toolFor: map[int32]string{1: "gate1", 2: "gate2"}, seen: map[int32]string{}}
+	svc := &scriptSvc{toolFor: map[int32]string{1: "gate1", 2: "gate2"}, seen: map[int32]string{}, prev: map[int32]string{}}
 	app := gatedApp(t, svc, map[string]*gatedTool{"gate1": gate1, "gate2": gate2})
 	h := newHub(t, app)
 	ws := dial(t, h)
@@ -438,8 +443,8 @@ func TestSteerExactTurnLifecycle(t *testing.T) {
 		t.Fatalf("folded steer frame %s — want inputId/text/final", f.Payload)
 	}
 	<-gate2.entered
-	if svc.seen[2] != "hold on" {
-		t.Fatalf("provider call 2 saw last=%q, want the folded steer", svc.seen[2])
+	if svc.prev[2] != "hold on" || svc.seen[2] != "" {
+		t.Fatalf("provider call 2 saw prev=%q last=%q, want the folded steer then its context record", svc.prev[2], svc.seen[2])
 	}
 
 	// Persisted input refuses recall while the turn still runs.
@@ -471,7 +476,7 @@ func TestSteerExactTurnLifecycle(t *testing.T) {
 		t.Fatalf("terminal snapshot %+v, want %+v", term.Steering, want)
 	}
 	for n, last := range svc.seen {
-		if last == "scratch that" {
+		if last == "scratch that" || svc.prev[n] == "scratch that" {
 			t.Fatalf("provider call %d saw the recalled input fold", n)
 		}
 	}

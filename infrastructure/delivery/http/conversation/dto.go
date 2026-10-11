@@ -30,6 +30,12 @@ type conversationDTO struct {
 	ActiveCount    int                    `json:"activeCount"`
 	SealedSegments int                    `json:"sealedSegments"`
 	CanCompact     *bool                  `json:"canCompact,omitempty"`
+	// ActiveTurnID is the hub's in-progress transport turn for this room.
+	// Detail and list items set it while a non-terminal turn exists;
+	// writes leave it empty so it stays off the wire. It is not
+	// persisted conversation state.
+	ActiveTurnID   string `json:"activeTurnId,omitempty"`
+	ActiveTurnKind string `json:"activeTurnKind,omitempty"`
 }
 
 func toConversation(i drepo.ConversationInfo) conversationDTO {
@@ -49,8 +55,9 @@ func toConversation(i drepo.ConversationInfo) conversationDTO {
 	}
 }
 
-// toolCallDTO is the owner-visible call record — id, name, lifecycle
-// status, the exact input string the model produced, when the call was
+// toolCallDTO is the owner-visible call record — id, name, provenance
+// (model-originated vs application-injected), lifecycle status, the exact
+// input string the model produced, when the call was
 // recorded, the plain result text when one exists, and any
 // media the tool produced. Tool I/O intentionally crosses to the local
 // owner UI; optionalContent and key material never do. Output and
@@ -59,6 +66,7 @@ func toConversation(i drepo.ConversationInfo) conversationDTO {
 type toolCallDTO struct {
 	ID          string          `json:"id"`
 	Name        string          `json:"name"`
+	Type        string          `json:"type"`   // "origin" | "injection"
 	Status      string          `json:"status"` // "pending" | "completed"
 	Input       string          `json:"input"`
 	CalledAt    *time.Time      `json:"calledAt,omitempty"`
@@ -70,6 +78,7 @@ func toToolCall(t entity.ToolCall) toolCallDTO {
 	d := toolCallDTO{
 		ID:     t.ID(),
 		Name:   t.Name(),
+		Type:   t.Type().String(),
 		Status: "completed",
 		Input:  t.Input(),
 	}

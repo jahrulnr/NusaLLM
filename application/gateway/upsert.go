@@ -21,6 +21,33 @@ import (
 // managing their own indirection; "" clears the credential; nil keeps
 // whatever is stored, indirection included.
 //
+// After the record commits, the provider catalog merges into it — the
+// same merge the hourly auto-import runs — so a save never waits a tick
+// for its models. The import's result is the UpsertOutcome: merged ids
+// in Added, a fetch/merge failure in CatalogError. catalog == nil skips
+// the import entirely. The failure can never be an Upsert error: the
+// record is already written, and an error would have transports retry
+// a write that succeeded.
+func (app *GatewayApp) Upsert(ctx context.Context, in GatewayInput) (UpsertOutcome, error) {
+	if err := app.write(ctx, in); err != nil {
+		return UpsertOutcome{}, err
+	}
+	if app.catalog == nil {
+		return UpsertOutcome{}, nil
+	}
+	added, err := app.importModels(ctx, in.ID)
+	if err != nil {
+		return UpsertOutcome{CatalogError: err.Error()}, nil
+	}
+	return UpsertOutcome{Added: added}, nil
+}
+
+// write is the record half of Upsert — the whole-document replace plus
+// its vault CRUD. It is a separate method because the inspect→save
+// window holds app.mu while importModels locks the same mutex, and Go
+// mutexes are not reentrant; keeping the provider call out of the lock
+// also means catalog latency never serializes management ops.
+//
 // Write order matters: every input validates before the first store
 // call, the vault write precedes the record save (an orphaned value is
 // harmless garbage, a dangling ref is a broken gateway), and the
@@ -28,7 +55,7 @@ import (
 // naming it — covering both an explicit clear and a transition to an
 // env:/foreign-secret: ref, where the old material would otherwise sit
 // in the vault forever.
-func (app *GatewayApp) Upsert(ctx context.Context, in GatewayInput) error {
+func (app *GatewayApp) write(ctx context.Context, in GatewayInput) error {
 	if _, ok := enum.ParseStyle(in.Style.String()); !ok {
 		return apperror.New(400, "invalid gateway",
 			fmt.Errorf("unknown style %q", in.Style))

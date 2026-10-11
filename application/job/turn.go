@@ -2,6 +2,7 @@ package job
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
@@ -24,8 +25,10 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 	// Hand-built Deps may carry a zero or invalid config — normalize
 	// clamps and tag defaults fill it.
 	ccfg := d.Config
-	// Directory-aware tools work under the room's bound workspace.
-	ctx = dservice.WithWorkspaceDir(ctx, conv.Workspace())
+	// Directory-aware tools work under the turn's resolved workspace —
+	// the room's binding, else the driver's default root.
+	dir := TurnWorkspace(conv, driver)
+	ctx = dservice.WithWorkspaceDir(ctx, dir)
 	ctx = dservice.WithConversationID(ctx, convID)
 	ccfg.Normalize()
 	wireModel := model.ApplyUnknownContextDefaults()
@@ -79,6 +82,15 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 					return err
 				}
 				didCompact = true
+			}
+		}
+		if last := conv.Last(); last != nil && last.Editable() {
+			// An editable message just entered history — the submitted
+			// line or a folded steer — so pin the turn's workspace
+			// behind it: the record the provider reads cites the
+			// current path, while the system prompt stays untouched.
+			if err := d.appendWorkspaceContext(ctx, convID, conv, dir); err != nil {
+				return err
 			}
 		}
 		before := len(conv.Messages())
@@ -333,6 +345,43 @@ func (d Deps) persistInterrupted(ctx context.Context, convID string, msg *entity
 		}
 	}
 	return nil
+}
+
+// appendWorkspaceContext records the turn's working directory as one
+// injection-typed `workspace` call on a system user message, appended right
+// after the editable line it describes. The record travels history like a
+// tool result — adapters fold it into the next provider call — and
+// renderers show it as a context line, not a user quote. The empty latency
+// marks it as a stored record, not a measured execution.
+func (d Deps) appendWorkspaceContext(ctx context.Context, convID string, conv *aggregate.Conversation, dir string) error {
+	shown := dir
+	if shown == "" {
+		shown = "(unset)"
+	}
+	raw, err := json.Marshal(struct {
+		Path string `json:"path"`
+	}{Path: dir})
+	if err != nil {
+		return apperror.New(500, "workspace context marshal failed", err)
+	}
+	msg, err := entity.NewMessage(enum.RoleUser, "")
+	if err != nil {
+		return err
+	}
+	msg.SetUserType(enum.LLMUserTypeSystem)
+	callID, err := valueobject.NewID("call", "")
+	if err != nil {
+		return err
+	}
+	call, err := entity.NewToolCall(callID.String(), "workspace", string(raw), enum.TooltypeInjection)
+	if err != nil {
+		return err
+	}
+	call.SetStoredOutput("workspace changed to "+shown, "")
+	msg.AddToolCall(call)
+	conv.Append(msg)
+	_, err = d.Convs.AppendMessage(ctx, convID, msg)
+	return err
 }
 
 // pendingCalls returns the model-originated calls still awaiting output on

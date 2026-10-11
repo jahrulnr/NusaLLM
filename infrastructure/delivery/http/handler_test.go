@@ -259,6 +259,57 @@ func TestConversationListPaging(t *testing.T) {
 	}
 }
 
+type scriptedTurn struct{ id, kind, room string }
+
+func (s scriptedTurn) ActiveTurn(conversationID string) (string, string, bool) {
+	if s.id == "" || conversationID != s.room {
+		return "", "", false
+	}
+	return s.id, s.kind, true
+}
+
+func TestConversationDetailActiveTurn(t *testing.T) {
+	fc := &fakeConversations{infos: []drepo.ConversationInfo{mkInfo("c_1"), mkInfo("c_2")}}
+	h := newTestHandler(t, Deps{
+		Conversations: fc,
+		LiveTurns:     scriptedTurn{id: "t_live", kind: "send", room: "c_1"},
+	})
+	rec := do(t, h, "GET", "/api/conversations/c_1", "", "")
+	if rec.Code != 200 {
+		t.Fatalf("want 200, got %d", rec.Code)
+	}
+	doc := decodeBody(t, rec)
+	if doc["activeTurnId"] != "t_live" || doc["activeTurnKind"] != "send" {
+		t.Fatalf("detail turn: %v %v", doc["activeTurnId"], doc["activeTurnKind"])
+	}
+	rec = do(t, h, "GET", "/api/conversations/c_2", "", "")
+	if _, ok := decodeBody(t, rec)["activeTurnId"]; ok {
+		t.Fatal("idle room must omit activeTurnId")
+	}
+	rec = do(t, h, "GET", "/api/conversations?limit=10", "", "")
+	for _, item := range decodeBody(t, rec)["data"].([]any) {
+		m := item.(map[string]any)
+		if m["id"] == "c_1" {
+			if m["activeTurnId"] != "t_live" || m["activeTurnKind"] != "send" {
+				t.Fatalf("list item for the live room must carry the turn: %v", m)
+			}
+		} else if _, ok := m["activeTurnId"]; ok {
+			t.Fatalf("idle room's list item must omit activeTurnId: %v", m)
+		}
+	}
+	h = newTestHandler(t, Deps{Conversations: fc})
+	rec = do(t, h, "GET", "/api/conversations/c_1", "", "")
+	if _, ok := decodeBody(t, rec)["activeTurnId"]; ok {
+		t.Fatal("detail without a turn hub must omit activeTurnId")
+	}
+	rec = do(t, h, "GET", "/api/conversations?limit=10", "", "")
+	for _, item := range decodeBody(t, rec)["data"].([]any) {
+		if _, ok := item.(map[string]any)["activeTurnId"]; ok {
+			t.Fatal("list without a turn hub must omit activeTurnId")
+		}
+	}
+}
+
 func TestConversationDetail404(t *testing.T) {
 	h := newTestHandler(t, Deps{Conversations: &fakeConversations{}})
 	rec := do(t, h, "GET", "/api/conversations/c_missing", "", "")
@@ -358,6 +409,7 @@ func TestMessagesWindowAndSanitization(t *testing.T) {
 	}
 	pending := calls[0].(map[string]any)
 	if pending["id"] != "call_1" || pending["name"] != "read_file" ||
+		pending["type"] != "origin" ||
 		pending["status"] != "pending" ||
 		pending["input"] != `{"path":"/etc/passwd"}` {
 		t.Fatalf("pending tool call projection wrong: %v", pending)
@@ -367,6 +419,7 @@ func TestMessagesWindowAndSanitization(t *testing.T) {
 	}
 	done := calls[1].(map[string]any)
 	if done["id"] != "call_2" || done["name"] != "run_shell" ||
+		done["type"] != "origin" ||
 		done["status"] != "completed" ||
 		done["input"] != `{"cmd":"ls -la"}` ||
 		done["output"] != "total 0" ||
@@ -445,6 +498,32 @@ func TestMessagesCompletedEmptyToolOutput(t *testing.T) {
 	result := msgs[0].(map[string]any)["toolCalls"].([]any)[0].(map[string]any)
 	if result["status"] != "completed" || result["output"] != "" {
 		t.Fatalf("empty completed tool output misclassified: %v", result)
+	}
+}
+
+// An injection call — the application's context record — projects its
+// provenance so the UI can render it as context, not model work.
+func TestMessagesInjectionCallType(t *testing.T) {
+	msg, _ := entity.NewMessage(enum.RoleUser, "")
+	msg.SetUserType(enum.LLMUserTypeSystem)
+	call, _ := entity.NewToolCall("call_ws", "workspace", `{"path":"/srv/ws"}`, enum.TooltypeInjection)
+	call.SetStoredOutput("The active workspace is /srv/ws.", "")
+	msg.AddToolCall(call)
+	h := newTestHandler(t, Deps{Conversations: &fakeConversations{
+		infos:   []drepo.ConversationInfo{{ID: "c_1", MessageCount: 1}},
+		history: []entity.Message{msg},
+	}})
+	rec := do(t, h, "GET", "/api/conversations/c_1/messages", "", "")
+	if rec.Code != 200 {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	msgs := decodeBody(t, rec)["messages"].([]any)
+	got := msgs[0].(map[string]any)["toolCalls"].([]any)[0].(map[string]any)
+	if got["type"] != "injection" || got["output"] != "The active workspace is /srv/ws." {
+		t.Fatalf("injection call projection wrong: %v", got)
+	}
+	if msgs[0].(map[string]any)["userType"] != "system" {
+		t.Fatalf("context record userType = %v", msgs[0])
 	}
 }
 

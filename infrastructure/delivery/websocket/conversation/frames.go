@@ -128,6 +128,36 @@ func resyncFrame(requestID, convID, turnID string, payload resyncPayload) server
 	}
 }
 
+// activityPayload is the conversation.activity body — the room-level
+// notice that a transport turn opened or reached its terminal. state
+// mirrors the edge ("opened", or the terminal verdict "completed"/
+// "failed"); kind is the command that opened the turn; requestId is
+// the opening command's own correlation id so the issuing tab
+// recognizes its notice — opaque to every other tab.
+type activityPayload struct {
+	State     string `json:"state"`
+	Kind      string `json:"kind"`
+	RequestID string `json:"requestId"`
+}
+
+// activityFrame projects a turn's open/terminal edge into the
+// room-level notice broadcast to every socket. It is unsequenced and
+// unjournaled — room state, not turn stream data — so a turn.watch
+// replay must never reproduce it. The frame carries no top-level
+// requestId: it answers no command.
+func activityFrame(t *turn, state string) serverFrame {
+	return serverFrame{
+		Type:           "conversation.activity",
+		ConversationID: t.conversationID,
+		TurnID:         t.id,
+		Payload: activityPayload{
+			State:     state,
+			Kind:      t.kind.String(),
+			RequestID: t.requestID,
+		},
+	}
+}
+
 type phasePayload struct {
 	Phase string `json:"phase"`
 }

@@ -22,7 +22,8 @@ import (
 )
 
 // Edit rewrites the target user message, drops the old assistant suffix,
-// and regenerates — the room ends as [edited user, fresh assistant].
+// and regenerates — the room ends as [edited user, context record, fresh
+// assistant].
 func TestEditRegeneratesFromTarget(t *testing.T) {
 	app, _ := fixture(t, okHandler)
 	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "original", nil, appjob.SendOptions{}, nil); err != nil {
@@ -42,10 +43,10 @@ func TestEditRegeneratesFromTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	msgs := conv.Messages()
-	if len(msgs) != 2 || msgs[0].Content() != "edited" || msgs[0].ID() != target {
+	if len(msgs) != 3 || msgs[0].Content() != "edited" || msgs[0].ID() != target {
 		t.Fatalf("edited history wrong: %+v", msgs)
 	}
-	if msgs[1].Role() != enum.RoleAssistant {
+	if msgs[2].Role() != enum.RoleAssistant {
 		t.Fatal("edit must regenerate the assistant turn")
 	}
 }
@@ -68,9 +69,15 @@ func TestEditRejectsNonUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	conv, _ := app.deps.Convs.Load(t.Context(), "room")
-	assistant := conv.Messages()[1].ID()
+	assistant := conv.Messages()[2].ID()
 	if err := app.Edit(t.Context(), "room", assistant, "hijack", nil); apperror.As(err).StatusCode() != 400 {
 		t.Fatalf("assistant edit → %v, want 400", err)
+	}
+	// The workspace context record is a non-editable user-role message —
+	// the same predicate excludes it.
+	contextRecord := conv.Messages()[1].ID()
+	if err := app.Edit(t.Context(), "room", contextRecord, "hijack", nil); apperror.As(err).StatusCode() != 400 {
+		t.Fatalf("context-record edit → %v, want 400", err)
 	}
 }
 
@@ -114,7 +121,7 @@ func TestEditCompactedMessage(t *testing.T) {
 	}
 	conv, _ = app.deps.Convs.Load(t.Context(), "room")
 	msgs := conv.Messages()
-	if len(msgs) != 2 || msgs[0].ID() != target || msgs[0].Content() != "new question" {
+	if len(msgs) != 3 || msgs[0].ID() != target || msgs[0].Content() != "new question" {
 		t.Fatalf("repromoted history wrong: %+v", msgs)
 	}
 	info, _ := app.deps.Convs.Info(t.Context(), "room")
@@ -170,7 +177,7 @@ func TestEditPreemptsRunningSend(t *testing.T) {
 	}
 	conv, _ = app.deps.Convs.Load(t.Context(), "room")
 	msgs := conv.Messages()
-	if len(msgs) != 2 || msgs[0].Content() != "edited" {
+	if len(msgs) != 3 || msgs[0].Content() != "edited" {
 		t.Fatalf("post-edit history wrong: %+v", msgs)
 	}
 }
@@ -226,7 +233,7 @@ func TestEditPreemptsRunningTool(t *testing.T) {
 	}
 	conv, _ = convs.Load(t.Context(), "room")
 	msgs := conv.Messages()
-	if len(msgs) != 2 || msgs[0].Content() != "edited instead" || msgs[1].Content() != "done" {
+	if len(msgs) != 3 || msgs[0].Content() != "edited instead" || msgs[2].Content() != "done" {
 		t.Fatalf("post-edit history wrong: %+v", msgs)
 	}
 	// The truncated suffix must not leave a pending call behind.

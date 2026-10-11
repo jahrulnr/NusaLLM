@@ -1,8 +1,9 @@
 package appconversation
 
 import (
-	appjob "github.com/jahrulnr/nusallm/application/job"
 	"testing"
+
+	appjob "github.com/jahrulnr/nusallm/application/job"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
@@ -19,7 +20,7 @@ func TestConversationQueries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.ID != "query-room" || info.MessageCount != 2 {
+	if info.ID != "query-room" || info.MessageCount != 3 {
 		t.Fatalf("Info = %+v", info)
 	}
 

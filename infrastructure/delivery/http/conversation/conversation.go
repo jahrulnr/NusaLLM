@@ -38,11 +38,21 @@ type Writer interface {
 	Compact(ctx context.Context, id string) error
 }
 
+// LiveTurn is the websocket hub's read of a room's in-progress transport
+// turn. The conversation projection does not own that fact; a nil lookup
+// omits it. kind is "send" or "edit".
+type LiveTurn interface {
+	ActiveTurn(conversationID string) (turnID, kind string, ok bool)
+}
+
 // Deps wires the use cases; Reads and Writes are optional — nil leaves
 // the corresponding routes unregistered.
 type Deps struct {
 	Reads  Reader
 	Writes Writer
+	// LiveTurns reports a non-terminal transport turn for detail and
+	// list reads. Nil leaves the field off the projection.
+	LiveTurns LiveTurn
 	// Jobs is the server-lifecycle context for accepted background work
 	// (delete, compact) — decoupled from any single request so a client
 	// disconnect can't cancel accepted work; nil means Background.
@@ -56,7 +66,7 @@ func Register(api *gin.RouterGroup, d Deps) {
 	if jobs == nil {
 		jobs = context.Background()
 	}
-	s := &server{reads: d.Reads, writes: d.Writes, jobs: jobs}
+	s := &server{reads: d.Reads, writes: d.Writes, jobs: jobs, live: d.LiveTurns}
 	if d.Reads != nil {
 		api.GET("/conversations", s.list)
 		api.GET("/conversations/:id", s.get)
@@ -73,5 +83,6 @@ func Register(api *gin.RouterGroup, d Deps) {
 type server struct {
 	reads  Reader
 	writes Writer
+	live   LiveTurn
 	jobs   context.Context
 }

@@ -96,6 +96,24 @@ export class TurnSocket extends EventTarget {
     });
   }
 
+  // watchTurn attaches to a turn this tab did not open — a reload or a
+  // room selection that found one still running. The cursor starts at
+  // afterSeq and reconnect re-watches from the last frame actually seen.
+  watchTurn({ conversationId, turnId, afterSeq = -1 }) {
+    let info = this.turns.get(turnId);
+    if (!info) {
+      info = { conversationId, lastSeq: afterSeq };
+      this.turns.set(turnId, info);
+    }
+    return this._command({
+      type: 'turn.watch',
+      requestId: requestId(),
+      conversationId,
+      turnId,
+      afterSeq: info.lastSeq,
+    });
+  }
+
   cancelTurn({ conversationId, turnId }) {
     return this._command({
       type: 'turn.cancel',
@@ -166,6 +184,10 @@ export class TurnSocket extends EventTarget {
   // frame event, not inside each consumer. Returns false for
   // duplicates/replays — a replayed turn.opened must never reset the
   // tracked cursor, and an old frame must never regress it.
+  // Unsequenced frames that still carry a turnId — the room-level
+  // conversation.activity broadcast — match none of the type checks
+  // below: they pass through to the shell without moving the cursor,
+  // minting a tracked turn, or retiring one.
   _accept(frame) {
     const t = this.turns.get(frame.turnId);
     const terminalSeq = this.terminals.get(frame.turnId);

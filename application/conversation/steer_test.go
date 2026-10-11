@@ -42,10 +42,12 @@ func (g *gatedTool) Execute(ctx context.Context, _ entity.ToolCall, _ dservice.T
 }
 
 // gatedScriptSvc demands the gated tool on call 1 and records the last
-// message call 2 sees — where the folded steer must sit.
+// two message contents call 2 sees — the folded steer and the context
+// record that trails it.
 type gatedScriptSvc struct {
 	calls    int32
 	lastSeen string
+	prevSeen string
 }
 
 func (s *gatedScriptSvc) Send(_ context.Context, conv *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, _ event.TurnEventHandler) error {
@@ -59,7 +61,9 @@ func (s *gatedScriptSvc) Send(_ context.Context, conv *aggregate.Conversation, _
 		m.AddToolCall(tc)
 		m.SetFinishReason(enum.FinishReasonToolCalls)
 	} else {
-		s.lastSeen = conv.Last().Content()
+		msgs := conv.Messages()
+		s.lastSeen = msgs[len(msgs)-1].Content()
+		s.prevSeen = msgs[len(msgs)-2].Content()
 		m, _ = entity.NewMessage(enum.RoleAssistant, "done")
 		m.SetFinishReason(enum.FinishReasonStop)
 	}
@@ -137,12 +141,13 @@ func TestSteerFoldsIntoRunningTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	msgs := conv.Messages()
-	// user / assistant+gated call / folded steer / assistant done
-	if len(msgs) != 4 || msgs[2].Role() != enum.RoleUser || msgs[2].Content() != "also check X" {
+	// user / context record / assistant+gated call / folded steer /
+	// context record / assistant done
+	if len(msgs) != 6 || msgs[3].Role() != enum.RoleUser || msgs[3].Content() != "also check X" {
 		t.Fatalf("steer did not fold into history: %d msgs", len(msgs))
 	}
-	if svc.lastSeen != "also check X" {
-		t.Fatalf("second provider call saw last=%q, want the steer", svc.lastSeen)
+	if svc.prevSeen != "also check X" || svc.lastSeen != "" {
+		t.Fatalf("second provider call saw prev=%q last=%q, want the steer then its context record", svc.prevSeen, svc.lastSeen)
 	}
 }
 
@@ -178,7 +183,7 @@ func TestRecallSteer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(conv.Messages()) != 3 {
+	if len(conv.Messages()) != 4 {
 		t.Fatalf("recalled steer entered history: %d msgs", len(conv.Messages()))
 	}
 	if svc.lastSeen != "need a tool" {

@@ -5,11 +5,13 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
 type fakeCatalog struct {
@@ -37,7 +39,7 @@ func TestRefreshModelsMergesDiscovered(t *testing.T) {
 		ApiKey:   strptr("sk-or-literal"),
 		Models:   []ModelInput{{ID: "a", ContextWindow: 64_000}},
 	}
-	if err := app.Upsert(t.Context(), in); err != nil {
+	if _, err := app.Upsert(t.Context(), in); err != nil {
 		t.Fatal(err)
 	}
 	app.catalog = fakeCatalog{ids: []string{"a", "b", "c"}}
@@ -78,7 +80,7 @@ func TestRefreshModelsReportsFailures(t *testing.T) {
 		{ID: "ok", Style: enum.StyleCompletion, Endpoint: "https://ok", Models: []ModelInput{{ID: "a"}}},
 		{ID: "bad", Style: enum.StyleCompletion, Endpoint: "https://bad"},
 	} {
-		if err := app.Upsert(t.Context(), in); err != nil {
+		if _, err := app.Upsert(t.Context(), in); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -96,5 +98,175 @@ func TestRefreshModelsReportsFailures(t *testing.T) {
 	info, err := app.Get(t.Context(), "ok")
 	if err != nil || len(info.Models) != 1 || info.Models[0].ID() != "a" {
 		t.Fatalf("failed refresh must not alter the record: %+v", info)
+	}
+}
+
+// A save with the catalog wired merges the provider's ids into the
+// record: ids the input already carried keep their parameters, unknown
+// ids append, and the apiKey still rides as its "secret:" reference —
+// the import path re-saves the record and must never leak resolved
+// material into the file.
+func TestUpsertImportsCatalog(t *testing.T) {
+	app, _, dir := newApp(t)
+	app.catalog = fakeCatalog{ids: []string{"a", "b"}}
+	in := GatewayInput{
+		ID:       "or",
+		Style:    enum.StyleCompletion,
+		Endpoint: "https://openrouter.ai/api",
+		ApiKey:   strptr("sk-or-literal"),
+		Models:   []ModelInput{{ID: "a", ContextWindow: 64_000}},
+	}
+	out, err := app.Upsert(t.Context(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Added) != 1 || out.Added[0] != "b" || out.CatalogError != "" {
+		t.Fatalf("outcome = %+v, want Added [b]", out)
+	}
+	info, err := app.Get(t.Context(), "or")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(info.Models) != 2 || info.Models[0].ID() != "a" ||
+		info.Models[0].ContextWindow() != 64_000 || info.Models[1].ID() != "b" {
+		t.Fatalf("models mismatch: %+v", info.Models)
+	}
+	raw, _ := os.ReadFile(dir + "/or.json")
+	if strings.Contains(string(raw), "sk-or-literal") ||
+		!strings.Contains(string(raw), "secret:gateway/or/api_key") {
+		t.Fatalf("import must not leak key material into the record: %s", raw)
+	}
+}
+
+// A catalog failure never fails the write — the record stands with the
+// input's models and the outcome carries the fetch failure, so callers
+// don't retry a write that already succeeded.
+func TestUpsertCatalogErrorKeepsRecord(t *testing.T) {
+	app, _, _ := newApp(t)
+	app.catalog = fakeCatalog{err: errors.New("provider unreachable")}
+	in := GatewayInput{
+		ID:       "g",
+		Style:    enum.StyleCompletion,
+		Endpoint: "https://x",
+		Models:   []ModelInput{{ID: "a"}},
+	}
+	out, err := app.Upsert(t.Context(), in)
+	if err != nil {
+		t.Fatalf("catalog failure must not fail the write: %v", err)
+	}
+	if out.CatalogError != "provider unreachable" || len(out.Added) != 0 {
+		t.Fatalf("outcome = %+v, want CatalogError only", out)
+	}
+	info, err := app.Get(t.Context(), "g")
+	if err != nil || len(info.Models) != 1 || info.Models[0].ID() != "a" {
+		t.Fatalf("catalog failure must not alter the record: %+v, %v", info, err)
+	}
+}
+
+// No catalog wired means no import — the write still succeeds and no
+// provider call happens (there is none to make).
+func TestUpsertNilCatalogSkipsImport(t *testing.T) {
+	app, _, _ := newApp(t)
+	in := GatewayInput{
+		ID:       "g",
+		Style:    enum.StyleCompletion,
+		Endpoint: "https://x",
+		Models:   []ModelInput{{ID: "a"}},
+	}
+	out, err := app.Upsert(t.Context(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Added) != 0 || out.CatalogError != "" {
+		t.Fatalf("nil catalog must yield an empty outcome: %+v", out)
+	}
+}
+
+// ImportModels splits failure by stage at the app layer: a missing
+// gateway propagates its Load 404 — the record itself is absent — while
+// a catalog failure after a successful load reports through
+// CatalogError because the record stands untouched.
+func TestImportModelsErrorSplit(t *testing.T) {
+	app, _, _ := newApp(t)
+	app.catalog = fakeCatalog{ids: []string{"a"}}
+
+	if _, err := app.ImportModels(t.Context(), "nope"); err == nil ||
+		apperror.As(err).StatusCode() != apperror.StatusNotFound {
+		t.Fatalf("missing gateway → %v, want 404", err)
+	}
+
+	in := GatewayInput{
+		ID:       "g",
+		Style:    enum.StyleCompletion,
+		Endpoint: "https://x",
+		Models:   []ModelInput{{ID: "a"}},
+	}
+	if _, err := app.Upsert(t.Context(), in); err != nil {
+		t.Fatal(err)
+	}
+	app.catalog = fakeCatalog{err: errors.New("provider unreachable")}
+	out, err := app.ImportModels(t.Context(), "g")
+	if err != nil {
+		t.Fatalf("catalog failure must not error the call: %v", err)
+	}
+	if out.CatalogError != "provider unreachable" || len(out.Added) != 0 {
+		t.Fatalf("outcome = %+v, want CatalogError only", out)
+	}
+	info, err := app.Get(t.Context(), "g")
+	if err != nil || len(info.Models) != 1 || info.Models[0].ID() != "a" {
+		t.Fatalf("catalog failure must not alter the record: %+v, %v", info, err)
+	}
+}
+
+// A save's record write and a refresh's inspect→merge→save window hold
+// the same mutex, so churn from concurrent Upsert and ImportModels on
+// one gateway can interleave only at serialized points — no merged id
+// is lost and no call reports an error (a CatalogError outcome would
+// still be tolerable; the record is always intact).
+func TestImportModelsConcurrentMergeWindow(t *testing.T) {
+	app, _, _ := newApp(t)
+	app.catalog = fakeCatalog{ids: []string{"a", "b"}}
+	in := GatewayInput{
+		ID:       "g",
+		Style:    enum.StyleCompletion,
+		Endpoint: "https://x",
+		Models:   []ModelInput{{ID: "a"}},
+	}
+	if _, err := app.Upsert(t.Context(), in); err != nil {
+		t.Fatal(err)
+	}
+
+	const goroutines, iterations = 8, 5
+	errs := make(chan error, goroutines*iterations)
+	var wg sync.WaitGroup
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			for i := 0; i < iterations; i++ {
+				var err error
+				if (n+i)%2 == 0 {
+					_, err = app.Upsert(t.Context(), in)
+				} else {
+					_, err = app.ImportModels(t.Context(), "g")
+				}
+				if err != nil {
+					errs <- err
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent op failed: %v", err)
+	}
+
+	info, err := app.Get(t.Context(), "g")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(info.Models) != 2 || info.Models[0].ID() != "a" || info.Models[1].ID() != "b" {
+		t.Fatalf("merged record lost an id: %+v", info.Models)
 	}
 }

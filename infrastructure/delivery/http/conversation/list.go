@@ -45,7 +45,17 @@ func (s *server) list(c *gin.Context) {
 			HasMore: offset+len(page) < len(infos)},
 	}
 	for _, i := range page {
-		out.Data = append(out.Data, toConversation(i))
+		dto := toConversation(i)
+		// The live transport turn rides list items too — a freshly
+		// loaded sidebar marks active rooms without per-room detail
+		// reads. Nil hub leaves the fields off the wire.
+		if s.live != nil {
+			if turnID, kind, ok := s.live.ActiveTurn(i.ID); ok {
+				dto.ActiveTurnID = turnID
+				dto.ActiveTurnKind = kind
+			}
+		}
+		out.Data = append(out.Data, dto)
 	}
 	c.JSON(200, out)
 }

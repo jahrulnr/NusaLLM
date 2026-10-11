@@ -298,6 +298,13 @@ interrupts outright. If the estimate reaches `compact_budget_pct` of the
 model's input allowance, or the provider answers 413, the turn compacts
 history once and retries rather than failing.
 
+Every turn also records where the model is working: a `workspace`
+context line — an application-written injection, not something you
+typed — lands behind your message before each provider call so the
+model sees the active path with the request itself. `/history` and
+`/export` render it as a plain context line rather than an empty user
+bubble, and the WebUI shows it the same way.
+
 When you submit your first message in a session with no active
 conversation, a fresh `c_<random>` conversation id is minted; the id
 shows up in the footer and in `/status`.
@@ -390,7 +397,8 @@ Notes on the less obvious ones:
   Gateways written through `gateway add --models` declare no window, so
   every CLI-managed model is selectable.
 - `/export` writes `# conversation <id>` markdown with attachments and
-  tool calls inlined as bracketed lines; the path is confined to the
+  tool calls inlined as bracketed lines; workspace context records
+  export under `## context · m_…` headings; the path is confined to the
   workspace.
 - `/usage` counts tokens, not money — the CLI exposes no pricing fields,
   so the numbers are `input`, `cached read`, `cached write`, `output`,
