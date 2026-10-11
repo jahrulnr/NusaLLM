@@ -6,10 +6,11 @@ import {
 } from '../../lib/turn-projection.js';
 import {
   createQueue, enqueue, steer, requeue, bindRoom, takeQueued,
-  hasQueuedForRoom, findEntry, removeEntry, markInFlightUnknown,
+  hasQueuedForRoom, hasHeldForRoom, findEntry, removeEntry,
+  markInFlightUnknown, pauseQueue, unpauseQueue,
   steerAcked, steerProjected, steerRecalled, reconcileSnapshot,
   markTurnUnknown,
-  QUEUED, SUBMITTING, STEERING, RECALLING, UNKNOWN,
+  QUEUED, SUBMITTING, STEERING, RECALLING, UNKNOWN, FAILED,
 } from '../../lib/pending-queue.js';
 
 // Orchestration only. The shell owns the API/socket instances, the
@@ -56,7 +57,6 @@ class AppShell extends Widget {
     this.sidebarOpen = matchMedia('(min-width: 761px)').matches;
     this.settingsOpen = false;
 
-    this.root.classList.add('shell');
     this._build();
     this._listen();
     this.socket.connect();
@@ -125,6 +125,7 @@ class AppShell extends Widget {
     on(this.composer, 'queue-restore', ({ id }) => this._queueRestore(id));
     on(this.composer, 'queue-copy', ({ id }) => this._queueCopy(id));
     on(this.composer, 'queue-dismiss', ({ id }) => this._queueDismiss(id));
+    on(this.composer, 'queue-retry', ({ id }) => this._queueRetry(id));
     on(this.composer, 'queue-remove', ({ id }) => this._queueRemove(id));
     on(this.composer, 'queue-open', ({ id }) => this._queueOpen(id));
     on(this.composer, 'queue-check', ({ id }) => this._queueCheck(id));
@@ -468,22 +469,29 @@ class AppShell extends Widget {
       id: e.id, text: e.text, state: e.state, roomLabel: this._roomLabel(e.room),
       foreign: e.room !== viewKey,
       online: this.socket.state === 'open',
+      note: e.note || '',
+      retryable: e.state === FAILED && e.room === viewKey &&
+        this._retryTargetId(e) != null,
     }));
-    this.composer.queuePaused = this.queue.paused;
+    // "Paused" means this view's own lane holds entries — holds in
+    // other rooms are their rooms' business.
+    this.composer.queuePaused = hasHeldForRoom(this.queue, viewKey);
     const g = this._gate(viewKey);
     this.composer.queueNotice = this.queue.notice || '';
-    // Resume is offered whenever this view holds queued lines — its
+    // Resume is offered whenever this view holds held-back lines — its
     // very job is retrying a required/failed refresh, so the barrier
     // itself must not disable it. Only busy, offline, loading, or a
     // refresh already in flight make it inert.
-    const resumable = this.queue.paused && hasQueuedForRoom(this.queue, viewKey);
+    const resumable = hasHeldForRoom(this.queue, viewKey);
     this.composer.resumeVisible = resumable;
     this.composer.canResume = resumable && !this._commandGates(viewKey) &&
       !this.viewLoading && this.socket.state === 'open' && !g.pending;
     // Enter captures locally whenever dispatch can't happen now:
-    // a command gating this view's room, paused, backed-up, or a
-    // refresh barrier for this view.
-    this.composer.queueMode = this._commandGates(viewKey) || this.queue.paused ||
+    // a command gating this view's room, a backlog, an offline socket,
+    // or a refresh barrier for this view. A bare pause is no reason —
+    // fresh lines are not held.
+    this.composer.queueMode = this._commandGates(viewKey) ||
+      this.socket.state !== 'open' ||
       hasQueuedForRoom(this.queue, viewKey) ||
       g.required || g.pending > 0 || g.failed;
   }
@@ -577,17 +585,13 @@ class AppShell extends Widget {
   // One dispatch rule for every path that could start a turn: the
   // socket must be open, no command may gate this room, the view
   // settled, and the room's authoritative refresh not outstanding or
-  // failed.
+  // failed. A paused queue is NOT a dispatch brake — the hold lives on
+  // the entries it captured, so fresh input still flows.
   _dispatchable(roomKey) {
     if (this._commandGates(roomKey) || this.viewLoading) return false;
     if (this.socket.state !== 'open') return false;
     const g = this._gate(roomKey);
     return !(g.required || g.pending > 0 || g.failed);
-  }
-
-  // The auto-drain additionally waits on an unpaused queue.
-  _drainable(roomKey) {
-    return this._dispatchable(roomKey) && !this.queue.paused;
   }
 
   _captureOpts() {
@@ -636,9 +640,9 @@ class AppShell extends Widget {
     const text = (content || '').trim();
     if (!text) return;
     const roomKey = this._viewRoomKey();
-    // Paused counts as undrainable here too — the composer's Queue label
-    // must mean what it says.
-    if (!this._drainable(roomKey) || hasQueuedForRoom(this.queue, roomKey)) {
+    // A paused queue doesn't hold fresh input — only undispatchable
+    // rooms or a waiting backlog capture the line locally.
+    if (!this._dispatchable(roomKey) || hasQueuedForRoom(this.queue, roomKey)) {
       enqueue(this.queue, { text, room: roomKey, opts: this._captureOpts() });
       this.composer.clear();
       this._syncQueue();
@@ -711,11 +715,11 @@ class AppShell extends Widget {
   }
 
   // The auto-drain: only the current view's queue dispatches, oldest
-  // first — entries for other rooms wait for their own view, a paused
-  // queue waits for an explicit Resume, and a refresh barrier holds
+  // first — entries for other rooms wait for their own view, a held
+  // head waits for an explicit Resume, and a refresh barrier holds
   // everything back until history is authoritative.
   _drainQueue() {
-    if (!this._drainable(this._viewRoomKey())) return;
+    if (!this._dispatchable(this._viewRoomKey())) return;
     const entry = takeQueued(this.queue, this._viewRoomKey());
     if (!entry) return;
     this._sendCommand({
@@ -733,7 +737,9 @@ class AppShell extends Widget {
       return;
     }
     enqueue(this.queue, { text: entry.text, room: entry.room, opts: entry.opts });
-    this.queue.paused = true;
+    // The returned copy waits for the user's Resume — its own room's
+    // lane holds, other rooms keep flowing.
+    pauseQueue(this.queue, entry.room);
     this.queue.notice = `"${this._roomLabel(entry.room)}" — text returned to that room's queue`;
   }
 
@@ -776,13 +782,60 @@ class AppShell extends Widget {
     this._syncQueue();
   }
 
-  // Dismiss acknowledges an unknown-delivery entry without touching
-  // the draft — the user checked history and chose to let it go.
+  // Dismiss acknowledges an unknown-delivery or failed entry without
+  // touching the draft — the user checked history and chose to let it
+  // go. A foreign queued line can also be dropped: its room may no
+  // longer exist to Open into.
   _queueDismiss(id) {
     const e = findEntry(this.queue, id);
-    if (!e || e.state !== UNKNOWN) return;
+    if (!e) return;
+    const droppable = e.state === UNKNOWN || e.state === FAILED ||
+      (e.state === QUEUED && e.room !== this._viewRoomKey());
+    if (!droppable) return;
     removeEntry(this.queue, e);
     this._syncQueue();
+  }
+
+  // Retry re-issues turn.edit against the failed turn's own user
+  // line — the turn regenerates under it, so a retry never appends a
+  // duplicate message. The gate is strict: turn.edit drops everything
+  // after its target, so Retry exists only while that line is still
+  // the tail — a retry must never silently rewind later messages.
+  _queueRetry(id) {
+    const e = findEntry(this.queue, id);
+    if (!e || e.state !== FAILED || e.room !== this._viewRoomKey()) return;
+    const messageId = this._retryTargetId(e);
+    if (!messageId) {
+      this._toast('warn', 'Retry',
+        'Only a failed turn still at the end of the conversation can be retried.');
+      return;
+    }
+    if (this._edit(messageId, e.text)) removeEntry(this.queue, e);
+    this._syncQueue();
+  }
+
+  // The message id a failed row's retry would edit — resolvable only
+  // while that line is the last rendered record. Resolution is lazy
+  // here and pinned by the post-terminal refresh where it runs.
+  _retryTargetId(e) {
+    const id = e.retryMessageId || this._retryMessageId(e);
+    if (!id) return null;
+    const idx = this.messages.findIndex((m) => m.id === id);
+    return idx === this.messages.length - 1 ? id : null;
+  }
+
+  // The persisted user line a failed send ran from — the earliest user
+  // record carrying the submitted text that the dispatch-time history
+  // did not already contain. A later identical line never qualifies,
+  // and optimistic pending lines never qualify either.
+  _retryMessageId(e) {
+    for (const m of this.messages) {
+      if (m.role !== 'user' || m.content !== e.text) continue;
+      if (typeof m.id === 'string' && m.id.startsWith('pending-')) continue;
+      if (e.historyIds && e.historyIds.has(m.id)) continue;
+      return m.id;
+    }
+    return null;
   }
 
   // Remove drops a locally queued line — never a server deletion.
@@ -814,15 +867,24 @@ class AppShell extends Widget {
 
   // Resume is explicit: a room whose refresh is required re-reads
   // history first — the drain waits for the barrier, never bypasses.
+  // Offline it changes nothing: releasing the holds early would let a
+  // reconnect drain fire the backlog on its own.
   async _queueResume() {
-    this.queue.paused = false;
-    this.queue.notice = '';
+    if (this.socket.state !== 'open') {
+      this.queue.notice = 'Reconnect before resuming the queue';
+      this._syncQueue();
+      return;
+    }
     const key = this._viewRoomKey();
+    // Resume releases this room's held lane — another room's holds
+    // wait for their own Resume.
+    unpauseQueue(this.queue, key);
+    this.queue.notice = '';
     const g = this._gate(key);
     if (!String(key).startsWith('fresh:') && (g.required || g.failed)) {
       const ok = await this._refresh(key);
       if (ok !== 'ok') {
-        this.queue.paused = true;
+        pauseQueue(this.queue, key);
         this.queue.notice = 'History refresh failed — try Resume again';
         this._syncQueue();
         return;
@@ -1056,7 +1118,8 @@ class AppShell extends Widget {
             this._syncComposer();
             this._syncStream();
           }
-          this.queue.paused = true;
+          pauseQueue(this.queue,
+            f.conversationId || (cmd && this._commandRoomKey(cmd)));
           this.queue.notice = 'The turn could not be recovered — check history before retrying';
           this._syncQueue();
           break;
@@ -1069,7 +1132,7 @@ class AppShell extends Widget {
         this._syncQueue();
         if (f.conversationId) {
           this._refresh(f.conversationId).then((ok) => {
-            if (ok !== 'ok') { this.queue.paused = true; this._syncQueue(); }
+            if (ok !== 'ok') { pauseQueue(this.queue, f.conversationId); this._syncQueue(); }
           });
         }
         this._refreshList();
@@ -1130,11 +1193,32 @@ class AppShell extends Widget {
       for (const e of settled.restored) this._restoreOwned(e);
       const failed = f.type === 'turn.failed';
       if (failed) {
-        // Never auto-drain after a failed or canceled turn — Resume is
-        // an explicit user call.
-        this.queue.paused = true;
+        // Never auto-drain the backlog after a failed or canceled turn
+        // — Resume is an explicit user call. Lines submitted later are
+        // fresh intent, not the failed turn's fallout.
+        pauseQueue(this.queue, roomKey);
         if (!interruptedTurn(f)) {
-          this._toast('error', 'Turn failed', (f.payload && f.payload.message) || f.code || 'error');
+          const msg = (f.payload && f.payload.message) || f.code || 'error';
+          this._toast('error', 'Turn failed', msg);
+          // A definitive failure keeps an explicit retry affordance:
+          // the row re-issues turn.edit against the failed turn's user
+          // line while it is still the tail — regenerating, never
+          // rewinding later messages. A send that never committed its
+          // user line has nothing to retry — its text returns through
+          // the draft/queue paths instead.
+          if (!cmd.watched &&
+              !(cmd.kind === 'send' && f.payload?.userMessagePersisted === false)) {
+            const e = enqueue(this.queue, {
+              text: cmd.content, room: roomKey, opts: cmd.opts,
+            });
+            e.state = FAILED;
+            e.note = msg;
+            e.retryMessageId = cmd.kind === 'edit' ? cmd.editMessageId : null;
+            // The send's dispatch-time history ids — the scan for its
+            // persisted line must skip every user record that predates
+            // this dispatch, including an earlier identical text.
+            e.historyIds = cmd.historyIds || null;
+          }
         }
       }
       // Persistence is authoritative: only userMessagePersisted ===
@@ -1150,7 +1234,7 @@ class AppShell extends Widget {
         const ownerKey = this._commandRoomKey(cmd);
         if (cmd.fromQueue) {
           requeue(this.queue, cmd.fromQueue);
-          this.queue.paused = true;
+          pauseQueue(this.queue, ownerKey);
         } else if (ownerKey === this._viewRoomKey() &&
                    this.composer.value.trim() !== cmd.content.trim()) {
           this._restoreDraft(cmd.content);
@@ -1158,19 +1242,32 @@ class AppShell extends Widget {
           enqueue(this.queue, {
             text: cmd.content, room: ownerKey, opts: cmd.opts,
           });
-          this.queue.paused = true;
+          pauseQueue(this.queue, ownerKey);
         }
       }
       // The barrier: the room's refresh must land before anything
       // drains — a stale response waits for the in-flight newer one.
       this._refreshBarrier(roomKey).then((ok) => {
         if (!ok) {
-          this.queue.paused = true;
+          pauseQueue(this.queue, roomKey);
           this.queue.notice = 'History refresh failed — Resume retries it';
           this._syncQueue();
           return;
         }
+        // Pin the failed turn's retry target while the refreshed
+        // history is authoritative — a later identical send must never
+        // become the row this entry edits. The sync must run even when
+        // nothing drains: the failed row's Retry arms on the target
+        // this refresh just resolved.
+        if (roomKey === this._viewRoomKey()) {
+          for (const e of this.queue.items) {
+            if (e.state === FAILED && e.room === roomKey && !e.retryMessageId) {
+              e.retryMessageId = this._retryMessageId(e);
+            }
+          }
+        }
         this._drainQueue();
+        this._syncQueue();
       });
       this._syncComposer();
       this._syncStream();
@@ -1210,10 +1307,10 @@ class AppShell extends Widget {
       this._restoreUnopenedEdit(cmd);
       if (cmd.fromQueue) {
         // A queue dispatch rejected pre-open returns to the local
-        // queue — paused, so nothing retries the rejected item
+        // queue — held, so nothing retries the rejected item
         // unintentionally.
         requeue(this.queue, cmd.fromQueue);
-        this.queue.paused = true;
+        pauseQueue(this.queue, this._commandRoomKey(cmd));
       } else if (cmd.kind === 'send' && cmd.content) {
         // A direct send rejected before opened must not drop its
         // text: back into the owning view's draft — unless that draft
@@ -1229,7 +1326,7 @@ class AppShell extends Widget {
             room: this._commandRoomKey(cmd),
             opts: cmd.opts,
           });
-          this.queue.paused = true;
+          pauseQueue(this.queue, this._commandRoomKey(cmd));
         }
       }
       this.command = null;
@@ -1268,7 +1365,7 @@ class AppShell extends Widget {
       // unknowable (it may not have been transmitted at all); an acked
       // input keeps steering — replay reconciles its receipt on the
       // next watch.
-      this.queue.paused = true;
+      pauseQueue(this.queue);
       if (markInFlightUnknown(this.queue)) {
         // Routine delivery-uncertainty goes in the panel's inline
         // notice — a toast would cover the composer controls it

@@ -83,16 +83,15 @@ func TestWidgetAssetsServeAndHead(t *testing.T) {
 	}
 }
 
-func TestStylesheetsStayAvailableFromBrowserCache(t *testing.T) {
+// Every asset shares one no-cache contract: a long-lived stylesheet
+// served next to a fresh script pairs new markup with stale rules.
+func TestAssetsNeverPairFreshJSWithStaleCSS(t *testing.T) {
 	r := router(t)
-	for _, p := range []string{"/styles/theme.css", "/widgets/x/x.css"} {
+	for _, p := range []string{"/styles/theme.css", "/widgets/x/x.css", "/widgets/x/x.js"} {
 		w := request(r, "GET", p, authority)
-		if got := w.Header().Get("Cache-Control"); got != "private, max-age=86400" {
+		if got := w.Header().Get("Cache-Control"); got != "no-cache" {
 			t.Errorf("GET %s cache-control = %q", p, got)
 		}
-	}
-	if got := request(r, "GET", "/widgets/x/x.js", authority).Header().Get("Cache-Control"); got != "no-cache" {
-		t.Errorf("JS cache-control = %q", got)
 	}
 }
 

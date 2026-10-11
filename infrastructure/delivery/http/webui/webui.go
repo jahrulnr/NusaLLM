@@ -26,11 +26,6 @@ func Register(r *gin.Engine, assets fs.FS) {
 	serve := func(c *gin.Context) {
 		headers(c)
 		name := strings.TrimPrefix(path.Clean("/"+c.Request.URL.Path), "/")
-		// Shadow-root stylesheets can be requested again when a widget is
-		// recreated. Keep CSS fresh in the browser while the server is down.
-		if strings.HasSuffix(name, ".css") {
-			c.Writer.Header().Set("Cache-Control", "private, max-age=86400")
-		}
 		if name == "" {
 			name = "index.html"
 		}

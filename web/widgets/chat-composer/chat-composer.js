@@ -2,8 +2,8 @@ import { Widget, el, emit } from '../../lib/dom.js';
 import { icon } from '../../lib/icons.js';
 
 // Composer: autosizing textarea, Enter sends / Shift+Enter newline.
-// While a turn runs anywhere — or the view's queue is paused,
-// backlogged, or behind a refresh barrier — Enter captures the line
+// While a turn runs anywhere — or the view's queue holds a backlog,
+// or the room sits behind a refresh barrier — Enter captures the line
 // locally. The send control stays an icon; its accessible name and the
 // shortcut say queue. The pending panel lists
 // room-bound queue entries and steering receipts; foreign rooms show
@@ -31,12 +31,13 @@ const STATE_LABELS = {
   steering: 'Waiting for next step',
   recalling: 'Recalling…',
   unknown: 'Delivery unknown',
+  failed: 'Turn failed',
 };
 
 // The fields a pending row is built from — when none changed the row
 // node is reused, so focus and scroll survive unrelated updates.
 function rowSig(item) {
-  return [item.state, item.text, item.roomLabel, item.foreign, item.online].join('');
+  return [item.state, item.text, item.roomLabel, item.foreign, item.online, item.note, item.retryable].join('');
 }
 
 class ChatComposer extends Widget {
@@ -70,15 +71,15 @@ class ChatComposer extends Widget {
   set canSteer(v) { this._canSteer = !!v; this._syncButton(); }
   // Stop is visible only inside the room owning the running turn.
   set canStop(v) { this._canStop = !!v; this._syncButton(); }
-  // Queue mode makes Enter/primary capture locally — busy, paused,
-  // backlogged, or behind a refresh barrier.
+  // Queue mode makes Enter/primary capture locally — busy, backlogged,
+  // or behind a refresh barrier.
   set queueMode(v) { this._queueMode = !!v; this._syncButton(); }
   set pendingItems(list) { this._pendingItems = list || []; this._syncPending(); }
   set queuePaused(v) { this._queuePaused = !!v; this._syncPending(); }
   set canResume(v) { this._canResume = !!v; this._syncPending(); }
   set queueNotice(v) { this._queueNotice = v || ''; this._syncPending(); }
-  // Resume's footer shows only while the queue is paused WITH lines
-  // this view owns — separate from canResume's click eligibility.
+  // Resume's footer shows only while the queue holds lines this view
+  // owns — separate from canResume's click eligibility.
   set resumeVisible(v) { this._resumeVisible = !!v; this._syncPending(); }
 
   get value() { return this.input ? this.input.value : ''; }
@@ -201,17 +202,22 @@ class ChatComposer extends Widget {
       ]),
       el('div', { class: 'pending-text', text: item.text }),
     );
+    if (item.note) row.append(el('div', { class: 'pending-note', text: item.note }));
     const actions = el('div', { class: 'pending-actions' });
     const action = (label, event, { aria = label, disabled = false, title = '', focusInput = true } = {}) =>
       el('button', {
         class: 'pending-action', type: 'button',
         'aria-label': aria, disabled, title,
         onclick: () => {
+          // The emit below synchronously rebuilds this row — capture
+          // its position first so the post-action focus lands on the
+          // successor, not a detached index.
+          const idx = [...this.pendingBody.querySelectorAll('.pending-item')].indexOf(row);
           emit(this, event, { id: item.id });
           // Deliberate focus: restored text lands in the input, a
           // removed row hands focus to the next action or the input.
           if (focusInput) this.input.focus();
-          else this._focusNextAction(row);
+          else this._focusNextAction(idx);
         },
         'data-action': event,
       }, [el('span', { text: label })]);
@@ -219,9 +225,24 @@ class ChatComposer extends Widget {
       actions.append(action('Open', 'queue-open', {
         aria: `Open ${item.roomLabel || 'owning room'}`,
       }));
-      if (item.state === 'unknown') {
-        actions.append(action('Dismiss', 'queue-dismiss', { aria: 'Dismiss unknown entry' }));
+      // In-flight receipts stay undismissable; everything else can be
+      // let go — the room may not even exist to Open into.
+      if (item.state === 'unknown' || item.state === 'failed' || item.state === 'queued') {
+        actions.append(action('Dismiss', 'queue-dismiss', { aria: 'Dismiss entry' }));
       }
+    } else if (item.state === 'failed') {
+      // A definitive turn failure — never auto-retried. Retry re-runs
+      // the turn from its own user line, and only while that line is
+      // still the tail — turn.edit would drop anything after it.
+      actions.append(
+        action('Retry', 'queue-retry', {
+          aria: 'Retry the failed turn',
+          disabled: !item.retryable,
+          title: item.retryable ? ''
+            : 'Later messages exist — retrying would rewind them',
+        }),
+        action('Dismiss', 'queue-dismiss', { aria: 'Dismiss failed turn', focusInput: false }),
+      );
     } else if (item.state === 'queued') {
       actions.append(
         action('Restore', 'queue-restore', { aria: 'Restore queued text to draft' }),
@@ -246,10 +267,11 @@ class ChatComposer extends Widget {
     return row;
   }
 
-  _focusNextAction(row) {
+  // Focus the action of whichever row now sits where the removed one
+  // was — the successor when there is one, else the new last row.
+  _focusNextAction(idx) {
     const rows = [...this.pendingBody.querySelectorAll('.pending-item')];
-    const idx = rows.indexOf(row);
-    const next = rows[idx + 1] || rows[idx - 1];
+    const next = rows[Math.min(idx, rows.length - 1)];
     const btn = next && next.querySelector('.pending-action');
     (btn || this.input).focus();
   }

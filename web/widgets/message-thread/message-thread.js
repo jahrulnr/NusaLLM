@@ -24,21 +24,36 @@ class MessageThread extends Widget {
     this._commandsBusy = false;
     this._pinned = true; // pinned to bottom until the user scrolls up
     this._lastScrollTop = 0;
+    // The last anchor read on a REAL user scroll — a render while the
+    // thread is display:none (settings open) can't measure anything,
+    // so this record is the only way back to the reader's place.
+    this._anchor = null;
+    this._hiddenRender = false;
     // Live-stream widget instances keyed by segment.id — preserved
     // across frames so user expansion/scroll state survives deltas.
     this._segmentWidgets = new Map();
     this._toolExpanded = new Map();
     this._annCursor = 0;
+    this._renderedMessages = []; // the list backing the current DOM
     this._caret = el('span', { class: 'caret', 'aria-hidden': 'true' });
     this._contentResize = new ResizeObserver(() => {
+      // A render that ran while hidden left its scroll write pending —
+      // the first resize with a real box applies the stored anchor.
+      if (this._hiddenRender) {
+        if (!this.root.getBoundingClientRect().height) return;
+        this._hiddenRender = false;
+        if (this._anchor && !this._pinned && this._restoreAnchor(this._anchor)) return;
+      }
       if (this._pinned) this._scrollToEnd();
     });
+    this._contentResize.observe(this.root);
     this.root.addEventListener('scroll', () => {
       const top = this.root.scrollTop;
       const atEnd = top + this.root.clientHeight >= this.root.scrollHeight - 2;
       if (atEnd) this._pinned = true;
       else if (top < this._lastScrollTop) this._pinned = false;
       this._lastScrollTop = top;
+      this._anchor = this._pinned ? null : this._scrollAnchor();
     });
     this._render();
   }
@@ -89,6 +104,7 @@ class MessageThread extends Widget {
           this._contentResize.observe(node);
         }
         this._handoffSegments = null;
+        this._renderedMessages = next;
         if (this._pinned) this._scrollToEnd();
         return;
       }
@@ -160,11 +176,20 @@ class MessageThread extends Widget {
   }
 
   connectedCallback() {
+    this._contentResize.observe(this.root);
     for (const node of this._messageNodes || []) this._contentResize.observe(node);
     if (this.streamEl) this._contentResize.observe(this.streamEl);
   }
 
   _render() {
+    // A hidden scroller (settings covers the thread) reports zero
+    // rects — the anchor recorded on the last real scroll is the only
+    // position still known, and scrollTop writes are no-ops anyway.
+    const hidden = !this.root.getBoundingClientRect().height;
+    // Capture the reader's place before the rebuild wipes the DOM —
+    // only a fresh load (empty → messages) may jump to the tail.
+    const anchor = this._scrollAnchor() || this._anchor;
+    const hadMessages = this._renderedMessages.length > 0;
     this._contentResize.disconnect();
     clear(this.root);
     this._messageNodes = [];
@@ -173,11 +198,13 @@ class MessageThread extends Widget {
     this.root.setAttribute('aria-label', 'Conversation');
 
     if (this._loading) {
+      this._renderedMessages = [];
       this.root.append(el('div', { class: 'hint', text: 'Loading history…' }));
       this._mountStream();
       return;
     }
     if (!this._hasConversation) {
+      this._renderedMessages = [];
       this.root.append(el('div', { class: 'empty' }, [
         el('div', { class: 'empty-mark', text: 'N' }),
         el('p', { class: 'empty-title', text: 'Pick a model, write a message.' }),
@@ -199,9 +226,50 @@ class MessageThread extends Widget {
       this._contentResize.observe(node);
     }
     this._mountStream();
-    // A fresh conversation load lands at the end unconditionally.
-    this._pinned = true;
-    this._scrollToEnd();
+    this._renderedMessages = this._messages;
+    if (hidden) {
+      // Defer the scroll write to the resize observer's first sight of
+      // a real box — writing now would land nowhere and be forgotten.
+      this._hiddenRender = true;
+      return;
+    }
+    this._hiddenRender = false;
+    if (!hadMessages && this._messages.length) {
+      // A fresh conversation load lands at the end unconditionally.
+      this._pinned = true;
+    }
+    if (this._pinned || !this._restoreAnchor(anchor)) this._scrollToEnd();
+  }
+
+  // The first message node crossing the scroller's top edge, keyed by
+  // its message id so the rebuilt list can find it again.
+  _scrollAnchor() {
+    const nodes = this._messageNodes || [];
+    const msgs = this._renderedMessages || [];
+    if (!nodes.length) return null;
+    const top = this.root.getBoundingClientRect().top;
+    for (let i = 0; i < nodes.length; i++) {
+      const r = nodes[i].getBoundingClientRect();
+      if (r.bottom > top && msgs[i] && msgs[i].id != null) {
+        return { id: msgs[i].id, delta: r.top - top };
+      }
+    }
+    return null;
+  }
+
+  // Returns false when the anchored message is gone — an edit cut the
+  // tail the reader was inside — so the caller lands on the new tail
+  // instead of the clamped top.
+  _restoreAnchor(anchor) {
+    if (!anchor) return false;
+    const idx = (this._renderedMessages || []).findIndex((m) => m.id === anchor.id);
+    const node = idx >= 0 ? this._messageNodes[idx] : null;
+    if (!node) return false;
+    const delta = node.getBoundingClientRect().top -
+      this.root.getBoundingClientRect().top - anchor.delta;
+    this.root.scrollTop += delta;
+    this._lastScrollTop = this.root.scrollTop;
+    return true;
   }
 
   _message(m) {

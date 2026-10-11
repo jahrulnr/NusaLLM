@@ -2,10 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   createQueue, enqueue, steer, requeue, bindRoom, takeQueued,
-  hasQueuedForRoom, findEntry, removeEntry, markInFlightUnknown,
+  hasQueuedForRoom, hasHeldForRoom, findEntry, removeEntry,
+  markInFlightUnknown, pauseQueue, unpauseQueue,
   markTurnUnknown, steerAcked, steerProjected, steerRecalled,
   reconcileSnapshot,
-  QUEUED, SUBMITTING, STEERING, RECALLING, UNKNOWN,
+  QUEUED, SUBMITTING, STEERING, RECALLING, UNKNOWN, FAILED,
 } from '../lib/pending-queue.js';
 
 const opts = { route: 'r', modelId: 'm', effort: '', provider: '', workspace: '' };
@@ -262,4 +263,74 @@ test('removeEntry/findEntry round-trip a known entry', () => {
   removeEntry(q, e);
   assert.equal(findEntry(q, e.id), null);
   assert.equal(q.items.length, 0);
+});
+
+test('a pause holds the existing backlog; a held head blocks the room lane', () => {
+  const q = createQueue();
+  enqueue(q, { text: 'backlog', room: 'a', opts });
+  pauseQueue(q);
+  // Lines enqueued after the pause are fresh intent — but a held head
+  // still blocks the room's lane ahead of them.
+  enqueue(q, { text: 'fresh', room: 'a', opts });
+  assert.equal(takeQueued(q, 'a'), null);
+  assert.equal(hasHeldForRoom(q, 'a'), true);
+  // Another room's unheld lane flows while the queue stays paused.
+  enqueue(q, { text: 'other', room: 'b', opts });
+  assert.equal(takeQueued(q, 'b').text, 'other');
+  // Resume releases the hold — the backlog drains in order.
+  unpauseQueue(q);
+  assert.equal(hasHeldForRoom(q, 'a'), false);
+  assert.equal(takeQueued(q, 'a').text, 'backlog');
+  assert.equal(takeQueued(q, 'a').text, 'fresh');
+});
+
+test('a room-scoped pause never touches another room\'s lane', () => {
+  const q = createQueue();
+  enqueue(q, { text: 'mine', room: 'a', opts });
+  enqueue(q, { text: 'theirs', room: 'b', opts });
+  pauseQueue(q, 'a');
+  assert.equal(hasHeldForRoom(q, 'a'), true);
+  assert.equal(hasHeldForRoom(q, 'b'), false);
+  assert.equal(takeQueued(q, 'b').text, 'theirs');
+  assert.equal(takeQueued(q, 'a'), null);
+  // Release is scoped the same way — another room's holds survive.
+  enqueue(q, { text: 'b-backlog', room: 'b', opts });
+  pauseQueue(q, 'b');
+  unpauseQueue(q, 'a');
+  assert.equal(hasHeldForRoom(q, 'a'), false);
+  assert.equal(hasHeldForRoom(q, 'b'), true);
+  assert.equal(q.paused, true);
+  unpauseQueue(q);
+  assert.equal(q.paused, false);
+});
+
+test('a requeue inherits the hold only inside a held lane', () => {
+  const q = createQueue();
+  const e = enqueue(q, { text: 'in-flight', room: 'a', opts });
+  removeEntry(q, e); // simulate dispatch
+  enqueue(q, { text: 'waiting', room: 'a', opts });
+  pauseQueue(q, 'a');
+  requeue(q, e);
+  assert.equal(e.held, true);
+  assert.equal(takeQueued(q, 'a'), null);
+  // A different room's failed dispatch rejoins unheld — it drains.
+  const other = enqueue(q, { text: 'elsewhere', room: 'b', opts });
+  removeEntry(q, other);
+  requeue(q, other);
+  assert.equal(other.held, false);
+  assert.equal(takeQueued(q, 'b').text, 'elsewhere');
+});
+
+test('FAILED entries never gate dispatch or reconciliation', () => {
+  const q = createQueue();
+  const e = enqueue(q, { text: 'turn text', room: 'a', opts });
+  e.state = FAILED;
+  e.note = 'provider rejected the request (HTTP 502)';
+  e.retryMessageId = null;
+  assert.equal(hasQueuedForRoom(q, 'a'), false);
+  assert.equal(takeQueued(q, 'a'), null);
+  assert.equal(markInFlightUnknown(q), false);
+  assert.equal(markTurnUnknown(q, 't1'), false);
+  assert.deepEqual(reconcileSnapshot(q, 't1', []).unknown, []);
+  assert.equal(q.items.length, 1); // dismissed/retried explicitly only
 });

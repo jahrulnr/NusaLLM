@@ -520,27 +520,55 @@ await scenarioRun('persistence-authority', async (s) => {
   s.hub().complete('t1', { failed: true, message: 'provider exploded', persistedUser: false });
   await poll(async () => (await input(s).inputValue()) === 'will not persist');
   check('unpersisted direct send restored to draft', true);
-  check('queue paused after failure', await s.page.evaluate(
-    () => document.querySelector('nusa-app')?.queue?.paused === true));
-  // Paused means Queue: Enter captures the draft locally, nothing sends.
+  check('nothing held after a direct-send failure', await s.page.evaluate(
+    () => document.querySelector('nusa-app')?.queue?.paused === false));
+  // The pause holds only what it captured — a fresh Enter is new
+  // intent and dispatches once the room's barrier clears.
   await typeEnter(s, 'will not persist');
-  await poll(async () => (await rows(s).count()) === 1);
-  check('paused submit queues instead of sending', sends().length === 1);
-  check('draft cleared into the queue', (await input(s).inputValue()) === '');
-  // Resume dispatches it; this failure also lands persisted:false, so
-  // the QUEUED entry rejoins its room paused — the draft stays empty.
-  await resumeBtn(s).click();
   await poll(() => sends().length === 2);
+  check('fresh submit after a definitive failure dispatches', true);
+  check('draft cleared once the lane is empty',
+    (await input(s).inputValue()) === '');
   s.hub().complete('t2', { failed: true, message: 'exploded again', persistedUser: false });
-  await poll(async () => (await rows(s).count()) === 1);
-  check('unpersisted queue send rejoins its queue', true);
-  check('no phantom draft for a queue send', (await input(s).inputValue()) === '');
-  // Third attempt persists despite the error → nothing comes back.
-  await resumeBtn(s).click();
+  // A held backlog still captures later lines behind it — FIFO order
+  // is never violated by fresh input.
+  await typeEnter(s, 'will not persist');
   await poll(() => sends().length === 3);
-  s.hub().complete('t3', { failed: true, message: 'transient', persistedUser: true });
-  await poll(async () => (await rows(s).count()) === 0);
-  check('persisted+error restores nothing', (await input(s).inputValue()) === '');
+  await typeEnter(s, 'queued during the turn');
+  await poll(async () => (await rows(s).count()) === 1);
+  s.hub().complete('t3', { failed: true, message: 'boom', persistedUser: false });
+  await poll(async () => (await input(s).inputValue()) === 'will not persist');
+  check('unpersisted send restores to draft', true);
+  await typeEnter(s, 'will not persist');
+  await poll(async () => (await rows(s).count()) === 2);
+  check('fresh line queues behind the held backlog', true);
+  await resumeBtn(s).click();
+  await poll(() => sends().length === 4);
+  check('resume drains the held head first',
+    s.hub().all('turn.send')[3].payload.content === 'queued during the turn');
+  // t4 completes — the unpaused lane drains the second line itself.
+  s.hub().complete('t4', {});
+  await poll(() => sends().length === 5);
+  check('post-completion drain dispatches the tail', true);
+  // A persisted failure parks a retry row — never a silent resend.
+  s.fixture.messages.get('c1').push(
+    { id: 'u-fail', role: 'user', userType: 'origin', content: 'will not persist' });
+  s.hub().complete('t5', { failed: true, message: 'provider rejected the request (HTTP 502)', persistedUser: true });
+  await poll(async () => (await rows(s).count()) === 1);
+  await poll(() => s.page.evaluate(
+    () => document.querySelector('nusa-app').messages.length === 1));
+  check('persisted failure parks a retry row', true);
+  check('no phantom draft for a persisted failure',
+    (await input(s).inputValue()) === '');
+  // Retry re-issues turn.edit against the failed turn's own line.
+  await s.page.locator('.pending-item .pending-action', { hasText: 'Retry' }).click();
+  await poll(() => s.hub().all('turn.edit').length === 1);
+  const retried = s.hub().all('turn.edit')[0];
+  check('retry re-runs the failed turn via turn.edit',
+    retried.conversationId === 'c1' &&
+    retried.payload.messageId === 'u-fail' &&
+    retried.payload.content === 'will not persist');
+  check('retry row consumed by dispatch', (await rows(s).count()) === 0);
 });
 
 await scenarioRun('preopen-error-cancel', async (s) => {
@@ -641,8 +669,8 @@ await scenarioRun('resync-unknown-expired', async (s) => {
   await poll(async () => (await s.page.locator('text=Delivery unknown').count()) > 0);
   check('expired send surfaced as unknown — not resent', true);
   check('no retry fired', s.allCmds('turn.send').length === 1);
-  check('queue paused for user decision', await s.page.evaluate(
-    () => document.querySelector('nusa-app').queue.paused === true));
+  check('unknown row holds nothing — it is an explicit decision, not a hold', await s.page.evaluate(
+    () => document.querySelector('nusa-app').queue.paused === false));
   // Explicit Copy puts the text back in the draft once.
   await s.page.locator('.pending-action', { hasText: 'Copy to draft' }).click();
   await poll(async () => (await input(s).inputValue()) === 'will vanish');

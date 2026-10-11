@@ -128,6 +128,7 @@
 }
 .pending-steering, .pending-submitting, .pending-recalling { color: var(--accent-dim); }
 .pending-unknown { color: var(--warn, #e0b34c); }
+.pending-failed { color: var(--danger); }
 .pending-room {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -139,6 +140,14 @@
   font-size: 12px;
   line-height: 1.5;
   color: var(--text-dim);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.pending-note {
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--danger);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }

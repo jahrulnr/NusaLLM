@@ -71,13 +71,13 @@ via `embed.go` and served by the same Gin origin as the HTTP API and the
   load, selection change, and turn completion. The message field grows with
   the draft, and the send button enables when a message can be sent.
 - **Queue, Steer, Stop.** A turn never blocks typing: while a turn
-  runs, the queue is paused/backlogged, or a post-terminal history
+  runs, the view's queue holds a backlog, or a post-terminal history
   refresh is still outstanding, Enter (IME `isComposing`-aware —
   composition Enter never submits) sends the draft to a **local,
   room-bound queue** and the shortcut reads Enter to queue; the send
   control stays an icon whose accessible name is Queue message. The pending
   panel above the input shows a count header, every entry's state
-  (`Queued`, `Waiting for next step`, `Delivery unknown`), its owning
+  (`Queued`, `Waiting for next step`, `Delivery unknown`, `Turn failed`), its owning
   room, and its full text in a bounded scroll area. Queued lines keep
   global submission order, dispatch oldest-first for the *visible*
   view only — a fresh (un-minted) view is its own queue key, so a
@@ -86,12 +86,22 @@ via `embed.go` and served by the same Gin origin as the HTTP API and the
   per-room barrier, so nothing — Enter, Resume, navigation, a fresh
   view — sends into a room whose history is still settling. A failed
   or canceled turn, a socket drop, or a failed refresh pauses the
-  queue until an explicit Resume. `Restore` returns local text to the
+  queue: the pause **holds the backlog it captured** — a held head
+  blocks its room's lane until an explicit Resume, while lines
+  submitted afterward flow as soon as the room is dispatchable.
+  `Restore` returns local text to the
   draft (appended after a newline, never overwriting); `Remove` drops
   a local line. Entries owned by another room or fresh view show
   **Open** — they never mutate this draft — and **Delivery unknown**
   rows offer Check history, an explicit Copy-to-draft decision, and
-  Dismiss instead of an automatic retry. **Steer** is a separate
+  Dismiss instead of an automatic retry. A **Turn failed** row is the
+  mirror contract: a definitive `turn.failed` offers **Retry** —
+  re-issuing `turn.edit` against the failed turn's own user line so
+  the turn regenerates without a duplicate message — and **Dismiss**,
+  never an automatic resend. `turn.edit` drops everything after its
+  target, so Retry is enabled only while the failed line is still the
+  tail of the room's history; an older failed row can only be
+  dismissed. **Steer** is a separate
   action visible only while the viewed room owns an opened send turn —
   it submits `turn.steer` to that exact turn, joins at the next model
   step (otherwise the input waits as pending until the turn ends), and

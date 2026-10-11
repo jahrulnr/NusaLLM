@@ -48,6 +48,11 @@ class ModelPicker extends Widget {
       document.removeEventListener('pointerdown', this._dismiss, true);
       this._dismiss = null;
     }
+    if (this._reclamp) {
+      window.removeEventListener('resize', this._reclamp);
+      this._reclamp = null;
+      this._menuEl = null;
+    }
   }
 
   _openMenu() {
@@ -238,8 +243,18 @@ class ModelPicker extends Widget {
     }
     menu.addEventListener('keydown', (e) => this._onMenuKeydown(e));
     this.root.append(menu);
+    this._clampMenu(menu);
+    this._menuEl = menu;
 
     this._installDismiss();
+  }
+
+  // Keep the popup inside the viewport even when the header picker
+  // sits at either edge — recomputed on each render and on resize.
+  _clampMenu(menu) {
+    const bounds = this.root.getBoundingClientRect();
+    const width = menu.getBoundingClientRect().width;
+    menu.style.left = `${Math.max(8 - bounds.left, Math.min(0, innerWidth - 8 - bounds.left - width))}px`;
   }
 
   _installDismiss() {
@@ -252,6 +267,9 @@ class ModelPicker extends Widget {
     };
     this._dismiss = dismiss;
     document.addEventListener('pointerdown', dismiss, true);
+    const reclamp = () => { if (this._menuEl) this._clampMenu(this._menuEl); };
+    this._reclamp = reclamp;
+    window.addEventListener('resize', reclamp);
   }
 
   // Header re-renders move this node (disconnect+reconnect) — the menu's

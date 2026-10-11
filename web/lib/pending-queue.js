@@ -4,7 +4,8 @@
 // persists to storage; a reload forgets pending items by design.
 //
 // Entry shape:
-//   { id, text, room, opts, ordinal, state, inputId, turnId, recallId }
+//   { id, text, room, opts, ordinal, state, inputId, turnId, recallId,
+//     held, note, retryMessageId }
 // - room: the target conversation id captured at submission, or the
 //   fresh:<n> token of the un-minted view — rebound by bindRoom when
 //   that token's send mints a room.
@@ -15,6 +16,12 @@
 // - inputId/turnId: set once submitted as turn.steer — the command's
 //   requestId is the receipt key every snapshot names.
 // - recallId: the in-flight turn.steer_recall requestId.
+// - held: the pause owns this entry specifically — entries captured
+//   while already held wait for Resume; lines enqueued after the pause
+//   flow freely once their room is dispatchable.
+// - note: one status line the row shows under the text (failure
+//   reason), and retryMessageId: the persisted user line a failed turn
+//   retries against.
 //
 // States:
 //   queued      — local text waiting for a free turn
@@ -22,16 +29,44 @@
 //   steering    — acked; waiting to be consumed at a safe point
 //   recalling   — turn.steer_recall in flight
 //   unknown     — transmitted, outcome lost (never auto-retried)
+//   failed      — a turn ended with a definitive failure; the row
+//                 offers an explicit retry, never an automatic one
 export const QUEUED = 'queued';
 export const SUBMITTING = 'submitting';
 export const STEERING = 'steering';
 export const RECALLING = 'recalling';
 export const UNKNOWN = 'unknown';
+export const FAILED = 'failed';
 
 export function createQueue() {
   // notice: one inline status line the panel shows instead of toasts
   // for routine queue/recall/connect outcomes.
   return { items: [], paused: false, next: 1, notice: '' };
+}
+
+// A pause holds the backlog that exists NOW in one room — entries
+// queued when it lands and any in-flight submission that rejoins
+// later. Lines submitted afterward are fresh intent and stay
+// dispatchable, and another room's lane is never touched. With no
+// room the hold lands globally (a dropped socket freezes every lane).
+// q.paused is always the derived "some entry is held" — removal paths
+// keep it honest through syncPaused.
+export function pauseQueue(q, room = null) {
+  for (const e of q.items) {
+    if (e.state === QUEUED && (room == null || e.room === room)) e.held = true;
+  }
+  syncPaused(q);
+}
+
+export function unpauseQueue(q, room = null) {
+  for (const e of q.items) {
+    if (room == null || e.room === room) e.held = false;
+  }
+  syncPaused(q);
+}
+
+function syncPaused(q) {
+  q.paused = q.items.some((e) => e.held);
 }
 
 export function findEntry(q, id) {
@@ -41,6 +76,7 @@ export function findEntry(q, id) {
 export function removeEntry(q, entry) {
   const i = q.items.indexOf(entry);
   if (i >= 0) q.items.splice(i, 1);
+  syncPaused(q);
 }
 
 // enqueue captures one local submission. The queue owns the text the
@@ -50,6 +86,7 @@ export function enqueue(q, { text, room, opts }) {
     id: `p${q.next}`, ordinal: q.next++,
     text, room: room ?? null, opts: { ...(opts || {}) },
     state: QUEUED, inputId: null, turnId: null, recallId: null,
+    held: false, note: '', retryMessageId: null, historyIds: null,
   };
   q.items.push(e);
   return e;
@@ -62,6 +99,7 @@ export function steer(q, { text, room, opts, turnId, inputId }) {
     id: `p${q.next}`, ordinal: q.next++,
     text, room: room ?? null, opts: { ...(opts || {}) },
     state: SUBMITTING, inputId, turnId, recallId: null,
+    held: false, note: '', retryMessageId: null, historyIds: null,
   };
   q.items.push(e);
   return e;
@@ -69,16 +107,24 @@ export function steer(q, { text, room, opts, turnId, inputId }) {
 
 // takeQueued removes and returns the oldest queued entry targeting
 // room — the only path a queued line becomes a turn.send, so newer
-// submissions never bypass older ones.
+// submissions never bypass older ones. While paused, a held head
+// blocks the room's lane: the backlog waits for Resume, and a newer
+// line may drain only through an unheld lane.
 export function takeQueued(q, room) {
   const e = q.items.find((x) => x.state === QUEUED && x.room === room);
-  if (!e) return null;
+  if (!e || e.held) return null;
   removeEntry(q, e);
   return e;
 }
 
 export function hasQueuedForRoom(q, room) {
   return q.items.some((e) => e.state === QUEUED && e.room === room);
+}
+
+// Held entries are the ones Resume actually releases — a paused room
+// with only post-pause lines needs nothing explicit.
+export function hasHeldForRoom(q, room) {
+  return q.items.some((e) => e.state === QUEUED && e.room === room && e.held);
 }
 
 // requeue returns a dispatched or unconsumed entry at its original
@@ -90,6 +136,9 @@ export function requeue(q, e) {
   e.inputId = null;
   e.turnId = null;
   e.recallId = null;
+  // A submission that rejoins a held lane inherits the hold — a failed
+  // dispatch must not retry itself ahead of the waiting backlog.
+  e.held = hasHeldForRoom(q, e.room) || e.held;
   if (q.items.includes(e)) return;
   const at = q.items.findIndex((x) => x.ordinal > e.ordinal);
   q.items.splice(at < 0 ? q.items.length : at, 0, e);

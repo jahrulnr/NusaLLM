@@ -177,3 +177,135 @@ test('attach displaces a stale watch but never a local command', () => {
   assert.equal(app.command.kind, 'send');
   assert.equal(app.command.conversationId, 'c3');
 });
+
+// A failed turn is driven through _onFrame like the real socket path:
+// send → opened → failed terminal.
+function failTurn(app, ws, payload) {
+  app.activeId = 'c1';
+  app._send('hi');
+  const cmd = app.command;
+  app._onFrame({ type: 'turn.opened', requestId: cmd.requestId, turnId: 't1', conversationId: 'c1', seq: 1 });
+  app._onFrame({ type: 'turn.failed', turnId: 't1', conversationId: 'c1', seq: 2, payload });
+}
+const flush = () => new Promise((r) => setTimeout(r));
+
+test('a persisted failure keeps a retry row; fresh input still sends', async () => {
+  const { app, ws } = makeApp();
+  app.composer.value = '';
+  failTurn(app, ws, { status: 502, message: 'upstream exploded', userMessagePersisted: true });
+  const e = app.queue.items.find((x) => x.state === 'failed');
+  assert.ok(e, 'failed row parked');
+  assert.equal(e.text, 'hi');
+  assert.equal(e.room, 'c1');
+  assert.equal(e.note, 'upstream exploded');
+  assert.equal(e.retryMessageId, null); // resolved lazily from history
+  // Nothing else was queued — the pause owns only what it captured,
+  // and an empty backlog means nothing is held.
+  assert.equal(app.queue.paused, false);
+  await flush(); // the barrier refresh lands and clears the gate
+  // "." is fresh intent — a definitive failure does not capture it.
+  app._send('.');
+  assert.equal(app.command.kind, 'send');
+  assert.equal(ws.sent.filter((f) => f.type === 'turn.send').length, 2);
+  // The failed row itself is still there waiting on an explicit call.
+  assert.equal(app.queue.items.filter((x) => x.state === 'failed').length, 1);
+});
+
+test('retry re-issues turn.edit against the failed user line', async () => {
+  const { app, ws } = makeApp();
+  app.composer.value = '';
+  failTurn(app, ws, { status: 502, message: 'boom', userMessagePersisted: true });
+  await flush();
+  const e = app.queue.items.find((x) => x.state === 'failed');
+  app.messages = [{ id: 'm1', role: 'user', content: 'hi' }];
+  app._queueRetry(e.id);
+  const edit = ws.sent.find((f) => f.type === 'turn.edit');
+  assert.equal(edit.conversationId, 'c1');
+  assert.equal(edit.payload.messageId, 'm1');
+  assert.equal(edit.payload.content, 'hi');
+  assert.equal(app.command.kind, 'edit');
+  assert.equal(app.queue.items.length, 0); // consumed by the dispatch
+});
+
+test('an unpersisted failure restores text instead of parking a retry row', async () => {
+  const { app } = makeApp();
+  app.composer.value = '';
+  failTurn(app, null, { status: 502, message: 'boom', userMessagePersisted: false });
+  assert.equal(app.queue.items.filter((x) => x.state === 'failed').length, 0);
+  // Owning view gets its text back in the draft.
+  assert.equal(app.composer.value, 'hi');
+});
+
+test('an interrupted turn never parks a retry row', () => {
+  const { app } = makeApp();
+  app.composer.value = '';
+  failTurn(app, null, { status: 408, code: 'interrupted', userMessagePersisted: true });
+  assert.equal(app.queue.items.filter((x) => x.state === 'failed').length, 0);
+});
+
+test('retry target skips an older identical line via dispatch-time history ids', async () => {
+  const { app, ws } = makeApp();
+  app.composer.value = '';
+  failTurn(app, ws, { status: 502, message: 'boom', userMessagePersisted: true });
+  await flush();
+  const e = app.queue.items.find((x) => x.state === 'failed');
+  // The send's own line is the NEWER identical record — the older one
+  // predates the dispatch and rides historyIds.
+  e.historyIds = new Set(['m-old']);
+  app.messages = [
+    { id: 'm-old', role: 'user', content: 'hi' },
+    { id: 'm-new', role: 'user', content: 'hi' },
+  ];
+  assert.equal(app._retryMessageId(e), 'm-new');
+  app._queueRetry(e.id);
+  const edit = ws.sent.find((f) => f.type === 'turn.edit');
+  assert.equal(edit.payload.messageId, 'm-new');
+});
+
+test('a failed line no longer at the tail cannot retry — only dismiss', async () => {
+  const { app, ws } = makeApp();
+  app.composer.value = '';
+  failTurn(app, ws, { status: 502, message: 'boom', userMessagePersisted: true });
+  await flush();
+  const e = app.queue.items.find((x) => x.state === 'failed');
+  // A later message landed after the failure — editing the failed
+  // line now would silently rewind it.
+  app.messages = [
+    { id: 'm1', role: 'user', content: 'hi' },
+    { id: 'm2', role: 'user', content: 'sent after' },
+  ];
+  assert.equal(app._retryTargetId(e), null);
+  app._queueRetry(e.id);
+  assert.equal(ws.sent.filter((f) => f.type === 'turn.edit').length, 0);
+  assert.ok(app.queue.items.includes(e)); // the row itself survives
+  app._queueDismiss(e.id);
+  assert.equal(app.queue.items.length, 0);
+});
+
+test('resume while offline keeps the held backlog held', async () => {
+  const { app } = makeApp();
+  app.composer.value = '';
+  failTurn(app, null, { status: 502, message: 'boom', userMessagePersisted: true });
+  // Park a held line the way the failure would have.
+  const { enqueue } = await import('../lib/pending-queue.js');
+  const e = enqueue(app.queue, { text: 'held', room: 'c1', opts: {} });
+  e.held = true;
+  app.queue.paused = true;
+  app.socket.state = 'closed';
+  await app._queueResume();
+  assert.equal(e.held, true);
+  assert.equal(app.queue.notice, 'Reconnect before resuming the queue');
+});
+
+test('a failed row in another room never retries through this view', async () => {
+  const { app, ws } = makeApp();
+  app.activeId = 'c1';
+  const { enqueue } = await import('../lib/pending-queue.js');
+  const e = enqueue(app.queue, { text: 'hi', room: 'c2', opts: {} });
+  e.state = 'failed';
+  e.retryMessageId = 'm1';
+  app.messages = [{ id: 'm1', role: 'user', content: 'hi' }];
+  app._queueRetry(e.id);
+  assert.equal(ws.sent.filter((f) => f.type === 'turn.edit').length, 0);
+  assert.ok(app.queue.items.includes(e));
+});
