@@ -85,7 +85,7 @@ func (app *GatewayApp) RefreshModels(ctx context.Context) []AutoImportResult {
 // endpoint. A missing record propagates its 404 (the gateway itself is
 // absent, not the catalog); every other import-side failure reports
 // through CatalogError because the record is intact. catalog == nil is
-// a wiring error, same contract as DiscoverModels.
+// a wiring error.
 func (app *GatewayApp) ImportModels(ctx context.Context, id string) (UpsertOutcome, error) {
 	if app.catalog == nil {
 		return UpsertOutcome{}, apperror.NewInternalError("model import unavailable", nil)

@@ -17,7 +17,6 @@ import (
 type Reader interface {
 	Get(ctx context.Context, id string) (appgateway.GatewayInfo, error)
 	List(ctx context.Context) ([]appgateway.GatewayInfo, error)
-	DiscoverModels(ctx context.Context, id string) ([]string, error)
 	DiscoverProviders(ctx context.Context, id, modelID string) ([]dservice.UpstreamProvider, error)
 }
 
@@ -42,7 +41,6 @@ func Register(api *gin.RouterGroup, d Deps) {
 	if d.Reads != nil {
 		api.GET("/gateways", s.list)
 		api.GET("/gateways/:id", s.get)
-		api.GET("/gateways/:id/available-models", s.availableModels)
 		api.GET("/gateways/:id/providers", s.providers)
 	}
 	if d.Writes != nil {

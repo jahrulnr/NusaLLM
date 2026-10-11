@@ -88,10 +88,6 @@ type fakeGateways struct {
 	infos []appgateway.GatewayInfo
 }
 
-func (f *fakeGateways) DiscoverModels(context.Context, string) ([]string, error) {
-	return nil, nil
-}
-
 func (f *fakeGateways) DiscoverProviders(context.Context, string, string) ([]dservice.UpstreamProvider, error) {
 	return nil, nil
 }

@@ -7,20 +7,6 @@ import (
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
-// DiscoverModels reads the provider catalog using the gateway's current
-// endpoint and resolved credential. It is read-only — Upsert and
-// ImportModels own merging ids into the record.
-func (app *GatewayApp) DiscoverModels(ctx context.Context, id string) ([]string, error) {
-	if app.catalog == nil {
-		return nil, apperror.NewInternalError("model discovery unavailable", nil)
-	}
-	gw, err := app.gateways.Load(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	return app.catalog.ListModels(ctx, gw)
-}
-
 // DiscoverProviders lists the upstream backends a gateway can route the
 // given model to — the choices an aggregator surface exposes to the
 // picker's route layer. Direct providers answer an empty list.

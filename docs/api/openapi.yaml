@@ -400,35 +400,6 @@ paths:
         "500": { $ref: "#/components/responses/Internal" }
         "503": { $ref: "#/components/responses/Unavailable" }
 
-  /api/gateways/{gatewayId}/available-models:
-    parameters:
-      - $ref: "#/components/parameters/GatewayId"
-    get:
-      operationId: discoverGatewayModels
-      tags: [gateways]
-      summary: Discover models from a configured provider
-      description: |
-        Uses the gateway's stored endpoint, API style, and resolved key to
-        read every page of the provider model list. Read-only: saving a
-        gateway (`PUT`) and `POST .../import-models` are what merge
-        provider ids into the record.
-      responses:
-        "200":
-          description: Provider model IDs in provider order, deduplicated.
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [data]
-                properties:
-                  data:
-                    type: array
-                    items: { type: string }
-        "400": { $ref: "#/components/responses/BadRequest" }
-        "403": { $ref: "#/components/responses/ForbiddenOrigin" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "502": { $ref: "#/components/responses/UpstreamError" }
-
   /api/gateways/{gatewayId}/providers:
     parameters:
       - $ref: "#/components/parameters/GatewayId"

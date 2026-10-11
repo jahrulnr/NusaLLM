@@ -48,8 +48,7 @@ via `embed.go` and served by the same Gin origin as the HTTP API and the
   /api/gateways/<id>/import-models` against the stored record and
   reports the imported count or error inside the open dialog. The
   model list stays a searchable, read-only list of stored ids —
-  searching never changes it. `/api/gateways/<id>/available-models`
-  remains read-only and unused by the editor.
+  searching never changes it.
   `serve` additionally auto-imports on boot and hourly, merging newly
   advertised model ids into each gateway record (existing entries keep
   their parameters; the stored key reference is never rewritten).

@@ -32,10 +32,6 @@ func (f *fakeReader) Get(_ context.Context, id string) (appgateway.GatewayInfo, 
 	return appgateway.GatewayInfo{}, nil
 }
 
-func (f *fakeReader) DiscoverModels(context.Context, string) ([]string, error) {
-	return nil, nil
-}
-
 func (f *fakeReader) DiscoverProviders(context.Context, string, string) ([]dservice.UpstreamProvider, error) {
 	return nil, nil
 }
@@ -88,7 +84,6 @@ func TestNilReadsLeavesReadRoutesUnregistered(t *testing.T) {
 	for _, p := range []string{
 		"/api/gateways",
 		"/api/gateways/g",
-		"/api/gateways/g/available-models",
 		"/api/gateways/g/providers",
 	} {
 		if rec := do(r, "GET", p); rec.Code != 404 {

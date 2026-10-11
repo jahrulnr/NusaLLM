@@ -24,6 +24,8 @@ test-web:
 # Headless browser suite; needs @playwright/test installed locally or
 # PLAYWRIGHT_MODULE=/abs/path/to/@playwright/test/index.mjs, and a
 # Chrome channel on PATH.
+PLAYWRIGHT_MODULE ?= $(wildcard $(shell npm root -g 2>/dev/null)/@playwright/test/index.mjs)
+export PLAYWRIGHT_MODULE
 e2e-web:
 	node web/test-e2e/steer-flow.mjs
 
