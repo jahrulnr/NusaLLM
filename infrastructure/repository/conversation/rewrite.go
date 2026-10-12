@@ -24,8 +24,8 @@ import (
 //     are merged into the new active.jsonl (the model regains the full
 //     pre-edit era verbatim — compaction summaries covering later eras
 //     would lie, so they are dropped with the old tail), every numbered
-//     segment is deleted, and the count resets so the next Compact starts
-//     at 0.jsonl again.
+//     segment is parked then removed, and the count resets so the next
+//     Compact starts at 0.jsonl again.
 //
 // Late tool-output patches can never resurrect a dropped suffix: they are
 // appended records, and the calls they targeted are simply gone.
@@ -59,7 +59,19 @@ func (r *ConversationRepository) RewriteFrom(ctx context.Context, convID, msgID,
 		return r.recountMeta(convID)
 	}
 
-	// Sealed segments — repromote the era holding the target.
+	// Sealed segments — repromote the era holding the target. The archive
+	// just validated at readMeta, so rewrite leftovers here are debris —
+	// a payload whose edit never committed, or post-commit cleanup a crash
+	// cut short. Sweep them first, the payload's staged temp sibling
+	// included: a stale payload must never be published.
+	for _, leftover := range []string{rewritePayload, rewritePayload + ".tmp"} {
+		_ = os.Remove(filepath.Join(dir, leftover))
+	}
+	if stale, err := filepath.Glob(filepath.Join(dir, "*.jsonl"+rewriteParkSuffix)); err == nil {
+		for _, p := range stale {
+			_ = os.Remove(p)
+		}
+	}
 	segs, err := sealedSegments(dir)
 	if err != nil {
 		return err
@@ -93,18 +105,92 @@ func (r *ConversationRepository) RewriteFrom(ctx context.Context, convID, msgID,
 			}
 		}
 		merged = append(merged, tailPatches...)
-		// Drop sealed segments before the new tail lands — if active
-		// were published first, a crash could reload merged history
-		// plus the old segments and double-count the repromoted era.
-		for _, f := range segs {
-			if err := os.Remove(f); err != nil {
-				return err
+
+		// The merged stream and the retired eras live in different files,
+		// so no single rename can commit this edit. The protocol: stage
+		// the merged bytes durable under a non-archive name, park every
+		// numbered segment under a parked name — renamed, never deleted —
+		// then publish the same bytes over active.jsonl; that one rename
+		// is the commit point. The invariants this buys:
+		//
+		//   - payload present + an edit-shaped archive mismatch = an
+		//     interrupted edit, finished by `conversation repair <id>
+		//     --finish-rewrite`. Edit-shaped is exact: the edit removes
+		//     numbered files only and parks them in ascending order
+		//     without a gap, so the archive shows fewer segments than
+		//     committed, a parked set that is the contiguous prefix
+		//     0.jsonl.rewrite-old … j.jsonl.rewrite-old, and every
+		//     surviving numbered segment an index above that prefix — or
+		//     the payload already equal to the live tail (the publish
+		//     landed, so republishing is a no-op whatever the leftovers);
+		//   - payload present + consistent archive = post-commit debris,
+		//     invisible to readers, swept by the next sealed edit, and
+		//     never republished;
+		//   - the payload is removed only once the archive validates, so
+		//     "inconsistent and no payload" is a state this code never
+		//     produces. A debris payload beside a foreign mismatch (a
+		//     Compact orphan, manual damage, a gapped parked set) is not
+		//     this window and is never republished either.
+		stream := joinLines(merged)
+		payload := filepath.Join(dir, rewritePayload)
+		if err := writeFileAtomic(payload, stream, 0o644); err != nil {
+			return err // nothing canonical moved yet
+		}
+		parked := make([]string, 0, len(segs))
+		rollback := func() {
+			restored := true
+			for _, p := range parked {
+				if err := os.Rename(p+rewriteParkSuffix, p); err != nil {
+					restored = false
+				}
+			}
+			// Drop the payload only when the archive was fully restored —
+			// while any segment stays parked the payload is the only
+			// roll-forward source for the era it holds.
+			if restored {
+				_ = os.Remove(payload)
 			}
 		}
-		if err := writeFileAtomic(active, joinLines(merged), 0o644); err != nil {
+		var parkErr error
+		for _, seg := range segs {
+			if parkErr = os.Rename(seg, seg+rewriteParkSuffix); parkErr != nil {
+				break
+			}
+			parked = append(parked, seg)
+		}
+		if parkErr == nil {
+			// The parked names must be durable before the publish: after
+			// it they are the only copies of their eras until the payload
+			// wins.
+			if d, err := os.Open(dir); err == nil {
+				parkErr = d.Sync()
+				_ = d.Close()
+			} else {
+				parkErr = err
+			}
+		}
+		if parkErr != nil {
+			rollback()
+			return parkErr
+		}
+		// Publish — the commit point. Before this rename the canonical
+		// stream is intact and the payload is debris; after it the merged
+		// history is the truth and the parked files are.
+		if err := writeFileAtomic(active, stream, 0o644); err != nil {
+			rollback()
 			return err
 		}
-		return r.recountMeta(convID)
+		if err := r.recountMeta(convID); err != nil {
+			return err
+		}
+		// Cleanup is best effort, payload first: once it is gone, leftover
+		// parked files still read as a consistent archive (they are not
+		// `*.jsonl`) and are swept by the next sealed edit.
+		_ = os.Remove(payload)
+		for _, p := range parked {
+			_ = os.Remove(p + rewriteParkSuffix)
+		}
+		return nil
 	}
 	return apperror.NewNotFoundError("message "+msgID, fmt.Errorf("no message %s in %s", msgID, convID))
 }

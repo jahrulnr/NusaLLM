@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -155,6 +156,110 @@ func (r *ConversationRepository) RepairOrphan(ctx context.Context, convID string
 	meta.MessageCount = len(all)
 	if err := r.writeMeta(convID, meta); err != nil {
 		return fmt.Errorf("repair %s: write metadata: %w", convID, err)
+	}
+	return nil
+}
+
+// RepairRewrite rolls an interrupted sealed edit forward — never back.
+// The payload RewriteFrom staged before touching a canonical name is the
+// merged history the edit intended, so the fix is deterministic: validate
+// the payload, publish it over active.jsonl, remove the leftover numbered
+// and parked segments, recount the counters, drop the payload. Callers
+// stop the app first. There is no abort direction — the parked segments
+// only survive inside the payload once the archive was already parked.
+func (r *ConversationRepository) RepairRewrite(ctx context.Context, convID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := validID(convID); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	meta, err := r.readMetaUnvalidated(convID)
+	if err != nil {
+		return err
+	}
+	dir := r.convDir(convID)
+	segs, err := sealedSegments(dir)
+	if err != nil {
+		return err
+	}
+	mismatch := sealedArchiveMismatch(convID, segs, meta.SealedSegments)
+	payloadPath := filepath.Join(dir, rewritePayload)
+	payload, err := os.ReadFile(payloadPath)
+	if errors.Is(err, os.ErrNotExist) {
+		if mismatch != nil {
+			// No payload means this is not the edit's crash window — the
+			// rewrite path never produces an inconsistent archive without
+			// one, so guesswork is not offered.
+			return fmt.Errorf("repair %s: no rewrite payload — the archive mismatch is not an interrupted edit; stop the app and reconcile it manually from a backup", convID)
+		}
+		return fmt.Errorf("repair %s: nothing to repair", convID)
+	}
+	if err != nil {
+		return err
+	}
+	if interruptedEdit(dir, convID, segs, meta.SealedSegments) == nil {
+		if mismatch == nil {
+			// The archive already validates: the edit committed and
+			// this payload is post-commit debris — publishing it could
+			// clobber history that landed after the crash.
+			return fmt.Errorf("repair %s: nothing to repair — the archive is already consistent", convID)
+		}
+		// A payload beside a mismatch the edit never produces is debris —
+		// not a recovery source. Under-diagnosis is the safe direction.
+		return fmt.Errorf("repair %s: the mismatch is not an interrupted edit — stop the app and reconcile it manually (a Compact orphan uses --discard-duplicate or --commit)", convID)
+	}
+	// Validate the whole payload before publishing: a complete,
+	// newline-terminated stream where every line decodes — through the
+	// same reader path a published file would take. A bad payload stays
+	// on disk so the parked segments remain a recovery source.
+	if len(payload) == 0 || payload[len(payload)-1] != '\n' {
+		return fmt.Errorf("repair %s: rewrite payload is empty or incomplete", convID)
+	}
+	var lines [][]byte
+	for _, line := range bytes.Split(bytes.TrimSuffix(payload, []byte("\n")), []byte("\n")) {
+		var record lineRecord
+		if err := json.Unmarshal(line, &record); err != nil {
+			return fmt.Errorf("repair %s: rewrite payload has a corrupt line: %w", convID, err)
+		}
+		if record.Type != lineMessage && record.Type != lineToolOutput {
+			return fmt.Errorf("repair %s: rewrite payload has an unknown line type %q", convID, record.Type)
+		}
+		lines = append(lines, line)
+	}
+	if _, err := messagesFromLines(lines); err != nil {
+		return fmt.Errorf("repair %s: rewrite payload does not decode: %w", convID, err)
+	}
+	if err := writeFileAtomic(filepath.Join(dir, activeFile), payload, 0o644); err != nil {
+		return fmt.Errorf("repair %s: publish payload: %w", convID, err)
+	}
+	// The merged stream is published — every leftover, numbered or
+	// parked, is a stale copy of eras it already holds.
+	parked, err := filepath.Glob(filepath.Join(dir, "*.jsonl"+rewriteParkSuffix))
+	if err != nil {
+		return err
+	}
+	leftovers := make([]string, 0, len(segs)+len(parked))
+	leftovers = append(leftovers, segs...)
+	leftovers = append(leftovers, parked...)
+	for _, stale := range leftovers {
+		if err := os.Remove(stale); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("repair %s: remove %s: %w", convID, filepath.Base(stale), err)
+		}
+	}
+	if err := r.recountMeta(convID); err != nil {
+		return fmt.Errorf("repair %s: recount metadata: %w", convID, err)
+	}
+	// Best effort, like RewriteFrom's post-commit cleanup: the archive is
+	// already published and validates, so a leftover payload is inert
+	// debris — invisible to readers, swept by the next sealed edit, and
+	// never republished.
+	_ = os.Remove(payloadPath)
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
 	}
 	return nil
 }

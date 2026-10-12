@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -258,5 +260,154 @@ func TestUnsetRemovesUnknownKeyAndLeaf(t *testing.T) {
 	}
 	if _, err := app.Unset("nope"); err == nil {
 		t.Fatal("unset of a missing key should fail")
+	}
+}
+
+// leafCase is one dotted config leaf: the raw value Set takes and the
+// JSON value the stored document then holds. Every value differs from
+// its default, so a write that is lost instead of serialized shows up
+// as a value that reverted.
+type leafCase struct {
+	key   string
+	value string
+	want  any
+}
+
+func concurrentLeaves() []leafCase {
+	return []leafCase{
+		{"server.port", "11998", float64(11998)},
+		{"conversation.mailbox_cap", "321", float64(321)},
+		{"conversation.max_turn_steps", "654", float64(654)},
+		{"conversation.compact_budget_pct", "42", float64(42)},
+		{"conversation.compact_keep_tail", "6", float64(6)},
+		{"service.header_timeout", `"45s"`, "45s"},
+		{"service.idle_timeout", `"20s"`, "20s"},
+		{"log.max_lines", "1234", float64(1234)},
+		{"log.max_files", "7", float64(7)},
+	}
+}
+
+// leafOf resolves one dotted key in a config document; a missing key
+// yields nil, which no expected value equals.
+func leafOf(t *testing.T, raw []byte, key string) any {
+	t.Helper()
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("decode document for %s: %v", key, err)
+	}
+	var node any = doc
+	for _, seg := range strings.Split(key, ".") {
+		section, ok := node.(map[string]any)
+		if !ok {
+			return nil
+		}
+		if node, ok = section[seg]; !ok {
+			return nil
+		}
+	}
+	return node
+}
+
+// releaseAll runs n writers, holds every one at a closed-channel gate,
+// and returns once all have finished — the writers enter the
+// read-modify-write together, with no sleep standing in for a barrier.
+func releaseAll(n int, run func(i int)) {
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			run(i)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+}
+
+// Concurrent leaf writes all land. Set is a whole-document
+// read-modify-write, so without serialization every writer that read
+// before the last write rewrites the file from its own stale read and
+// its key reverts to the default even though Set reported success. One
+// shared *SettingApp over a real file; the assertion is on the stored
+// document, not on timing.
+func TestConcurrentSetDoesNotLoseUpdates(t *testing.T) {
+	leaves := concurrentLeaves()
+	app, path := newApp(t)
+
+	docs := make([][]byte, len(leaves))
+	errs := make([]error, len(leaves))
+	releaseAll(len(leaves), func(i int) {
+		docs[i], errs[i] = app.Set(leaves[i].key, leaves[i].value)
+	})
+
+	// The document each Set returned is the writer's own view of the
+	// file, so it must carry the writer's leaf...
+	for i, leaf := range leaves {
+		if errs[i] != nil {
+			t.Fatalf("Set(%s) = %v", leaf.key, errs[i])
+		}
+		if got := leafOf(t, docs[i], leaf.key); !reflect.DeepEqual(got, leaf.want) {
+			t.Errorf("Set(%s) returned a document with %s = %v, want %v",
+				leaf.key, leaf.key, got, leaf.want)
+		}
+	}
+
+	// ...and so must what the file holds afterwards, for every leaf.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, leaf := range leaves {
+		if got := leafOf(t, raw, leaf.key); !reflect.DeepEqual(got, leaf.want) {
+			t.Errorf("%s = %v on disk, want %v — a concurrent write was lost",
+				leaf.key, got, leaf.want)
+		}
+	}
+}
+
+// Concurrent removals all land for the same reason — Unset reads the
+// whole document, deletes one leaf, and rewrites the file, so an
+// unsynchronized removal that ran on a stale read restores whatever the
+// writer before it deleted. A removal is not an absent line: the
+// validated document is rewritten whole, so the leaf returns to its
+// default value.
+func TestConcurrentUnsetDoesNotLoseRemovals(t *testing.T) {
+	leaves := concurrentLeaves()
+	app, path := newApp(t)
+	for _, leaf := range leaves {
+		if _, err := app.Set(leaf.key, leaf.value); err != nil {
+			t.Fatalf("seed %s: %v", leaf.key, err)
+		}
+	}
+	defaults, err := json.Marshal(config.NewConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	docs := make([][]byte, len(leaves))
+	errs := make([]error, len(leaves))
+	releaseAll(len(leaves), func(i int) {
+		docs[i], errs[i] = app.Unset(leaves[i].key)
+	})
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, leaf := range leaves {
+		if errs[i] != nil {
+			t.Fatalf("Unset(%s) = %v", leaf.key, errs[i])
+		}
+		want := leafOf(t, defaults, leaf.key)
+		if got := leafOf(t, docs[i], leaf.key); !reflect.DeepEqual(got, want) {
+			t.Errorf("Unset(%s) returned a document with %s = %v, want the default %v",
+				leaf.key, leaf.key, got, want)
+		}
+		if got := leafOf(t, raw, leaf.key); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s = %v on disk after its concurrent removal, want the default %v — a concurrent removal was lost",
+				leaf.key, got, want)
+		}
 	}
 }

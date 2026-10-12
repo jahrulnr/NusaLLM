@@ -125,4 +125,12 @@ type ConversationRepairer interface {
 	// still lead the live tail; RepairCommit publishes a unique one and
 	// recomputes the stored counters. Callers stop the application first.
 	RepairOrphan(ctx context.Context, convID string, action RepairAction) error
+
+	// RepairRewrite finishes a sealed-history edit interrupted mid-commit:
+	// the durable payload the edit staged is validated, published over the
+	// live tail, and the parked and numbered leftovers removed before the
+	// counters are recalculated. Rolling forward is the only direction —
+	// the merged stream already carries the surviving copy of the parked
+	// eras. Callers stop the application first.
+	RepairRewrite(ctx context.Context, convID string) error
 }

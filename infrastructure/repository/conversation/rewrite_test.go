@@ -3,6 +3,7 @@ package repoconversation
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
@@ -189,6 +190,312 @@ func TestSurgeryStopsAtUncommittedSealedSegment(t *testing.T) {
 	}
 	if string(after) != string(before) {
 		t.Fatal("uncommitted era changed")
+	}
+}
+
+// The sealed-path commit stages a durable payload before any canonical
+// name moves — a failed payload write must leave the archive untouched.
+func TestRewriteFromSealedPayloadFailureKeepsArchive(t *testing.T) {
+	repo := newRepo(t)
+	r := repo.(*ConversationRepository)
+	if err := repo.Save(t.Context(), newConv(t, "c1")); err != nil {
+		t.Fatal(err)
+	}
+	appendMsgs(t, repo, "c1", "u1", "u2", "u3")
+	ids := msgIDs(t, repo, "c1")
+	sum, _ := entity.NewMessage(enum.RoleUser, "S1")
+	if err := repo.Compact(t.Context(), "c1", sum, 2); err != nil { // seg0=[u1,u2], active=[S1,u3]
+		t.Fatal(err)
+	}
+	dir := r.convDir("c1")
+	segBefore, err := os.ReadFile(filepath.Join(dir, "0.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeBefore, err := os.ReadFile(filepath.Join(dir, activeFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The fault: the staged temp path holds a non-empty directory, so the
+	// sweep cannot clear it and the payload write cannot open it.
+	staged := filepath.Join(dir, rewritePayload+".tmp")
+	if err := os.MkdirAll(filepath.Join(staged, "keep"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := repo.RewriteFrom(t.Context(), "c1", ids[1], "u2*"); err == nil {
+		t.Fatal("expected RewriteFrom to fail on the payload write")
+	}
+
+	got, err := os.ReadFile(filepath.Join(dir, "0.jsonl"))
+	if err != nil || string(got) != string(segBefore) {
+		t.Fatalf("sealed segment changed across failed rewrite: %v", err)
+	}
+	got, err = os.ReadFile(filepath.Join(dir, activeFile))
+	if err != nil || string(got) != string(activeBefore) {
+		t.Fatalf("active.jsonl changed across failed rewrite: %v", err)
+	}
+	if _, err := repo.LoadAt(t.Context(), "c1", 0, 0); err != nil {
+		t.Fatalf("history unreadable after failed payload write: %v", err)
+	}
+}
+
+// A segment that cannot be parked must roll back the renames already
+// done — the canonical archive stays readable, nothing is lost.
+func TestRewriteFromSealedParkFailureRestoresSegments(t *testing.T) {
+	repo := newRepo(t)
+	r := repo.(*ConversationRepository)
+	if err := repo.Save(t.Context(), newConv(t, "c1")); err != nil {
+		t.Fatal(err)
+	}
+	appendMsgs(t, repo, "c1", "u1", "u2", "u3", "u4", "u5")
+	ids := msgIDs(t, repo, "c1")
+	sum1, _ := entity.NewMessage(enum.RoleUser, "S1")
+	if err := repo.Compact(t.Context(), "c1", sum1, 3); err != nil { // seg0=[u1,u2,u3], active=[S1,u4,u5]
+		t.Fatal(err)
+	}
+	sum2, _ := entity.NewMessage(enum.RoleUser, "S2")
+	if err := repo.Compact(t.Context(), "c1", sum2, 2); err != nil { // seg1=[S1,u4], active=[S2,u5]
+		t.Fatal(err)
+	}
+	dir := r.convDir("c1")
+	segBefore, err := os.ReadFile(filepath.Join(dir, "0.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A non-empty directory under the parked name cannot be renamed over
+	// or swept — parking 1.jsonl fails after 0.jsonl already moved.
+	blocker := filepath.Join(dir, "1.jsonl"+rewriteParkSuffix)
+	if err := os.Mkdir(blocker, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(blocker, "keep"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := repo.RewriteFrom(t.Context(), "c1", ids[1], "u2*"); err == nil {
+		t.Fatal("expected RewriteFrom to fail while parking")
+	}
+
+	got, err := os.ReadFile(filepath.Join(dir, "0.jsonl"))
+	if err != nil || string(got) != string(segBefore) {
+		t.Fatalf("rolled-back segment 0.jsonl changed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "1.jsonl")); err != nil {
+		t.Fatalf("unreached segment 1.jsonl lost: %v", err)
+	}
+	// The only parked name that should remain is the injected blocker
+	// itself — the rename the failure was staged on.
+	if _, err := os.Stat(filepath.Join(dir, "0.jsonl"+rewriteParkSuffix)); !os.IsNotExist(err) {
+		t.Fatalf("parked copy of 0.jsonl left behind by rollback")
+	}
+	if _, err := os.Stat(filepath.Join(dir, rewritePayload)); !os.IsNotExist(err) {
+		t.Fatalf("payload left behind by rollback: %v", err)
+	}
+	all, err := repo.LoadAt(t.Context(), "c1", 0, 0)
+	if err != nil || len(all) != 7 {
+		t.Fatalf("history after failed parking: n=%d err=%v", len(all), err)
+	}
+}
+
+// A failed publish rolls the parking back — the canonical stream and
+// every sealed era survive untouched.
+func TestRewriteFromSealedPublishFailureKeepsArchive(t *testing.T) {
+	repo := newRepo(t)
+	r := repo.(*ConversationRepository)
+	if err := repo.Save(t.Context(), newConv(t, "c1")); err != nil {
+		t.Fatal(err)
+	}
+	appendMsgs(t, repo, "c1", "u1", "u2", "u3")
+	ids := msgIDs(t, repo, "c1")
+	sum, _ := entity.NewMessage(enum.RoleUser, "S1")
+	if err := repo.Compact(t.Context(), "c1", sum, 2); err != nil { // seg0=[u1,u2], active=[S1,u3]
+		t.Fatal(err)
+	}
+	dir := r.convDir("c1")
+	segBefore, err := os.ReadFile(filepath.Join(dir, "0.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeBefore, err := os.ReadFile(filepath.Join(dir, activeFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, activeFile+".tmp"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := repo.RewriteFrom(t.Context(), "c1", ids[1], "u2*"); err == nil {
+		t.Fatal("expected RewriteFrom to fail on publish")
+	}
+
+	got, err := os.ReadFile(filepath.Join(dir, "0.jsonl"))
+	if err != nil || string(got) != string(segBefore) {
+		t.Fatalf("sealed segment changed across failed publish: %v", err)
+	}
+	got, err = os.ReadFile(filepath.Join(dir, activeFile))
+	if err != nil || string(got) != string(activeBefore) {
+		t.Fatalf("active.jsonl changed across failed publish: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, rewritePayload)); !os.IsNotExist(err) {
+		t.Fatalf("payload left behind by rollback: %v", err)
+	}
+	if _, err := repo.LoadAt(t.Context(), "c1", 0, 0); err != nil {
+		t.Fatalf("history unreadable after failed publish: %v", err)
+	}
+	// The failure was clean: removing the block lets the edit land.
+	if err := os.Remove(filepath.Join(dir, activeFile+".tmp")); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RewriteFrom(t.Context(), "c1", ids[1], "u2*"); err != nil {
+		t.Fatal(err)
+	}
+	all, err := repo.LoadAt(t.Context(), "c1", 0, 0)
+	if err != nil || len(all) != 2 || all[1].Content() != "u2*" {
+		t.Fatalf("history after retry: %+v err=%v", all, err)
+	}
+}
+
+// A crash between publish and metadata recount is the documented
+// interrupted-edit window: reads fail with the repair verb, and the
+// recovery command rolls the staged payload forward.
+func TestRewriteFromSealedMetaFailureLeavesRecoverableWindow(t *testing.T) {
+	repo := newRepo(t)
+	r := repo.(*ConversationRepository)
+	if err := repo.Save(t.Context(), newConv(t, "c1")); err != nil {
+		t.Fatal(err)
+	}
+	appendMsgs(t, repo, "c1", "u1", "u2", "u3")
+	ids := msgIDs(t, repo, "c1")
+	sum, _ := entity.NewMessage(enum.RoleUser, "S1")
+	if err := repo.Compact(t.Context(), "c1", sum, 2); err != nil { // seg0=[u1,u2], active=[S1,u3]
+		t.Fatal(err)
+	}
+	dir := r.convDir("c1")
+	block := filepath.Join(dir, metaFile+".tmp")
+	if err := os.Mkdir(block, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := repo.RewriteFrom(t.Context(), "c1", ids[1], "u2*"); err == nil {
+		t.Fatal("expected RewriteFrom to fail on the metadata recount")
+	}
+
+	for _, check := range []func() error{
+		func() error { _, err := repo.Load(t.Context(), "c1"); return err },
+		func() error { _, err := repo.LoadAt(t.Context(), "c1", 0, 0); return err },
+		func() error { _, err := repo.Info(t.Context(), "c1"); return err },
+	} {
+		err := check()
+		if err == nil || !strings.Contains(err.Error(), "--finish-rewrite") {
+			t.Fatalf("interrupted edit must name the repair verb, got %v", err)
+		}
+	}
+	m, _ := entity.NewMessage(enum.RoleUser, "new")
+	if _, err := repo.AppendMessage(t.Context(), "c1", m); err == nil {
+		t.Fatal("append proceeded on an interrupted archive")
+	}
+	if err := repo.Compact(t.Context(), "c1", sum, 1); err == nil {
+		t.Fatal("compact proceeded on an interrupted archive")
+	}
+
+	if err := os.Remove(block); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RepairRewrite(t.Context(), "c1"); err != nil {
+		t.Fatal(err)
+	}
+	all, err := repo.LoadAt(t.Context(), "c1", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 || all[0].Content() != "u1" || all[1].Content() != "u2*" {
+		t.Fatalf("repaired history = %+v, want the edit's merged stream", all)
+	}
+	info, err := repo.Info(t.Context(), "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.SealedSegments != 0 || info.MessageCount != 2 || info.ActiveCount != 2 {
+		t.Fatalf("counters after roll-forward: %+v", info)
+	}
+	if err := r.RepairRewrite(t.Context(), "c1"); err == nil || !strings.Contains(err.Error(), "nothing to repair") {
+		t.Fatalf("second repair must refuse cleanly: %v", err)
+	}
+}
+
+// Leftovers from a crashed edit — a payload whose commit never landed and
+// parked segment names — are debris once the archive validates again:
+// invisible to readers, swept by the next sealed edit, never republished.
+func TestRewriteFromSealedSweepsStaleLeftovers(t *testing.T) {
+	repo := newRepo(t)
+	r := repo.(*ConversationRepository)
+	if err := repo.Save(t.Context(), newConv(t, "c1")); err != nil {
+		t.Fatal(err)
+	}
+	appendMsgs(t, repo, "c1", "u1", "u2", "u3")
+	ids := msgIDs(t, repo, "c1")
+	sum, _ := entity.NewMessage(enum.RoleUser, "S1")
+	if err := repo.Compact(t.Context(), "c1", sum, 2); err != nil { // seg0=[u1,u2], active=[S1,u3]
+		t.Fatal(err)
+	}
+	dir := r.convDir("c1")
+	payload := filepath.Join(dir, rewritePayload)
+	if err := os.WriteFile(payload, []byte("stale\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	parked := filepath.Join(dir, "9.jsonl"+rewriteParkSuffix)
+	if err := os.WriteFile(parked, []byte("stale\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.LoadAt(t.Context(), "c1", 0, 0); err != nil {
+		t.Fatalf("debris must be invisible to readers: %v", err)
+	}
+
+	if err := repo.RewriteFrom(t.Context(), "c1", ids[1], "u2*"); err != nil {
+		t.Fatal(err)
+	}
+	all, err := repo.LoadAt(t.Context(), "c1", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 || all[1].Content() != "u2*" {
+		t.Fatalf("stale payload shaped history: %+v", all)
+	}
+	if _, err := os.Stat(payload); !os.IsNotExist(err) {
+		t.Fatalf("stale payload survived the rewrite: %v", err)
+	}
+	if _, err := os.Stat(parked); !os.IsNotExist(err) {
+		t.Fatalf("parked leftover survived the rewrite: %v", err)
+	}
+}
+
+// The sweep also claims the payload's staged temp sibling — the name
+// writeFileAtomic would reuse. A sealed edit that finds nothing still runs
+// the sweep first, so the leftover must not survive it.
+func TestRewriteFromSweepsPayloadTempSibling(t *testing.T) {
+	repo := newRepo(t)
+	r := repo.(*ConversationRepository)
+	if err := repo.Save(t.Context(), newConv(t, "c1")); err != nil {
+		t.Fatal(err)
+	}
+	appendMsgs(t, repo, "c1", "u1", "u2")
+	sum, _ := entity.NewMessage(enum.RoleUser, "S1")
+	if err := repo.Compact(t.Context(), "c1", sum, 1); err != nil {
+		t.Fatal(err)
+	}
+	dir := r.convDir("c1")
+	staged := filepath.Join(dir, rewritePayload+".tmp")
+	if err := os.WriteFile(staged, []byte("stale\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := repo.RewriteFrom(t.Context(), "c1", "missing-id", "x")
+	if err == nil || apperror.As(err).StatusCode() != apperror.StatusNotFound {
+		t.Fatalf("RewriteFrom(unknown id) = %v, want 404", err)
+	}
+	if _, err := os.Stat(staged); !os.IsNotExist(err) {
+		t.Fatalf("staged payload temp sibling survived the sweep: %v", err)
 	}
 }
 

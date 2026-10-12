@@ -18,6 +18,8 @@ class MessageThread extends Widget {
     this._loading = false;
     this._hasConversation = false;
     this._historyNotice = false;
+    this._earlierLoading = false; // an earlier-page request is in flight
+    this._earlierBtn = null;
     this._compactState = null;
     this._editingId = null;
     this._editDraft = null; // typed edit kept when the shell vetoes dispatch
@@ -118,6 +120,18 @@ class MessageThread extends Widget {
     this._historyNotice = !!v;
     this._render();
   }
+  // Busy flag for the notice's "Load earlier" button — pushed into the
+  // live node so a request in flight doesn't rebuild the thread; the
+  // flag is re-read for the initial state whenever a render recreates
+  // the control.
+  set earlierLoading(v) {
+    this._earlierLoading = !!v;
+    if (this._earlierBtn) {
+      this._earlierBtn.disabled = this._earlierLoading;
+      this._earlierBtn.textContent =
+        this._earlierLoading ? 'Loading…' : 'Load earlier messages';
+    }
+  }
   set compactState(state) {
     this._compactState = state;
     if (this.compactEl) this._renderCompactState();
@@ -193,6 +207,7 @@ class MessageThread extends Widget {
     this._contentResize.disconnect();
     clear(this.root);
     this._messageNodes = [];
+    this._earlierBtn = null;
     this.root.classList.add('thread');
     this.root.setAttribute('role', 'log');
     this.root.setAttribute('aria-label', 'Conversation');
@@ -214,7 +229,16 @@ class MessageThread extends Widget {
       return;
     }
     if (this._historyNotice) {
-      this.root.append(el('div', { class: 'notice', text: 'Earlier messages exist — showing the latest window.' }));
+      this._earlierBtn = el('button', {
+        class: 'earlier-btn', type: 'button',
+        disabled: this._earlierLoading || null,
+        onclick: () => emit(this, 'history-earlier'),
+        text: this._earlierLoading ? 'Loading…' : 'Load earlier messages',
+      });
+      this.root.append(el('div', { class: 'notice' }, [
+        el('div', { text: 'Earlier messages exist — this window does not reach the start.' }),
+        this._earlierBtn,
+      ]));
     }
     if (!this._messages.length) {
       this.root.append(el('div', { class: 'hint', text: 'No messages yet — say something.' }));

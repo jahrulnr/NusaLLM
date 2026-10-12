@@ -33,12 +33,24 @@ class AppShell extends Widget {
     this.socket = new TurnSocket();
 
     this.allConversations = [];
+    this.conversationsPage = { offset: 0, limit: 100, total: 0, hasMore: false };
+    // _listSeq counts list COMMITS — a response captured before one is
+    // stale by construction and drops on landing. _refreshSeq orders
+    // overlapping refreshes among themselves (newest start wins), so a
+    // refresh merely being on the wire never cancels a list mutation
+    // that commits honestly mid-flight.
+    this._listSeq = 0;
+    this._refreshSeq = 0;
+    this._moreBusy = false;     // a load-more list page is on the wire
     this.gateways = [];
     this.settings = {};
 
     this.activeId = null;       // selected conversation id (the VIEW)
     this.conversation = null;   // its detail projection
     this.messages = [];         // its latest message window
+    this.history = { start: 0, total: 0 }; // the window's server-side span
+    this._historySeq = 0;       // bumped by every write through _assignHistory
+    this._earlierLoading = false; // a load-earlier page is in flight
     this.selection = null;      // {route, modelId, effort, provider, workspace} next-send binding
     this.command = null;        // the one in-flight command (see above)
     this.settledStream = null;  // keep the final live view through history refresh
@@ -102,7 +114,11 @@ class AppShell extends Widget {
 
     on(this.sidebar, 'conversation-select', ({ id }) => this.select(id));
     on(this.sidebar, 'conversation-new', () => this.newConversation());
-    on(this.sidebar, 'conversation-search', ({ query }) => this._filter(query));
+    // The widget narrows rows by its own query — the shell re-projects
+    // the FULL loaded set so the coverage hint keeps counting loaded
+    // threads rather than the match count.
+    on(this.sidebar, 'conversation-search', () => this._pushConversations());
+    on(this.sidebar, 'conversation-more', () => this._loadMoreConversations());
     on(this.sidebar, 'sidebar-close', () => { this.sidebarOpen = false; this._syncSidebar(); });
     on(this.scrim, 'click', () => { this.sidebarOpen = false; this._syncSidebar(); });
 
@@ -119,6 +135,7 @@ class AppShell extends Widget {
     on(this.thread, 'message-edit', ({ messageId, content }, e) => {
       if (this._edit(messageId, content) === false) e.preventDefault();
     });
+    on(this.thread, 'history-earlier', () => this._loadEarlier());
 
     on(this.composer, 'turn-send', ({ content }) => this._send(content));
     on(this.composer, 'turn-steer', ({ content }) => this._steer(content));
@@ -172,7 +189,8 @@ class AppShell extends Widget {
     ]);
     if (convs.status === 'fulfilled') {
       this.allConversations = convs.value.data || [];
-      this.sidebar.conversations = this.allConversations;
+      this.conversationsPage = this._pageMeta(convs.value.page);
+      this._pushConversations();
     } else this._toast('error', 'Conversations', this._errText(convs.reason));
     if (gws.status === 'fulfilled') {
       this.gateways = gws.value.data || [];
@@ -326,6 +344,11 @@ class AppShell extends Widget {
     }
     this.thread.loading = true;
     this.thread.hasConversation = true;
+    // An earlier-page request from the room being left still lands —
+    // generation drops its data, but its busy flag must not linger on
+    // this room's notice control until then.
+    this._earlierLoading = false;
+    this.thread.earlierLoading = false;
     this._setHash(id);
     // Placeholder chrome — the previous room's title/binding must not
     // linger as if it described this id.
@@ -413,7 +436,10 @@ class AppShell extends Widget {
     this._syncCompact();
     this.thread.hasConversation = false;
     this.thread.messages = this.messages;
+    this.history = { start: 0, total: 0 };
     this.thread.historyNotice = false;
+    this._earlierLoading = false;
+    this.thread.earlierLoading = false;
     this._defaultSelection();
     this._syncComposer();
     this._syncStream();
@@ -422,10 +448,32 @@ class AppShell extends Widget {
     this._drainQueue(); // a pre-open queue drains once the view is free
   }
 
-  _filter(query) {
-    const q = (query || '').trim().toLowerCase();
-    this.sidebar.conversations = !q ? this.allConversations
-      : this.allConversations.filter((c) => (c.title || c.id).toLowerCase().includes(q));
+  // Every sidebar list write goes through here — the widget's coverage
+  // hint counts whatever array it is handed, so rows and paging meta
+  // are always pushed together, and the array is always the full
+  // loaded set for the widget's own _query to narrow.
+  _pushConversations() {
+    this.sidebar.conversations = this.allConversations;
+    // `total` before `hasMore`: the widget renders its coverage hint the
+    // moment `hasMore` flips true and reads `total` as it does, so the
+    // total must already be current. Keeping that order holds even if an
+    // await is ever introduced between the setters — no intermediate
+    // state can then show a stale total.
+    this.sidebar.total = this.conversationsPage.total;
+    this.sidebar.hasMore = this.conversationsPage.hasMore;
+    this.sidebar.moreBusy = this._moreBusy;
+  }
+
+  // Wire meta may be absent on a degenerate response — fall back to
+  // the loaded count so the coverage the sidebar states stays true.
+  _pageMeta(page) {
+    const p = page || {};
+    return {
+      offset: p.offset || 0,
+      limit: p.limit || 100,
+      total: typeof p.total === 'number' ? p.total : this.allConversations.length,
+      hasMore: !!p.hasMore,
+    };
   }
 
   // The scrim belongs to the mobile overlay only — on desktop the
@@ -579,6 +627,72 @@ class AppShell extends Widget {
         x.role === 'user' && x.content === m.content &&
         !(this.command.historyIds && this.command.historyIds.has(x.id)));
       if (owned && !committed) this.messages.push(m);
+    }
+    // The window the view now owns — every writer through here lands
+    // the newest page. _historySeq lets an in-flight earlier-page
+    // request tell it is answering a window that no longer exists.
+    this.history = {
+      start: page.effectiveStart ?? 0,
+      total: typeof page.total === 'number' ? page.total : (this.history?.total || 0),
+    };
+    this._historySeq++;
+    // A fresh window supersedes any in-flight "Load earlier" page — that
+    // request no longer owns the view, so its guarded release will skip.
+    // Release the busy flags here instead, or the control would stick.
+    this._earlierLoading = false;
+    this.thread.earlierLoading = false;
+  }
+
+  // "Load earlier" grows the window one page upward from its current
+  // start, prepended without duplicating ids — existing records win an
+  // id collision since they are the fresher copy. The response applies
+  // only while the window it was computed against is still the view's:
+  // a room reload or an authoritative refresh landing mid-flight bumps
+  // _historySeq and resets to the newest page, so the stale page drops
+  // instead of resurrecting records a rewrite may have cut. A page that
+  // no longer reaches the window start is dropped for the same reason —
+  // a gap above the list is worse than a lost click.
+  async _loadEarlier() {
+    const id = this.activeId;
+    const history = this.history;
+    if (!id || this._earlierLoading || this.viewLoading ||
+        !history || history.start <= 0) return;
+    const start = Math.max(0, history.start - 100);
+    const limit = history.start - start; // 1..100 — inside the contract cap
+    this._earlierLoading = true;
+    this.thread.earlierLoading = true;
+    const gen = this.generation;
+    const seq = this._historySeq;
+    // The request owns the busy flag only while it still describes the
+    // view it was issued for. A room switch (new generation/id) or an
+    // authoritative window write (new _historySeq) hands ownership to
+    // another request, whose flag this one must not release.
+    const owns = () => gen === this.generation && id === this.activeId &&
+      seq === this._historySeq;
+    try {
+      const page = await this.api.getMessages(id, { start, limit });
+      if (!owns()) return;
+      const end = page.nextStart ??
+        (page.effectiveStart ?? start) + (page.messages || []).length;
+      if (end < this.history.start) return;
+      const seen = new Set(this.messages.map((m) => m.id));
+      this.messages = [
+        ...(page.messages || []).filter((m) => !seen.has(m.id)),
+        ...this.messages,
+      ];
+      this.history = {
+        start: page.effectiveStart ?? start,
+        total: typeof page.total === 'number' ? page.total : history.total,
+      };
+      this.thread.messages = this.messages;
+      this.thread.historyNotice = this.history.start > 0;
+    } catch (err) {
+      this._toast('error', 'History', this._errText(err));
+    } finally {
+      if (owns()) {
+        this._earlierLoading = false;
+        this.thread.earlierLoading = false;
+      }
     }
   }
 
@@ -909,6 +1023,10 @@ class AppShell extends Widget {
       return false;
     }
     const prior = this.messages.slice();
+    // The window those messages came from travels with them — a
+    // "Load earlier" can commit while this edit is still pre-open, and
+    // the snapshot must put the start back with the cut messages.
+    const priorHistory = { ...this.history };
     const idx = prior.findIndex((m) => m.id === messageId);
     const removedIds = idx >= 0 ? prior.slice(idx + 1).map((m) => m.id) : [];
     if (idx >= 0) {
@@ -925,6 +1043,7 @@ class AppShell extends Widget {
       cancelRequested: false, claimFreshView: false,
       editMessageId: messageId,
       priorMessages: prior,
+      priorHistory,
       removedIds,
       stream: createTurnProjection(requestId),
     };
@@ -934,12 +1053,25 @@ class AppShell extends Widget {
   }
 
   // A pre-open edit failure puts the cut history back. Once the turn
-  // has opened, the terminal HTTP read is authoritative instead.
+  // has opened, the terminal HTTP read is authoritative instead. The
+  // window comes back with the messages it describes: a "Load earlier"
+  // that committed while this edit was pre-open moved history.start
+  // under the snapshot, and leaving it there would make the next
+  // "Load earlier" fetch only up to that newer start — the range
+  // between the restored window and the stale start would vanish from
+  // the list with no notice.
   _restoreUnopenedEdit(cmd) {
     if (!cmd || cmd.kind !== 'edit' || cmd.turnId || !cmd.priorMessages) return;
     if (this.activeId !== cmd.conversationId) return;
     this.messages = cmd.priorMessages;
     this.thread.messages = this.messages;
+    if (cmd.priorHistory) this.history = { ...cmd.priorHistory };
+    this.thread.historyNotice = this.history.start > 0;
+    // _historySeq is NOT bumped here. An earlier page already in flight
+    // for this same start is still the correct page for the restored
+    // window, and the `end < history.start` guard drops any page that
+    // no longer reaches it — bumping would throw that legitimate page
+    // away instead of letting it land.
   }
 
   // A room loaded while a transport turn is still running attaches to
@@ -1489,14 +1621,66 @@ class AppShell extends Widget {
     return inflight;
   }
 
+  // Re-reads every page the user already loaded — titles, order, and
+  // the active-turn markers stay fresh without shrinking the list back
+  // to one page. _refreshSeq keeps the newest refresh authoritative
+  // among overlapping ones; _listSeq makes the response drop when a
+  // list mutation (load-more, delete) committed while it was in
+  // flight — its whole-span answer no longer describes the set.
   async _refreshList() {
+    const seq = ++this._refreshSeq;
+    const listSeq = this._listSeq;
+    const pages = Math.max(1, Math.ceil(this.allConversations.length / 100));
     try {
-      const page = await this.api.listConversations({ limit: 100 });
-      this.allConversations = page.data || [];
-      this.sidebar.conversations = this.allConversations;
+      const results = await Promise.all(Array.from({ length: pages },
+        (_, i) => this.api.listConversations({ offset: i * 100, limit: 100 })));
+      if (seq !== this._refreshSeq || listSeq !== this._listSeq) return;
+      ++this._listSeq;
+      const seen = new Set();
+      this.allConversations = results.flatMap((r) => r.data || [])
+        .filter((c) => !seen.has(c.id) && seen.add(c.id));
+      this.conversationsPage = this._pageMeta(results[results.length - 1].page);
+      this._pushConversations();
       this.sidebar.activeId = this.activeId;
     } catch (err) {
+      if (seq !== this._refreshSeq) return;
       this._toast('warn', 'Conversations', this._errText(err));
+    }
+  }
+
+  // The sidebar's explicit next page: appends what follows the loaded
+  // set and reports the coverage back. A second click while a request
+  // is on the wire is ignored here — moreBusy also drives the widget's
+  // disabled state. Landing order decides races: an append that
+  // commits while a refresh is still on the wire bumps _listSeq so the
+  // refresh's pre-append span answer drops; an append whose page was
+  // fetched before another commit (refresh applied, delete) is itself
+  // offset-stale and drops through the same check.
+  async _loadMoreConversations() {
+    if (this._moreBusy || !this.conversationsPage.hasMore) return;
+    const seq = this._listSeq;
+    this._moreBusy = true;
+    this.sidebar.moreBusy = true;
+    try {
+      const page = await this.api.listConversations({
+        offset: this.allConversations.length, limit: 100,
+      });
+      if (seq !== this._listSeq) return;
+      ++this._listSeq;
+      const seen = new Set(this.allConversations.map((c) => c.id));
+      this.allConversations = [
+        ...this.allConversations,
+        ...(page.data || []).filter((c) => !seen.has(c.id)),
+      ];
+      this.conversationsPage = this._pageMeta(page.page);
+      this._pushConversations();
+    } catch (err) {
+      if (seq === this._listSeq) {
+        this._toast('warn', 'Conversations', this._errText(err));
+      }
+    } finally {
+      this._moreBusy = false;
+      this.sidebar.moreBusy = false;
     }
   }
 
@@ -1541,8 +1725,19 @@ class AppShell extends Widget {
     const id = this.activeId;
     try {
       await this.api.deleteConversation(id);
+      // Committed — every list response already on the wire answers a
+      // roster that still contained this row and must not land it back.
+      ++this._listSeq;
       this.allConversations = this.allConversations.filter((c) => c.id !== id);
-      this.sidebar.conversations = this.allConversations;
+      // The removed row was loaded, so the local span and the coverage
+      // it reports shrink by exactly one — no refresh needed.
+      const p = this.conversationsPage;
+      this.conversationsPage = {
+        ...p,
+        total: Math.max(0, p.total - 1),
+        hasMore: this.allConversations.length < Math.max(0, p.total - 1),
+      };
+      this._pushConversations();
       if (this.activeId === id) this.newConversation();
       this._toast('info', 'Deleted', 'Thread removed.');
     } catch (err) { this._toast('error', 'Delete', this._errText(err)); }

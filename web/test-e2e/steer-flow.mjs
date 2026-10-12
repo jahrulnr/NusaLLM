@@ -93,6 +93,14 @@ function makeFixture() {
       ['c2', { id: 'c2', title: 'Room Two', modelId: 'm1', route: 'gw1', workspace: '' }],
     ]),
     messages: new Map([['c1', []], ['c2', []]]),
+    // The projected settings document the settings page autosaves
+    // against — PATCHes apply a leaf and echo the whole document.
+    settings: {
+      server: { port: 10998, hosts: ['127.0.0.1'] },
+      conversation: { mailbox_cap: 128, max_turn_steps: 512, compact_budget_pct: 90, compact_keep_tail: 4 },
+      log: { max_lines: 2000, max_files: 9 },
+    },
+    patchLog: [],    // settings PATCH bodies, in request order
     minted: 0,
     // path -> ticket {count, limit, release[]} — the next `limit`
     // requests stall until released; further requests pass through
@@ -115,10 +123,72 @@ function release(t) {
   if (t) t.release.splice(0).forEach((r) => r());
 }
 
+// --- paging contract -------------------------------------------------------
+// Mirrors of transport/paging.go + conversation/{get,list}.go: message
+// `start` is absolute (negative counts back from the end), `limit` is
+// 1..100, `offset`/`limit` page the list, and each response reports
+// where the window landed — a held request answers the same math a live
+// one would, bound to the data at request time.
+
+function intParam(url, key, def) {
+  if (!url.searchParams.has(key)) return def;
+  const raw = url.searchParams.get(key);
+  return /^[+-]?\d+$/.test(raw) ? Number(raw) : NaN;
+}
+
+const badRange = (detail) => ({
+  body: { code: 'invalid_argument', detail }, status: 400,
+});
+
+function messagesPage(msgs, url) {
+  const start = intParam(url, 'start', -50);
+  const limit = intParam(url, 'limit', 50);
+  if (Number.isNaN(start)) return badRange('start must be an integer');
+  if (Number.isNaN(limit) || limit < 1 || limit > 100) {
+    return badRange('limit must be an integer between 1 and 100');
+  }
+  const total = msgs.length;
+  let effective = start < 0 ? start + total : start;
+  if (effective < 0) effective = 0;
+  if (effective > total) effective = total;
+  const page = msgs.slice(effective, Math.min(effective + limit, total));
+  const body = {
+    effectiveStart: effective,
+    total,
+    hasMore: effective + page.length < total,
+    messages: structuredClone(page),
+  };
+  // messagePage.NextStart carries no omitempty — the key is always on
+  // the wire, next start while newer rows remain and null otherwise.
+  body.nextStart = body.hasMore ? effective + page.length : null;
+  return { body, status: 200 };
+}
+
+function conversationsPage(convs, url) {
+  const offset = intParam(url, 'offset', 0);
+  const limit = intParam(url, 'limit', 30);
+  if (Number.isNaN(offset) || offset < 0) {
+    return badRange('offset must be a non-negative integer');
+  }
+  if (Number.isNaN(limit) || limit < 1 || limit > 100) {
+    return badRange('limit must be an integer between 1 and 100');
+  }
+  const all = [...convs.values()];
+  const page = all.slice(offset, offset + limit);
+  return { body: {
+    data: structuredClone(page),
+    page: {
+      offset, limit, total: all.length,
+      hasMore: offset + page.length < all.length,
+    },
+  }, status: 200 };
+}
+
 // A held GET's response is captured at REQUEST time — a slow response
 // that lands late carries the data as of its request, so overlapping
 // writers can actually be told apart.
-function snapshotFor(fixture, p) {
+function snapshotFor(fixture, url) {
+  const p = url.pathname;
   const convMatch = p.match(/^\/api\/conversations\/([^/]+)$/);
   if (convMatch) {
     const c = fixture.convs.get(convMatch[1]);
@@ -127,8 +197,16 @@ function snapshotFor(fixture, p) {
   }
   const msgMatch = p.match(/^\/api\/conversations\/([^/]+)\/messages$/);
   if (msgMatch) {
-    const msgs = fixture.messages.get(msgMatch[1]) || [];
-    return { body: { messages: structuredClone(msgs), effectiveStart: 0, total: msgs.length }, status: 200 };
+    // The real handler resolves the conversation first (reads.Info) — an
+    // id with no conversation is a 404 problem, not an empty page. An
+    // existing room with no messages still answers the normal window.
+    if (!fixture.convs.has(msgMatch[1])) {
+      return { body: { code: 'not_found', detail: 'conversation not found' }, status: 404 };
+    }
+    return messagesPage(fixture.messages.get(msgMatch[1]) || [], url);
+  }
+  if (p === '/api/conversations') {
+    return conversationsPage(fixture.convs, url);
   }
   return { body: {}, status: 200 };
 }
@@ -140,6 +218,24 @@ function apiMock(fixture) {
     const json = (body, status = 200) => route.fulfill({
       status, contentType: 'application/json', body: JSON.stringify(body),
     });
+    if (p === '/api/settings' && request.method() === 'PATCH') {
+      // Apply the leaf like a real read-modify-write backend and echo
+      // the projected document — the autosave round-trip the editor
+      // lives on. Held responses use the 'PATCH <path>' stall key.
+      const body = JSON.parse(request.postData() || '{}');
+      fixture.patchLog.push(body);
+      const seg = String(body.key || '').split('.');
+      let node = fixture.settings;
+      for (const part of seg.slice(0, -1)) node = node && node[part];
+      if (node && seg.length > 1) node[seg[seg.length - 1]] = body.value;
+      const held = fixture.stalls.get(`PATCH ${p}`);
+      if (held && held.count < held.limit) {
+        held.count += 1;
+        await new Promise((r) => held.release.push(r));
+        if (held.fail) return json({ detail: 'injected failure' }, 500);
+      }
+      return json(fixture.settings);
+    }
     if (request.method() !== 'GET') return json({});
     fixture.getLog.push(p);
     // Truthful failure injection: 500s the app must survive.
@@ -153,14 +249,15 @@ function apiMock(fixture) {
     const held = fixture.stalls.get(p);
     if (held && held.count < held.limit) {
       held.count += 1;
-      const snap = snapshotFor(fixture, p);
+      const snap = snapshotFor(fixture, url);
       await new Promise((r) => held.release.push(r));
       return held.fail
         ? json({ detail: 'injected failure' }, 500)
         : json(snap.body, snap.status);
     }
     if (p === '/api/conversations') {
-      return json({ data: [...fixture.convs.values()], total: fixture.convs.size });
+      const r = conversationsPage(fixture.convs, url);
+      return json(r.body, r.status);
     }
     const convMatch = p.match(/^\/api\/conversations\/([^/]+)$/);
     if (convMatch) {
@@ -169,13 +266,17 @@ function apiMock(fixture) {
     }
     const msgMatch = p.match(/^\/api\/conversations\/([^/]+)\/messages$/);
     if (msgMatch) {
-      const msgs = fixture.messages.get(msgMatch[1]) || [];
-      return json({ messages: msgs, effectiveStart: 0, total: msgs.length });
+      // Same rule as the held snapshot above: the two paths must agree.
+      if (!fixture.convs.has(msgMatch[1])) {
+        return json({ code: 'not_found', detail: 'conversation not found' }, 404);
+      }
+      const r = messagesPage(fixture.messages.get(msgMatch[1]) || [], url);
+      return json(r.body, r.status);
     }
     if (p === '/api/gateways') {
       return json({ data: [{ id: 'gw1', name: 'MockGW', broken: false, models: [{ id: 'm1', name: 'Mock' }] }], total: 1 });
     }
-    if (p === '/api/settings') return json({});
+    if (p === '/api/settings') return json(fixture.settings);
     if (p === '/api/context') return json({ estimate: 420, total: 8192 });
     if (p === '/api/tools') return json({ data: [] });
     if (p === '/api/health') return json({ ok: true });
@@ -1496,6 +1597,261 @@ await scenarioRun('select-watches-live-turn', async (s) => {
     () => document.querySelector('nusa-app').command?.kind === 'edit'));
   check('edit turn does not offer steer', !(await steerBtn(s).isVisible()));
   check('stop armed for the reattached edit', await stopBtn(s).isVisible());
+});
+
+// Settings autosave: a PATCH response re-projects the whole document.
+// The editor must refresh values in place — detaching the focused
+// field blurs it to BODY and fires a change the user never asked for.
+await scenarioRun('settings-autosave-focus', async (s) => {
+  await s.page.goto(BASE + '#settings');
+  const editor = s.page.locator('nusa-settings-editor');
+  const convSummary = editor.locator('details[data-section="conversation"] > summary');
+  await s.page.locator('nusa-settings-page details.section', { hasText: 'Application' })
+    .locator('> summary').click();
+  await convSummary.waitFor({ timeout: 8000 });
+  await convSummary.click();
+  const steps = editor.locator('[id="s-conversation.max_turn_steps"]');
+  const tail = editor.locator('[id="s-conversation.compact_keep_tail"]');
+  await steps.waitFor();
+
+  // Commit an edit on one field; hold the PATCH response in flight.
+  const held = stall(s.fixture, 'PATCH /api/settings', 1);
+  await steps.fill('25');
+  await steps.press('Tab');
+  await poll(() => s.fixture.patchLog.length === 1);
+  check('one PATCH for the committed edit',
+    s.fixture.patchLog[0].key === 'conversation.max_turn_steps' &&
+    s.fixture.patchLog[0].value === 25);
+
+  // While the response is held, focus another field and draft — no blur.
+  await tail.click();
+  await tail.fill('7');
+  const tailNode = await tail.elementHandle();
+  release(held);
+  check('held response applied', await poll(() => s.page.evaluate(
+    () => document.querySelector('nusa-app').settings?.conversation?.max_turn_steps === 25)));
+  // Let any stray blur/change handlers settle before counting PATCHes.
+  await s.page.evaluate(() => new Promise(
+    (r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  await s.page.waitForTimeout(200);
+
+  const focusPath = await s.page.evaluate(() => {
+    const path = [];
+    let a = document.activeElement;
+    while (a) {
+      path.push(a.id ? `${a.tagName}#${a.id}` : a.tagName);
+      a = a.shadowRoot ? a.shadowRoot.activeElement : null;
+    }
+    return path.join(' > ');
+  });
+  check('drafted field stayed attached and focused',
+    await tailNode.evaluate((n) => n.isConnected) &&
+    focusPath.endsWith('INPUT#s-conversation.compact_keep_tail'), focusPath);
+  check('draft survives the projection', (await tail.inputValue()) === '7');
+  check('untouched field fired no premature PATCH', s.fixture.patchLog.length === 1,
+    JSON.stringify(s.fixture.patchLog));
+
+  // The user's real commit sends exactly one more PATCH.
+  await tail.press('Tab');
+  await poll(() => s.fixture.patchLog.length === 2);
+  check('real commit is exactly one PATCH',
+    s.fixture.patchLog[1].key === 'conversation.compact_keep_tail' &&
+    s.fixture.patchLog[1].value === 7,
+    JSON.stringify(s.fixture.patchLog));
+});
+
+// The thread-window contract end to end: a room deeper than one page
+// opens on its newest slice, "Load earlier" grows the window upward
+// without moving the reader's anchored line, and the control retires
+// once the window reaches index 0.
+await scenarioRun('history-earlier-window', async (s) => {
+  // 250 records — two pages of headroom above the newest window.
+  s.fixture.messages.set('c1', Array.from({ length: 250 }, (_, i) => ({
+    id: `h-${String(i).padStart(3, '0')}`,
+    role: i % 2 ? 'assistant' : 'user',
+    userType: 'origin',
+    content: `history record ${i}`,
+  })));
+  await open(s, '#conversation=c1');
+  const earlierBtn = s.page.locator('nusa-message-thread .earlier-btn');
+  await earlierBtn.waitFor({ timeout: 8000 });
+  check('window opened on the newest page', await s.page.evaluate(() => {
+    const app = document.querySelector('nusa-app');
+    return app.history.start === 150 && app.messages.length === 100 &&
+      app.messages[0].id === 'h-150';
+  }));
+  check('notice offers the earlier control', await earlierBtn.isVisible());
+  const THREAD = `document.querySelector('nusa-app').shadowRoot.querySelector('nusa-message-thread')`;
+  const scrollTop = () => s.page.evaluate((expr) => {
+    eval(expr).shadowRoot.querySelector('.thread').scrollTop = 0;
+  }, THREAD);
+  const deltaOf = (id) => s.page.evaluate(([expr, want]) => {
+    const t = eval(expr);
+    const scroller = t.shadowRoot.querySelector('.thread');
+    const i = t._renderedMessages.findIndex((m) => m.id === want);
+    if (i < 0) return null;
+    return t._messageNodes[i].getBoundingClientRect().top -
+      scroller.getBoundingClientRect().top;
+  }, [THREAD, id]);
+  // Scroll up — the anchor is the first window record at the
+  // scroller's top edge, where a reader paging upward sits.
+  await scrollTop();
+  await s.page.screenshot({ path: `${ART}/history-earlier-desktop.png` });
+  const anchor = await s.page.evaluate((expr) => {
+    const t = eval(expr);
+    const scroller = t.shadowRoot.querySelector('.thread');
+    const i = t._messageNodes.findIndex((n) =>
+      n.getBoundingClientRect().bottom > scroller.getBoundingClientRect().top);
+    return {
+      id: t._renderedMessages[i].id,
+      delta: t._messageNodes[i].getBoundingClientRect().top -
+        scroller.getBoundingClientRect().top,
+    };
+  }, THREAD);
+  check('anchor is the first record of the window', anchor.id === 'h-150', anchor.id);
+  // Dispatch the click directly: a real click would first scroll the
+  // control into view, which is a no-op for a reader already at the top
+  // but races the anchor the widget captures live at render time.
+  await earlierBtn.dispatchEvent('click');
+  await poll(() => s.page.evaluate(
+    () => document.querySelector('nusa-app').history.start === 50));
+  check('earlier page prepended above the window', await s.page.evaluate((expr) => {
+    const app = document.querySelector('nusa-app');
+    const t = eval(expr);
+    return app.messages.length === 200 && app.messages[0].id === 'h-050' &&
+      new Set(app.messages.map((m) => m.id)).size === 200 &&
+      t._renderedMessages.length === 200 && t._messageNodes.length === 200;
+  }, THREAD));
+  // The restore lands synchronously; the prepended markdown views' own
+  // stylesheets may settle a frame later and shift geometry by a few px,
+  // which the browser's own scroll anchoring then mostly absorbs. Wait
+  // for the tree to stop growing before comparing.
+  await s.page.waitForFunction((expr) => {
+    const scroller = eval(expr).shadowRoot.querySelector('.thread');
+    const now = performance.now();
+    if (window.__lastSHAt == null || scroller.scrollHeight !== window.__lastSH) {
+      window.__lastSH = scroller.scrollHeight;
+      window.__lastSHAt = now;
+    }
+    return now - window.__lastSHAt > 120;
+  }, THREAD, { timeout: 6000 });
+  const after = await deltaOf(anchor.id);
+  check('anchored message kept its viewport offset',
+    after !== null && Math.abs(after - anchor.delta) < 12,
+    `delta ${anchor.delta} -> ${after}`);
+  check('control stays while history remains', await earlierBtn.isVisible());
+  // Mobile inspection point — the control is still rendered. The
+  // drawer covers the workspace at this width; dismiss it first.
+  await s.page.setViewportSize({ width: 390, height: 844 });
+  await s.page.evaluate(() => {
+    const app = document.querySelector('nusa-app');
+    app.sidebarOpen = false;
+    app._syncSidebar();
+  });
+  await scrollTop();
+  await s.page.waitForTimeout(150);
+  await s.page.screenshot({ path: `${ART}/history-earlier-mobile.png` });
+  await earlierBtn.dispatchEvent('click');
+  await poll(() => s.page.evaluate(
+    () => document.querySelector('nusa-app').history.start === 0));
+  check('window reached index 0', await s.page.evaluate(() => {
+    const app = document.querySelector('nusa-app');
+    return app.messages.length === 250 && app.messages[0].id === 'h-000';
+  }));
+  check('control retired at the start of history',
+    (await earlierBtn.count()) === 0 &&
+    (await s.page.locator('nusa-message-thread .notice').count()) === 0);
+});
+
+// The list-paging contract end to end: pages append on demand and the
+// coverage hint counts the loaded set — never the filtered rows —
+// while search only reaches what is loaded. The control retires at the
+// tail of the store.
+await scenarioRun('sidebar-load-more', async (s) => {
+  // 230 threads — the first page ends at 100 with two pages behind it.
+  for (let i = 3; i <= 230; i++) {
+    const id = `t${String(i).padStart(3, '0')}`;
+    s.fixture.convs.set(id, {
+      id, title: `Thread ${i}`, modelId: 'm1', route: 'gw1', workspace: '',
+    });
+    s.fixture.messages.set(id, []);
+  }
+  await open(s, '#conversation=c1');
+  const items = s.page.locator('nusa-nav-sidebar .item');
+  const moreBtn = s.page.locator('nusa-nav-sidebar .more-btn');
+  const coverage = s.page.locator('nusa-nav-sidebar .coverage');
+  const search = s.page.locator('nusa-nav-sidebar .search');
+  const SIDEBAR = `document.querySelector('nusa-app').shadowRoot.querySelector('nusa-nav-sidebar')`;
+  await moreBtn.waitFor({ timeout: 8000 });
+  check('first page renders 100 rows', (await items.count()) === 100);
+  check('coverage states the loaded span',
+    (await coverage.textContent()).trim() === 'Loaded 100 of 230');
+  // The control disables while its page is on the wire.
+  const held = stall(s.fixture, '/api/conversations', 1);
+  await moreBtn.click();
+  await poll(() => held.count === 1);
+  check('control disabled in flight',
+    (await moreBtn.isDisabled()) &&
+    (await moreBtn.textContent()).includes('Loading'));
+  release(held);
+  await poll(async () => (await items.count()) === 200);
+  check('next page appended', true);
+  check('coverage follows the loaded span',
+    (await coverage.textContent()).trim() === 'Loaded 200 of 230');
+  check('control stays while pages remain', await moreBtn.isVisible());
+  // The .more row is the last child of the scrolling list — it must
+  // end above the fixed connection footer, never cover it.
+  await s.page.evaluate((expr) => {
+    const list = eval(expr).shadowRoot.querySelector('.list');
+    list.scrollTop = list.scrollHeight;
+  }, SIDEBAR);
+  const geo = await s.page.evaluate((expr) => {
+    const sb = eval(expr);
+    const r = (q) => sb.shadowRoot.querySelector(q).getBoundingClientRect();
+    return { moreBottom: r('.more').bottom, footerTop: r('.footer').top };
+  }, SIDEBAR);
+  check('load-more row stays above the connection footer',
+    geo.moreBottom <= geo.footerTop + 1, JSON.stringify(geo));
+  await s.page.screenshot({ path: `${ART}/sidebar-more-desktop.png` });
+  // Search narrows only the loaded set — a thread on the last page is
+  // honestly absent while unloaded — and the hint still counts loaded.
+  await search.fill('Thread 229');
+  await poll(async () =>
+    (await s.page.locator('nusa-nav-sidebar .hint').count()) === 1);
+  check('search covers only loaded threads', (await items.count()) === 0);
+  check('coverage still counts loaded, not matches',
+    (await coverage.textContent()).trim() === 'Loaded 200 of 230');
+  // With the list filtered empty, the control is the next tab stop —
+  // a real keyboard landing, not a scripted .focus().
+  await s.page.keyboard.press('Tab');
+  const focus = await s.page.evaluate((expr) => {
+    const a = eval(expr).shadowRoot.activeElement;
+    return a ? {
+      cls: a.className, visible: a.matches(':focus-visible'),
+    } : null;
+  }, SIDEBAR);
+  check('keyboard focus lands on the control with a visible ring',
+    focus && focus.cls === 'more-btn' && focus.visible, JSON.stringify(focus));
+  await s.page.screenshot({ path: `${ART}/sidebar-more-focus-desktop.png` });
+  await search.fill('');
+  await poll(async () => (await items.count()) === 200);
+  // Mobile drawer inspection — the rail is an overlay at this width
+  // and is already open from the desktop state.
+  await s.page.setViewportSize({ width: 390, height: 844 });
+  await s.page.evaluate((expr) => {
+    const list = eval(expr).shadowRoot.querySelector('.list');
+    list.scrollTop = list.scrollHeight;
+  }, SIDEBAR);
+  await s.page.screenshot({ path: `${ART}/sidebar-more-mobile.png` });
+  // The last page lands; the control retires and the tail is searchable.
+  await moreBtn.click();
+  await poll(async () => (await items.count()) === 230);
+  check('list exhausted after the last page', true);
+  check('control retired once fully loaded', (await moreBtn.count()) === 0);
+  check('coverage row retired with it', (await coverage.count()) === 0);
+  await search.fill('Thread 229');
+  await poll(async () => (await items.count()) === 1);
+  check('tail page searchable once loaded', true);
 });
 
 // --- teardown --------------------------------------------------------------

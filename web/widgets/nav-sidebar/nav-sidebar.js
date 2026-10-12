@@ -2,8 +2,8 @@ import { Widget, el, emit, clear } from '../../lib/dom.js';
 import { icon } from '../../lib/icons.js';
 
 // Left rail: brand, New thread, search, the recent conversation list,
-// and a connection/status footer. Pure rendering — the shell owns the
-// list data and reacts to the emitted events.
+// the Load more control, and a connection/status footer. Pure rendering
+// — the shell owns the list data and reacts to the emitted events.
 class NavSidebar extends Widget {
   static stylesheet = new URL('./nav-sidebar.css', import.meta.url);
 
@@ -15,6 +15,9 @@ class NavSidebar extends Widget {
     this._open = true;
     this._connection = 'closed';
     this._query = '';
+    this._hasMore = false;
+    this._total = 0;
+    this._moreBusy = false;
     this._render();
   }
 
@@ -25,6 +28,13 @@ class NavSidebar extends Widget {
   set conversations(list) { this._conversations = list || []; this._renderList(); }
   set activeId(id) { this._activeId = id; this._renderList(); }
   set loading(v) { this._loading = !!v; this._renderList(); }
+  // Paging state for the list. `hasMore`/`total` come from the server's
+  // page meta; `moreBusy` is the shell's in-flight load-more request —
+  // deliberately separate from `loading` so the list stays usable
+  // (selection, search) while a page is on the wire.
+  set hasMore(v) { this._hasMore = !!v; this._renderList(); }
+  set total(v) { this._total = Number(v) || 0; this._renderList(); }
+  set moreBusy(v) { this._moreBusy = !!v; this._renderList(); }
   set open(v) {
     this._open = !!v;
     this.classList.toggle('closed', !this._open);
@@ -81,7 +91,6 @@ class NavSidebar extends Widget {
     }
     if (!rows.length) {
       this.listEl.append(el('div', { class: 'hint', text: q ? 'No matches' : 'No threads yet' }));
-      return;
     }
     for (const c of rows) {
       const active = c.id === this._activeId;
@@ -95,6 +104,25 @@ class NavSidebar extends Widget {
         el('span', { class: 'item-meta', text: this._when(c.updatedAt) }),
       ]));
     }
+    this._renderMore();
+  }
+
+  // Load-more control, rendered after the rows. The server still holds
+  // pages behind the loaded set, and the client-side search only sees
+  // what is loaded — so the reach is stated outright instead of hidden.
+  _renderMore() {
+    if (!this._hasMore) return;
+    this.listEl.append(el('div', { class: 'more' }, [
+      el('button', {
+        class: 'more-btn', type: 'button',
+        disabled: this._moreBusy || null,
+        onclick: () => emit(this, 'conversation-more'),
+      }, [el('span', { text: this._moreBusy ? 'Loading…' : 'Load more' })]),
+      el('div', {
+        class: 'coverage',
+        text: `Loaded ${(this._conversations || []).length} of ${this._total}`,
+      }),
+    ]));
   }
 
   _when(iso) {

@@ -70,6 +70,22 @@ via `embed.go` and served by the same Gin origin as the HTTP API and the
   panel for estimated and total tokens. `/api/context` refreshes on room
   load, selection change, and turn completion. The message field grows with
   the draft, and the send button enables when a message can be sent.
+- History and the sidebar are paged explicitly — no infinite scroll.
+  A room opens on its newest page of messages; while earlier records
+  exist, the thread shows a notice with a "Load earlier messages"
+  control that prepends the previous page above the current window,
+  holding the reader's anchored line at its viewport offset. The
+  window only ever grows upward from what is loaded and resets to the
+  newest page on a room reload, a completed turn in that room, a
+  terminal turn in that room from another tab, a reconnect refresh, or
+  a queue Resume; the control retires once the window reaches the
+  first record.
+  The sidebar pages threads with a "Load more" control and a
+  `Loaded X of Y` coverage hint; its search filters only the loaded
+  set, so the hint counts loaded threads, not filtered matches.
+  Each control disables while its own request is in flight; a
+  superseded earlier page releases the control when the window is
+  replaced, because the window it answered no longer exists.
 - **Queue, Steer, Stop.** A turn never blocks typing: while a turn
   runs, the view's queue holds a backlog, or a post-terminal history
   refresh is still outstanding, Enter (IME `isComposing`-aware —
@@ -289,6 +305,14 @@ The same honesty applies to the pending queue and steering receipts:
   retained terminal payload through the normal terminal path; a
   verdict of `unknown` retires the command honestly, keeps every
   receipt unknown, and pauses for an explicit user decision.
+- History and thread lists are paged explicitly: a room opens on its
+  newest page, "Load earlier" only extends the window upward, and the
+  window resets to the newest page on a room reload, a completed turn
+  in it, a terminal turn in it from another tab, a reconnect refresh,
+  or a queue Resume — earlier pages must be paged in again. Sidebar
+  search
+  reaches only loaded threads — an unloaded match is absent, not
+  hidden — and the `Loaded X of Y` hint states the loaded coverage.
 
 ## Development
 

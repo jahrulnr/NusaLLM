@@ -55,7 +55,7 @@ func main() {
 			if len(args) > 1 && args[1] == "repair" {
 				os.Exit(admin.ConversationRepair(args[2:], os.Stdout, os.Stderr))
 			}
-			fmt.Fprintln(os.Stderr, "usage: nusallm conversation repair <id> --discard-duplicate|--commit")
+			fmt.Fprintln(os.Stderr, "usage: nusallm conversation repair <id> --discard-duplicate|--commit|--finish-rewrite")
 			os.Exit(2)
 		case "serve":
 			if err := serve(args[1:]); err != nil {
@@ -83,7 +83,7 @@ Usage:
   ` + admin.CLIName + ` onboard          guided provider setup wizard
   ` + admin.CLIName + ` gateway <...>    manage provider routes — list/show/add/set/delete
   ` + admin.CLIName + ` config <...>     inspect and patch the config file — show/path/set/unset/validate
-  ` + admin.CLIName + ` conversation repair <id> --discard-duplicate|--commit (offline recovery)
+  ` + admin.CLIName + ` conversation repair <id> --discard-duplicate|--commit|--finish-rewrite (offline recovery)
   ` + admin.CLIName + ` serve [--port N] local WebUI — loopback only (default port 10998 from server.port)
   ` + admin.CLIName + ` --help           this text
 

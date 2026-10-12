@@ -159,6 +159,12 @@ Two primitives cover everything (`conversation.go`):
   line, and `fsync`s. This is the hot path — a message or a patch is
   durable in one syscall pair, and concurrent tool results racing to
   persist stay safe because nobody read-modify-writes a stored line.
+  Before writing it mirrors `readLines`'s tolerance exactly: it drops a
+  final record only when that line fails the same decode/type probe, and a
+  complete record that lost its terminator — still decodable, so still a
+  record to the reader — is kept, with the missing newline written instead.
+  So a new line is never glued onto partial bytes and a tail readers would
+  have tolerated is not left behind to turn interior.
 - `writeFileAtomic` stages to `<path>.tmp`, `fsync`s, closes, renames over
   the target, then best-effort `fsync`s the directory. A crash mid-write
   leaves the old file or nothing — never a torn target. The file-level
@@ -213,7 +219,9 @@ action. It supports exactly one extra numbered segment; a missing segment
 must be restored from backup. A partially overlapping orphan is not a
 documented Compact crash window: neither repair action can safely choose
 which copy of a message to keep. If the command rejects both actions, leave
-the files unchanged and reconcile them manually from a backup.
+the files unchanged and reconcile them manually from a backup. A
+different crash window — an edit interrupted inside sealed history —
+carries its own roll-forward verb; see `RewriteFrom` below.
 
 `messageCount` grows by one (the summary is a message) and `activeCount`
 shrinks to `activeCount - dropBefore + 1`.
@@ -232,11 +240,71 @@ caller can regenerate the turn. Two shapes:
   every patch lives in the tail). Dead patches are harmless.
 - **Target in sealed segment N** — repromotion. Segments `0..N-1` and N's
   surviving prefix are merged into the new `active.jsonl`, so the model
-  regains the full pre-edit era verbatim. Every numbered segment is then
-  deleted and `sealedSegments` resets to the re-globbed count — the next
+  regains the full pre-edit era verbatim. The numbered segments are then
+  retired and `sealedSegments` resets to the re-globbed count — the next
   `Compact` starts again at `0.jsonl`. Compaction summaries covering later
   eras would lie about discarded content, so they go away with the old
   tail rather than being preserved.
+
+  The merged stream and the retired eras live in different files, so no
+  single rename can commit the edit. The protocol instead stages
+  everything around a payload name. First the directory is swept of
+  rewrite leftovers (`active.jsonl.rewrite`, `*.jsonl.rewrite-old`) — the
+  archive just validated, so anything matching is debris, never something
+  to publish. The merged stream is then written durable to
+  `active.jsonl.rewrite`, each `k.jsonl` is *parked* as
+  `k.jsonl.rewrite-old` — renamed, never deleted — with a directory
+  fsync, and only then is `active.jsonl` rewritten with the merged
+  bytes. That rename is the commit point: before it the canonical stream
+  and every era are intact, after it the merged history is truth and the
+  parked files are stale copies. A failure before the commit rolls the
+  parking back and drops the payload once every canonical name is
+  restored — if a rename-back itself fails, the payload stays because it
+  is then the only roll-forward source. That leftover is diagnosed as an
+  interrupted edit only when the parked set still has the protocol's shape —
+  the contiguous prefix `0.jsonl.rewrite-old … j.jsonl.rewrite-old` with
+  every surviving numbered segment an index above it. A gapped or otherwise
+  wrong-side leftovers state is refused by `--finish-rewrite` (pinned by
+  tests in `repair_test.go`) and needs manual reconciliation from a backup;
+  only a properly shaped leftover may roll forward, committing an edit the
+  user saw fail — no message is lost (the payload carries the merged stream),
+  but the outcome is surprising. After it, `recountMeta` resyncs
+  the counters (`sealedSegments` re-globs to zero — a parked name is not
+  `*.jsonl`) and the payload and parked files are removed, best effort.
+
+  Two states survive a crash inside that window. A payload plus an
+  edit-shaped layout is an interrupted edit: every read fails and names
+  the fix, `nusallm conversation repair <id> --finish-rewrite`. The
+  failure is store-wide for listing, not just for that room: `readMeta`
+  fails for it, so `List` — and with it `GET /api/conversations` — errors
+  for the whole store and the sidebar stays empty until the room is
+  repaired, the same blast radius the Compact-orphan window has. The
+  layout is edit-shaped only when it is one the protocol can leave while
+  a payload exists — fewer numbered segments than the metadata counts,
+  *and* a parked set that is exactly the contiguous prefix
+  `0.jsonl.rewrite-old … j.jsonl.rewrite-old` (segments are parked in
+  ascending order and never skipped, so a crash mid-parking leaves a mix
+  of parked and numbered files) with every surviving numbered segment an
+  index above that prefix — or a payload already byte-identical to the
+  live tail, where the publish landed and republishing it is a no-op. A
+  payload plus a consistent archive is post-commit debris: invisible to
+  readers, swept by the next sealed edit, never republished. The payload
+  is only removed once the archive validates, so "inconsistent and no
+  payload" is a state this code never produces. Any other mismatch — an
+  extra segment, a missing numbered file, a gapped or wrong-side parked
+  set, manual damage — is not this window; it keeps the mismatch's own
+  recovery guidance.
+
+  `--finish-rewrite` rolls forward, never back: it validates the payload
+  (newline-terminated, every line a stream record), publishes it over
+  `active.jsonl`, deletes every numbered and parked leftover, recounts
+  the counters, and removes the payload. There is no abort — the merged
+  stream already carries the only surviving copy of the parked eras, so
+  publishing is the only safe completion. Run it with the app stopped; a
+  second run, a run against a healthy room, or a payload sitting beside a
+  mismatch the edit cannot leave refuses cleanly — under-diagnosis is the
+  safe direction, since the only alternative is republishing stale bytes
+  over live history.
 
 Both paths re-run `entity.EditableMessage` on the stored
 `(role, userType)` tuple — only real user messages (`role=user`,
@@ -278,8 +346,17 @@ duplicate history, so meta is the authority on what is committed.
 
 Torn-tail tolerance is the other recovery rule (`readLines`): a final
 line that fails to decode or has no `type` is dropped, since that is the
-signature of a crash mid-append. Corruption earlier in the file is
-reported, not swallowed.
+signature of a crash mid-append. The writer mirrors that tolerance exactly,
+not a narrower one: before appending, `appendLine` probes the true final
+line with the same decode/type test. A line that fails it is dropped, but a
+record that decodes and carries a `type` is kept even when its terminator
+was lost — a missing terminator is not damage to the record, and `readLines`
+would have kept it, so the file gains the newline instead of losing the
+record. Only that final line is eligible, and the probe is not capped: a
+long decodable line is exactly the tail the reader keeps, so the probe reads
+it whole. A damaged tail left in place becomes interior corruption on the
+next append, after which every read of the room fails; corruption earlier in
+the file is reported, not swallowed.
 
 ## Gateways
 

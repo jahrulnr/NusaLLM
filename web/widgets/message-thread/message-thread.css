@@ -21,6 +21,23 @@
   max-width: 420px;
 }
 
+/* "Load earlier" rides inside the notice — not a message node, so the
+   reader's scroll anchor ignores it. */
+.earlier-btn {
+  display: block;
+  margin: 6px auto 0;
+  padding: 3px 10px;
+  background: none;
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.earlier-btn:hover:not(:disabled) { color: var(--accent); border-color: var(--hairline-strong); }
+.earlier-btn:disabled { color: var(--text-faint); cursor: default; }
+
 .compact-status {
   display: flex;
   align-items: center;

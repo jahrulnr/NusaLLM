@@ -92,6 +92,33 @@
 
 .hint { padding: 10px; color: var(--text-faint); font-size: 12px; }
 
+/* Load-more control: lasts at the end of the scrolling list, so it
+   never covers the connection footer. */
+.more {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 4px 4px;
+}
+.more-btn {
+  width: 100%;
+  padding: 7px 10px;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.more-btn:hover:not(:disabled) { border-color: var(--hairline-strong); color: var(--accent); }
+.more-btn:disabled { color: var(--text-faint); cursor: default; }
+/* Document-level :focus-visible cannot cross into this shadow root, and
+   the UA default ring is near-black on the dark panel — keep keyboard
+   focus visible on the new control, in the house outline style. */
+.more-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.coverage { font-size: 10.5px; color: var(--text-faint); text-align: center; }
+
 .footer {
   display: flex;
   align-items: center;

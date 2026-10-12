@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -626,6 +627,315 @@ func TestTruncatedTailTolerated(t *testing.T) {
 	}
 }
 
+// A torn tail is the signature of a crash mid-append: the next write cuts
+// it at the last line boundary rather than gluing a record onto partial
+// bytes — the half-written record is unrecoverable, never merged.
+func TestAppendAfterTornTailDropsPartialRecord(t *testing.T) {
+	dir := t.TempDir()
+	repo := NewConversationRepository(dir)
+	if err := repo.Save(t.Context(), newConv(t, "c1")); err != nil {
+		t.Fatal(err)
+	}
+	appendMsgs(t, repo, "c1", "u1")
+	active := filepath.Join(dir, "c1", activeFile)
+	f, err := os.OpenFile(active, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`{"type":"message","data:`); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	appendMsgs(t, repo, "c1", "u2")
+
+	raw, err := os.ReadFile(active)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw[len(raw)-1] != '\n' || strings.Count(string(raw), "\n") != 2 {
+		t.Fatalf("torn bytes survived the append:\n%s", raw)
+	}
+	for i, line := range bytes.Split(bytes.TrimSuffix(raw, []byte("\n")), []byte("\n")) {
+		var record lineRecord
+		if err := json.Unmarshal(line, &record); err != nil {
+			t.Fatalf("line %d does not decode after append: %v", i, err)
+		}
+	}
+	got, err := repo.Load(t.Context(), "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Messages()) != 2 || got.Messages()[0].Content() != "u1" || got.Messages()[1].Content() != "u2" {
+		t.Fatalf("history after torn-tail append: %+v", got.Messages())
+	}
+	all, err := repo.LoadAt(t.Context(), "c1", 0, 0)
+	if err != nil || len(all) != 2 {
+		t.Fatalf("global history after torn-tail append: n=%d err=%v", len(all), err)
+	}
+	// The clean path still appends: a newline-terminated file costs no
+	// truncation and the third record lands as its own line.
+	appendMsgs(t, repo, "c1", "u3")
+	all, err = repo.LoadAt(t.Context(), "c1", 0, 0)
+	if err != nil || len(all) != 3 || all[2].Content() != "u3" {
+		t.Fatalf("append after repair: n=%d err=%v", len(all), err)
+	}
+	info, err := repo.Info(t.Context(), "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.MessageCount != 3 || info.ActiveCount != 3 {
+		t.Fatalf("counters after torn-tail appends: %+v", info)
+	}
+}
+
+// A file whose only bytes are one torn record truncates to empty rather
+// than keeping partial history.
+func TestAppendAfterTornTailTruncatesWholeFile(t *testing.T) {
+	dir := t.TempDir()
+	repo := NewConversationRepository(dir)
+	if err := repo.Save(t.Context(), newConv(t, "c1")); err != nil {
+		t.Fatal(err)
+	}
+	active := filepath.Join(dir, "c1", activeFile)
+	if err := os.WriteFile(active, []byte(`{"type":"message","data:`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	appendMsgs(t, repo, "c1", "u1")
+	raw, err := os.ReadFile(active)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(raw), "\n") != 1 {
+		t.Fatalf("torn-only file kept partial bytes:\n%s", raw)
+	}
+	if got := len(msgIDs(t, repo, "c1")); got != 1 {
+		t.Fatalf("history = %d, want 1", got)
+	}
+}
+
+// A torn tail larger than the scan window still cuts at the last line
+// boundary — the backward walk keeps going until it finds a newline.
+func TestAppendAfterTornTailSpansScanChunks(t *testing.T) {
+	dir := t.TempDir()
+	repo := NewConversationRepository(dir)
+	if err := repo.Save(t.Context(), newConv(t, "c1")); err != nil {
+		t.Fatal(err)
+	}
+	appendMsgs(t, repo, "c1", "u1")
+	active := filepath.Join(dir, "c1", activeFile)
+	f, err := os.OpenFile(active, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(strings.Repeat("x", 40<<10)); err != nil { // >32KiB torn
+		t.Fatal(err)
+	}
+	f.Close()
+
+	appendMsgs(t, repo, "c1", "u2")
+
+	raw, err := os.ReadFile(active)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(raw), "\n") != 2 {
+		t.Fatalf("torn bytes beyond one chunk survived:\n%s", raw[:64])
+	}
+	if got := len(msgIDs(t, repo, "c1")); got != 2 {
+		t.Fatalf("history = %d, want 2", got)
+	}
+}
+
+// readLines tolerates a final line that fails to decode even when it is
+// newline-terminated, so the writer must drop that tail too: left behind,
+// the next append turns it interior and every later read of the room fails.
+func TestAppendAfterUndecodableTerminatedTailDropsRecord(t *testing.T) {
+	dir := t.TempDir()
+	repo := NewConversationRepository(dir)
+	if err := repo.Save(t.Context(), newConv(t, "c1")); err != nil {
+		t.Fatal(err)
+	}
+	appendMsgs(t, repo, "c1", "u1")
+	active := filepath.Join(dir, "c1", activeFile)
+	f, err := os.OpenFile(active, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("{\"type\":\"message\",\"data\":\n"); err != nil { // terminated, undecodable
+		t.Fatal(err)
+	}
+	f.Close()
+
+	appendMsgs(t, repo, "c1", "u2")
+
+	raw, err := os.ReadFile(active)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(raw), "\n") != 2 {
+		t.Fatalf("undecodable terminated line survived the append:\n%s", raw)
+	}
+	for i, line := range bytes.Split(bytes.TrimSuffix(raw, []byte("\n")), []byte("\n")) {
+		var record lineRecord
+		if err := json.Unmarshal(line, &record); err != nil {
+			t.Fatalf("line %d does not decode after append: %v", i, err)
+		}
+	}
+	got, err := repo.Load(t.Context(), "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Messages()) != 2 || got.Messages()[0].Content() != "u1" || got.Messages()[1].Content() != "u2" {
+		t.Fatalf("history after undecodable-tail append: %+v", got.Messages())
+	}
+	all, err := repo.LoadAt(t.Context(), "c1", 0, 0)
+	if err != nil || len(all) != 2 || all[1].Content() != "u2" {
+		t.Fatalf("global history after undecodable-tail append: n=%d err=%v", len(all), err)
+	}
+	info, err := repo.Info(t.Context(), "c1")
+	if err != nil || info.MessageCount != 2 || info.ActiveCount != 2 {
+		t.Fatalf("counters after undecodable-tail append: %+v err=%v", info, err)
+	}
+}
+
+// A final line that is valid JSON but carries no type is torn by the same
+// rule readLines applies — it is not a record — so it drops before the
+// append instead of becoming interior corruption.
+func TestAppendAfterTypelessTerminatedTailDropsRecord(t *testing.T) {
+	dir := t.TempDir()
+	repo := NewConversationRepository(dir)
+	if err := repo.Save(t.Context(), newConv(t, "c1")); err != nil {
+		t.Fatal(err)
+	}
+	appendMsgs(t, repo, "c1", "u1")
+	active := filepath.Join(dir, "c1", activeFile)
+	f, err := os.OpenFile(active, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("{\"data\":{\"id\":\"m1\",\"role\":\"user\"}}\n"); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	appendMsgs(t, repo, "c1", "u2")
+
+	raw, err := os.ReadFile(active)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(raw), "\n") != 2 || strings.Contains(string(raw), "\"m1\"") {
+		t.Fatalf("typeless terminated line survived the append:\n%s", raw)
+	}
+	got, err := repo.Load(t.Context(), "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Messages()) != 2 || got.Messages()[1].Content() != "u2" {
+		t.Fatalf("history after typeless-tail append: %+v", got.Messages())
+	}
+	all, err := repo.LoadAt(t.Context(), "c1", 0, 0)
+	if err != nil || len(all) != 2 {
+		t.Fatalf("global history after typeless-tail append: n=%d err=%v", len(all), err)
+	}
+}
+
+// oldTornProbeCap is the probe window the writer used to apply before it
+// was removed: the probe now reads the true final line. Kept to seed a
+// final line longer than that window and prove the clean path neither
+// rewrites it nor drops it.
+const oldTornProbeCap = 64 << 10
+
+// A clean file appends without a full-file rewrite even when its final line
+// is longer than the probe window this writer used to bound: the record
+// decodes, so it survives and the new record lands after it. Asserted
+// through behavior — every pre-existing byte survives and the new record
+// lands as the last line — not through syscall counting.
+func TestAppendToCleanFileKeepsFinalLineBeyondOldProbeCap(t *testing.T) {
+	dir := t.TempDir()
+	repo := NewConversationRepository(dir)
+	if err := repo.Save(t.Context(), newConv(t, "c1")); err != nil {
+		t.Fatal(err)
+	}
+	big, err := entity.NewMessage(enum.RoleUser, strings.Repeat("x", oldTornProbeCap+(1<<10)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.AppendMessage(t.Context(), "c1", big); err != nil {
+		t.Fatal(err)
+	}
+	active := filepath.Join(dir, "c1", activeFile)
+	if fi, err := os.Stat(active); err != nil || fi.Size() <= oldTornProbeCap {
+		t.Fatalf("seed line must exceed the old probe cap: size=%v err=%v", fi, err)
+	}
+	before, err := os.ReadFile(active)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	appendMsgs(t, repo, "c1", "u2")
+
+	after, err := os.ReadFile(active)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(after, before) {
+		t.Fatal("clean append rewrote bytes it did not need to")
+	}
+	if strings.Count(string(after), "\n") != 2 {
+		t.Fatalf("clean large file gained a stray line: %d lines", strings.Count(string(after), "\n"))
+	}
+	got, err := repo.Load(t.Context(), "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Messages()) != 2 || got.Messages()[0].Content() != big.Content() || got.Messages()[1].Content() != "u2" {
+		t.Fatalf("history after clean large append: n=%d", len(got.Messages()))
+	}
+	all, err := repo.LoadAt(t.Context(), "c1", 0, 0)
+	if err != nil || len(all) != 2 {
+		t.Fatalf("global history after clean large append: n=%d err=%v", len(all), err)
+	}
+}
+
+// Only the torn tail drops. An undecodable interior line stays put and
+// keeps failing the read loudly — never silently removed to make the load
+// succeed.
+func TestAppendKeepsInteriorCorruption(t *testing.T) {
+	dir := t.TempDir()
+	repo := NewConversationRepository(dir)
+	if err := repo.Save(t.Context(), newConv(t, "c1")); err != nil {
+		t.Fatal(err)
+	}
+	appendMsgs(t, repo, "c1", "u1")
+	active := filepath.Join(dir, "c1", activeFile)
+	raw, err := os.ReadFile(active)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const corrupt = "not-a-record\n"
+	if err := os.WriteFile(active, append(raw, []byte(corrupt+"{\"data\":{}}\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	appendMsgs(t, repo, "c1", "u2")
+
+	after, err := os.ReadFile(active)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(after, []byte(corrupt)) {
+		t.Fatalf("interior corruption was silently dropped:\n%s", after)
+	}
+	if _, err := repo.Load(t.Context(), "c1"); err == nil || !strings.Contains(err.Error(), "corrupt line") {
+		t.Fatalf("Load past interior corruption → %v, want a corrupt-line error", err)
+	}
+	if _, err := repo.LoadAt(t.Context(), "c1", 0, 0); err == nil || !strings.Contains(err.Error(), "corrupt line") {
+		t.Fatalf("LoadAt past interior corruption → %v, want a corrupt-line error", err)
+	}
+}
+
 // convID becomes a directory segment — traversal ids must be rejected.
 func TestInvalidIDRejected(t *testing.T) {
 	repo := NewConversationRepository(t.TempDir())
@@ -710,5 +1020,179 @@ func TestMessageIDRoundtrip(t *testing.T) {
 	}
 	if got.Last().ID() != m.ID() || m.ID() == "" {
 		t.Fatalf("id lost: %q vs %q", got.Last().ID(), m.ID())
+	}
+}
+
+// messageLine marshals a stored message line — the jsonl envelope the writer
+// produces — so the tail-shape tests can seed active.jsonl by hand.
+func messageLine(t *testing.T, content string) []byte {
+	t.Helper()
+	m, err := entity.NewMessage(enum.RoleUser, content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(lineRecord{Type: lineMessage, Data: encodeMessage(m)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func messageContents(msgs []entity.Message) []string {
+	var out []string
+	for _, m := range msgs {
+		out = append(out, m.Content())
+	}
+	return out
+}
+
+// TestAppendMirrorsReaderFinalLineTolerance drives the append path over the
+// final-line shape matrix. Each case seeds active.jsonl with raw bytes,
+// appends one record, and pins what the writer left behind: Load and LoadAt
+// must stay readable and return exactly the surviving records. The writer
+// must mirror readLines — dropping only a final line that fails the same
+// decode/type probe, repairing (not dropping) a complete record whose
+// terminator was lost, and leaving interior corruption for the reader to
+// report. A final line the reader would drop and the writer leaves in place
+// turns interior on the next append, after which the room reads corrupt.
+func TestAppendMirrorsReaderFinalLineTolerance(t *testing.T) {
+	u1 := messageLine(t, "u1")
+	u2 := messageLine(t, "u2")
+	longValid := messageLine(t, strings.Repeat("L", oldTornProbeCap+(1<<10)))
+	longUndecodable := bytes.Repeat([]byte("x"), oldTornProbeCap+(1<<10))
+
+	// line joins raw fragments, newline-terminating each.
+	line := func(parts ...[]byte) []byte {
+		var out []byte
+		for _, p := range parts {
+			out = append(out, p...)
+			out = append(out, '\n')
+		}
+		return out
+	}
+
+	cases := []struct {
+		name       string
+		seed       []byte
+		want       []string
+		wantErr    bool
+		rawHasLine []byte // if set, the raw file must still contain this exact run
+	}{
+		{
+			name: "terminated valid",
+			seed: line(u1, u2),
+			want: []string{"u1", "u2", "new"},
+		},
+		{
+			name: "terminated undecodable",
+			seed: line(u1, []byte("not-a-record")),
+			want: []string{"u1", "new"},
+		},
+		{
+			name: "terminated typeless",
+			seed: line(u1, []byte(`{"data":{"role":"user"}}`)),
+			want: []string{"u1", "new"},
+		},
+		{
+			name: "terminated blank",
+			seed: line(u1, nil),
+			want: []string{"u1", "new"},
+		},
+		{
+			name: "terminated whitespace-only",
+			seed: line(u1, []byte("  \t ")),
+			want: []string{"u1", "new"},
+		},
+		{
+			name:       "unterminated complete decoded",
+			seed:       append(line(u1), u2...), // u2 without its terminator
+			want:       []string{"u1", "u2", "new"},
+			rawHasLine: append(append([]byte(nil), u2...), '\n'),
+		},
+		{
+			name: "unterminated partial undecodable",
+			seed: append(line(u1), []byte(`{"type":"message","data":{"role":"us`)...),
+			want: []string{"u1", "new"},
+		},
+		{
+			name: "unterminated whitespace-only",
+			seed: append(line(u1), []byte("   ")...),
+			want: []string{"u1", "new"},
+		},
+		{
+			name: "whole file one unterminated valid record",
+			seed: u1,
+			want: []string{"u1", "new"},
+		},
+		{
+			name: "whole file one unterminated partial record",
+			seed: []byte(`{"type":"message","data":{"role":`),
+			want: []string{"new"},
+		},
+		{
+			name: "final line past old cap, terminated undecodable",
+			seed: line(u1, longUndecodable),
+			want: []string{"u1", "new"},
+		},
+		{
+			name: "final line past old cap, unterminated valid",
+			seed: append(line(u1), longValid...),
+			want: []string{"u1", strings.Repeat("L", oldTornProbeCap+(1<<10)), "new"},
+		},
+		{
+			name:    "interior corruption stays reported",
+			seed:    line(u1, []byte("not-a-record"), u2),
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			repo := NewConversationRepository(dir)
+			if err := repo.Save(t.Context(), newConv(t, "c1")); err != nil {
+				t.Fatal(err)
+			}
+			active := filepath.Join(dir, "c1", activeFile)
+			if err := os.WriteFile(active, tc.seed, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			appendMsgs(t, repo, "c1", "new")
+
+			if tc.wantErr {
+				if _, err := repo.Load(t.Context(), "c1"); err == nil || !strings.Contains(err.Error(), "corrupt line") {
+					t.Fatalf("Load → %v, want a corrupt-line error", err)
+				}
+				if _, err := repo.LoadAt(t.Context(), "c1", 0, 0); err == nil || !strings.Contains(err.Error(), "corrupt line") {
+					t.Fatalf("LoadAt → %v, want a corrupt-line error", err)
+				}
+				return
+			}
+
+			got, err := repo.Load(t.Context(), "c1")
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if contents := messageContents(got.Messages()); !slices.Equal(contents, tc.want) {
+				t.Fatalf("Load records = %q, want %q", contents, tc.want)
+			}
+			all, err := repo.LoadAt(t.Context(), "c1", 0, 0)
+			if err != nil {
+				t.Fatalf("LoadAt: %v", err)
+			}
+			if contents := messageContents(all); !slices.Equal(contents, tc.want) {
+				t.Fatalf("LoadAt records = %q, want %q", contents, tc.want)
+			}
+			if len(tc.rawHasLine) > 0 {
+				raw, err := os.ReadFile(active)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Contains(raw, tc.rawHasLine) {
+					t.Fatalf("writer dropped a decodable record instead of repairing its terminator:\n%s", raw)
+				}
+			}
+		})
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/jahrulnr/nusallm/infrastructure/config"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
@@ -20,6 +21,15 @@ import (
 type SettingApp struct {
 	path  string
 	store config.Store
+	// mu serializes the read-modify-write in Set and Unset. The file is
+	// one document, so two writers that both read before either writes
+	// would each rewrite it from their own read and the later write
+	// would drop the earlier key — atomic replacement prevents a torn
+	// file, not a lost update. Reads stay lock-free: Path, Show, and
+	// Validate see whichever whole document is current. Like the
+	// gateway mutex this is process-local; a concurrent `nusallm config
+	// set` process writing the same file can still interleave.
+	mu sync.Mutex
 }
 
 // New binds the app to the resolved config path. An empty path means the
@@ -69,6 +79,10 @@ func (a *SettingApp) Validate() error {
 // (5, true, "2m") with bare text taken as a string; `null` is refused —
 // `config unset` is the removal path. The written file carries the full
 // document in schema order so what is stored is what Load computes.
+//
+// The document read, the patch, and the write are one critical section:
+// a second writer runs against the first writer's result, never against
+// the document it read before.
 func (a *SettingApp) Set(key, rawValue string) ([]byte, error) {
 	schemaLeaf, err := schemaLeaf(key)
 	if err != nil {
@@ -88,6 +102,9 @@ func (a *SettingApp) Set(key, rawValue string) ([]byte, error) {
 			fmt.Errorf("config key %q expects a %s value like %s",
 				key, jsonType(schemaLeaf), string(example)))
 	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
 
 	doc, err := a.doc(true)
 	if err != nil {
@@ -122,8 +139,13 @@ func (a *SettingApp) Set(key, rawValue string) ([]byte, error) {
 
 // Unset removes one dotted key — including unknown keys, which is the
 // cleanup path for leftovers and comment-as-field additions. The result
-// is validated before writing; the file keeps schema order.
+// is validated before writing; the file keeps schema order. Like Set,
+// the read-modify-write is serialized so a concurrent write is never
+// dropped.
 func (a *SettingApp) Unset(key string) ([]byte, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
 	doc, err := a.doc(false)
 	if err != nil {
 		return nil, err

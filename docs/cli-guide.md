@@ -456,6 +456,21 @@ them. The command checks the chosen case and recalculates counters when
 committing. A missing segment needs restoration from backup; see the
 [recovery procedure](./persistence.md#compact--sealing-history).
 
+An edit interrupted mid-commit is a different window: the merged stream
+stays staged as `active.jsonl.rewrite` and every read fails naming the
+fix. A crash there can leave a mix of files — the sealed segments are
+parked as `*.jsonl.rewrite-old` in ascending order from `0.jsonl`, so
+the archive shows a parked prefix plus any numbered suffix, or, once the
+publish landed, a payload already equal to `active.jsonl`. Only that
+layout is diagnosed as an interrupted edit: stop the app and run
+`nusallm conversation repair <id> --finish-rewrite`; it validates the
+staged stream, publishes it, and removes the leftovers. Any other
+mismatch — a parked name with a gap below it, a numbered segment the
+parked set has passed, an extra or missing numbered file — keeps the
+mismatch's own guidance instead, never the repair verb. The
+[state machine](./persistence.md#rewritefrom--editing-a-message) covers
+what the crash can and cannot leave behind.
+
 ### Tools the model can call
 
 `/tools` lists what the model may invoke; the current wiring

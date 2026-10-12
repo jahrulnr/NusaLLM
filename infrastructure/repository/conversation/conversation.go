@@ -30,10 +30,15 @@ import (
 )
 
 const (
-	metaFile       = "meta.json"
-	activeFile     = "active.jsonl"
-	lineMessage    = "message"
-	lineToolOutput = "tool_output"
+	metaFile   = "meta.json"
+	activeFile = "active.jsonl"
+	// The sealed-edit commit protocol stages the merged stream in
+	// rewritePayload before any canonical name moves, and parks numbered
+	// segments under rewriteParkSuffix until the new tail is published.
+	rewritePayload    = activeFile + ".rewrite"
+	rewriteParkSuffix = ".rewrite-old"
+	lineMessage       = "message"
+	lineToolOutput    = "tool_output"
 )
 
 // ConversationRepository is a JSONL-backed Conversation store. A single
@@ -180,15 +185,121 @@ func appendLine(path string, v any) error {
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
+	if err := dropTornTail(f); err != nil {
+		return err
+	}
 	if _, err := f.Write(append(raw, '\n')); err != nil {
 		return err
 	}
 	return f.Sync()
+}
+
+// dropTornTail cuts a damaged final record before an append, mirroring the
+// tolerance readLines applies on the read side exactly. readLines drops its
+// final line only when that line fails the decode/type probe, whether or
+// not it carries a terminator; a complete record that lost its terminator
+// still decodes, so the reader keeps it. This writer therefore drops a
+// final line that fails the same probe, and for one that decodes with a
+// type it repairs the missing terminator instead of dropping the record —
+// keeping the reader's record and leaving the append on a fresh line. A
+// damaged tail left in place would turn interior on the next append and
+// every later read of the room would fail from then on. The bytes of a
+// dropped line are unrecoverable: they are discarded at the line boundary
+// rather than glued onto the next record.
+//
+// The probe reads the true final line, with no cap: a long decodable line
+// is exactly the tail readLines keeps, so a bounded probe that skipped it
+// would drop a record the reader still had. Finding the line's start is a
+// backward chunk scan that reads those bytes anyway, so the append path
+// still reads the previous record once — the clean path costs one stat, a
+// one-byte read, and one scan chunk.
+func dropTornTail(f *os.File) error {
+	fi, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	size := fi.Size()
+	if size == 0 {
+		return nil
+	}
+	var last [1]byte
+	if _, err := f.ReadAt(last[:], size-1); err != nil {
+		return err
+	}
+	// end is where the backward search stops: one past the last byte the
+	// final line's content may occupy. A terminated final line drops with
+	// its terminator, so the search starts before it.
+	end := size
+	terminated := last[0] == '\n'
+	if terminated {
+		end = size - 1
+	}
+	line, start, err := finalLine(f, end)
+	if err != nil {
+		return err
+	}
+	if !tornLine(line) {
+		if terminated {
+			return nil // the final record is intact — append without touching it
+		}
+		// The final record decodes but lost its terminator: repair it in
+		// place so the append lands on a fresh line instead of gluing onto
+		// it. readLines keeps this record; only its terminator is missing.
+		if _, err := f.Write([]byte{'\n'}); err != nil {
+			return err
+		}
+		return nil
+	}
+	if err := f.Truncate(start); err != nil {
+		return err
+	}
+	return f.Sync()
+}
+
+// finalLine returns the content of the file's final line — the bytes after
+// the last '\n' in [0, end) — and the offset that content starts at (0 when
+// the file holds no earlier newline). It walks backward from end in chunks
+// so the tail is read once however long the final line is; a line longer
+// than one chunk is accumulated across iterations.
+func finalLine(f *os.File, end int64) ([]byte, int64, error) {
+	const chunk = 32 << 10
+	buf := make([]byte, chunk)
+	var tail []byte
+	for e := end; e > 0; e -= chunk {
+		start := e - chunk
+		if start < 0 {
+			start = 0
+		}
+		window := buf[:e-start]
+		if _, err := f.ReadAt(window, start); err != nil {
+			return nil, 0, err
+		}
+		if i := bytes.LastIndexByte(window, '\n'); i >= 0 {
+			line := make([]byte, 0, len(window)-i-1+len(tail))
+			line = append(line, window[i+1:]...)
+			line = append(line, tail...)
+			return line, start + int64(i) + 1, nil
+		}
+		tail = append(append([]byte(nil), window...), tail...)
+	}
+	return tail, 0, nil
+}
+
+// tornLine reports whether a final line is one readLines drops — it fails
+// to decode as a line record or carries no type. A blank line is not torn:
+// readLines skips blank lines rather than dropping a record.
+func tornLine(line []byte) bool {
+	trimmed := bytes.TrimSpace(line)
+	if len(trimmed) == 0 {
+		return false
+	}
+	var probe struct{ Type string }
+	return json.Unmarshal(trimmed, &probe) != nil || probe.Type == ""
 }
 
 // messagesFromLines decodes message lines and applies tool_output patches
@@ -282,6 +393,89 @@ func validateSealedArchive(dir string, committed int) error {
 		return err
 	}
 	id := filepath.Base(dir)
+	if err := interruptedEdit(dir, id, segs, committed); err != nil {
+		return err
+	}
+	return sealedArchiveMismatch(id, segs, committed)
+}
+
+// interruptedEdit reports whether the archive shows the sealed edit's
+// crash window — a staged payload plus a layout only this protocol can
+// leave behind. The edit only ever removes numbered files, so more
+// segments than committed is never its remnant. While a payload exists
+// the protocol's layout is narrow: it parks numbered segments in
+// ascending order and never skips one, so the parked set is exactly the
+// contiguous prefix 0.jsonl.rewrite-old … j.jsonl.rewrite-old, and every
+// numbered segment still present is the suffix the parking left behind —
+// an index greater than every parked index. A payload already equal to
+// the live tail is the escape hatch: the publish landed, so the window is
+// still edit-shaped however the leftovers are mixed, and republishing it
+// is a no-op. Anything else — a Compact orphan, a missing segment, manual
+// damage, a gapped or otherwise wrong-side parked set — gets the
+// mismatch's own guidance rather than rolling a possibly stale payload
+// forward.
+func interruptedEdit(dir, id string, segs []string, committed int) error {
+	if committed < 0 || len(segs) >= committed {
+		return nil
+	}
+	payload, err := os.ReadFile(filepath.Join(dir, rewritePayload))
+	if err != nil {
+		return nil
+	}
+	// Publish already landed (payload == live tail): republishing is a
+	// no-op, so the window stays edit-shaped whatever the leftover mix is.
+	if active, err := os.ReadFile(filepath.Join(dir, activeFile)); err == nil && bytes.Equal(active, payload) {
+		return interruptedEditErr(id)
+	}
+	parked, err := filepath.Glob(filepath.Join(dir, "*.jsonl"+rewriteParkSuffix))
+	if err != nil || len(parked) == 0 {
+		return nil
+	}
+	maxParked, ok := parkedPrefix(parked)
+	if !ok {
+		return nil
+	}
+	for _, seg := range segs {
+		n, _ := strconv.Atoi(strings.TrimSuffix(filepath.Base(seg), ".jsonl"))
+		if n <= maxParked {
+			return nil
+		}
+	}
+	return interruptedEditErr(id)
+}
+
+// parkedPrefix reports whether the parked segment names form the
+// contiguous ascending prefix 0,1,…,j the edit protocol leaves — it parks
+// numbered segments in order and never skips one — and returns the
+// highest parked index. An unparseable name or a gap is not this
+// protocol's remnant.
+func parkedPrefix(parked []string) (maxIndex int, ok bool) {
+	idx := make([]int, 0, len(parked))
+	for _, p := range parked {
+		n, err := strconv.Atoi(strings.TrimSuffix(filepath.Base(p), ".jsonl"+rewriteParkSuffix))
+		if err != nil {
+			return 0, false
+		}
+		idx = append(idx, n)
+	}
+	sort.Ints(idx)
+	for i, n := range idx {
+		if n != i {
+			return 0, false
+		}
+	}
+	return len(idx) - 1, true
+}
+
+func interruptedEditErr(id string) error {
+	return fmt.Errorf("conversation %s: interrupted edit in sealed history; stop the app and run `nusallm conversation repair %s --finish-rewrite` to roll it forward", id, id)
+}
+
+// sealedArchiveMismatch reports how the numbered segments disagree with
+// the committed count — nil means files and metadata describe the same
+// eras. The caller supplies the globbed segments so the same listing can
+// feed surgery after the check.
+func sealedArchiveMismatch(id string, segs []string, committed int) error {
 	if committed < 0 {
 		return fmt.Errorf("conversation %s: invalid metadata sealedSegments=%d; stop the app, inspect meta.json, and restore from backup", id, committed)
 	}
