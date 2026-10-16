@@ -49,3 +49,20 @@
 .section > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
 .section-body { padding: 0 18px 18px; }
 nusa-provider-manager, nusa-settings-editor { display: block; min-width: 0; }
+
+@media (max-width: 760px) {
+  .top-inner { min-height: 56px; padding: 0 16px; gap: 12px; }
+  .top h1 { font-size: 18px; }
+  .back {
+    flex: 0 0 44px;
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0;
+  }
+  .back svg { width: 18px; height: 18px; }
+  .content { padding: 12px 16px 48px; gap: 12px; }
+  .section > summary { box-sizing: border-box; min-height: 56px; padding: 16px; font-size: 16px; }
+  .section-body { padding: 0 14px 16px; }
+}

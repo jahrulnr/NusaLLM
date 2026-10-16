@@ -233,22 +233,31 @@
 
 @media (max-width: 620px) {
   :host { padding: 8px 10px 10px; }
-  .composer { padding: 10px 11px 8px; }
   .shortcut { display: none; }
-  /* The footer reflows instead of clipping — Context, Steer, and Stop
-     stay reachable at 320px. */
+}
+
+/* Mobile (≤760px): 44px touch targets, text at 12px or larger, and a
+   16px input so iOS does not zoom the page on focus. The footer reflows
+   instead of clipping, so Context, Steer, and Stop stay reachable at 320px. */
+@media (max-width: 760px) {
+  .composer { padding: 10px 10px 8px; }
+  .input { min-height: 48px; font-size: 16px; line-height: 1.5; }
+  .shortcut, .status { font-size: 12px; }
   .footer { flex-wrap: wrap; row-gap: 8px; }
-  .footer-right {
-    flex-shrink: 1;
-    min-width: 0;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    gap: 8px;
-  }
-  /* Touch targets at 44px on the affected controls. */
-  .send, .steer { height: 44px; }
-  .send { min-width: 44px; }
-  .steer { padding: 0 12px; }
-  .pending-action, .pending-resume { min-height: 44px; padding: 6px 14px; }
-  .context-trigger { padding: 8px 12px; }
+  .footer-right { flex-shrink: 1; min-width: 0; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+  .send { width: 44px; height: 44px; }
+  .send svg { width: 16px; height: 16px; }
+  .steer { min-height: 44px; padding: 0 14px; font-size: 13px; }
+  .pending-title, .pending-state, .pending-room { font-size: 12px; }
+  .pending-text { font-size: 14px; }
+  .pending-notice, .pending-note { font-size: 13px; }
+  .pending-action, .pending-resume { min-height: 44px; padding: 0 14px; font-size: 13px; }
+  .pending-foot { padding: 8px 12px; }
+  .context-trigger { min-height: 44px; padding: 0 14px; font-size: 12px; }
+  .context-head { font-size: 13px; }
+  .context-close { width: 44px; height: 44px; padding: 0; }
+  .context-close svg { width: 16px; height: 16px; }
+  .context-usage { font-size: 13px; }
+  .context-caption { font-size: 12px; }
+  .context-popover { width: min(340px, calc(100vw - 32px)); }
 }

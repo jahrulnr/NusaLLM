@@ -78,3 +78,16 @@ td, th { max-width: 40ch; overflow-wrap: break-word; }
   border-radius: 3px;
   padding: 1px 6px;
 }
+
+@media (max-width: 760px) {
+  .md { font-size: 16px; line-height: 1.6; }
+  h1, h2, h3, h4, h5, h6 { overflow-wrap: break-word; }
+  h1 { font-size: 20px; }
+  h2 { font-size: 18px; }
+  h3 { font-size: 16px; }
+  h4, h5, h6 { font-size: 14px; }
+  .inline-code { font-size: 14px; }
+  .table-scroll table { font-size: 14px; }
+  th { font-size: 12px; }
+  th, td { padding: 8px 12px; }
+}

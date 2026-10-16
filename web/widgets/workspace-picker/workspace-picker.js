@@ -2,6 +2,9 @@ import { Widget, el, emit, clear } from '../../lib/dom.js';
 import { icon } from '../../lib/icons.js';
 import { APIClient } from '../../lib/api-client.js';
 
+// On phones the menu is a bottom sheet instead of a popover.
+const SHEET = '(max-width: 760px)';
+
 // Workspace picker: a popup file-manager fed entirely by /api/fs/browse —
 // directories only, home by default, ascendable to the filesystem root.
 // Workspace is a room-level boundary (tools and exec run there), separate
@@ -39,6 +42,12 @@ class WorkspacePicker extends Widget {
       document.removeEventListener('pointerdown', this._dismiss, true);
       this._dismiss = null;
     }
+    if (this._reclamp) {
+      window.removeEventListener('resize', this._reclamp);
+      this._reclamp = null;
+      // Leave _menuEl. A header re-render disconnects this host, and
+      // connectedCallback installs a new listener against the open menu.
+    }
   }
 
   _installDismiss() {
@@ -50,6 +59,19 @@ class WorkspacePicker extends Widget {
     };
     this._dismiss = dismiss;
     document.addEventListener('pointerdown', dismiss, true);
+    const reclamp = () => { if (this._menuEl) this._clampMenu(this._menuEl); };
+    this._reclamp = reclamp;
+    window.addEventListener('resize', reclamp);
+  }
+
+  // Keep the popup inside the viewport even when the header picker
+  // sits at either edge — recomputed on each render and on resize. On
+  // phones the menu is a full-width bottom sheet and needs no clamp.
+  _clampMenu(menu) {
+    if (matchMedia(SHEET).matches) { menu.style.left = ''; return; }
+    const bounds = this.getBoundingClientRect();
+    const width = menu.getBoundingClientRect().width;
+    menu.style.left = `${Math.max(8 - bounds.left, Math.min(0, innerWidth - 8 - bounds.left - width))}px`;
   }
 
   _openMenu() {
@@ -173,7 +195,12 @@ class WorkspacePicker extends Widget {
     });
     this.root.append(this.trigger);
 
-    if (!this._open) return;
+    if (!this._open) {
+      this._menuEl = null;
+      return;
+    }
+    // Phones: dims the page and takes the tap that dismisses the sheet.
+    this.root.append(el('div', { class: 'menu-backdrop', 'aria-hidden': 'true', onclick: () => this._closeMenu() }));
     const menu = el('div', { class: 'menu', 'aria-label': 'Workspace' });
     this._renderMenu(menu);
     menu.addEventListener('keydown', (e) => {
@@ -183,11 +210,8 @@ class WorkspacePicker extends Widget {
       }
     });
     this.root.append(menu);
-    // Keep the popup inside the viewport even when the header picker
-    // sits at either edge. Recompute after every navigation/rerender.
-    const bounds = this.getBoundingClientRect();
-    const width = menu.getBoundingClientRect().width;
-    menu.style.left = `${Math.max(8 - bounds.left, Math.min(0, innerWidth - 8 - bounds.left - width))}px`;
+    this._clampMenu(menu);
+    this._menuEl = menu;
     this._installDismiss();
   }
 }

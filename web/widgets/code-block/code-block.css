@@ -84,3 +84,21 @@
 :host(.tool-code) .chrome { padding: 2px 0; border: 0; background: none; }
 :host(.tool-code) .scroll { padding: 3px 0; }
 :host(.tool-code) .line::before { display: none; }
+
+@media (max-width: 760px) {
+  .chrome { min-height: 44px; padding: 0 12px; }
+  .lang { font-size: 12px; min-width: 0; overflow-wrap: anywhere; }
+  /* min-height holds inside tool cards, where .chrome keeps only 2px vertical padding. */
+  .copy {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0 14px;
+    font-size: 13px;
+  }
+  .lines { font-size: 13px; }
+  .line::before { font-size: 12px; }
+}

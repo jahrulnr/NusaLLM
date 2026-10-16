@@ -61,6 +61,12 @@ via `embed.go` and served by the same Gin origin as the HTTP API and the
   applies the moment it's coherent, so closing mid-flow never loses a
   pick — and the emitted selection rides `turn.send` as
   `effort`/`provider` overrides.
+- At phone width (≤760px) the header takes two rows: the title row keeps
+  the drawer toggle, title, and rename, and `⋯` opens a thread-actions
+  sheet (rename, compact, settings, and delete). Delete in that sheet
+  asks first, with Keep as the initial focus. Both pickers sit on the
+  second row and open as bottom sheets. Desktop keeps the inline controls
+  and hides `⋯`.
 - Workspace is a separate room-level boundary: `nusa-workspace-picker`
   sits beside the model picker as its own popup file-manager fed by
   `/api/fs/browse` — directories only, home by default, ascendable to the

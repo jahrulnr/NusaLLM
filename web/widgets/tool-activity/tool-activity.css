@@ -71,3 +71,19 @@
 .sec-body nusa-code-block { margin: 4px 0 0; }
 .sec-body nusa-code-block { --code-max-height: min(320px, 42vh); }
 .note { margin: 5px 0; color: var(--text-faint); font-style: italic; }
+
+@media (max-width: 760px) {
+  /* min-height is the full row height, so padding is included. */
+  .summary {
+    box-sizing: border-box;
+    min-height: 48px;
+    padding: 10px 12px;
+    font-size: 14px;
+  }
+  .callid { font-size: 12px; }
+  .name { min-width: 0; overflow-wrap: anywhere; }
+  .status { font-size: 12px; padding: 2px 8px; }
+  .body { padding: 10px 12px 12px; }
+  .sec-heading { font-size: 12px; }
+  .sec-body { font-size: 14px; }
+}

@@ -18,6 +18,10 @@ const PATHS = {
   tool: 'M14.5 6.5a4 4 0 00-5.6 5L4 16.4V20h3.6l4.9-4.9a4 4 0 005-5.6l-2.8 2.8-2.6-2.6 2.4-3.2z',
   panel: 'M4 5h16v14H4zM15 5v14',
   folder: 'M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z',
+  // Zero-length segments render as dots under the round caps.
+  more: 'M5 12h.01M12 12h.01M19 12h.01',
+  // Arrows folding inward: summarize the thread.
+  compact: 'M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7',
 };
 
 export function icon(name, size = 14) {

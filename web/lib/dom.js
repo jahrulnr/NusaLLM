@@ -44,7 +44,16 @@ export class Widget extends HTMLElement {
     // `stylesheet` is set in each widget module as
     // `new URL('./name.css', import.meta.url)` — import.meta resolves
     // per-module, so the URL must be captured in the widget's own file.
-    this.shadowRoot.append(el('link', { rel: 'stylesheet', href: this.constructor.stylesheet }));
+    const sheet = el('link', { rel: 'stylesheet', href: this.constructor.stylesheet });
+    // Until the sheet applies the widget renders bare, so a transition the
+    // sheet declares would run from that bare layout on first paint. Once
+    // the sheet is in, flush the applied state as the baseline and mark the
+    // host `styled`; transitions key off `:host(.styled)` and arm only then.
+    sheet.addEventListener('load', () => {
+      void getComputedStyle(this).transform;
+      this.classList.add('styled');
+    }, { once: true });
+    this.shadowRoot.append(sheet);
     // The wrapper must fill the host so a widget's height:100% chain
     // (grid rows, flex children, internal scroll containers) resolves
     // against the host box, not auto content height.

@@ -246,3 +246,29 @@ nusa-tool-activity, nusa-thinking-block { display: block; }
   .caret { animation: none; }
   .thread { scroll-behavior: auto; }
 }
+
+/* Mobile (≤760px): 44px touch targets, text at 12px or larger, and a
+   16px edit field. The edit control is a full-height column on the
+   bubble's right edge; the bubble reserves room for it. */
+@media (max-width: 760px) {
+  .thread { padding: 14px 12px 24px; }
+  .hint { font-size: 14px; }
+  .notice { font-size: 13px; }
+  .earlier-btn { min-height: 44px; padding: 0 16px; font-size: 14px; }
+  .compact-status { font-size: 13px; }
+  .empty-mark { width: 48px; height: 48px; }
+  .empty-title { font-size: 17px; }
+  .empty-hint { font-size: 14px; }
+  .user-msg { max-width: 92%; padding: 10px 48px 10px 14px; }
+  /* Edit mode renders no edit control, so it gives the reserved column
+     back and takes the full thread width for typing. */
+  .user-msg.editing { max-width: 100%; padding: 10px 12px; }
+  .user-content { font-size: 15px; line-height: 1.5; }
+  .edit-btn { top: 0; right: 0; bottom: 0; width: 44px; height: auto; min-height: 44px; padding: 0; }
+  .edit-btn svg { width: 16px; height: 16px; }
+  .steer-label { font-size: 12px; }
+  .context-line { font-size: 13px; }
+  .attachment { min-width: 0; max-width: 100%; font-size: 12px; }
+  .edit-input { min-height: 96px; padding: 10px 12px; font-size: 16px; }
+  .edit-save, .edit-cancel { min-height: 44px; padding: 0 16px; font-size: 14px; }
+}

@@ -21,6 +21,11 @@
   --shell-side: 320px;
 }
 
+/* On phones the drawer is an overlay, so it covers most of the width. */
+@media (max-width: 760px) {
+  :root { --shell-nav: min(86vw, 320px); }
+}
+
 *, *::before, *::after { box-sizing: border-box; }
 
 /* The shell fills the viewport; scrolling stays inside its own panels. */

@@ -45,6 +45,9 @@
   /* Both drawers are fixed overlays — the grid has ONE in-flow track
      and <main> must fill it. */
   .grid { grid-template-columns: minmax(0, 1fr); }
+  /* The entrance transform would override the drawer's closed
+     translateX(-100%) for the length of the animation. */
+  .grid > nusa-nav-sidebar { animation: none; }
 }
 
 @media (min-width: 761px) {

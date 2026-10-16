@@ -3,6 +3,8 @@ import { icon } from '../../lib/icons.js';
 import { APIClient } from '../../lib/api-client.js';
 
 const EFFORTS = ['default', 'none', 'low', 'medium', 'high', 'xhigh', 'max'];
+// On phones the menu is a bottom sheet instead of a popover.
+const SHEET = '(max-width: 760px)';
 
 // Layered model picker: search → model (grouped by gateway) → effort →
 // upstream route (aggregator providers, or Auto). Each completed layer
@@ -120,19 +122,24 @@ class ModelPicker extends Widget {
   }
 
   _renderSearch(menu) {
+    const list = el('div', { class: 'menu-results' });
     const input = el('input', {
       class: 'menu-search', type: 'text', placeholder: 'Search models…',
       'aria-label': 'Search models', value: this._query,
     });
+    // Only the result list re-renders per keystroke: the field keeps its
+    // focus and caret, and the phone keyboard stays up.
     input.addEventListener('input', () => {
       this._query = input.value;
-      this._render();
-      const again = this.root.querySelector('.menu-search');
-      if (again) { again.focus(); again.setSelectionRange(again.value.length, again.value.length); }
+      clear(list);
+      this._renderResults(list);
     });
     input.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); this._closeMenu(true); } });
-    menu.append(input);
+    menu.append(input, list);
+    this._renderResults(list);
+  }
 
+  _renderResults(list) {
     const q = this._query.trim().toLowerCase();
     const usable = (this._gateways || []).filter((g) => !g.broken && (g.models || []).length);
     const groups = usable
@@ -142,14 +149,14 @@ class ModelPicker extends Widget {
       }))
       .filter(({ models }) => models.length);
     if (!groups.length) {
-      menu.append(el('div', { class: 'menu-empty', text: usable.length ? 'No matching models' : 'No gateways configured' }));
+      list.append(el('div', { class: 'menu-empty', text: usable.length ? 'No matching models' : 'No gateways configured' }));
       return;
     }
     for (const { g, models } of groups) {
-      menu.append(el('div', { class: 'menu-group', text: g.name || g.id }));
+      list.append(el('div', { class: 'menu-group', text: g.name || g.id }));
       for (const m of models) {
         const sel = this._selection && this._selection.modelId === m.id && this._selection.route === g.id;
-        menu.append(this._item(m.id, m.contextWindow ? `${Math.round(m.contextWindow / 1024)}k` : '', () => {
+        list.append(this._item(m.id, m.contextWindow ? `${Math.round(m.contextWindow / 1024)}k` : '', () => {
           // Re-picking the current model keeps its tuning; a different
           // model starts clean so a stale pin can't leak across.
           const same = this._selection && this._selection.modelId === m.id && this._selection.route === g.id;
@@ -235,6 +242,10 @@ class ModelPicker extends Widget {
     this.root.append(this.trigger);
 
     if (!this._open) return;
+    // Phones: dims the page and takes the tap that dismisses the sheet.
+    // It sits inside this host, so the outside-tap listener ignores it and
+    // the tap never reaches the page underneath.
+    this.root.append(el('div', { class: 'menu-backdrop', 'aria-hidden': 'true', onclick: () => this._closeMenu() }));
     const menu = el('div', { class: 'menu', role: 'listbox', 'aria-label': 'Models' });
     switch (this._step) {
       case 'effort': this._renderEffort(menu); break;
@@ -250,8 +261,10 @@ class ModelPicker extends Widget {
   }
 
   // Keep the popup inside the viewport even when the header picker
-  // sits at either edge — recomputed on each render and on resize.
+  // sits at either edge — recomputed on each render and on resize. On
+  // phones the menu is a full-width bottom sheet and needs no clamp.
   _clampMenu(menu) {
+    if (matchMedia(SHEET).matches) { menu.style.left = ''; return; }
     const bounds = this.root.getBoundingClientRect();
     const width = menu.getBoundingClientRect().width;
     menu.style.left = `${Math.max(8 - bounds.left, Math.min(0, innerWidth - 8 - bounds.left - width))}px`;

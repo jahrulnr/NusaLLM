@@ -154,13 +154,55 @@
     height: auto;
     z-index: 60;
     width: var(--shell-nav);
-    transition: transform 180ms ease;
     box-shadow: 8px 0 28px rgba(0, 0, 0, 0.55);
   }
+  /* Armed by the Widget base once this sheet has applied (host `styled`),
+     so the first paint of a closed drawer does not animate in from the
+     unstyled layout. */
+  :host(.styled) { transition: transform 180ms ease; }
   :host(.closed) { width: var(--shell-nav); transform: translateX(-100%); box-shadow: none; }
   .close-btn { display: grid; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  :host { transition: none; }
+  :host, :host(.styled) { transition: none; }
+}
+
+@media (max-width: 760px) {
+  .brand { padding: 16px 16px 12px; }
+  .brand-name { font-size: 16px; }
+  .close-btn {
+    flex: 0 0 44px;
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0;
+  }
+  .close-btn svg { width: 18px; height: 18px; }
+  .new-btn {
+    min-height: 48px;
+    margin: 4px 14px 12px;
+    padding: 0 14px;
+    font-size: 15px;
+  }
+  .search {
+    min-height: 44px;
+    margin: 0 14px 12px;
+    padding: 0 12px;
+    font-size: 16px;
+  }
+  .list { padding: 0 10px 12px; }
+  .item { min-height: 56px; padding: 10px 12px; }
+  /* Each conversation row is its own target; keep 8px between neighbours. */
+  .item + .item { margin-top: 8px; }
+  .item-title { font-size: 15px; }
+  .item-meta { font-size: 12px; }
+  .hint { padding: 12px; font-size: 14px; }
+  .more { padding: 8px 4px 4px; }
+  .more-btn { min-height: 48px; font-size: 15px; }
+  .coverage { font-size: 12px; }
+  .footer { padding: 12px 16px; }
+  .conn-dot { width: 9px; height: 9px; }
+  .conn-label { font-size: 13px; }
 }

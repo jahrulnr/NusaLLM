@@ -98,6 +98,9 @@ class AppShell extends Widget {
     this.main = el('main', { class: 'main' }, [this.header, this.thread, this.composer]);
     this.workspace = el('div', { class: 'workspace' }, [this.main, this.settingsPage]);
     this.settingsPage.hidden = true;
+    // Sync before the drawer joins the DOM, so a phone never paints it
+    // open and then slides it shut on load.
+    this._syncSidebar();
     // The scrim sits beside .grid, never inside it — the grid
     // children's entrance transform would become its fixed
     // containing block.
@@ -106,7 +109,6 @@ class AppShell extends Widget {
       this.scrim,
       this.toasts,
     );
-    this._syncSidebar();
   }
 
   _listen() {

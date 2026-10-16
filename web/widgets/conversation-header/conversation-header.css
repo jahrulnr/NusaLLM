@@ -77,17 +77,60 @@
 .spacer { flex: 1 1 0; min-width: 0; }
 
 nusa-model-picker { flex: 0 1 auto; min-width: 0; max-width: min(300px, 40vw); }
+.picks { display: contents; }
+.more-btn { display: none; }
 
-@media (max-width: 520px) {
-  .header { padding: 8px 8px; gap: 4px; }
-  .title { max-width: 110px; }
-  nusa-model-picker { max-width: 152px; }
-  /* The confirm row may drop only its explanatory text — Delete/Keep
-     stay reachable at every width. */
-  .confirm { gap: 6px; padding: 3px 6px; }
-  .confirm-text { display: none; }
-  .icon-btn { padding: 4px; }
-  .compact-btn { padding: 4px 6px; font-size: 10px; }
+/* Phones (≤760px): two rows. Row one is the drawer toggle, the title,
+   and the thread-actions button. Row two holds the model and workspace
+   pickers. Every control is at least 44px. Compaction, rename, settings,
+   and delete live in the sheet, so their desktop controls are hidden. */
+@media (max-width: 760px) {
+  :host { z-index: 30; } /* the pickers and sheet clear the composer (20) */
+  .header {
+    z-index: auto;
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr) 44px;
+    align-items: center;
+    gap: 6px 8px;
+    padding: 6px 12px 8px;
+    min-height: 0;
+  }
+  .sidebar-toggle,
+  .more-btn {
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    color: var(--text-dim);
+  }
+  .sidebar-toggle { grid-column: 1; grid-row: 1; }
+  .sidebar-toggle svg { width: 20px; height: 20px; }
+  .more-btn { display: grid; grid-column: 3; grid-row: 1; }
+  .more-btn svg { width: 20px; height: 20px; stroke-width: 3; }
+  .title,
+  .rename-input {
+    grid-column: 2;
+    grid-row: 1;
+    width: 100%;
+    max-width: none;
+    height: 44px;
+  }
+  .title { gap: 8px; padding: 0 8px; font-size: 16px; }
+  .title svg { width: 14px; height: 14px; }
+  .rename-input { padding: 0 10px; font-size: 16px; }
+  .picks {
+    display: flex;
+    grid-column: 1 / -1;
+    grid-row: 2;
+    gap: 8px;
+    min-width: 0;
+  }
+  .picks > nusa-model-picker { flex: 1 1 0; min-width: 0; max-width: none; }
+  .picks > nusa-workspace-picker { flex: 0 1 auto; min-width: 0; max-width: 46%; }
+  .spacer,
+  .compact-btn,
+  .settings-btn,
+  .icon-btn.danger,
+  .confirm { display: none; }
 }
 
 .confirm {
@@ -121,3 +164,110 @@ nusa-model-picker { flex: 0 1 auto; min-width: 0; max-width: min(300px, 40vw); }
   cursor: pointer;
 }
 .confirm-no:hover { color: var(--text); }
+
+/* Thread actions sheet. A modal <dialog>: the top layer keeps it above the
+   composer, the pickers, and the toasts without a z-index race. Only the
+   phone layout opens it. */
+.sheet {
+  position: fixed;
+  inset: auto 0 0 0;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  max-height: 80vh;
+  max-height: 80dvh;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-ui);
+  overflow: visible;
+}
+.sheet::backdrop { background: rgba(0, 0, 0, 0.5); }
+.sheet[open] .sheet-panel { animation: sheet-up 180ms ease-out; }
+@keyframes sheet-up {
+  from { opacity: 0; transform: translateY(24px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sheet[open] .sheet-panel { animation: none; }
+}
+.sheet-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px calc(12px + env(safe-area-inset-bottom, 0px));
+  background: var(--panel-2);
+  border-top: 1px solid var(--hairline-strong);
+  border-radius: 14px 14px 0 0;
+}
+.sheet-grip {
+  align-self: center;
+  width: 40px;
+  height: 4px;
+  margin: 2px 0 6px;
+  border-radius: 2px;
+  background: var(--hairline-strong);
+}
+.sheet-head { display: flex; align-items: center; gap: 8px; min-height: 44px; padding-left: 12px; }
+.sheet-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+  font-weight: 600;
+}
+.sheet-close {
+  display: grid;
+  place-items: center;
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  background: none;
+  border: 0;
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.sheet-close:hover { color: var(--text); background: var(--bg); }
+.sheet-list { display: flex; flex-direction: column; gap: 2px; }
+.sheet-action {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 52px;
+  padding: 0 12px;
+  background: none;
+  border: 0;
+  border-radius: var(--radius);
+  color: var(--text);
+  font: inherit;
+  font-size: 16px;
+  text-align: left;
+  cursor: pointer;
+}
+.sheet-action svg { flex-shrink: 0; color: var(--text-dim); }
+.sheet-action:hover:not(:disabled),
+.sheet-action:focus-visible { background: var(--bg); }
+.sheet-action:disabled { color: var(--text-faint); cursor: default; }
+.sheet-action.danger,
+.sheet-action.danger svg { color: var(--danger); }
+.sheet-confirm { display: flex; flex-direction: column; gap: 10px; padding: 8px 12px 4px; }
+.sheet-confirm-text { font-size: 15px; color: var(--warn); }
+.sheet-confirm-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.sheet-confirm-row button {
+  min-height: 48px;
+  padding: 0 12px;
+  border-radius: var(--radius);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.sheet-no { background: none; color: var(--text); border: 1px solid var(--hairline-strong); }
+.sheet-yes { background: var(--danger); color: var(--bg); border: 1px solid var(--danger); }

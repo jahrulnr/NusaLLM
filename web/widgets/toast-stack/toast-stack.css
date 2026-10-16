@@ -38,3 +38,24 @@
   padding: 2px;
 }
 .toast-close:hover { color: var(--text); }
+
+@media (max-width: 760px) {
+  :host { top: 8px; left: 8px; right: 8px; bottom: auto; }
+  .stack { width: auto; }
+  .toast { padding: 12px 14px; }
+  .toast-title { font-size: 15px; }
+  .toast-message { font-size: 14px; }
+  /* The 44px target starts at the top padding edge so its icon sits level with the title. */
+  .toast-close {
+    flex: 0 0 44px;
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    margin-top: -12px;
+    padding: 0;
+  }
+  .toast-close svg { width: 18px; height: 18px; }
+}

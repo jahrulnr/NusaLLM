@@ -101,3 +101,64 @@
 .menu-back:hover { color: var(--text); }
 .menu-back svg { transform: rotate(90deg); }
 
+.menu-backdrop { display: none; }
+
+/* Phones (≤760px): the menu becomes a bottom sheet over a dimmed page.
+   Targets are 44px, and the search field is 16px so iOS does not zoom. */
+@media (max-width: 760px) {
+  .trigger { height: 44px; padding: 0 12px; font-size: 14px; max-width: none; }
+  .menu-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 49;
+    background: rgba(0, 0, 0, 0.5);
+  }
+  .menu {
+    position: fixed;
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    min-width: 0;
+    max-width: none;
+    max-height: 72vh;
+    max-height: 72dvh;
+    padding: 8px 8px calc(12px + env(safe-area-inset-bottom, 0px));
+    border: 1px solid var(--hairline-strong);
+    border-bottom: 0;
+    border-radius: 14px 14px 0 0;
+    box-shadow: none;
+  }
+  .menu::before {
+    content: '';
+    display: block;
+    flex: none;
+    width: 40px;
+    height: 4px;
+    margin: 0 auto 8px;
+    border-radius: 2px;
+    background: var(--hairline-strong);
+  }
+  .menu-group { padding: 12px 12px 4px; font-size: 12px; }
+  .menu-group:has(> .menu-back) {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 4px 4px;
+  }
+  .menu-back {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+  }
+  .menu-back svg { width: 16px; height: 16px; }
+  .menu-search { min-height: 44px; margin: 0 0 8px; padding: 0 12px; font-size: 16px; }
+  .menu-item { min-height: 44px; padding: 10px 12px; font-size: 15px; }
+  .menu-meta { font-size: 12px; }
+  .menu-empty { padding: 12px; font-size: 14px; }
+}
+
