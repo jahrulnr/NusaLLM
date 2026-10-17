@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jahrulnr/nusallm/infrastructure/config"
 )
 
 func TestConfigPathWorksWithInvalidStorageDir(t *testing.T) {
@@ -115,6 +117,8 @@ func TestConfigShowAndValidateUseFileContents(t *testing.T) {
 
 func TestLoadConfigDefaultsForUnsetOrMissingPath(t *testing.T) {
 	t.Chdir(t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("CONFIG_PATH", "")
 	cfg, path, err := LoadConfig(true)
 	if err != nil || path != "" || cfg.Storage.Dir != "./data" {
@@ -142,10 +146,157 @@ func TestConfigPathExportedEnvWinsOverDotEnv(t *testing.T) {
 
 func TestConfigPathWithoutConfiguredFileExplainsDefaults(t *testing.T) {
 	t.Chdir(t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("CONFIG_PATH", "")
 	var out, errs bytes.Buffer
 	if code := Config([]string{"path"}, &out, &errs); code != 0 || strings.TrimSpace(out.String()) != "(no config file — running on defaults)" || errs.Len() != 0 {
 		t.Fatalf("path exit %d, out=%q, err=%q", code, out.String(), errs.String())
+	}
+}
+
+func TestResolveConfigPathPrefersEnvOverInstalledFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	installed := filepath.Join(home, ".config", "nusallm", "config.json")
+	if err := os.MkdirAll(filepath.Dir(installed), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(installed, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("environment", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		t.Setenv("CONFIG_PATH", "/exported")
+		if got := resolveConfigPath(); got != "/exported" {
+			t.Fatalf("path = %q, want /exported", got)
+		}
+	})
+
+	t.Run("dotenv", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		t.Setenv("CONFIG_PATH", "")
+		if err := os.WriteFile(".env", []byte("CONFIG_PATH=/from-dotenv\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := resolveConfigPath(); got != "/from-dotenv" {
+			t.Fatalf("path = %q, want /from-dotenv", got)
+		}
+	})
+}
+
+func TestResolveConfigPathUsesInstalledFileWhenUnset(t *testing.T) {
+	home := t.TempDir()
+	t.Chdir(t.TempDir())
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("CONFIG_PATH", "")
+	installed := filepath.Join(home, ".config", "nusallm", "config.json")
+	if err := os.MkdirAll(filepath.Dir(installed), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(installed, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveConfigPath(); got != installed {
+		t.Fatalf("path = %q, want %q", got, installed)
+	}
+}
+
+func TestResolveConfigPathInstalledIgnoresDotEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Chdir(t.TempDir())
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("CONFIG_PATH", "")
+	if err := os.WriteFile(".env", []byte("CONFIG_PATH=/from-dotenv\nNUSALLM_TEST_DOTENV_KEEP=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prev, had := os.LookupEnv("NUSALLM_TEST_DOTENV_KEEP")
+	t.Cleanup(func() {
+		if had {
+			_ = os.Setenv("NUSALLM_TEST_DOTENV_KEEP", prev)
+			return
+		}
+		_ = os.Unsetenv("NUSALLM_TEST_DOTENV_KEEP")
+	})
+	prevInstall := runningFromInstall
+	runningFromInstall = func() bool { return true }
+	t.Cleanup(func() { runningFromInstall = prevInstall })
+
+	want, err := userConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(want); !os.IsNotExist(err) {
+		t.Fatalf("config stat err = %v, want missing", err)
+	}
+	if got := resolveConfigPath(); got != want {
+		t.Fatalf("path = %q, want %q", got, want)
+	}
+	if os.Getenv("NUSALLM_TEST_DOTENV_KEEP") != "1" {
+		t.Fatal(".env keys other than CONFIG_PATH were not loaded")
+	}
+}
+
+func TestResolveConfigPathInstalledKeepsExportedEnv(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("CONFIG_PATH", "/exported")
+	if err := os.WriteFile(".env", []byte("CONFIG_PATH=/from-dotenv\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prev := runningFromInstall
+	runningFromInstall = func() bool { return true }
+	t.Cleanup(func() { runningFromInstall = prev })
+	if got := resolveConfigPath(); got != "/exported" {
+		t.Fatalf("path = %q, want /exported", got)
+	}
+}
+
+func TestEnsureConfigInstalledFileUsesAbsoluteDataDir(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	path, err := userConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := userDataDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var errs bytes.Buffer
+	if err := EnsureConfig(path, &errs); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Validate(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Storage.Dir != data {
+		t.Fatalf("storage.dir = %q, want %q", cfg.Storage.Dir, data)
+	}
+	if !strings.Contains(errs.String(), path) {
+		t.Fatalf("stderr = %q, want the config path", errs.String())
+	}
+}
+
+func TestResolveConfigPathStaysEmptyWithoutInstalledFile(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("CONFIG_PATH", "")
+	if got := resolveConfigPath(); got != "" {
+		t.Fatalf("path = %q, want empty", got)
 	}
 }
 

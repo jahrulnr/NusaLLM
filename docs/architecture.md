@@ -510,9 +510,10 @@ as the local driver's `FallbackRoot`, so a room with no bound workspace
 runs its tools there — and the injected `workspace` context record
 cites it.
 
-Config resolves as `CONFIG_PATH` env → JSON file → `default` struct tags;
-a `.env` in cwd can set `CONFIG_PATH` itself (real env wins). When
-`repl.Run` returns, the deferred teardown runs in reverse: the REPL
+Config resolves as an exported `CONFIG_PATH`, then the user file at
+`~/.config/nusallm/config.json` when this process is the installed
+binary, then a `.env` in cwd for a source build, then `default` struct
+tags. When `repl.Run` returns, the deferred teardown runs in reverse: the REPL
 releases its handles first, then the conversation app shuts down (reject
 posts, terminate every worker, wait for their loops), and the boot
 resources — including the sqlite secret store — close last.

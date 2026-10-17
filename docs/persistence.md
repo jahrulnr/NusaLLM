@@ -54,18 +54,24 @@ an ID becomes a path segment, every repository re-asserts
 `valueobject.ValidID` at its own boundary — no `.`, `..`, or path
 separators ever reach `filepath.Join`.
 
-The JSON config file itself is *not* part of this tree. Its location is
-whatever the `CONFIG_PATH` environment variable points at; when it is
-missing, `admin.EnsureConfig` (`delivery/cli/admin/admin.go`) generates
-it once — called by both `run` and `serve`, it delegates to
-`setup.EnsureConfig` (`application/setup/setup.go`), which writes a
-default-tagged file only when the path is non-empty and nothing exists
-there. Read-only admin commands never create it. `storage.dir` inside
-it selects the root above. A
-`.env` file in the working directory is also read at boot
-(`admin.loadEnvFile`) — it feeds the `env:` credential references
-described below, and real environment variables always win over `.env`
-entries.
+The JSON config file itself is *not* part of this tree. `resolveConfigPath`
+(`delivery/cli/admin/admin.go`) takes an exported `CONFIG_PATH` first.
+The binary at `~/.local/bin/nusallm` then defaults to
+`$XDG_CONFIG_HOME/nusallm/config.json` or `~/.config/nusallm/config.json`
+even when the file is missing and even when a `.env` in the working
+directory names another path. A source build still lets that `.env` set
+`CONFIG_PATH`. When `CONFIG_PATH` is still empty, the same user file is
+used if it already exists. When no path is resolved, nothing is created
+and `storage.dir` stays `./data`.
+`admin.EnsureConfig` generates a file once — called by both `run` and
+`serve`. For the user config path it writes `storage.dir` as an absolute
+directory (`$XDG_DATA_HOME/nusallm` or `~/.local/share/nusallm`). Any
+other path delegates to `setup.EnsureConfig`
+(`application/setup/setup.go`), which writes a default-tagged file only
+when the path is non-empty and nothing exists there. Read-only admin
+commands never create a config. `storage.dir` inside the file selects
+the root above. The same `.env` also feeds the `env:` credential
+references described below.
 
 When a non-empty config path is configured, loading fails on a missing,
 unreadable, or malformed file. Defaults apply to fields absent from a valid

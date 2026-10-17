@@ -45,9 +45,31 @@ Running from source without building also works:
 go run ./cmd/nusallm
 ```
 
-Put the resulting binary anywhere on your `PATH`. There is no installer
-and no system-level state — everything it writes lives under one data
-directory, covered below.
+Install that same binary for the current user. `nusallm install` copies
+it to `~/.local/bin/nusallm` and enables a systemd user service whose
+program is `nusallm serve`. The CLI and the WebUI are one executable:
+the service is the binary launched with `serve`, and it starts at login.
+
+```sh
+make install                      # build, install CLI, start WebUI at login
+./nusallm install                 # same, from a binary you already built
+./nusallm install --no-service    # CLI only
+./nusallm serve install           # service only, after the CLI is installed
+./nusallm uninstall               # remove the binary and the service
+```
+
+`~/.local/bin` is already on `PATH` for a login shell once the directory
+exists. If the current shell does not see it, install prints the single
+`export` line to add. It does not edit shell startup files.
+
+`nusallm serve start`, `stop`, `status`, and `uninstall` manage that
+user service. `--linger` on `install` or `serve install` runs
+`loginctl enable-linger` so the WebUI keeps running after logout. Without
+it, the service starts at login and stops when the session ends. Config
+and data directories are left in place by uninstall.
+
+There is no system-wide unit and no desktop entry. The listener stays on
+loopback; open the URL install prints.
 
 Two soft dependencies are worth knowing about:
 
@@ -58,24 +80,32 @@ Two soft dependencies are worth knowing about:
 
 ## Where things live
 
-The client locates one config file and one data directory. Both resolve
-relative to the directory you launch `nusallm` from, so running it from a
-project directory keeps that project's state together.
+The client locates one config file and one data directory.
 
-- **Config file** — the `CONFIG_PATH` environment variable names the JSON
-  config file. If it is unset, the process runs on built-in defaults and
-  no file exists to edit (`nusallm config path` prints `(no config file —
-  running on defaults)`). If it is set and the file is missing, the REPL
-  writes a fully-default document there on first start and tells you:
-  `nusallm: no config found; wrote defaults to <path>`. The REPL and
-  `serve` write defaults on start (`admin.EnsureConfig`); `config set`
-  writes the file too — other admin subcommands never create it.
+- **Config file** — depends on which binary is running. The copy at
+  `~/.local/bin/nusallm` (`nusallm install`, `make install`) defaults to
+  `~/.config/nusallm/config.json` (`$XDG_CONFIG_HOME/nusallm/config.json`
+  when that variable is set), including when a `.env` in the working
+  directory names some other file. A source build (`./bin/nusallm`,
+  `go run`, `make cli`) still lets that `.env` set `CONFIG_PATH`. An
+  exported `CONFIG_PATH` wins over both. The installed file's `storage.dir`
+  is `~/.local/share/nusallm` (`$XDG_DATA_HOME/nusallm` when set), so the
+  CLI and the login WebUI share one store. When a source build has no
+  `CONFIG_PATH` and the user file does not exist yet, the process runs on
+  built-in defaults and `nusallm config path` prints `(no config file —
+  running on defaults)`. A configured path that does not exist yet is
+  written once by the REPL, `serve`, and `config set`: `nusallm: no config
+  found; wrote defaults to <path>`. Read-only admin commands never create
+  it.
 - **`.env`** — before reading `CONFIG_PATH`, the process loads
   `KEY=VALUE` pairs from a `.env` file in the launch directory (comments
   with `#` allowed, quotes stripped). Real environment variables win over
   `.env` entries. The shipped `.env.example` contains exactly one line:
   `CONFIG_PATH=./data/config.json`.
-- **Data directory** — `storage.dir` in the config file, default `./data`.
+- **Data directory** — `storage.dir` in the config file. The tag default
+  is `./data`, relative to the working directory, which is what a checkout
+  uses when its `.env` points `CONFIG_PATH` at `./data/config.json`. The
+  file created by `nusallm install` stores an absolute directory instead.
   Created on demand. Everything persistent lives under it:
 
 | Path under `storage.dir` | Contents |

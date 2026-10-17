@@ -28,9 +28,12 @@ import (
 )
 
 const serveUsage = `Usage: ` + admin.CLIName + ` serve [--port N]
+       ` + admin.CLIName + ` serve install|start|stop|status|uninstall
 
 Local WebUI — embedded browser UI, HTTP API, and WebSocket turn channel.
 Binds 127.0.0.1 only; port defaults to server.port in config.
+install/start/stop/status/uninstall manage the systemd user service
+that runs this same binary.
 
 Flags:
   --port N   loopback port for this process (1..65535)

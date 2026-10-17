@@ -1,7 +1,7 @@
 // Package admin is the argv boundary for operator commands — gateway,
-// config, and onboard are the "handlers" main.go dispatches to, the way
-// an http server's mux routes to delivery handlers. Each handler returns
-// the process exit code; cmd/ owns no admin logic of its own.
+// config, onboard, and install are the "handlers" main.go dispatches to,
+// the way an http server's mux routes to delivery handlers. Each handler
+// returns the process exit code; cmd/ owns no admin logic of its own.
 package admin
 
 import (
@@ -97,15 +97,69 @@ func LoadConfig(strict bool) (config.Config, string, error) {
 	return cfg, configPath, nil
 }
 
+// runningFromInstall reports whether this process is the copy placed at
+// ~/.local/bin by `nusallm install` / `make install`. Tests replace it.
+var runningFromInstall = func() bool {
+	exe, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	bin, err := userBinPath()
+	if err != nil {
+		return false
+	}
+	exeInfo, err := os.Stat(exe)
+	if err != nil {
+		return false
+	}
+	binInfo, err := os.Stat(bin)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(exeInfo, binInfo)
+}
+
+// resolveConfigPath locates the JSON config. A CONFIG_PATH already in the
+// environment wins; a .env in the working directory can set it for a
+// source build, and an exported variable is never overwritten. The
+// installed binary defaults to the user config path even when that file
+// does not exist yet and even when .env names a different file. With
+// neither, an existing user config is still used; otherwise the process
+// runs on tag defaults and storage stays ./data. Nothing is created here.
 func resolveConfigPath() string {
+	if os.Getenv("CONFIG_PATH") == "" && runningFromInstall() {
+		if path, err := userConfigPath(); err == nil {
+			// Pin before .env loads so a checkout CONFIG_PATH cannot
+			// redirect the installed binary at its own store.
+			_ = os.Setenv("CONFIG_PATH", path)
+		}
+	}
 	loadEnvFile(".env")
-	return os.Getenv("CONFIG_PATH")
+	if path := os.Getenv("CONFIG_PATH"); path != "" {
+		return path
+	}
+	path, err := userConfigPath()
+	if err != nil {
+		return ""
+	}
+	fi, err := os.Stat(path)
+	if err != nil || fi.IsDir() {
+		return ""
+	}
+	return path
 }
 
 // EnsureConfig generates the config file when missing — a write command
-// or the REPL, never a read.
+// or the REPL, never a read. The user config path gets an absolute
+// storage.dir; any other path is the tag-default document.
 func EnsureConfig(path string, stderr io.Writer) error {
-	created, err := setup.EnsureConfig(repoconfig.NewLocal(), path)
+	var created bool
+	var err error
+	if userPath, pathErr := userConfigPath(); pathErr == nil && path == userPath {
+		_, created, err = ensureInstalledConfig()
+	} else {
+		created, err = setup.EnsureConfig(repoconfig.NewLocal(), path)
+	}
 	if err != nil {
 		return err
 	}

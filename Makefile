@@ -1,4 +1,4 @@
-.PHONY: build cli serve test fmt-check test-web e2e-web gateway-add
+.PHONY: build cli serve install test fmt-check test-web e2e-web gateway-add
 
 build:
 	mkdir -p ./bin
@@ -9,6 +9,9 @@ cli: build
 	
 serve: build
 	./bin/nusallm serve
+
+install: build
+	./bin/nusallm install
 
 test: build
 	go vet ./...
