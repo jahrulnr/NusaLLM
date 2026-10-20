@@ -72,6 +72,13 @@ function sheetFor(url) {
   return pending;
 }
 
+// Boot readiness: resolves once every sheet requested so far has loaded
+// or failed. Widget classes created later register their own entries —
+// boot only waits for the shell's initial set, not mid-turn arrivals.
+export function sheetsReady() {
+  return Promise.allSettled([...sheetCache.values()]);
+}
+
 export class Widget extends HTMLElement {
   constructor() {
     super();

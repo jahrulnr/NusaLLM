@@ -6,9 +6,60 @@
 <title>NusaLLM</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/styles/theme.css">
+<!-- Boot overlay: painted by this inline style before any external asset
+     arrives, so a refresh never flashes naked markup while the module
+     graph and widget stylesheets are still on the wire. app-shell emits
+     `app:ready` once its initial styles apply; the listener below lifts
+     the cover. Colors mirror theme.css — duplicated inline on purpose. -->
+<style>
+#boot {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  display: grid;
+  place-items: center;
+  background: #0b0d0c;
+  color: #c8f169;
+  font: 500 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+  letter-spacing: 0.04em;
+  transition: opacity 0.18s ease;
+}
+#boot.gone { opacity: 0; pointer-events: none; }
+#boot .mark { display: flex; align-items: center; gap: 0.6em; }
+#boot .dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: currentColor;
+  animation: boot-pulse 1s ease-in-out infinite;
+}
+@keyframes boot-pulse { 50% { opacity: 0.25; transform: scale(0.7); } }
+@media (prefers-reduced-motion: reduce) {
+  #boot { transition: none; }
+  #boot .dot { animation: none; }
+}
+</style>
 </head>
 <body style="max-width: 100vw; max-height: 100vh">
+<div id="boot" role="status" aria-label="Loading">
+  <span class="mark"><span class="dot"></span>NusaLLM</span>
+</div>
 <nusa-app></nusa-app>
+<script>
+  // Lift the boot cover once the app reports styled, fade it out, then
+  // drop the node. The timeout is a failsafe — a failed boot must not
+  // leave a permanent cover over a usable page.
+  (function () {
+    var boot = document.getElementById('boot');
+    var done = false;
+    var lift = function () {
+      if (done || !boot) return;
+      done = true;
+      boot.classList.add('gone');
+      setTimeout(function () { boot.remove(); }, 250);
+    };
+    addEventListener('app:ready', lift, { once: true });
+    setTimeout(lift, 15000);
+  })();
+</script>
 <!-- Trusted pinned vendor bundle (classic script registers
      globalThis.mermaid); it must load before the app module. -->
 <script src="/vendor/mermaid/mermaid.min.js"></script>

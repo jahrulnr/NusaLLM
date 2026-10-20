@@ -1,4 +1,4 @@
-import { Widget, el } from '../../lib/dom.js';
+import { Widget, el, emit, sheetsReady } from '../../lib/dom.js';
 import { APIClient } from '../../lib/api-client.js';
 import { TurnSocket } from '../../lib/socket-client.js';
 import {
@@ -77,6 +77,14 @@ class AppShell extends Widget {
     this._listen();
     this.socket.connect();
     this._boot();
+    // The index.html boot overlay covers the unstyled gap before modules
+    // and sheets arrive; once the shell's initial styles apply, tell it
+    // the app is dressed so it can lift the cover.
+    sheetsReady().then(() => {
+      const go = () => emit(this, 'app:ready');
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(go);
+      else go();
+    });
     addEventListener('hashchange', () => {
       if (location.hash === '#settings') {
         this._showSettings();
