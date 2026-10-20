@@ -378,8 +378,46 @@ func TestCompactRejectsCorruptLine(t *testing.T) {
 		t.Fatal(err)
 	}
 	sum, _ := entity.NewMessage(enum.RoleUser, "S")
-	if err := repo.Compact(t.Context(), "c1", sum, 1); err == nil {
+	if err := compactAt(t, repo, "c1", sum, 1); err == nil {
 		t.Fatal("compact must fail on corrupt active line")
+	}
+}
+
+func TestCompactRejectsMismatchedRetainedTail(t *testing.T) {
+	repo := newRepo(t)
+	if err := repo.Save(t.Context(), newConv(t, "c1")); err != nil {
+		t.Fatal(err)
+	}
+	appendMsgs(t, repo, "c1", "m1", "m2", "m3")
+	conv, err := repo.Load(t.Context(), "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum, _ := entity.NewMessage(enum.RoleUser, "S")
+
+	if err := repo.Compact(t.Context(), "c1", sum, 1, conv.Messages()[2:]); err == nil {
+		t.Fatal("compact must reject a retained tail of the wrong length")
+	}
+	wrong := append([]entity.Message(nil), conv.Messages()[1:]...)
+	wrong[1], _ = entity.NewMessage(enum.RoleUser, "imposter")
+	if err := repo.Compact(t.Context(), "c1", sum, 1, wrong); err == nil {
+		t.Fatal("compact must reject a retained tail with different message ids")
+	}
+
+	// Validation happens before the sealed segment is published.
+	r := repo.(*ConversationRepository)
+	if _, err := os.Stat(filepath.Join(r.path, "c1", "0.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("failed compact published a sealed segment: %v", err)
+	}
+	unchanged, err := repo.Load(t.Context(), "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unchanged.Messages()) != 3 || unchanged.Messages()[0].Content() != "m1" {
+		t.Fatalf("failed compact changed active history: %+v", unchanged.Messages())
+	}
+	if err := compactAt(t, repo, "c1", sum, 1); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -391,10 +429,10 @@ func TestLoadAtRejectsMissingSealedSegment(t *testing.T) {
 	}
 	appendMsgs(t, repo, "c1", "m1", "m2", "m3")
 	sum, _ := entity.NewMessage(enum.RoleUser, "S")
-	if err := repo.Compact(t.Context(), "c1", sum, 2); err != nil {
+	if err := compactAt(t, repo, "c1", sum, 2); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.Compact(t.Context(), "c1", sum, 1); err != nil {
+	if err := compactAt(t, repo, "c1", sum, 1); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Remove(filepath.Join(r.path, "c1", "0.jsonl")); err != nil {
@@ -404,7 +442,7 @@ func TestLoadAtRejectsMissingSealedSegment(t *testing.T) {
 		!strings.Contains(err.Error(), "sealed segment 0.jsonl missing") {
 		t.Fatalf("LoadAt with missing segment → %v", err)
 	}
-	if err := repo.Compact(t.Context(), "c1", sum, 1); err == nil {
+	if err := compactAt(t, repo, "c1", sum, 1); err == nil {
 		t.Fatal("compact must not extend an archive with a missing segment")
 	}
 }
@@ -419,7 +457,7 @@ func TestCompactIgnoresPatchWithoutCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	sum, _ := entity.NewMessage(enum.RoleUser, "S")
-	if err := repo.Compact(t.Context(), "c1", sum, 1); err != nil {
+	if err := compactAt(t, repo, "c1", sum, 1); err != nil {
 		t.Fatal(err)
 	}
 	all, err := repo.LoadAt(t.Context(), "c1", 0, 0)
@@ -439,7 +477,7 @@ func TestCompactSealAndGlobalLoadAt(t *testing.T) {
 	appendMsgs(t, repo, "c1", "m1", "m2", "m3", "m4", "m5")
 
 	sum, _ := entity.NewMessage(enum.RoleUser, "SUMMARY")
-	if err := repo.Compact(t.Context(), "c1", sum, 3); err != nil {
+	if err := compactAt(t, repo, "c1", sum, 3); err != nil {
 		t.Fatal(err)
 	}
 
@@ -500,7 +538,7 @@ func TestPatchReachesSealedCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	sum, _ := entity.NewMessage(enum.RoleUser, "S")
-	if err := repo.Compact(t.Context(), "c1", sum, 1); err != nil {
+	if err := compactAt(t, repo, "c1", sum, 1); err != nil {
 		t.Fatal(err)
 	}
 	if err := repo.UpdateToolCallOutput(t.Context(), "c1", patchCall(t, "sealed-call", "OUT")); err != nil {
@@ -532,12 +570,12 @@ func TestPatchSurvivesLaterCompact(t *testing.T) {
 		t.Fatal(err)
 	}
 	sum1, _ := entity.NewMessage(enum.RoleUser, "S1")
-	if err := repo.Compact(t.Context(), "c1", sum1, 1); err != nil { // seg0=[call], active=[S1,patch]
+	if err := compactAt(t, repo, "c1", sum1, 1); err != nil { // seg0=[call], active=[S1,patch]
 		t.Fatal(err)
 	}
 	appendMsgs(t, repo, "c1", "u1", "u2")
 	sum2, _ := entity.NewMessage(enum.RoleUser, "S2")
-	if err := repo.Compact(t.Context(), "c1", sum2, 1); err != nil { // seg1=[S1], active=[S2,u1,u2,patch]
+	if err := compactAt(t, repo, "c1", sum2, 1); err != nil { // seg1=[S1], active=[S2,u1,u2,patch]
 		t.Fatal(err)
 	}
 	all, err := repo.LoadAt(t.Context(), "c1", 0, 1)
@@ -988,7 +1026,7 @@ func TestCompactIgnoresToolOutputDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.Compact(t.Context(), "c1", summary, 1); err != nil {
+	if err := compactAt(t, repo, "c1", summary, 1); err != nil {
 		t.Fatal(err)
 	}
 	got, err := repo.Load(t.Context(), "c1")

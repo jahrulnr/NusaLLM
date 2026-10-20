@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -661,5 +662,24 @@ func TestEffortClampAndEscapeHatch(t *testing.T) {
 	}
 	if captured["service_tier"] != "flex" {
 		t.Fatalf("escape hatch: %+v", captured["service_tier"])
+	}
+}
+
+func TestMergeIncludeKeepsDefaults(t *testing.T) {
+	base := []string{"reasoning.encrypted_content"}
+	cases := []struct {
+		raw  string
+		want []string
+	}{
+		{`["web_search_call.action.sources"]`, []string{"reasoning.encrypted_content", "web_search_call.action.sources"}},
+		{`"web_search_call.action.sources"`, []string{"reasoning.encrypted_content", "web_search_call.action.sources"}},
+		{"a, b", []string{"reasoning.encrypted_content", "a", "b"}},
+		{`["reasoning.encrypted_content","a","a"]`, []string{"reasoning.encrypted_content", "a"}},
+		{`[]`, []string{"reasoning.encrypted_content"}},
+	}
+	for _, tc := range cases {
+		if got := mergeInclude(base, tc.raw); !slices.Equal(got, tc.want) {
+			t.Errorf("mergeInclude(%q) = %v, want %v", tc.raw, got, tc.want)
+		}
 	}
 }

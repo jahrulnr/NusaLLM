@@ -91,6 +91,9 @@ func (s *Service) Send(ctx context.Context, conv *aggregate.Conversation, gw *ag
 	req.Header.Set("x-api-key", gw.ApiKey())
 	req.Header.Set("anthropic-version", anthropicVersion)
 	req.Header.Set("Content-Type", "application/json")
+	if beta := betaHeaderValue(model); beta != "" {
+		req.Header.Set("anthropic-beta", beta)
+	}
 	if strings.Contains(gw.Endpoint(), enum.OpenCode.String()) {
 		req.Header.Set("x-opencode-session", conv.ID())
 	}

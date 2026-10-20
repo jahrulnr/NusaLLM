@@ -63,11 +63,13 @@ type StreamOptions struct {
 // MessageBody is one wire message. Content is any: a bare string, or a
 // parts array when the message carries attachments.
 type MessageBody struct {
-	Role             string         `json:"role"`
-	Content          any            `json:"content,omitempty"`
-	ToolCalls        []ToolCallBody `json:"tool_calls,omitempty"`
-	ToolCallID       string         `json:"tool_call_id,omitempty"`
-	ReasoningContent string         `json:"reasoning_content,omitempty"` // DeepSeek/OpenRouter replay
+	Role             string          `json:"role"`
+	Content          any             `json:"content,omitempty"`
+	ToolCalls        []ToolCallBody  `json:"tool_calls,omitempty"`
+	ToolCallID       string          `json:"tool_call_id,omitempty"`
+	Reasoning        string          `json:"reasoning,omitempty"`         // OpenRouter plaintext reasoning
+	ReasoningContent string          `json:"reasoning_content,omitempty"` // DeepSeek replay alias
+	ReasoningDetails json.RawMessage `json:"reasoning_details,omitempty"` // OpenRouter structured replay
 }
 
 // ToolCallBody is a wire tool_call on an assistant message. Index appears

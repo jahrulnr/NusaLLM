@@ -33,16 +33,27 @@ func decodeResponse(rb *ResponseBody) (entity.Message, decodeMeta, error) {
 		}
 		switch it.Type {
 		case "message":
+			var itemText strings.Builder
 			for _, p := range it.Content {
 				switch p.Type {
 				case "output_text":
 					text.WriteString(p.Text)
+					itemText.WriteString(p.Text)
 				case "refusal":
 					refused = true
 					text.WriteString(p.Refusal)
+					itemText.WriteString(p.Refusal)
 				}
 			}
-			template = append(template, json.RawMessage(`{"type":"message"}`))
+			// Keep the item's own text and phase: the domain content is
+			// the concatenation, but replay must reproduce the original
+			// message boundaries and commentary/final_answer labels.
+			raw, err := json.Marshal(messagePlaceholder{Type: "message", Phase: it.Phase, Text: itemText.String()})
+			if err != nil {
+				return entity.Message{}, decodeMeta{}, err
+			}
+			template = append(template, raw)
+			keepTemplate = true
 		case "function_call":
 			input := it.Arguments
 			if input == "" || !json.Valid(json.RawMessage(input)) {

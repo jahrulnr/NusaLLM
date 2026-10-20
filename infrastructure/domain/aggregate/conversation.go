@@ -54,17 +54,20 @@ func (c *Conversation) Append(m entity.Message) {
 }
 
 // Compact replaces messages[:dropBefore] with a summary message — the live
-// history becomes [summary] + messages[dropBefore:]. The caller must pick a
-// boundary that does not split a tool-call/result pair, which would leave
-// orphaned results on the wire. dropBefore is clamped to the history bounds.
-func (c *Conversation) Compact(summary entity.Message, dropBefore int) {
+// history becomes [summary] + retained. retained is the caller-supplied
+// surviving tail, in order; adapters may have stripped replay artifacts
+// that no longer validate against the rewritten prefix. The caller must
+// pick a boundary that does not split a tool-call/result pair, which would
+// leave orphaned results on the wire. dropBefore is clamped to the history
+// bounds.
+func (c *Conversation) Compact(summary entity.Message, dropBefore int, retained []entity.Message) {
 	if dropBefore < 0 {
 		dropBefore = 0
 	}
 	if dropBefore > len(c.messages) {
 		dropBefore = len(c.messages)
 	}
-	c.messages = append([]entity.Message{summary}, c.messages[dropBefore:]...)
+	c.messages = append([]entity.Message{summary}, retained...)
 }
 
 // CanManualCompact reports whether a manual checkpoint can fold history.

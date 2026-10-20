@@ -74,6 +74,13 @@ func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool
 	// text.verbosity, service_tier, tool_choice, a store:true override…
 	for k, v := range model.OptionalContent() {
 		if name, ok := strings.CutPrefix(k, "responses."); ok {
+			if name == "include" {
+				// include is additive: the adapter always needs the
+				// encrypted reasoning opt-in for stateless replay, and
+				// an escape hatch must not silently replace it.
+				body.Include = mergeInclude(body.Include, v)
+				continue
+			}
 			if body.Extra == nil {
 				body.Extra = map[string]json.RawMessage{}
 			}
@@ -151,9 +158,13 @@ func assistantItems(m entity.Message, text string, origin []entity.ToolCall) []j
 			items = append(items, raw...)
 		}
 	}
-	emitMsg := func() {
-		emit(ItemBody{Type: "message", Role: "assistant",
-			Content: []any{PartBody{Type: "output_text", Text: text}}})
+	emitMsg := func(phase string, body *string) {
+		msgText := text
+		if body != nil {
+			msgText = *body
+		}
+		emit(ItemBody{Type: "message", Role: "assistant", Phase: phase,
+			Content: []any{PartBody{Type: "output_text", Text: msgText}}})
 		msgDone = true
 	}
 	emitCall := func() {
@@ -170,14 +181,16 @@ func assistantItems(m entity.Message, text string, origin []entity.ToolCall) []j
 	}
 	for _, entry := range template {
 		var head struct {
-			Type string `json:"type"`
+			Type  string  `json:"type"`
+			Phase string  `json:"phase"`
+			Text  *string `json:"text"`
 		}
 		if err := json.Unmarshal(entry, &head); err != nil {
 			continue
 		}
 		switch head.Type {
 		case "message":
-			emitMsg()
+			emitMsg(head.Phase, head.Text)
 		case "function_call":
 			emitCall()
 		case "reasoning":
@@ -185,9 +198,9 @@ func assistantItems(m entity.Message, text string, origin []entity.ToolCall) []j
 			// item without it is unverifiable padding; drop it
 			// (documented ZDR behavior).
 			var probe struct {
-				Encrypted json.RawMessage `json:"encrypted_content"`
+				Encrypted string `json:"encrypted_content"`
 			}
-			if json.Unmarshal(entry, &probe) == nil && len(probe.Encrypted) > 0 {
+			if json.Unmarshal(entry, &probe) == nil && strings.TrimSpace(probe.Encrypted) != "" {
 				items = append(items, entry)
 			}
 		default:
@@ -196,7 +209,7 @@ func assistantItems(m entity.Message, text string, origin []entity.ToolCall) []j
 		}
 	}
 	if !msgDone && (text != "" || len(items) == 0) {
-		emitMsg()
+		emitMsg("", nil)
 	}
 	for used < len(origin) {
 		emitCall()
@@ -302,3 +315,31 @@ type plainError string
 func (e plainError) Error() string { return string(e) }
 
 func errPlain(s string) error { return plainError(s) }
+
+// mergeInclude appends configured include values to the adapter defaults.
+// Values may arrive as a JSON string array, a JSON string, or a comma/
+// whitespace separated list; duplicates and empty entries are ignored.
+func mergeInclude(base []string, raw string) []string {
+	var values []string
+	if err := json.Unmarshal([]byte(raw), &values); err != nil {
+		var one string
+		if err := json.Unmarshal([]byte(raw), &one); err == nil {
+			values = []string{one}
+		} else {
+			values = strings.FieldsFunc(raw, func(r rune) bool {
+				return r == ',' || r == '\n' || r == '\r' || r == ' ' || r == '\t'
+			})
+		}
+	}
+	seen := make(map[string]bool, len(base)+len(values))
+	out := make([]string, 0, len(base)+len(values))
+	for _, v := range append(append([]string{}, base...), values...) {
+		v = strings.TrimSpace(v)
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	return out
+}

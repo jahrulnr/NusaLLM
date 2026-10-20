@@ -154,7 +154,11 @@ func TestConversationRepairFinishRewriteRollsForwardInterruptedEdit(t *testing.T
 		}
 	}
 	summary, _ := entity.NewMessage(enum.RoleUser, "S1")
-	if err := repo.Compact(t.Context(), "c1", summary, 2); err != nil { // 0.jsonl=[u1,u2], active=[S1,u3]
+	conv, err = repo.Load(t.Context(), "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Compact(t.Context(), "c1", summary, 2, conv.Messages()[2:]); err != nil { // 0.jsonl=[u1,u2], active=[S1,u3]
 		t.Fatal(err)
 	}
 	dir := filepath.Join(storage, "conversations", "c1")

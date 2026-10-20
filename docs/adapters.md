@@ -227,6 +227,13 @@ byte-exact — Anthropic thinking signatures are bound to the prompt prefix,
 so those blocks must never be reserialized through a narrower struct. The
 decoder is why the DTO's `Content` is `[]json.RawMessage`.
 
+`messages.anthropic_beta` is the one adapter key that is not a body escape
+hatch: a JSON string array, JSON string, or comma/whitespace separated list
+is flattened into the comma-separated `anthropic-beta` header and skipped
+from `RequestBody.Extra`. This is how interleaved-thinking and context-
+management betas reach the wire — putting them in the request body would be
+ignored by Anthropic.
+
 Tool results ride `tool_result` blocks inside the next user turn (the wire
 has no tool role); a call's output attachments nest inside its own
 `tool_result` block natively, and an interrupted call yields an
@@ -252,9 +259,11 @@ Two deliberate stances define the request leg:
   item list goes every turn — the repository is the record, and edits would
   break `previous_response_id` chains anyway. `include:
   reasoning.encrypted_content` opts into replayable reasoning so stateless
-  turns keep their chain of thought; a stored reasoning item *without* the
-  blob is dropped at encode (documented ZDR behavior — the provider would
-  reject it).
+  turns keep their chain of thought; a stored reasoning item *without* a
+  non-empty string blob is dropped at encode (documented ZDR behavior — the
+  provider would reject it, and `null` is not a blob). `responses.include`
+  is additive: configured values merge with the adapter default instead of
+  replacing it.
 - **Template replay like messages, one level up.** The turn template sits in
   `optionalContent` under `responses.output_items` — `{"type":"message"}` and
   `{"type":"function_call"}` placeholders refill from domain state, reasoning
@@ -439,6 +448,19 @@ builds a scratch conversation containing only this tool's schema and
 drives `Send` until the model answers through it, accepting plain text as
 a fallback. It is never registered in the `tools` map in
 `cmd/nusallm/wire.go`.
+
+**Prefix-bound replay artifacts.** Signed thinking cannot survive a fold.
+The summary scratch replaces the tool catalog and the checkpoint replaces
+the sealed prefix, so the job consults the adapter's optional
+`dservice.CompactionSanitizer` twice: before building the scratch request
+and on the retained tail it persists. `textmessages` drops
+`thinking`/`redacted_thinking` blocks (keeping text/tool_use placeholders),
+and `textcompletion` drops `completion.reasoning_details` while preserving
+plain reasoning text. `textgeneratecontent` implements no sanitizer because
+Gemini's stateless `generateContent` requires thought blocks to be sent
+back; `textresponses` currently keeps encrypted reasoning. The repository
+overlays only the sanitized `optionalContent` onto the stored tail lines —
+every other field, plus all tool-output patch lines, remains byte-exact.
 
 ## `service/workspace` — the sandbox
 

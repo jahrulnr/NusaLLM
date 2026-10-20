@@ -766,3 +766,24 @@ func TestStreamCancelKeepsCompleteToolDropsPartial(t *testing.T) {
 		t.Fatalf("complete command: %s", calls[0].Input())
 	}
 }
+
+func TestSanitizeCompactedTailDropsReasoningDetails(t *testing.T) {
+	m, _ := entity.NewMessage(enum.RoleAssistant, "answer")
+	m.SetOptionalContent(reasoningDetailsKey, `[{"type":"reasoning.text","text":"think","signature":"SIG"}]`)
+	m.SetOptionalContent("completion.reasoning_content", "think")
+
+	svc := &Service{}
+	got := svc.SanitizeCompactedTail([]entity.Message{m})
+	if len(got) != 1 || got[0].ID() != m.ID() {
+		t.Fatalf("sanitizer changed the tail: %+v", got)
+	}
+	if _, ok := got[0].OptionalContent()[reasoningDetailsKey]; ok {
+		t.Fatalf("reasoning details survived compaction: %+v", got[0].OptionalContent())
+	}
+	if got[0].OptionalContent()["completion.reasoning_content"] != "think" {
+		t.Fatal("plaintext reasoning fallback must survive")
+	}
+	if m.OptionalContent()[reasoningDetailsKey] == "" {
+		t.Fatal("sanitizer mutated the input message")
+	}
+}

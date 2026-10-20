@@ -33,7 +33,15 @@ func (d Deps) compact(ctx context.Context, convID string, conv *aggregate.Conver
 	if err := scratch.SetEnvironment(conv.Environment()); err != nil {
 		return err
 	}
-	for _, m := range conv.Messages() {
+	prefix := conv.Messages()
+	if sanitizer, ok := svc.(dservice.CompactionSanitizer); ok {
+		prefix = sanitizer.SanitizeCompactedTail(prefix)
+	}
+	if len(prefix) != len(conv.Messages()) {
+		return apperror.New(500, "compaction sanitizer changed history length",
+			fmt.Errorf("got %d messages, want %d", len(prefix), len(conv.Messages())))
+	}
+	for _, m := range prefix {
 		scratch.Append(m)
 	}
 	instruction, err := entity.NewMessage(enum.RoleUser, prompt.UserPrompt("compaction"))
@@ -104,10 +112,18 @@ func (d Deps) compact(ctx context.Context, convID string, conv *aggregate.Conver
 		// is noise — refuse rather than write an empty segment.
 		return apperror.New(500, "nothing to compact", fmt.Errorf("dropBefore %d over %d messages", dropBefore, len(conv.Messages())))
 	}
-	if err := d.Convs.Compact(ctx, convID, next, dropBefore); err != nil {
+	tail := conv.Messages()[dropBefore:]
+	if sanitizer, ok := svc.(dservice.CompactionSanitizer); ok {
+		tail = sanitizer.SanitizeCompactedTail(tail)
+	}
+	if len(tail) != len(conv.Messages())-dropBefore {
+		return apperror.New(500, "compaction sanitizer changed retained tail",
+			fmt.Errorf("got %d messages, want %d", len(tail), len(conv.Messages())-dropBefore))
+	}
+	if err := d.Convs.Compact(ctx, convID, next, dropBefore, tail); err != nil {
 		return err
 	}
-	conv.Compact(next, dropBefore)
+	conv.Compact(next, dropBefore, tail)
 	// Handoff spend merges only after the fold commits — a failed
 	// Compact must not persist usage against an unchanged history.
 	conv.AddUsage(scratch.Usage())

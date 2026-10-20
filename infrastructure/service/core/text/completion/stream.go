@@ -39,13 +39,15 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 	go readSSE(resp.Body, done, events, errs)
 
 	var (
-		content   strings.Builder
-		reasoning strings.Builder
-		calls     []ToolCallBody // assembled by index — order preserved
-		finish    string
-		usage     *UsageBody
-		doneSeen  bool
-		logged    []json.RawMessage
+		content          strings.Builder
+		reasoning        strings.Builder // OpenRouter `reasoning` plaintext
+		reasoningContent strings.Builder // DeepSeek `reasoning_content`
+		details          []json.RawMessage
+		calls            []ToolCallBody // assembled by index — order preserved
+		finish           string
+		usage            *UsageBody
+		doneSeen         bool
+		logged           []json.RawMessage
 	)
 	timer := time.NewTimer(s.idle)
 	defer timer.Stop()
@@ -58,8 +60,10 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 			// stays only when its argument delta is valid JSON; a call
 			// still streaming arguments is dropped.
 			kept := completeToolCalls(calls)
-			if content.Len() > 0 || reasoning.Len() > 0 || len(kept) > 0 {
-				if err := s.commitStream(conv, onEvent, content.String(), reasoning.String(), kept, "", usage); err != nil {
+			if content.Len() > 0 || reasoning.Len() > 0 || reasoningContent.Len() > 0 || len(kept) > 0 {
+				// Details are deliberately dropped on cancel: a partially
+				// streamed signature/encrypted blob is not replayable.
+				if err := s.commitStream(conv, onEvent, content.String(), reasoning.String(), reasoningContent.String(), nil, kept, "", usage); err != nil {
 					return err
 				}
 			}
@@ -80,7 +84,7 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 				emit(onEvent, event.NewErrorEvent(err))
 				return err
 			}
-			return s.commitStream(conv, onEvent, content.String(), reasoning.String(), completeToolCalls(calls), finish, usage)
+			return s.commitStream(conv, onEvent, content.String(), reasoning.String(), reasoningContent.String(), details, completeToolCalls(calls), finish, usage)
 		case ev := <-events:
 			timer.Reset(s.idle)
 			if ev.done {
@@ -111,11 +115,30 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 					content.WriteString(t)
 					emit(onEvent, event.NewDeltaEvent(t))
 				}
-				if ch.Delta.ReasoningContent != "" {
-					// Keep reasoning separate from answer deltas while
-					// preserving its original arrival order.
-					reasoning.WriteString(ch.Delta.ReasoningContent)
+				// Keep reasoning separate from answer deltas while preserving
+				// its original arrival order. OpenRouter spells the plaintext
+				// alias `reasoning`; DeepSeek uses `reasoning_content`; the
+				// structured `reasoning_details` array carries signatures and
+				// encrypted blobs. Prefer the plaintext alias for display so
+				// a chunk carrying both does not double-emit.
+				switch {
+				case ch.Delta.Reasoning != "":
+					reasoning.WriteString(ch.Delta.Reasoning)
+					emit(onEvent, event.NewReasoningEvent(ch.Delta.Reasoning))
+				case ch.Delta.ReasoningContent != "":
+					reasoningContent.WriteString(ch.Delta.ReasoningContent)
 					emit(onEvent, event.NewReasoningEvent(ch.Delta.ReasoningContent))
+				}
+				if len(ch.Delta.ReasoningDetails) > 0 {
+					var chunkDetails []json.RawMessage
+					if json.Unmarshal(ch.Delta.ReasoningDetails, &chunkDetails) == nil {
+						details = append(details, chunkDetails...)
+						if ch.Delta.Reasoning == "" && ch.Delta.ReasoningContent == "" {
+							if text := reasoningTextFromDetails(ch.Delta.ReasoningDetails); text != "" {
+								emit(onEvent, event.NewReasoningEvent(text))
+							}
+						}
+					}
 				}
 				for _, tc := range ch.Delta.ToolCalls {
 					calls = mergeCallDelta(calls, tc)
@@ -127,8 +150,17 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 
 // commitStream turns the accumulated stream state into the assistant
 // message exactly once — called on clean close or EOF-after-terminal.
-func (s *Service) commitStream(conv *aggregate.Conversation, onEvent event.TurnEventHandler, content, reasoning string, calls []ToolCallBody, finish string, usage *UsageBody) error {
-	msg, err := decodeMessage(MessageBody{Role: "assistant", Content: content, ToolCalls: calls, ReasoningContent: reasoning}, finish)
+func (s *Service) commitStream(conv *aggregate.Conversation, onEvent event.TurnEventHandler, content, reasoning, reasoningContent string, details []json.RawMessage, calls []ToolCallBody, finish string, usage *UsageBody) error {
+	var rawDetails json.RawMessage
+	if len(details) > 0 {
+		if raw, err := json.Marshal(details); err == nil {
+			rawDetails = raw
+		}
+	}
+	msg, err := decodeMessage(MessageBody{
+		Role: "assistant", Content: content, ToolCalls: calls,
+		Reasoning: reasoning, ReasoningContent: reasoningContent, ReasoningDetails: rawDetails,
+	}, finish)
 	if err != nil {
 		return err
 	}

@@ -68,7 +68,7 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 		select {
 		case <-ctx.Done():
 			s.logAppend(ctx, "provider.stream", logged)
-			kept := partialBlocks(blocks)
+			kept := replayableBlocks(blocks)
 			if blocksHaveContent(kept) {
 				if err := s.commitStream(conv, onEvent, kept, "", usage); err != nil {
 					return err
@@ -91,7 +91,7 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 				emit(onEvent, event.NewErrorEvent(err))
 				return err
 			}
-			return s.commitStream(conv, onEvent, blocks, finish, usage)
+			return s.commitStream(conv, onEvent, replayableBlocks(blocks), finish, usage)
 		case ev := <-events:
 			timer.Reset(s.idle)
 			if len(ev.data) == 0 {
@@ -164,12 +164,17 @@ func startBlock(blocks []blockAcc, i int, head ContentBlock) []blockAcc {
 	return blocks
 }
 
-// partialBlocks drops tool_use blocks whose argument delta never
-// finished. A stopped block, or one whose JSON already closed, stays.
-func partialBlocks(blocks []blockAcc) []blockAcc {
+// replayableBlocks drops state that cannot replay: a tool_use whose
+// argument delta never finished, and a thinking block whose signature never
+// arrived — Anthropic rejects an unsigned thinking block, so committing
+// one poisons every later turn.
+func replayableBlocks(blocks []blockAcc) []blockAcc {
 	kept := make([]blockAcc, 0, len(blocks))
 	for _, b := range blocks {
 		if b.kind == "tool_use" && !toolUseComplete(b) {
+			continue
+		}
+		if b.kind == "thinking" && b.sig.Len() == 0 {
 			continue
 		}
 		kept = append(kept, b)
@@ -227,7 +232,9 @@ func (s *Service) commitStream(conv *aggregate.Conversation, onEvent event.TurnE
 		case "text":
 			raw = append(raw, mustMarshal(ContentBlock{Type: "text", Text: b.text.String()}))
 		case "thinking":
-			raw = append(raw, mustMarshal(ContentBlock{Type: "thinking", Thinking: b.thinking.String(), Signature: b.sig.String()}))
+			// thinking is required even when display:"omitted" leaves
+			// the text empty; ContentBlock's omitempty would drop it.
+			raw = append(raw, mustMarshal(thinkingBlock{Type: "thinking", Thinking: b.thinking.String(), Signature: b.sig.String()}))
 		case "tool_use":
 			in := json.RawMessage(b.args.String())
 			if !json.Valid(in) || len(in) == 0 {

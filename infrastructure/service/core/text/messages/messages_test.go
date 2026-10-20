@@ -713,3 +713,68 @@ func TestContentBlocksKeepsUnknownContent(t *testing.T) {
 		t.Fatalf("nil content has nothing to merge: %+v", got)
 	}
 }
+
+func TestSanitizeCompactedTailDropsReasoningOnly(t *testing.T) {
+	plain, _ := entity.NewMessage(enum.RoleUser, "plain")
+	reasoning, _ := entity.NewMessage(enum.RoleAssistant, "answer")
+	raw := `[{"type":"thinking","thinking":"secret","signature":"SIG"},` +
+		`{"type":"redacted_thinking","data":"ENC"},` +
+		`{"type":"text","text":"answer"}]`
+	reasoning.SetOptionalContent(blocksKey, raw)
+	onlyReasoning, _ := entity.NewMessage(enum.RoleAssistant, "")
+	onlyReasoning.SetOptionalContent(blocksKey,
+		`[{"type":"thinking","thinking":"secret","signature":"SIG"}]`)
+
+	svc := &Service{}
+	got := svc.SanitizeCompactedTail([]entity.Message{plain, reasoning, onlyReasoning})
+	if len(got) != 3 {
+		t.Fatalf("sanitizer changed length: %d", len(got))
+	}
+	if got[0].ID() != plain.ID() || got[0].OptionalContent()[blocksKey] != "" {
+		t.Fatalf("plain message changed: %+v", got[0])
+	}
+	if got[1].ID() != reasoning.ID() {
+		t.Fatalf("sanitizer reordered messages: %+v", got)
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal([]byte(got[1].OptionalContent()[blocksKey]), &blocks); err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 1 || blocks[0].Type != "text" || blocks[0].Text != "answer" {
+		t.Fatalf("kept blocks = %+v", blocks)
+	}
+	if _, ok := got[2].OptionalContent()[blocksKey]; ok {
+		t.Fatalf("reasoning-only message kept blocks: %+v", got[2].OptionalContent())
+	}
+	// The input must stay untouched: later turns still replay exactly what
+	// the provider sent.
+	if reasoning.OptionalContent()[blocksKey] != raw {
+		t.Fatal("sanitizer mutated the input message")
+	}
+}
+
+func TestBetaHeaderValueFormats(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want string
+	}{
+		{`["beta-a","beta-b"]`, "beta-a, beta-b"},
+		{`"beta-a"`, "beta-a"},
+		{"beta-a, beta-b", "beta-a, beta-b"},
+		{"beta-a  beta-a\nbeta-b", "beta-a, beta-b"},
+		{``, ""},
+		{`[]`, ""},
+	}
+	for _, tc := range cases {
+		model, _ := entity.NewModel("m", "test")
+		if tc.raw != "" {
+			model.SetOptionalContent(betaKey, tc.raw)
+		}
+		if got := betaHeaderValue(model); got != tc.want {
+			t.Errorf("betaHeaderValue(%q) = %q, want %q", tc.raw, got, tc.want)
+		}
+	}
+}

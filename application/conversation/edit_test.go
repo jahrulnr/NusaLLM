@@ -108,7 +108,7 @@ func TestEditCompactedMessage(t *testing.T) {
 	// Seal the first turn — the user message leaves the live tail.
 	sum, _ := entity.NewMessage(enum.RoleUser, "summary of old turn")
 	sum.SetUserType(enum.LLMUserTypeSystem)
-	if err := app.deps.Convs.Compact(t.Context(), "room", sum, 1); err != nil {
+	if err := app.deps.Convs.Compact(t.Context(), "room", sum, 1, conv.Messages()[1:]); err != nil {
 		t.Fatal(err)
 	}
 	conv, _ = app.deps.Convs.Load(t.Context(), "room")

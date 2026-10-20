@@ -28,3 +28,17 @@ type TextModelService interface {
 	// upstream detail stays in Cause.
 	Send(ctx context.Context, conv *aggregate.Conversation, gw *aggregate.Gateway, model entity.Model, onEvent event.TurnEventHandler) error
 }
+
+// CompactionSanitizer is the optional provider capability that owns
+// prefix-bound replay artifacts. When compaction replaces the conversation
+// prefix, signatures recorded against the old prefix cannot be replayed;
+// adapters that emit such artifacts implement this method to return a tail
+// with those artifacts removed. The input and its messages are not mutated;
+// order and length are preserved so the caller can persist the rewritten
+// tail alongside the checkpoint.
+//
+// Adapters whose replay artifacts remain valid across a prefix change do
+// not implement this capability.
+type CompactionSanitizer interface {
+	SanitizeCompactedTail(tail []entity.Message) []entity.Message
+}

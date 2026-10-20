@@ -111,7 +111,7 @@ func TestConversationCompact(t *testing.T) {
 	}
 	sum, _ := entity.NewMessage(enum.RoleUser, "SUMMARY")
 	sum.SetUserType(enum.LLMUserTypeSystem)
-	c.Compact(sum, 2)
+	c.Compact(sum, 2, c.Messages()[2:])
 
 	msgs := c.Messages()
 	if len(msgs) != 3 || msgs[0].Content() != "SUMMARY" ||
@@ -119,11 +119,11 @@ func TestConversationCompact(t *testing.T) {
 		t.Fatalf("compact produced %+v", msgs)
 	}
 
-	c.Compact(sum, -5)
+	c.Compact(sum, -5, c.Messages())
 	if got := c.Messages(); len(got) != 4 || got[0].Content() != "SUMMARY" {
 		t.Fatalf("negative dropBefore must clamp to 0, got %+v", got)
 	}
-	c.Compact(sum, 99)
+	c.Compact(sum, 99, nil)
 	if got := c.Messages(); len(got) != 1 || got[0].Content() != "SUMMARY" {
 		t.Fatalf("overflow dropBefore must clamp to len, got %+v", got)
 	}
@@ -140,7 +140,7 @@ func TestManualCompactWhileTailExceedsKeep(t *testing.T) {
 	}
 	checkpoint, _ := entity.NewMessage(enum.RoleUser, "checkpoint")
 	checkpoint.SetUserType(enum.LLMUserTypeSystem)
-	c.Compact(checkpoint, 2)
+	c.Compact(checkpoint, 2, c.Messages()[2:])
 	// checkpoint + kept tail is still longer than keepTail, so an explicit
 	// fold remains available instead of failing the button.
 	if !c.CanManualCompact(2) {

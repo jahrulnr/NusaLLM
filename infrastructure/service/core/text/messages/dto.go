@@ -86,6 +86,15 @@ type ContentBlock struct {
 	Source    *SourceBody     `json:"source,omitempty"`      // image / document
 }
 
+// thinkingBlock is the wire shape for a thinking content block. Both
+// fields are required even when display:"omitted" leaves thinking empty
+// with a signature, so it cannot reuse ContentBlock's omitempty tags.
+type thinkingBlock struct {
+	Type      string `json:"type"`
+	Thinking  string `json:"thinking"`
+	Signature string `json:"signature"`
+}
+
 // SourceBody is the media source of an image/document block — a base64
 // payload, a remote URL, or inline plain text (document blocks only).
 type SourceBody struct {

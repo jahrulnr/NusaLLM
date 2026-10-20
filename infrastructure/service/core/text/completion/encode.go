@@ -155,9 +155,28 @@ func encodeMessage(m entity.Message, model entity.Model, fileRoot wire.MediaRoot
 		out.ToolCalls = append(out.ToolCalls, wb)
 	}
 	// Replay artifacts: "completion.<field>" optionalContent → wire field.
+	// reasoning_details is the structured payload (signatures and
+	// encrypted blobs); reasoning is OpenRouter's plaintext alias and
+	// reasoning_content is DeepSeek's. Prefer the structured details when
+	// present — sending both forms duplicates the reasoning text.
+	var plainReasoning, plainContent string
 	for k, v := range m.OptionalContent() {
-		if k == "completion.reasoning_content" {
-			out.ReasoningContent = v
+		switch k {
+		case reasoningKey:
+			plainReasoning = v
+		case reasoningContentKey:
+			plainContent = v
+		case reasoningDetailsKey:
+			if json.Valid([]byte(v)) {
+				out.ReasoningDetails = json.RawMessage(v)
+			}
+		}
+	}
+	if len(out.ReasoningDetails) == 0 {
+		if plainReasoning != "" {
+			out.Reasoning = plainReasoning
+		} else {
+			out.ReasoningContent = plainContent
 		}
 	}
 

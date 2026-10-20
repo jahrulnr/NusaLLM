@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 
@@ -12,10 +13,13 @@ import (
 )
 
 // Compact seals the first dropBefore message lines verbatim into the next
-// numbered segment, then rewrites active.jsonl as [summary] + surviving
+// numbered segment, then rewrites active.jsonl as [summary] + retained
 // messages + patch lines — patches stay global so late outputs still
-// reach sealed calls. Patches without a surviving call are ignored on read.
-func (r *ConversationRepository) Compact(ctx context.Context, convID string, summary entity.Message, dropBefore int) error {
+// reach sealed calls. retained carries the caller-sanitized optionalContent
+// for the surviving tail; every other field stays exactly as stored, so
+// tool outputs and patches are never re-derived from the domain copy.
+// Patches without a surviving call are ignored on read.
+func (r *ConversationRepository) Compact(ctx context.Context, convID string, summary entity.Message, dropBefore int, retained []entity.Message) error {
 	if err := validID(convID); err != nil {
 		return err
 	}
@@ -49,6 +53,14 @@ func (r *ConversationRepository) Compact(ctx context.Context, convID string, sum
 		// oversized segment would corrupt the archive layout.
 		return fmt.Errorf("compact %s: invalid dropBefore %d over %d message lines", convID, dropBefore, len(msgLines))
 	}
+	if len(retained) != len(msgLines)-dropBefore {
+		return fmt.Errorf("compact %s: retained tail has %d messages, active has %d after dropBefore %d",
+			convID, len(retained), len(msgLines)-dropBefore, dropBefore)
+	}
+	tailLines, err := rewriteRetainedLines(msgLines[dropBefore:], retained)
+	if err != nil {
+		return fmt.Errorf("compact %s: %w", convID, err)
+	}
 
 	// Seal the dropped prefix verbatim into the next numbered segment.
 	sealed := filepath.Join(r.convDir(convID), fmt.Sprintf("%d.jsonl", meta.SealedSegments))
@@ -72,7 +84,7 @@ func (r *ConversationRepository) Compact(ctx context.Context, convID string, sum
 	}
 	buf.Write(sum)
 	buf.WriteByte('\n')
-	for _, l := range append(msgLines[dropBefore:], patchLines...) {
+	for _, l := range append(tailLines, patchLines...) {
 		buf.Write(l)
 		buf.WriteByte('\n')
 	}
@@ -94,4 +106,36 @@ func (r *ConversationRepository) Compact(ctx context.Context, convID string, sum
 		return err
 	}
 	return nil
+}
+
+// rewriteRetainedLines overlays the caller-sanitized optionalContent onto
+// the stored tail. Validation happens before any file write; unchanged
+// lines pass through byte-exact so timestamp and unknown-field formatting
+// survive.
+func rewriteRetainedLines(lines [][]byte, retained []entity.Message) ([][]byte, error) {
+	out := make([][]byte, 0, len(lines))
+	for i, line := range lines {
+		var lr lineRecord
+		if err := json.Unmarshal(line, &lr); err != nil {
+			return nil, fmt.Errorf("corrupt retained line: %w", err)
+		}
+		if lr.Type != lineMessage {
+			return nil, fmt.Errorf("retained line %d is %q, not a message", i, lr.Type)
+		}
+		if lr.Data.ID != retained[i].ID() {
+			return nil, fmt.Errorf("retained tail mismatch at %d: stored %q, supplied %q",
+				i, lr.Data.ID, retained[i].ID())
+		}
+		if maps.Equal(lr.Data.OptionalContent, retained[i].OptionalContent()) {
+			out = append(out, line)
+			continue
+		}
+		lr.Data.OptionalContent = retained[i].OptionalContent()
+		rewritten, err := json.Marshal(lr)
+		if err != nil {
+			return nil, fmt.Errorf("rewrite retained line %d: %w", i, err)
+		}
+		out = append(out, rewritten)
+	}
+	return out, nil
 }

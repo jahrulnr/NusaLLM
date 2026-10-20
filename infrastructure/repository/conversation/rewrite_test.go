@@ -67,12 +67,12 @@ func TestRewriteFromSealedPromotesEra(t *testing.T) {
 	ids := msgIDs(t, repo, "c1")
 
 	sum1, _ := entity.NewMessage(enum.RoleUser, "S1")
-	if err := repo.Compact(t.Context(), "c1", sum1, 3); err != nil { // seg0=[u1,u2,u3], active=[S1,u4,u5]
+	if err := compactAt(t, repo, "c1", sum1, 3); err != nil { // seg0=[u1,u2,u3], active=[S1,u4,u5]
 		t.Fatal(err)
 	}
 	appendMsgs(t, repo, "c1", "u6")
 	sum2, _ := entity.NewMessage(enum.RoleUser, "S2")
-	if err := repo.Compact(t.Context(), "c1", sum2, 2); err != nil { // seg1=[S1,u4], active=[S2,u5,u6]
+	if err := compactAt(t, repo, "c1", sum2, 2); err != nil { // seg1=[S1,u4], active=[S2,u5,u6]
 		t.Fatal(err)
 	}
 
@@ -129,7 +129,7 @@ func TestRewriteFromActiveRecountsSealedHistory(t *testing.T) {
 	appendMsgs(t, repo, "c1", "u1", "u2", "u3")
 	ids := msgIDs(t, repo, "c1")
 	sum, _ := entity.NewMessage(enum.RoleUser, "summary")
-	if err := repo.Compact(t.Context(), "c1", sum, 2); err != nil {
+	if err := compactAt(t, repo, "c1", sum, 2); err != nil {
 		t.Fatal(err)
 	}
 	if err := repo.RewriteFrom(t.Context(), "c1", ids[2], "u3*"); err != nil {
@@ -158,7 +158,7 @@ func TestSurgeryStopsAtUncommittedSealedSegment(t *testing.T) {
 	if err := os.Mkdir(blockedMeta, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.Compact(t.Context(), "c1", sum, 2); err == nil {
+	if err := compactAt(t, repo, "c1", sum, 2); err == nil {
 		t.Fatal("expected metadata publish failure")
 	}
 	if err := os.Remove(blockedMeta); err != nil {
@@ -169,7 +169,7 @@ func TestSurgeryStopsAtUncommittedSealedSegment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.Compact(t.Context(), "c1", sum, 1); err == nil {
+	if err := compactAt(t, repo, "c1", sum, 1); err == nil {
 		t.Fatal("compact overwrote an uncommitted sealed era")
 	}
 	if err := repo.RewriteFrom(t.Context(), "c1", ids[2], "u3*"); err == nil {
@@ -204,7 +204,7 @@ func TestRewriteFromSealedPayloadFailureKeepsArchive(t *testing.T) {
 	appendMsgs(t, repo, "c1", "u1", "u2", "u3")
 	ids := msgIDs(t, repo, "c1")
 	sum, _ := entity.NewMessage(enum.RoleUser, "S1")
-	if err := repo.Compact(t.Context(), "c1", sum, 2); err != nil { // seg0=[u1,u2], active=[S1,u3]
+	if err := compactAt(t, repo, "c1", sum, 2); err != nil { // seg0=[u1,u2], active=[S1,u3]
 		t.Fatal(err)
 	}
 	dir := r.convDir("c1")
@@ -251,11 +251,11 @@ func TestRewriteFromSealedParkFailureRestoresSegments(t *testing.T) {
 	appendMsgs(t, repo, "c1", "u1", "u2", "u3", "u4", "u5")
 	ids := msgIDs(t, repo, "c1")
 	sum1, _ := entity.NewMessage(enum.RoleUser, "S1")
-	if err := repo.Compact(t.Context(), "c1", sum1, 3); err != nil { // seg0=[u1,u2,u3], active=[S1,u4,u5]
+	if err := compactAt(t, repo, "c1", sum1, 3); err != nil { // seg0=[u1,u2,u3], active=[S1,u4,u5]
 		t.Fatal(err)
 	}
 	sum2, _ := entity.NewMessage(enum.RoleUser, "S2")
-	if err := repo.Compact(t.Context(), "c1", sum2, 2); err != nil { // seg1=[S1,u4], active=[S2,u5]
+	if err := compactAt(t, repo, "c1", sum2, 2); err != nil { // seg1=[S1,u4], active=[S2,u5]
 		t.Fatal(err)
 	}
 	dir := r.convDir("c1")
@@ -309,7 +309,7 @@ func TestRewriteFromSealedPublishFailureKeepsArchive(t *testing.T) {
 	appendMsgs(t, repo, "c1", "u1", "u2", "u3")
 	ids := msgIDs(t, repo, "c1")
 	sum, _ := entity.NewMessage(enum.RoleUser, "S1")
-	if err := repo.Compact(t.Context(), "c1", sum, 2); err != nil { // seg0=[u1,u2], active=[S1,u3]
+	if err := compactAt(t, repo, "c1", sum, 2); err != nil { // seg0=[u1,u2], active=[S1,u3]
 		t.Fatal(err)
 	}
 	dir := r.convDir("c1")
@@ -368,7 +368,7 @@ func TestRewriteFromSealedMetaFailureLeavesRecoverableWindow(t *testing.T) {
 	appendMsgs(t, repo, "c1", "u1", "u2", "u3")
 	ids := msgIDs(t, repo, "c1")
 	sum, _ := entity.NewMessage(enum.RoleUser, "S1")
-	if err := repo.Compact(t.Context(), "c1", sum, 2); err != nil { // seg0=[u1,u2], active=[S1,u3]
+	if err := compactAt(t, repo, "c1", sum, 2); err != nil { // seg0=[u1,u2], active=[S1,u3]
 		t.Fatal(err)
 	}
 	dir := r.convDir("c1")
@@ -395,7 +395,7 @@ func TestRewriteFromSealedMetaFailureLeavesRecoverableWindow(t *testing.T) {
 	if _, err := repo.AppendMessage(t.Context(), "c1", m); err == nil {
 		t.Fatal("append proceeded on an interrupted archive")
 	}
-	if err := repo.Compact(t.Context(), "c1", sum, 1); err == nil {
+	if err := compactAt(t, repo, "c1", sum, 1); err == nil {
 		t.Fatal("compact proceeded on an interrupted archive")
 	}
 
@@ -436,7 +436,7 @@ func TestRewriteFromSealedSweepsStaleLeftovers(t *testing.T) {
 	appendMsgs(t, repo, "c1", "u1", "u2", "u3")
 	ids := msgIDs(t, repo, "c1")
 	sum, _ := entity.NewMessage(enum.RoleUser, "S1")
-	if err := repo.Compact(t.Context(), "c1", sum, 2); err != nil { // seg0=[u1,u2], active=[S1,u3]
+	if err := compactAt(t, repo, "c1", sum, 2); err != nil { // seg0=[u1,u2], active=[S1,u3]
 		t.Fatal(err)
 	}
 	dir := r.convDir("c1")
@@ -481,7 +481,7 @@ func TestRewriteFromSweepsPayloadTempSibling(t *testing.T) {
 	}
 	appendMsgs(t, repo, "c1", "u1", "u2")
 	sum, _ := entity.NewMessage(enum.RoleUser, "S1")
-	if err := repo.Compact(t.Context(), "c1", sum, 1); err != nil {
+	if err := compactAt(t, repo, "c1", sum, 1); err != nil {
 		t.Fatal(err)
 	}
 	dir := r.convDir("c1")
@@ -641,7 +641,7 @@ func TestRewriteFromKeepsPatchForSealedCall(t *testing.T) {
 	}
 	appendMsgs(t, repo, "c1", "u1")
 	sum, _ := entity.NewMessage(enum.RoleUser, "S")
-	if err := repo.Compact(t.Context(), "c1", sum, 1); err != nil { // seg0=[call], active=[S,u1]
+	if err := compactAt(t, repo, "c1", sum, 1); err != nil { // seg0=[call], active=[S,u1]
 		t.Fatal(err)
 	}
 	if err := repo.UpdateToolCallOutput(t.Context(), "c1", patchCall(t, "call_sealed", "sealed result")); err != nil {

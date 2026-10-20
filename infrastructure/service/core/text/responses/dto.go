@@ -60,6 +60,7 @@ type ItemBody struct {
 	Type      string `json:"type"`
 	Role      string `json:"role,omitempty"`      // message
 	Content   any    `json:"content,omitempty"`   // message
+	Phase     string `json:"phase,omitempty"`     // assistant message — commentary | final_answer
 	CallID    string `json:"call_id,omitempty"`   // function_call / function_call_output
 	Name      string `json:"name,omitempty"`      // function_call
 	Arguments string `json:"arguments,omitempty"` // function_call — JSON string
@@ -105,12 +106,23 @@ type ResponseBody struct {
 type ItemShape struct {
 	Type      string          `json:"type"`
 	Role      string          `json:"role"`
+	Phase     string          `json:"phase"`
 	CallID    string          `json:"call_id"`
 	Name      string          `json:"name"`
 	Arguments string          `json:"arguments"`
 	Summary   []PartBody      `json:"summary"`
 	Content   []PartBody      `json:"content"`
 	Encrypted json.RawMessage `json:"encrypted_content"`
+}
+
+// messagePlaceholder keeps a message item's phase and text in the replay
+// template. The domain stores one concatenated content string, so each
+// item's own slice must travel with the ordered template; an older
+// placeholder without text falls back to that string on encode.
+type messagePlaceholder struct {
+	Type  string `json:"type"`
+	Phase string `json:"phase,omitempty"`
+	Text  string `json:"text"`
 }
 
 // UsageBody maps Responses usage — input_tokens is the INCLUSIVE total

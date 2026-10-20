@@ -90,7 +90,7 @@ func TestRepairOrphanRejectsOverlapWithCommittedSegment(t *testing.T) {
 	}
 	appendMsgs(t, r, "c1", "one", "two")
 	summary, _ := entity.NewMessage(enum.RoleUser, "summary")
-	if err := r.Compact(t.Context(), "c1", summary, 1); err != nil {
+	if err := compactAt(t, r, "c1", summary, 1); err != nil {
 		t.Fatal(err)
 	}
 	dir := r.convDir("c1")
@@ -215,11 +215,11 @@ func TestRepairRewriteFinishesInterruptedEdit(t *testing.T) {
 	}
 	appendMsgs(t, r, "c1", "u1", "u2", "u3", "u4")
 	sum1, _ := entity.NewMessage(enum.RoleUser, "S1")
-	if err := r.Compact(t.Context(), "c1", sum1, 2); err != nil { // seg0=[u1,u2], active=[S1,u3,u4]
+	if err := compactAt(t, r, "c1", sum1, 2); err != nil { // seg0=[u1,u2], active=[S1,u3,u4]
 		t.Fatal(err)
 	}
 	sum2, _ := entity.NewMessage(enum.RoleUser, "S2")
-	if err := r.Compact(t.Context(), "c1", sum2, 2); err != nil { // seg1=[S1,u3], active=[S2,u4]
+	if err := compactAt(t, r, "c1", sum2, 2); err != nil { // seg1=[S1,u3], active=[S2,u4]
 		t.Fatal(err)
 	}
 	dir := r.convDir("c1")
@@ -292,7 +292,7 @@ func TestRepairRewriteFinishesPublishedWindow(t *testing.T) {
 	}
 	appendMsgs(t, r, "c1", "u1", "u2")
 	sum, _ := entity.NewMessage(enum.RoleUser, "S1")
-	if err := r.Compact(t.Context(), "c1", sum, 1); err != nil { // seg0=[u1], active=[S1,u2], meta=1
+	if err := compactAt(t, r, "c1", sum, 1); err != nil { // seg0=[u1], active=[S1,u2], meta=1
 		t.Fatal(err)
 	}
 	dir := r.convDir("c1")
@@ -353,11 +353,11 @@ func TestRepairRewriteFinishesPublishedWindowWithGappedLeftovers(t *testing.T) {
 	}
 	appendMsgs(t, r, "c1", "u1", "u2", "u3")
 	sum1, _ := entity.NewMessage(enum.RoleUser, "S1")
-	if err := r.Compact(t.Context(), "c1", sum1, 2); err != nil { // seg0=[u1,u2], active=[S1,u3]
+	if err := compactAt(t, r, "c1", sum1, 2); err != nil { // seg0=[u1,u2], active=[S1,u3]
 		t.Fatal(err)
 	}
 	sum2, _ := entity.NewMessage(enum.RoleUser, "S2")
-	if err := r.Compact(t.Context(), "c1", sum2, 1); err != nil { // seg1=[S1], active=[S2,u3], meta=2
+	if err := compactAt(t, r, "c1", sum2, 1); err != nil { // seg1=[S1], active=[S2,u3], meta=2
 		t.Fatal(err)
 	}
 	dir := r.convDir("c1")
@@ -425,11 +425,11 @@ func TestRepairRewriteFinishesAllParkedWindow(t *testing.T) {
 	}
 	appendMsgs(t, r, "c1", "u1", "u2", "u3")
 	sum1, _ := entity.NewMessage(enum.RoleUser, "S1")
-	if err := r.Compact(t.Context(), "c1", sum1, 2); err != nil { // seg0=[u1,u2], active=[S1,u3]
+	if err := compactAt(t, r, "c1", sum1, 2); err != nil { // seg0=[u1,u2], active=[S1,u3]
 		t.Fatal(err)
 	}
 	sum2, _ := entity.NewMessage(enum.RoleUser, "S2")
-	if err := r.Compact(t.Context(), "c1", sum2, 1); err != nil { // seg1=[S1], active=[S2,u3]
+	if err := compactAt(t, r, "c1", sum2, 1); err != nil { // seg1=[S1], active=[S2,u3]
 		t.Fatal(err)
 	}
 	dir := r.convDir("c1")
@@ -495,12 +495,12 @@ func TestRepairRewriteRefusesWrongSideParkedSet(t *testing.T) {
 	}
 	appendMsgs(t, r, "c1", "u1", "u2", "u3")
 	sum1, _ := entity.NewMessage(enum.RoleUser, "S1")
-	if err := r.Compact(t.Context(), "c1", sum1, 2); err != nil { // seg0=[u1,u2], active=[S1,u3]
+	if err := compactAt(t, r, "c1", sum1, 2); err != nil { // seg0=[u1,u2], active=[S1,u3]
 		t.Fatal(err)
 	}
 	appendMsgs(t, r, "c1", "u4")
 	sum2, _ := entity.NewMessage(enum.RoleUser, "S2")
-	if err := r.Compact(t.Context(), "c1", sum2, 2); err != nil { // seg1=[S1,u3], active=[S2,u4], meta=2
+	if err := compactAt(t, r, "c1", sum2, 2); err != nil { // seg1=[S1,u3], active=[S2,u4], meta=2
 		t.Fatal(err)
 	}
 	dir := r.convDir("c1")
@@ -565,12 +565,12 @@ func TestRepairRewriteRefusesGappedParkedSet(t *testing.T) {
 	}
 	appendMsgs(t, r, "c1", "u1", "u2", "u3")
 	sum1, _ := entity.NewMessage(enum.RoleUser, "S1")
-	if err := r.Compact(t.Context(), "c1", sum1, 2); err != nil { // seg0=[u1,u2], active=[S1,u3]
+	if err := compactAt(t, r, "c1", sum1, 2); err != nil { // seg0=[u1,u2], active=[S1,u3]
 		t.Fatal(err)
 	}
 	appendMsgs(t, r, "c1", "u4")
 	sum2, _ := entity.NewMessage(enum.RoleUser, "S2")
-	if err := r.Compact(t.Context(), "c1", sum2, 2); err != nil { // seg1=[S1,u3], active=[S2,u4], meta=2
+	if err := compactAt(t, r, "c1", sum2, 2); err != nil { // seg1=[S1,u3], active=[S2,u4], meta=2
 		t.Fatal(err)
 	}
 	dir := r.convDir("c1")
@@ -606,15 +606,15 @@ func TestRepairRewriteRefusesNumberedBelowParked(t *testing.T) {
 	}
 	appendMsgs(t, r, "c1", "u1", "u2", "u3", "u4")
 	sum1, _ := entity.NewMessage(enum.RoleUser, "S1")
-	if err := r.Compact(t.Context(), "c1", sum1, 2); err != nil { // seg0=[u1,u2]
+	if err := compactAt(t, r, "c1", sum1, 2); err != nil { // seg0=[u1,u2]
 		t.Fatal(err)
 	}
 	sum2, _ := entity.NewMessage(enum.RoleUser, "S2")
-	if err := r.Compact(t.Context(), "c1", sum2, 1); err != nil { // seg1=[S1]
+	if err := compactAt(t, r, "c1", sum2, 1); err != nil { // seg1=[S1]
 		t.Fatal(err)
 	}
 	sum3, _ := entity.NewMessage(enum.RoleUser, "S3")
-	if err := r.Compact(t.Context(), "c1", sum3, 1); err != nil { // seg2=[S2], meta=3
+	if err := compactAt(t, r, "c1", sum3, 1); err != nil { // seg2=[S2], meta=3
 		t.Fatal(err)
 	}
 	dir := r.convDir("c1")
@@ -656,7 +656,7 @@ func TestStalePayloadDoesNotShadowOrphan(t *testing.T) {
 	}
 	appendMsgs(t, r, "c1", "u1", "u2", "u3")
 	sum, _ := entity.NewMessage(enum.RoleUser, "S1")
-	if err := r.Compact(t.Context(), "c1", sum, 2); err != nil { // seg0=[u1,u2], active=[S1,u3], meta=1
+	if err := compactAt(t, r, "c1", sum, 2); err != nil { // seg0=[u1,u2], active=[S1,u3], meta=1
 		t.Fatal(err)
 	}
 	dir := r.convDir("c1")
@@ -762,7 +762,7 @@ func TestRepairRewriteRefusesNonInterruptedStates(t *testing.T) {
 		}
 		appendMsgs(t, r, "c1", "u1", "u2")
 		sum, _ := entity.NewMessage(enum.RoleUser, "S1")
-		if err := r.Compact(t.Context(), "c1", sum, 1); err != nil {
+		if err := compactAt(t, r, "c1", sum, 1); err != nil {
 			t.Fatal(err)
 		}
 		dir := r.convDir("c1")
@@ -793,7 +793,7 @@ func TestRepairRewriteRejectsUndecodablePayload(t *testing.T) {
 			}
 			appendMsgs(t, r, "c1", "u1", "u2")
 			sum, _ := entity.NewMessage(enum.RoleUser, "S1")
-			if err := r.Compact(t.Context(), "c1", sum, 1); err != nil {
+			if err := compactAt(t, r, "c1", sum, 1); err != nil {
 				t.Fatal(err)
 			}
 			dir := r.convDir("c1")
@@ -834,7 +834,7 @@ func TestRepairOrphanCommittedActiveRewrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	summary, _ := entity.NewMessage(enum.RoleUser, "summary")
-	if err := r.Compact(t.Context(), "c1", summary, 2); err == nil {
+	if err := compactAt(t, r, "c1", summary, 2); err == nil {
 		t.Fatal("expected metadata failure")
 	}
 	if err := os.Remove(block); err != nil {

@@ -27,6 +27,11 @@ const defaultMaxTokens = 16384
 // must replay exactly as received.
 const blocksKey = "messages.content_blocks"
 
+// betaKey is the model optionalContent selector for the anthropic-beta
+// header. Unlike messages.<param> body escape hatches it cannot ride the
+// JSON body, so encodeRequest skips it and Send sets the header.
+const betaKey = "messages.anthropic_beta"
+
 var errUnsupported = errPlain("modality has no carrier on this wire")
 
 // encodeRequest maps domain state onto the wire body. Attachments resolve
@@ -86,9 +91,12 @@ func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool
 		body.OutputConfig = &OutputConfig{Effort: e.String()}
 	}
 	// Adapter-namespaced escape hatch: "messages.<param>" lands verbatim —
-	// this is how thinking config, cache_control, and betas ride through
-	// without dedicated fields.
+	// this is how thinking config and cache_control ride through without
+	// dedicated fields. Beta selectors are headers, not body fields.
 	for k, v := range model.OptionalContent() {
+		if k == betaKey {
+			continue
+		}
 		if name, ok := strings.CutPrefix(k, "messages."); ok {
 			if body.Extra == nil {
 				body.Extra = map[string]json.RawMessage{}
@@ -350,3 +358,35 @@ type plainError string
 func (e plainError) Error() string { return string(e) }
 
 func errPlain(s string) error { return plainError(s) }
+
+// betaHeaderValue flattens the model's beta selector into the header form
+// Anthropic accepts: JSON string array, JSON string, or a comma/whitespace
+// separated list. Empty entries and duplicates are removed.
+func betaHeaderValue(model entity.Model) string {
+	raw := strings.TrimSpace(model.OptionalContent()[betaKey])
+	if raw == "" {
+		return ""
+	}
+	var values []string
+	if err := json.Unmarshal([]byte(raw), &values); err != nil {
+		var one string
+		if err := json.Unmarshal([]byte(raw), &one); err == nil {
+			values = []string{one}
+		} else {
+			values = strings.FieldsFunc(raw, func(r rune) bool {
+				return r == ',' || r == '\n' || r == '\r' || r == ' ' || r == '\t'
+			})
+		}
+	}
+	seen := make(map[string]bool, len(values))
+	out := values[:0]
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	return strings.Join(out, ", ")
+}

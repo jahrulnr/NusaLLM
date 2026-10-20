@@ -80,6 +80,38 @@ func (m Message) Parts() []MessagePart               { return m.parts }
 func (m Message) ToolCalls() []ToolCall              { return m.toolCalls }
 func (m Message) OptionalContent() map[string]string { return m.optionalContent }
 
+// clone returns a copy whose optionalContent map is detached from the
+// receiver — sanitizers edit provider replay artifacts without mutating
+// the stored history they were handed.
+func (m Message) clone() Message {
+	out := m
+	if m.optionalContent != nil {
+		out.optionalContent = make(map[string]string, len(m.optionalContent))
+		for k, v := range m.optionalContent {
+			out.optionalContent[k] = v
+		}
+	}
+	return out
+}
+
+// WithOptionalContent returns a copy carrying one provider replay artifact.
+// The receiver is unchanged.
+func (m Message) WithOptionalContent(key, value string) Message {
+	out := m.clone()
+	out.SetOptionalContent(key, value)
+	return out
+}
+
+// WithoutOptionalContent returns a copy with the named provider replay
+// artifacts removed. The receiver is unchanged.
+func (m Message) WithoutOptionalContent(keys ...string) Message {
+	out := m.clone()
+	for _, key := range keys {
+		delete(out.optionalContent, key)
+	}
+	return out
+}
+
 // SetOptionalContent stores a provider-specific replay artifact under an
 // adapter-namespaced key (e.g. "gemini.thought_signature",
 // "deepseek.reasoning_content"). Values are plain strings — adapters owning a

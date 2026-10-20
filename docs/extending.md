@@ -143,7 +143,12 @@ verbatim).
    `generatecontent.parts` for the turn templates, `generatecontent.call_id`
    on the `ToolCall` for a provider-issued correlation id. `encode.go` reads
    `<style>.<param>` keys from `Model.OptionalContent()` into
-   `RequestBody.Extra`. The domain never interprets these values.
+   `RequestBody.Extra`. The domain never interprets these values. If a
+   template entry is bound to the exact request prefix (signed thinking,
+   encrypted reasoning), implement the optional
+   `dservice.CompactionSanitizer` so compaction can strip it from both the
+   summary request and the persisted tail; preserving array length lets the
+   conversation aggregate and repository apply the same cut safely.
    Provider-epsilon on the wire itself — like
    the `x-opencode-session` header each adapter sets for
    `enum.OpenCode` endpoints — stays in the adapter; `enum.Provider`

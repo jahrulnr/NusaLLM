@@ -151,10 +151,19 @@ func (s *Service) unaryResponse(ctx context.Context, resp *http.Response, conv *
 	}
 	conv.Append(msg)
 	conv.AddUsage(usage)
-	if r := msg.OptionalContent()["completion.reasoning_content"]; r != "" {
-		// Preserve reasoning separately so the application can store it
-		// in the message timeline and the delivery layer can render it.
-		emit(onEvent, event.NewReasoningEvent(r))
+	// Preserve reasoning separately so the application can store it in
+	// the message timeline and the delivery layer can render it. Prefer
+	// the provider's plaintext field; older OpenRouter-shaped responses
+	// may only carry the structured details array.
+	reasoning := msg.OptionalContent()[reasoningKey]
+	if reasoning == "" {
+		reasoning = msg.OptionalContent()[reasoningContentKey]
+	}
+	if reasoning == "" {
+		reasoning = reasoningTextFromDetails(json.RawMessage(msg.OptionalContent()[reasoningDetailsKey]))
+	}
+	if reasoning != "" {
+		emit(onEvent, event.NewReasoningEvent(reasoning))
 	}
 	emit(onEvent, event.NewDeltaEvent(msg.Content()))
 	for _, tc := range msg.ToolCalls() {

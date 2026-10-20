@@ -11,9 +11,19 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/service/wire"
 )
 
+// Replay artifacts live under adapter-namespaced optionalContent keys.
+// reasoning is display text; reasoning_details is the structured payload
+// (including encrypted blobs and signatures) OpenRouter requires back.
+const (
+	reasoningKey        = "completion.reasoning"
+	reasoningContentKey = "completion.reasoning_content"
+	reasoningDetailsKey = "completion.reasoning_details"
+)
+
 // decodeMessage maps a wire assistant message onto a domain Message:
 // content, origin tool calls, finish reason, and replay artifacts
-// (reasoning_content rides optionalContent for the next request).
+// (reasoning, reasoning_content, and reasoning_details ride optionalContent
+// for the next request).
 func decodeMessage(w MessageBody, finishReason string) (entity.Message, error) {
 	msg, err := entity.NewMessage(enum.RoleAssistant, contentText(w.Content))
 	if err != nil {
@@ -35,10 +45,43 @@ func decodeMessage(w MessageBody, finishReason string) (entity.Message, error) {
 		}
 		msg.AddToolCall(tc)
 	}
+	if w.Reasoning != "" {
+		msg.SetOptionalContent(reasoningKey, w.Reasoning)
+	}
 	if w.ReasoningContent != "" {
-		msg.SetOptionalContent("completion.reasoning_content", w.ReasoningContent)
+		msg.SetOptionalContent(reasoningContentKey, w.ReasoningContent)
+	}
+	if len(w.ReasoningDetails) > 0 && string(w.ReasoningDetails) != "null" {
+		msg.SetOptionalContent(reasoningDetailsKey, string(w.ReasoningDetails))
 	}
 	return msg, nil
+}
+
+// reasoningTextFromDetails flattens the human-readable entries of an
+// OpenRouter reasoning_details array. Encrypted entries contribute
+// nothing; callers use this for display, never for replay.
+func reasoningTextFromDetails(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var details []struct {
+		Type    string `json:"type"`
+		Text    string `json:"text"`
+		Summary string `json:"summary"`
+	}
+	if err := json.Unmarshal(raw, &details); err != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, d := range details {
+		switch d.Type {
+		case "reasoning.text":
+			b.WriteString(d.Text)
+		case "reasoning.summary":
+			b.WriteString(d.Summary)
+		}
+	}
+	return b.String()
 }
 
 // contentText normalizes wire content — string or parts array — into text.

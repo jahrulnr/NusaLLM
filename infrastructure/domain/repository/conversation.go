@@ -60,10 +60,13 @@ type Conversation interface {
 	UpdateToolCallOutput(ctx context.Context, convID string, call entity.ToolCall) error
 
 	// Compact seals messages[:dropBefore] into the next numbered archive
-	// segment and restarts the live history as [summary] + tail — mirroring
-	// Conversation.Compact, which the caller must apply to the aggregate as
-	// well. Callers must not split a tool-call/result pair at the boundary.
-	Compact(ctx context.Context, convID string, summary entity.Message, dropBefore int) error
+	// segment and restarts the live history as [summary] + retained —
+	// mirroring Conversation.Compact, which the caller must apply to the
+	// aggregate as well. retained must be exactly the live tail
+	// (dropBefore onward) in order, with any replay artifacts the provider
+	// no longer accepts stripped from optionalContent. Callers must not
+	// split a tool-call/result pair at the boundary.
+	Compact(ctx context.Context, convID string, summary entity.Message, dropBefore int, retained []entity.Message) error
 
 	// RewriteFrom is the edit primitive — the persistence counterpart of
 	// Conversation.RewriteFrom. It locates a user message anywhere in
