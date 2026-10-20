@@ -9,11 +9,10 @@ import { toolOrbPhase } from '../../lib/tool-phase.js';
 // (not finished), `settled` is proven-ended, `pending` is a persisted
 // call with no recorded outcome.
 class ToolActivity extends Widget {
-  static stylesheet = new URL('./tool-activity.css', import.meta.url);
+  static stylesheets = [new URL('./tool-activity.css', import.meta.url), statusOrbStylesheet];
 
   constructor() {
     super();
-    this.shadowRoot.insertBefore(el('link', { rel: 'stylesheet', href: statusOrbStylesheet }), this.root);
     this._tool = null;
     this._build();
     this._sync();

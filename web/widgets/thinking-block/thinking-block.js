@@ -6,11 +6,10 @@ import { statusOrb, statusOrbStylesheet } from '../../lib/status-orb.js';
 // The card stays collapsed until the user opens it. The orb carries the
 // live/done signal so a stream does not open and shut the panel.
 class ThinkingBlock extends Widget {
-  static stylesheet = new URL('./thinking-block.css', import.meta.url);
+  static stylesheets = [new URL('./thinking-block.css', import.meta.url), statusOrbStylesheet];
 
   constructor() {
     super();
-    this.shadowRoot.insertBefore(el('link', { rel: 'stylesheet', href: statusOrbStylesheet }), this.root);
     this._state = { status: 'done', startedAt: null, elapsedMs: null };
     this._renderedText = '';
     this._bodyPinned = true;
