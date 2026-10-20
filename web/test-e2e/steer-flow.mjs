@@ -924,6 +924,26 @@ await scenarioRun('responsive-layout', async (s) => {
     check(`no horizontal overflow at ${w}px`, true);
     await s.page.screenshot({ path: `${ART}/resp-${w}-busy.png` });
   }
+  // Under 760px the footer may wrap — but a busy turn must not carry a
+  // status caption that pushes the controls onto a second row.
+  await s.page.setViewportSize({ width: 390, height: 800 });
+  await poll(() => overflowOk(s));
+  check('no horizontal overflow at 390px', true);
+  const foot = await s.page.evaluate((expr) => {
+    const c = eval(expr);
+    const rect = (q) => {
+      const node = c?.shadowRoot.querySelector(q);
+      return node && node.offsetParent !== null ? node.getBoundingClientRect() : null;
+    };
+    const status = c?.shadowRoot.querySelector('.status');
+    return {
+      left: rect('.footer-left'), right: rect('.footer-right'),
+      statusHidden: !status || status.hidden === true || status.offsetParent === null,
+    };
+  }, COMPOSER);
+  check('busy footer carries no status text', foot.statusHidden === true);
+  check('footer controls stay on the badge row at 390px',
+    !!foot.left && !!foot.right && foot.right.top < foot.left.bottom);
   // The real 320px validation (sidebar toggle, hit-testing, usable
   // clicks) lives in the dedicated mobile scenario below.
 });

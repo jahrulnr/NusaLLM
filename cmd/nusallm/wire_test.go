@@ -7,9 +7,29 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jahrulnr/nusallm/infrastructure/config"
 	"github.com/jahrulnr/nusallm/infrastructure/redact"
 	repolog "github.com/jahrulnr/nusallm/infrastructure/repository/log"
 )
+
+// The local driver's fallback root is the delivery's workspace root —
+// never the process cwd, which a "" value would silently resolve to
+// inside CheckRoot.
+func TestLocalEnvironmentBindsDeliveryWorkspaceRoot(t *testing.T) {
+	bundle := localEnvironment("/srv/root", nil, nil, nil)
+	if got := bundle.FallbackRoot(); got != "/srv/root" {
+		t.Fatalf("FallbackRoot = %q, want /srv/root", got)
+	}
+	if bundle.Workspace() != nil {
+		t.Fatal("Workspace store should pass through untouched")
+	}
+}
+
+func TestComposeRejectsEmptyWorkspaceRoot(t *testing.T) {
+	if _, err := compose(config.Config{}, nil, "", ""); err == nil {
+		t.Fatal("compose with an empty workspace root must fail")
+	}
+}
 
 func TestRedactWithoutBodiesProviderRequest(t *testing.T) {
 	dir := t.TempDir()

@@ -31,8 +31,8 @@ type EnvironmentDriver interface {
 type EnvironmentBundle struct {
 	WorkspaceStore drepo.Workspace
 	// DefaultRoot feeds FallbackRoot — the directory a room with no bound
-	// workspace resolves file tools and exec against (the CLI wires its
-	// launch directory).
+	// workspace resolves file tools and exec against. Each delivery picks
+	// it: the REPL passes its launch directory, serve the owner's home.
 	DefaultRoot string
 	Services    map[enum.Style]dservice.TextModelService
 	Tools       map[string]dservice.Tool

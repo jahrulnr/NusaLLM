@@ -508,7 +508,9 @@ attachments is the process cwd — `os.Root`-confined for file tools and
 by the `ToolPermissionAgent` check in `execTool`. The same cwd is wired
 as the local driver's `FallbackRoot`, so a room with no bound workspace
 runs its tools there — and the injected `workspace` context record
-cites it.
+cites it. `serve` shares `compose` but passes the owner's home as that
+root instead: under the systemd unit the process cwd is the storage
+dir, not a workspace.
 
 Config resolves as an exported `CONFIG_PATH`, then the user file at
 `~/.config/nusallm/config.json` when this process is the installed

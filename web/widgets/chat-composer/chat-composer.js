@@ -305,9 +305,7 @@ class ChatComposer extends Widget {
       el('span', { text: 'Steer' }),
     );
     this.stopButton.hidden = !this._canStop;
-    const reason = this._busy ? 'Responding…'
-      : !this._canSend ? 'Select a model to send'
-      : '';
+    const reason = !this._canSend ? 'Select a model to send' : '';
     this.statusEl.textContent = reason;
     this.statusEl.hidden = !reason;
     this.shortcutEl.textContent = this._queueMode

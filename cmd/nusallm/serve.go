@@ -66,7 +66,16 @@ func serve(args []string) (serveErr error) {
 	if err != nil {
 		return err
 	}
-	eng, err := compose(b.Config(), b.Secrets(), b.ConfigPath())
+	// A WebUI room with no bound workspace runs its tools under the
+	// owner's home — the same root the workspace picker opens on. The
+	// process launch dir is not a workspace here: the systemd unit pins
+	// it to the storage dir, and a manual serve cwd is incidental.
+	fileTree := repofiletree.NewLocal()
+	home, err := fileTree.HomeDir()
+	if err != nil {
+		return err
+	}
+	eng, err := compose(b.Config(), b.Secrets(), b.ConfigPath(), home)
 	if err != nil {
 		return err
 	}
@@ -115,7 +124,7 @@ func serve(args []string) (serveErr error) {
 		Settings:           settings,
 		SettingsWriter:     settings,
 		Tools:              eng.conversations,
-		FileTree:           repofiletree.NewLocal(),
+		FileTree:           fileTree,
 		// Accepted delete/compaction jobs ride the server lifecycle —
 		// a client that abandons a request can't cancel them, but
 		// shutdown does.

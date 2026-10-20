@@ -298,8 +298,10 @@ binding and falls back to that root; the resolved path is bound into
 `dservice.WithWorkspaceDir` for file tools and `exec`, and the turn
 injects it as a `workspace` context record behind the user's message so
 the model hears where it is working. A remote driver should return its
-own default root, not leak the CLI's cwd — the composition root wires
-the local driver's fallback to the process working directory.
+own default root, not leak the delivery's cwd — the composition root
+wires the local driver's fallback per front-end: the REPL passes its
+launch directory, `serve` the owner's home (a service's launch dir is
+the storage dir, not a workspace).
 
 ## Recipe: a new slash command
 

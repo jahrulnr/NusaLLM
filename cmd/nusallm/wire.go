@@ -1,7 +1,7 @@
 package main
 
 import (
-	"os"
+	"errors"
 	"path/filepath"
 	"time"
 
@@ -9,6 +9,7 @@ import (
 	appjob "github.com/jahrulnr/nusallm/application/job"
 	"github.com/jahrulnr/nusallm/infrastructure/config"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	"github.com/jahrulnr/nusallm/infrastructure/redact"
 	repoconfig "github.com/jahrulnr/nusallm/infrastructure/repository/config"
@@ -37,32 +38,36 @@ type engine struct {
 }
 
 // compose wires repositories, provider adapters, the tool catalog, and
-// the conversation broker from boot state. Every fallible step runs
-// before the logger is created, so an error return can never leak it.
-// Caller owns Shutdown on the broker and Close on the logger.
-func compose(cfg config.Config, secrets *reposecret.Store, configPath string) (*engine, error) {
+// the conversation broker from boot state. workspaceRoot is the
+// delivery's default workspace — the root file tools, file://
+// resolution, and the local driver's FallbackRoot run against when a
+// room binds no workspace. Every fallible step runs before the logger
+// is created, so an error return can never leak it. Caller owns
+// Shutdown on the broker and Close on the logger.
+func compose(cfg config.Config, secrets *reposecret.Store, configPath, workspaceRoot string) (*engine, error) {
+	// An empty root would silently resolve to the process cwd inside
+	// CheckRoot — exactly the accidental-coupling this param removes.
+	if workspaceRoot == "" {
+		return nil, errors.New("compose: workspace root is required")
+	}
 	dir := cfg.Storage.Dir
 	gateways := repogateway.NewGatewayRepository(filepath.Join(dir, "gateways"), secrets)
 	convs := repoconversation.NewConversationRepository(filepath.Join(dir, "conversations"))
-	wd, err := os.Getwd()
-	if err != nil {
-		return nil, err
-	}
 	tools := map[string]dservice.Tool{}
 	workspaceStore := repoworkspace.NewLocal()
-	readFile, err := toolfile.NewFileReadTool(workspaceStore, wd) // workspace root = cwd
+	readFile, err := toolfile.NewFileReadTool(workspaceStore, workspaceRoot)
 	if err != nil {
 		return nil, err
 	}
-	writeFile, err := toolfile.NewFileWriteTool(workspaceStore, wd)
+	writeFile, err := toolfile.NewFileWriteTool(workspaceStore, workspaceRoot)
 	if err != nil {
 		return nil, err
 	}
-	patchFile, err := toolfile.NewFilePatchTool(workspaceStore, wd)
+	patchFile, err := toolfile.NewFilePatchTool(workspaceStore, workspaceRoot)
 	if err != nil {
 		return nil, err
 	}
-	readMedia, err := toolfile.NewReadMediaTool(workspaceStore, wd)
+	readMedia, err := toolfile.NewReadMediaTool(workspaceStore, workspaceRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +97,7 @@ func compose(cfg config.Config, secrets *reposecret.Store, configPath string) (*
 		Logger:        logger,
 		HeaderTimeout: time.Duration(cfg.Service.HeaderTimeout),
 		IdleTimeout:   time.Duration(cfg.Service.IdleTimeout),
-		FileRoot:      wd,
+		FileRoot:      workspaceRoot,
 		FileStore:     workspaceStore,
 	}
 	services := map[enum.Style]dservice.TextModelService{
@@ -102,16 +107,23 @@ func compose(cfg config.Config, secrets *reposecret.Store, configPath string) (*
 		enum.StyleGenerateContent: textgeneratecontent.New(textOpts),
 	}
 	environments := map[enum.Environment]appjob.EnvironmentDriver{
-		enum.EnvironmentLocal: appjob.EnvironmentBundle{
-			WorkspaceStore: workspaceStore,
-			DefaultRoot:    wd,
-			Services:       services,
-			Tools:          tools,
-		},
+		enum.EnvironmentLocal: localEnvironment(workspaceRoot, workspaceStore, services, tools),
 	}
 
 	return &engine{
 		conversations: appconversation.New(convs, gateways, environments, cfg, repoconfig.NewLocal(), configPath),
 		logger:        logger,
 	}, nil
+}
+
+// localEnvironment bundles the host-machine driver: the workspace repo,
+// provider adapters, and tools all default to the delivery's workspace
+// root, so a room with no bound workspace runs there.
+func localEnvironment(root string, workspaceStore drepo.Workspace, services map[enum.Style]dservice.TextModelService, tools map[string]dservice.Tool) appjob.EnvironmentBundle {
+	return appjob.EnvironmentBundle{
+		WorkspaceStore: workspaceStore,
+		DefaultRoot:    root,
+		Services:       services,
+		Tools:          tools,
+	}
 }

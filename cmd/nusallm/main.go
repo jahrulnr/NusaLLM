@@ -134,7 +134,11 @@ func run(ctx context.Context) (runErr error) {
 	}()
 	cfg := b.Config()
 	dir := cfg.Storage.Dir
-	eng, err := compose(cfg, b.Secrets(), b.ConfigPath())
+	wd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	eng, err := compose(cfg, b.Secrets(), b.ConfigPath(), wd)
 	if err != nil {
 		return err
 	}
@@ -150,10 +154,6 @@ func run(ctx context.Context) (runErr error) {
 			runErr = shutdownErr
 		}
 	}()
-	wd, err := os.Getwd()
-	if err != nil {
-		return err
-	}
 	homeDir, _ := repofiletree.NewLocal().HomeDir()
 
 	repl, err := tui.NewREPL(tui.Options{

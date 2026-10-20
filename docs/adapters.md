@@ -191,7 +191,8 @@ is the whole configuration surface:
 | `Logger` | `drepo.Logger` sink for `provider.request` / `provider.response` / `provider.error` / `provider.stream` entries; logging failures never break a send |
 
 `cmd/nusallm/wire.go` feeds `cfg.Service.HeaderTimeout`/`IdleTimeout`, `cfg.App.Name` as
-`Title`, `cfg.App.Source` as `Referer`, the process cwd as `FileRoot`, and the
+`Title`, `cfg.App.Source` as `Referer`, the delivery's workspace root as `FileRoot`
+(the REPL's cwd, `serve`'s owner home), and the
 redacted repository logger. Response bodies are read under a 32 MiB cap
 (`readAll` in `stream.go`).
 
@@ -393,7 +394,8 @@ backpressure the tool, and chunks are never persisted.
 | `summary` | `application/job` (`summary.go`) | Compaction checkpoint contract — not in the agent-facing catalog |
 
 The four file tools receive the same `repository.Workspace` at construction;
-`cmd/nusallm/wire.go` also passes the process cwd as their fallback root.
+`cmd/nusallm/wire.go` also passes the delivery's workspace root as their
+fallback root (the REPL's cwd, `serve`'s owner home).
 The local repository opens `os.Root` per call so every requested path resolves inside the workspace,
 traversal (`..`) and symlink escapes included. `read_media` and
 `/attach`-style resolution share the same discipline: sniff the first 512
