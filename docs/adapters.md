@@ -391,7 +391,62 @@ backpressure the tool, and chunks are never persisted.
 | `apply_patch` | `tool/file` (`patch.go`) | Literal search/replace — deliberately not unified diff; files > 4 MiB are rejected in favor of `exec`/`sed`; ambiguous anchors must gain context or `replace_all` |
 | `read_media` | `tool/file` (`read_media.go`) | Attaches a non-text file to the result as a pinned `file://` reference — see below |
 | `exec` | `tool/terminal` (`exec.go`) | Shell command, merged output — see below |
+| `web_search` | `tool/web` (`web.go`) | Searchwire metasearch across Brave/Startpage/Wikipedia/GitHub (+ keyed sources); ranked results with partial-failure reporting |
+| `web_fetch` | `tool/web` (`web.go`) | Searchwire fetch — one URL → readable text; truncated output spilled to a `tempFile` for follow-up `read_file` |
 | `summary` | `application/job` (`summary.go`) | Compaction checkpoint contract — not in the agent-facing catalog |
+
+The `web_*` tools are thin adapters over `github.com/jahrulnr/searchwire`
+`Searcher.Tools()` — searchwire owns the tool contract (name, description,
+input schema, execution) so NusaLLM, its MCP server, and any other host share
+one definition. `ToolDef.Run` accepts `call.Input()` verbatim and returns a
+JSON document that becomes the raw tool text. Searchwire's `answer` tool is
+deliberately not registered: it delegates answering to a provider-side model,
+while here the bound model should reason over raw search/fetch output itself.
+Credentials resolve from searchwire's environment conventions
+(`BRAVE_SEARCH_API_KEY`, `GITHUB_TOKEN`, …); every configured secret is
+redacted from tool errors by the library.
+
+The `web_*` tools stay one stable surface while their backend is chosen
+per turn: `runTurn` binds the resolved gateway's identity into the tool
+context (`service.WithWebProvider` — `Kind` is the gateway id, `Endpoint`
+/`APIKey` its resolved credentials). When `Kind` is `omniroute` (or its
+`9router` alias), the tool prefers the router's own APIs —
+`POST {endpoint}/search` and `POST {endpoint}/web/fetch` — with the
+gateway's bearer key, normalizing the response into the same JSON document
+searchwire emits so the model sees one output contract. Any OmniRoute
+failure (missing fetch-provider credentials, transport error, empty
+results) falls back to searchwire in the same call, so a router-bound
+gateway never makes web tools worse than the generic path.
+
+When `Kind` is `opencode` (or `opencode-go`), `web_search` prefers the
+gateway's own Responses API — `POST {endpoint}/responses` with the
+`web_search` server tool and the turn's bound model — which works on both
+the Zen (`/zen/v1`) and Go (`/zen/go/v1`) lanes since the path resolves
+relative to the gateway endpoint. The response's `web_search_call`
+actions, `url_citation` annotations, and grounded answer are normalized
+into the search document. Models behind oa-compat lanes silently drop
+non-function tools, so a response recording zero `web_search_call` items
+fails loudly into the searchwire fallback rather than passing an
+ungrounded answer off as a search. OpenCode has no fetch API, so
+`web_fetch` always stays on searchwire — as does `web_search` when the
+bound `Model` is absent.
+
+Every document carries a `backend` field (`omniroute`/`opencode`/
+`searchwire`) plus a bounded `backendFallback` note when the preferred
+backend failed. Provider kinds with only model-mediated *answer* surfaces
+(OpenRouter/OpenAI) resolve to searchwire directly: no intermediary model
+answers on the agent's behalf.
+
+Searchwire truncates over-limit fetch text and writes the FULL extracted
+text to a `tempFile` under its temp dir — a path the turn's workspace-
+confined `read_file` cannot reach. The adapter therefore re-spills that
+artifact into the conversation's `ToolOutput` store (the same reservation
+`exec` uses) and rewrites `tempFile` to the reachable reference, removing
+the original. Likewise any web document over the call's output budget is
+spilled whole and returned middle-truncated with a `full output:` pointer
+— matching the exec contract. The searcher is constructed with
+`MaxResponseBytes` under the output budget so truncation plus an artifact
+triggers consistently instead of silent mid-document elision.
 
 The four file tools receive the same `repository.Workspace` at construction;
 `cmd/nusallm/wire.go` also passes the delivery's workspace root as their

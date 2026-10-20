@@ -52,6 +52,11 @@ available, other managers through `infrastructure/system`. The CLI and
 the WebUI are one executable: the service is the binary launched with
 `serve`, and it starts at login.
 
+Install and update are the same command: when a service is already
+registered, `serve install` replaces the binary and restarts it onto
+the new build — no `stop`/`start` round trip needed. A crashed or
+stopped service is started rather than restarted.
+
 ```sh
 make install                            # build, install CLI, start WebUI at login
 ./nusallm serve install                 # same, from a binary you already built

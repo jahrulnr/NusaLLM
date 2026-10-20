@@ -69,3 +69,34 @@ func WorkspaceDir(ctx context.Context) string {
 	dir, _ := ctx.Value(workspaceCtxKey{}).(string)
 	return dir
 }
+
+type webProviderCtxKey struct{}
+
+// WebProvider carries the bound gateway's provider identity for the turn, so
+// provider-capable tools (web search/fetch) can prefer the provider's own
+// endpoint over the generic backend. Kind is the normalized provider name —
+// the gateway id. Endpoint/APIKey are the gateway's resolved credentials so
+// a tool never needs a second credential source for the same provider.
+// Model is the bound model's wire id — required by provider-native paths
+// whose search executes through the provider's own model surface (e.g. the
+// OpenCode Responses web_search server tool).
+type WebProvider struct {
+	Kind     string
+	Endpoint string
+	APIKey   string
+	Model    string
+}
+
+// WithWebProvider binds the turn's provider identity for web tools.
+func WithWebProvider(ctx context.Context, p WebProvider) context.Context {
+	if p.Kind == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, webProviderCtxKey{}, p)
+}
+
+// ProviderFrom returns the bound provider identity, if any.
+func WebProviderFrom(ctx context.Context) (WebProvider, bool) {
+	p, ok := ctx.Value(webProviderCtxKey{}).(WebProvider)
+	return p, ok
+}

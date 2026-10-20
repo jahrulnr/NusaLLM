@@ -128,6 +128,10 @@ func (s systemd) Register(spec Spec) error {
 	if err := s.run("daemon-reload"); err != nil {
 		return err
 	}
+	// Heal a StartLimit wedge the same way Start does: a service that
+	// crash-looped on the old binary would otherwise refuse the enable
+	// --now below and turn every update into a manual stop+start.
+	_, _, _ = systemctlUser("reset-failed", s.unitName(spec.Name))
 	if err := s.run("enable", "--now", s.unitName(spec.Name)); err != nil {
 		return err
 	}

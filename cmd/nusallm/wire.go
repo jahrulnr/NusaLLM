@@ -25,6 +25,8 @@ import (
 	textresponses "github.com/jahrulnr/nusallm/infrastructure/service/core/text/responses"
 	toolfile "github.com/jahrulnr/nusallm/infrastructure/service/tool/file"
 	toolexec "github.com/jahrulnr/nusallm/infrastructure/service/tool/terminal"
+	toolweb "github.com/jahrulnr/nusallm/infrastructure/service/tool/web"
+	"github.com/jahrulnr/searchwire"
 )
 
 // engine is the wired application slice every front-end shares — the
@@ -80,6 +82,18 @@ func compose(cfg config.Config, secrets *reposecret.Store, configPath, workspace
 		return nil, err
 	}
 	for _, tool := range []dservice.Tool{readFile, writeFile, patchFile, readMedia, execTool} {
+		tools[tool.Schema().Name()] = tool
+	}
+	// Web search/fetch run locally through searchwire so the bound model
+	// reasons over raw results itself — the answer tool is deliberately
+	// skipped: it delegates answering to a provider-side model. The
+	// conversation output store lets oversized fetches spill to readable
+	// artifacts instead of eliding mid-document.
+	webTools, err := toolweb.Tools(toolOutputs, searchwire.ToolSearch, searchwire.ToolFetch)
+	if err != nil {
+		return nil, err
+	}
+	for _, tool := range webTools {
 		tools[tool.Schema().Name()] = tool
 	}
 

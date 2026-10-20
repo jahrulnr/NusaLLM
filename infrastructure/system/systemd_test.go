@@ -132,6 +132,13 @@ func TestRegisterWritesUnitAndEnables(t *testing.T) {
 			t.Fatalf("calls missing %q:\n%s", want, joined)
 		}
 	}
+	// A StartLimit wedge from a crash-looping old binary must be healed
+	// before enable --now, or updates get refused and force stop+start.
+	reset := strings.Index(joined, "reset-failed")
+	enable := strings.Index(joined, "enable --now")
+	if reset < 0 || reset > enable {
+		t.Fatalf("want reset-failed before enable:\n%s", joined)
+	}
 	if strings.Contains(joined, " restart ") {
 		t.Fatalf("first register restarted:\n%s", joined)
 	}

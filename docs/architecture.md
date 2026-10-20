@@ -106,7 +106,7 @@ Everything concrete meets in `cmd/nusallm`. `run` and `serve` load
 config and open the sqlite secret store through `admin.LoadBoot`;
 `compose` (`wire.go`) constructs the local filesystem repositories, builds the
 four `enum.Style` text adapters (completion, responses, messages,
-generatecontent), constructs the five agent tools, and registers them as the
+generatecontent), constructs the agent tools, and registers them as the
 `local` environment driver for `appconversation.New`. Each room persists its
 environment identity; Send/Edit/Compact select the corresponding bundle for
 that room. An unavailable driver fails explicitly instead of falling back.
@@ -500,8 +500,9 @@ map (all four `enum.Style` values — `StyleCompletion` → `textcompletion`,
 `StyleResponses` → `textresponses`, `StyleMessages` → `textmessages`,
 `StyleGenerateContent` → `textgeneratecontent` — sharing one
 `coretext.Options`; a style with no registered adapter would 500 as
-"no adapter for gateway style"), the five tools
-(`read_file`, `write_file`, `apply_patch`, `read_media`, `exec`), then
+"no adapter for gateway style"), the tools
+(`read_file`, `write_file`, `apply_patch`, `read_media`, `exec`,
+`web_search`, `web_fetch`), then
 `appconversation.New` and `tui.NewREPL`. Workspace root for tools and
 attachments is the process cwd — `os.Root`-confined for file tools and
 `file://` resolution; `exec` is intentionally unsandboxed, gated instead

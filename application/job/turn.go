@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
@@ -36,6 +37,17 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 	dir := TurnWorkspace(conv, driver)
 	ctx = dservice.WithWorkspaceDir(ctx, dir)
 	ctx = dservice.WithConversationID(ctx, convID)
+	// Provider-capable tools resolve their backend per turn from the bound
+	// gateway — the gateway id is the provider identity users name. A nil
+	// gateway (hand-built deps) binds nothing and tools run provider-free.
+	if gw != nil {
+		ctx = dservice.WithWebProvider(ctx, dservice.WebProvider{
+			Kind:     strings.ToLower(gw.ID()),
+			Endpoint: gw.Endpoint(),
+			APIKey:   gw.ApiKey(),
+			Model:    model.ID(),
+		})
+	}
 	ccfg.Normalize()
 	wireModel := model.ApplyUnknownContextDefaults()
 	// The call surface is live config: a stored conversation can predate

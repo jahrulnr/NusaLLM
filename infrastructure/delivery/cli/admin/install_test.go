@@ -439,6 +439,29 @@ func TestInstallRegistersWebService(t *testing.T) {
 	}
 }
 
+func TestInstallReportsStartVsRestart(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		active  bool
+		wantOut string
+	}{
+		{"fresh install starts", false, "service started"},
+		{"update restarts", true, "service restarted onto the new binary"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateInstallHome(t)
+			svc := &fakeService{isActive: tc.active}
+			var out, errs bytes.Buffer
+			if code := ServeAdmin([]string{"install"}, &out, &errs, svc); code != 0 {
+				t.Fatalf("install exit %d\n%s\n%s", code, out.String(), errs.String())
+			}
+			if !strings.Contains(out.String(), tc.wantOut) {
+				t.Fatalf("stdout = %q, want %q", out.String(), tc.wantOut)
+			}
+		})
+	}
+}
+
 func TestInstallSkipsServiceWhenManagerUnavailable(t *testing.T) {
 	home := isolateInstallHome(t)
 	svc := &fakeService{availErr: errors.New("user systemd is unavailable (no bus)")}

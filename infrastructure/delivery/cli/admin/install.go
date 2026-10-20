@@ -26,8 +26,10 @@ for the current user, and manage the host service.
 
 install copies this executable to ~/.local/bin/` + CLIName + ` and
 registers the WebUI service with the host manager — the service runs
-this same binary with "serve" and starts at login. uninstall removes
-the registration and the copied binary; config and data stay.
+this same binary with "serve" and starts at login. Re-running install
+updates the binary and restarts a running service onto it; install and
+update are one command. uninstall removes the registration and the
+copied binary; config and data stay.
 
 Flags (install):
   --no-service   copy the CLI only
@@ -463,11 +465,19 @@ func installWebService(svc system.Service, linger bool, stdout, stderr io.Writer
 		fmt.Fprintf(stderr, "%s: %s; service was not installed\n", CLIName, err)
 		return 0
 	}
+	// The report names what Register actually did: a running service is
+	// restarted onto the new binary, a stopped one is started — install
+	// and update are one command either way.
+	restarting := svc.Active(CLIName)
 	if err := svc.Register(spec); err != nil {
 		fmt.Fprintln(stderr, CLIName+":", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "%s: WebUI available at http://127.0.0.1:%d (starts at login)\n", CLIName, listenPort(configPath))
+	action := "service started"
+	if restarting {
+		action = "service restarted onto the new binary"
+	}
+	fmt.Fprintf(stdout, "%s: WebUI available at http://127.0.0.1:%d (%s, starts at login)\n", CLIName, listenPort(configPath), action)
 	if linger {
 		if err := svc.PersistAcrossLogout(); err != nil {
 			if errors.Is(err, system.ErrUnsupported) {
