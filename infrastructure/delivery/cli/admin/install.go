@@ -6,55 +6,32 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
-	"os/exec"
-	"os/user"
 	"path/filepath"
-	"strings"
+	"strconv"
+	"time"
 
 	"github.com/jahrulnr/nusallm/infrastructure/config"
 	repoconfig "github.com/jahrulnr/nusallm/infrastructure/repository/config"
+	"github.com/jahrulnr/nusallm/infrastructure/system"
 )
 
-const serviceName = "nusallm.service"
-
-// execCommand runs a host program. Tests replace it so an install never
-// talks to the real user systemd bus.
-var execCommand = func(name string, args ...string) ([]byte, int, error) {
-	cmd := exec.Command(name, args...)
-	out, err := cmd.CombinedOutput()
-	if err == nil {
-		return out, 0, nil
-	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return out, exitErr.ExitCode(), nil
-	}
-	return out, -1, err
-}
-
-const installUsage = `Usage: ` + CLIName + ` install [--no-service] [--linger]
-
-Copy this executable to ~/.local/bin/` + CLIName + ` and run the WebUI
-as a systemd user service. The service starts at login. The CLI and the
-WebUI are this same binary; the service runs it with "serve".
-
-Flags:
-  --no-service   copy the CLI only
-  --linger       also run loginctl enable-linger (service survives logout)
-`
-
-const uninstallUsage = `Usage: ` + CLIName + ` uninstall
-
-Remove the CLI binary and the systemd user service.
-Config and data directories are left in place.
-`
-
-const serveAdminUsage = `Usage: ` + CLIName + ` serve install [--linger]
+const serveAdminUsage = `Usage: ` + CLIName + ` serve [--port N]
+       ` + CLIName + ` serve install [--no-service] [--linger]
        ` + CLIName + ` serve start|stop|status|uninstall
 
-Manage the WebUI systemd user service. The service runs the binary
-installed at ~/.local/bin/` + CLIName + `.
+The serve family owns the WebUI: run it in the foreground, install it
+for the current user, and manage the host service.
+
+install copies this executable to ~/.local/bin/` + CLIName + ` and
+registers the WebUI service with the host manager — the service runs
+this same binary with "serve" and starts at login. uninstall removes
+the registration and the copied binary; config and data stay.
+
+Flags (install):
+  --no-service   copy the CLI only
+  --linger       keep the service running after logout (where supported)
 `
 
 // IsServeAdmin reports argv that manages the WebUI service. Flags such
@@ -68,15 +45,16 @@ func IsServeAdmin(arg string) bool {
 	}
 }
 
-// Install copies the running executable into ~/.local/bin and enables the
-// WebUI user service. --no-service stops after the copy. A missing user
-// systemd bus still leaves the CLI installed.
-func Install(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("install", flag.ContinueOnError)
+// serveInstall copies the running executable into ~/.local/bin and
+// registers the WebUI service with the host manager. --no-service stops
+// after the copy. A missing or unsupported manager still leaves the CLI
+// installed.
+func serveInstall(args []string, stdout, stderr io.Writer, svc system.Service) int {
+	fs := flag.NewFlagSet("serve install", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	noService := fs.Bool("no-service", false, "copy the CLI only")
 	linger := fs.Bool("linger", false, "keep the user service running after logout")
-	fs.Usage = func() { fmt.Fprint(stderr, installUsage) }
+	fs.Usage = func() { fmt.Fprint(stderr, serveAdminUsage) }
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -85,7 +63,7 @@ func Install(args []string, stdout, stderr io.Writer) int {
 	}
 	if fs.NArg() != 0 {
 		fmt.Fprintf(stderr, "%s: unexpected argument %q\n", CLIName, fs.Arg(0))
-		fmt.Fprint(stderr, installUsage)
+		fmt.Fprint(stderr, serveAdminUsage)
 		return 2
 	}
 	configPath, created, err := ensureInstalledConfig()
@@ -115,21 +93,29 @@ func Install(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	return enableService(stdout, stderr, *linger)
+	return installWebService(svc, *linger, stdout, stderr)
 }
 
-// Uninstall removes the user service and the copied binary. Config and
-// data stay where they are.
-func Uninstall(args []string, stdout, stderr io.Writer) int {
+// serveUninstall removes the service registration and the copied
+// binary. Config and data stay where they are.
+func serveUninstall(args []string, stdout, stderr io.Writer, svc system.Service) int {
 	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
-		fmt.Fprint(stdout, uninstallUsage)
+		fmt.Fprint(stdout, serveAdminUsage)
 		return 0
 	}
 	if len(args) != 0 {
-		fmt.Fprint(stderr, uninstallUsage)
+		fmt.Fprint(stderr, serveAdminUsage)
 		return 2
 	}
-	code := removeService(stderr)
+	code := 0
+	note, err := svc.Deregister(CLIName)
+	if note != "" {
+		fmt.Fprintf(stderr, "%s: %s\n", CLIName, note)
+	}
+	if err != nil {
+		fmt.Fprintln(stderr, CLIName+":", err)
+		code = 1
+	}
 	bin, err := userBinPath()
 	if err != nil {
 		fmt.Fprintln(stderr, CLIName+":", err)
@@ -156,7 +142,7 @@ func Uninstall(args []string, stdout, stderr io.Writer) int {
 }
 
 // ServeAdmin handles `nusallm serve install|start|stop|status|uninstall`.
-func ServeAdmin(args []string, stdout, stderr io.Writer) int {
+func ServeAdmin(args []string, stdout, stderr io.Writer, svc system.Service) int {
 	if len(args) == 0 {
 		fmt.Fprint(stderr, serveAdminUsage)
 		return 2
@@ -166,19 +152,15 @@ func ServeAdmin(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stdout, serveAdminUsage)
 		return 0
 	case "install":
-		return serveInstall(args[1:], stdout, stderr)
+		return serveInstall(args[1:], stdout, stderr, svc)
 	case "start", "stop", "status":
 		if len(args) != 1 {
 			fmt.Fprint(stderr, serveAdminUsage)
 			return 2
 		}
-		return serveControl(args[0], stdout, stderr)
+		return serveControl(args[0], stdout, stderr, svc)
 	case "uninstall":
-		if len(args) != 1 {
-			fmt.Fprint(stderr, serveAdminUsage)
-			return 2
-		}
-		return removeService(stderr)
+		return serveUninstall(args[1:], stdout, stderr, svc)
 	default:
 		fmt.Fprintf(stderr, "%s: unknown serve command %q\n", CLIName, args[0])
 		fmt.Fprint(stderr, serveAdminUsage)
@@ -186,244 +168,83 @@ func ServeAdmin(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-func serveInstall(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("serve install", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	linger := fs.Bool("linger", false, "keep the user service running after logout")
-	fs.Usage = func() { fmt.Fprint(stderr, serveAdminUsage) }
-	if err := fs.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return 0
-		}
-		return 2
-	}
-	if fs.NArg() != 0 {
-		fmt.Fprintf(stderr, "%s: unexpected argument %q\n", CLIName, fs.Arg(0))
-		fmt.Fprint(stderr, serveAdminUsage)
-		return 2
-	}
-	bin, err := userBinPath()
-	if err != nil {
-		fmt.Fprintln(stderr, CLIName+":", err)
-		return 1
-	}
-	fi, err := os.Stat(bin)
-	if err != nil || !fi.Mode().IsRegular() {
-		fmt.Fprintf(stderr, "%s: CLI is not installed at %s — run %s install\n", CLIName, bin, CLIName)
-		return 1
-	}
-	configPath, created, err := ensureInstalledConfig()
-	if err != nil {
-		fmt.Fprintln(stderr, CLIName+":", err)
-		return 1
-	}
-	if created {
-		fmt.Fprintf(stderr, "%s: no config found; wrote defaults to %s\n", CLIName, configPath)
-	}
-	return enableService(stdout, stderr, *linger)
-}
-
-func serveControl(action string, stdout, stderr io.Writer) int {
-	if action == "status" {
-		configPath, err := userConfigPath()
-		if err != nil {
+func serveControl(action string, stdout, stderr io.Writer, svc system.Service) int {
+	if action == "stop" {
+		if err := svc.Stop(CLIName); err != nil {
 			fmt.Fprintln(stderr, CLIName+":", err)
 			return 1
 		}
-		fmt.Fprintf(stdout, "%s: WebUI available at http://127.0.0.1:%d\n", CLIName, listenPort(configPath))
-	}
-	out, code, err := systemctlUser(action, serviceName)
-	if len(out) > 0 {
-		_, _ = stdout.Write(out)
-		if !strings.HasSuffix(string(out), "\n") {
-			fmt.Fprintln(stdout)
-		}
-	}
-	if err != nil {
-		fmt.Fprintln(stderr, CLIName+":", err)
-		return 1
-	}
-	return code
-}
-
-// enableService writes the user unit and starts it. A user bus that is
-// not there is success with a note: the CLI install must still stand on
-// a machine without systemd.
-func enableService(stdout, stderr io.Writer, linger bool) int {
-	probe, _, err := systemctlUser("is-system-running")
-	if err != nil || busDown(string(probe)) {
-		reason := strings.TrimSpace(string(probe))
-		if err != nil {
-			reason = err.Error()
-		}
-		fmt.Fprintf(stderr, "%s: user systemd is unavailable (%s); service was not installed\n", CLIName, reason)
 		return 0
 	}
-	_, activeCode, activeErr := systemctlUser("is-active", "--quiet", serviceName)
-	wasActive := activeErr == nil && activeCode == 0
-
-	home, err := os.UserHomeDir()
-	if err != nil {
-		fmt.Fprintln(stderr, CLIName+":", err)
-		return 1
-	}
+	// start and status report against the configured port; stop above
+	// needs no config — a broken config path must not block stopping.
 	configPath, err := userConfigPath()
 	if err != nil {
 		fmt.Fprintln(stderr, CLIName+":", err)
 		return 1
 	}
-	bin, err := userBinPath()
-	if err != nil {
-		fmt.Fprintln(stderr, CLIName+":", err)
-		return 1
-	}
-	work := serviceWorkingDir(home, configPath)
-	if err := os.MkdirAll(work, 0o755); err != nil {
-		fmt.Fprintln(stderr, CLIName+":", err)
-		return 1
-	}
-	text, err := renderUserUnit(bin, work, configPath)
-	if err != nil {
-		fmt.Fprintln(stderr, CLIName+":", err)
-		return 1
-	}
-	unitPath, err := systemdUnitPath()
-	if err != nil {
-		fmt.Fprintln(stderr, CLIName+":", err)
-		return 1
-	}
-	if err := writeFileAtomic(unitPath, []byte(text), 0o644); err != nil {
-		fmt.Fprintln(stderr, CLIName+":", err)
-		return 1
-	}
-	if code := runSystemctl(stderr, "daemon-reload"); code != 0 {
-		return code
-	}
-	if code := runSystemctl(stderr, "enable", "--now", serviceName); code != 0 {
-		return code
-	}
-	if wasActive {
-		if code := runSystemctl(stderr, "restart", serviceName); code != 0 {
-			return code
+	port := listenPort(configPath)
+	if action == "status" {
+		fmt.Fprintf(stdout, "%s: WebUI available at http://127.0.0.1:%d\n", CLIName, port)
+		report, state, err := svc.Status(CLIName)
+		if report != "" {
+			fmt.Fprintln(stdout, report)
 		}
+		if err != nil {
+			fmt.Fprintln(stderr, CLIName+":", err)
+			return 1
+		}
+		if state == system.StateRunning {
+			return 0
+		}
+		// Registered-but-not-running is not a query failure — LSB
+		// convention reports it as 3.
+		return 3
 	}
-	fmt.Fprintf(stdout, "%s: WebUI available at http://127.0.0.1:%d (starts at login)\n", CLIName, listenPort(configPath))
-	if linger {
-		enableLinger(stderr)
+	// A start against a held port crash-loops the service until the
+	// manager's restart budget burns out — then every later start is
+	// refused with no hint of the real conflict. Report it up front;
+	// an already-running service still delegates so start stays
+	// idempotent.
+	if !svc.Active(CLIName) && portInUse(port) {
+		fmt.Fprintln(stderr, portHeldMessage(port))
+		return 1
+	}
+	if err := svc.Start(CLIName); err != nil {
+		if portInUse(port) {
+			fmt.Fprintln(stderr, portHeldMessage(port))
+		} else {
+			fmt.Fprintln(stderr, CLIName+":", err)
+		}
+		return 1
 	}
 	return 0
 }
 
-func runSystemctl(stderr io.Writer, args ...string) int {
-	out, code, err := systemctlUser(args...)
+func portHeldMessage(port int) string {
+	return fmt.Sprintf("%s: 127.0.0.1:%d is already in use — a foreground `nusallm serve`/`make serve` or another process may hold it", CLIName, port)
+}
+
+// portInUse reports whether a listener accepts on the loopback port —
+// the cheapest way to explain a refused start or a failed bind.
+func portInUse(port int) bool {
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), 500*time.Millisecond)
 	if err != nil {
-		fmt.Fprintln(stderr, CLIName+":", err)
-		return 1
+		return false
 	}
-	if code != 0 {
-		msg := strings.TrimSpace(string(out))
-		if msg == "" {
-			msg = fmt.Sprintf("exit %d", code)
-		}
-		fmt.Fprintf(stderr, "%s: systemctl --user %s: %s\n", CLIName, strings.Join(args, " "), msg)
-		return code
-	}
-	return 0
-}
-
-func enableLinger(stderr io.Writer) {
-	name := ""
-	if u, err := user.Current(); err == nil {
-		name = u.Username
-	}
-	if name == "" {
-		name = os.Getenv("USER")
-	}
-	args := []string{"enable-linger"}
-	if name != "" {
-		args = append(args, name)
-	}
-	out, code, err := execCommand("loginctl", args...)
-	if err == nil && code == 0 {
-		return
-	}
-	reason := strings.TrimSpace(string(out))
-	if err != nil {
-		reason = err.Error()
-	}
-	fmt.Fprintf(stderr, "%s: linger was not enabled: %s\n", CLIName, reason)
-	if name == "" {
-		fmt.Fprintf(stderr, "%s: enable it with: sudo loginctl enable-linger \"$USER\"\n", CLIName)
-		return
-	}
-	fmt.Fprintf(stderr, "%s: enable it with: sudo loginctl enable-linger %s\n", CLIName, name)
-}
-
-func removeService(stderr io.Writer) int {
-	unitPath, err := systemdUnitPath()
-	if err != nil {
-		fmt.Fprintln(stderr, CLIName+":", err)
-		return 1
-	}
-	if _, err := os.Stat(unitPath); errors.Is(err, os.ErrNotExist) {
-		return 0
-	} else if err != nil {
-		fmt.Fprintln(stderr, CLIName+":", err)
-		return 1
-	}
-	out, code, runErr := systemctlUser("disable", "--now", serviceName)
-	down := runErr != nil || busDown(string(out))
-	if runErr != nil {
-		fmt.Fprintf(stderr, "%s: user systemd is unavailable (%v); removed the unit file anyway\n", CLIName, runErr)
-	} else if down {
-		fmt.Fprintf(stderr, "%s: user systemd is unavailable (%s); removed the unit file anyway\n", CLIName, strings.TrimSpace(string(out)))
-	} else if code != 0 {
-		msg := strings.TrimSpace(string(out))
-		if msg == "" {
-			msg = fmt.Sprintf("exit %d", code)
-		}
-		fmt.Fprintf(stderr, "%s: systemctl --user disable --now %s: %s\n", CLIName, serviceName, msg)
-	}
-	if err := os.Remove(unitPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		fmt.Fprintln(stderr, CLIName+":", err)
-		return 1
-	}
-	if !down {
-		if out, code, err := systemctlUser("daemon-reload"); err != nil || code != 0 {
-			msg := strings.TrimSpace(string(out))
-			if err != nil {
-				msg = err.Error()
-			}
-			if msg == "" {
-				msg = fmt.Sprintf("exit %d", code)
-			}
-			fmt.Fprintf(stderr, "%s: systemctl --user daemon-reload: %s\n", CLIName, msg)
-		}
-	}
-	if !down && code != 0 {
-		return code
-	}
-	return 0
-}
-
-func systemctlUser(args ...string) ([]byte, int, error) {
-	return execCommand("systemctl", append([]string{"--user"}, args...)...)
-}
-
-func busDown(text string) bool {
-	return strings.Contains(text, "Failed to connect to bus") ||
-		strings.Contains(text, "Failed to connect to user scope bus") ||
-		strings.Contains(text, "not been booted with systemd")
+	_ = conn.Close()
+	return true
 }
 
 func listenPort(configPath string) int {
+	fallback := config.NewConfig().Server.Port
 	raw, err := os.ReadFile(configPath)
 	if err != nil {
-		return 10998
+		return fallback
 	}
 	cfg, err := config.Validate(raw)
 	if err != nil || cfg.Server.Port < 1 {
-		return 10998
+		return fallback
 	}
 	return cfg.Server.Port
 }
@@ -441,58 +262,6 @@ func serviceWorkingDir(home, configPath string) string {
 		return home
 	}
 	return cfg.Storage.Dir
-}
-
-// renderUserUnit writes a user unit that starts this same binary with
-// "serve". Paths are absolute so the unit does not depend on the service
-// manager's PATH or on the directory it was installed from.
-func renderUserUnit(binary, workingDir, configPath string) (string, error) {
-	execStart, err := systemdArg(binary)
-	if err != nil {
-		return "", err
-	}
-	work, err := systemdArg(workingDir)
-	if err != nil {
-		return "", err
-	}
-	env, err := systemdArg("CONFIG_PATH=" + configPath)
-	if err != nil {
-		return "", err
-	}
-	lines := []string{
-		"[Unit]",
-		"Description=NusaLLM",
-		"After=network-online.target",
-		"Wants=network-online.target",
-		"StartLimitIntervalSec=60",
-		"StartLimitBurst=5",
-		"",
-		"[Service]",
-		"ExecStart=" + execStart + " serve",
-		"WorkingDirectory=" + work,
-		"Environment=" + env,
-		"Restart=on-failure",
-		"RestartSec=5",
-		"TimeoutStopSec=20",
-		"KillMode=control-group",
-		"",
-		"[Install]",
-		"WantedBy=default.target",
-		"",
-	}
-	return strings.Join(lines, "\n"), nil
-}
-
-func systemdArg(value string) (string, error) {
-	if strings.ContainsAny(value, "\r\n") {
-		return "", fmt.Errorf("systemd value contains a line break")
-	}
-	if !strings.ContainsAny(value, " \t\"\\") {
-		return value, nil
-	}
-	escaped := strings.ReplaceAll(value, `\`, `\\`)
-	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
-	return `"` + escaped + `"`, nil
 }
 
 // installBinary copies the running executable to dest. The same file
@@ -634,17 +403,6 @@ func userBinPath() (string, error) {
 	return filepath.Abs(filepath.Join(home, ".local", "bin", CLIName))
 }
 
-func systemdUnitPath() (string, error) {
-	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
-		return filepath.Abs(filepath.Join(dir, "systemd", "user", serviceName))
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Abs(filepath.Join(home, ".config", "systemd", "user", serviceName))
-}
-
 func dirOnPath(dir string) bool {
 	dir = filepath.Clean(dir)
 	for _, entry := range filepath.SplitList(os.Getenv("PATH")) {
@@ -666,26 +424,58 @@ func dirOnPath(dir string) bool {
 	return false
 }
 
-func writeFileAtomic(path string, raw []byte, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".unit-*")
+// webServiceSpec describes the WebUI service for the host manager —
+// the installed binary, the storage dir as cwd, the config path pinned
+// in its environment. The registration identity is CLIName.
+func webServiceSpec() (system.Spec, string, error) {
+	bin, err := userBinPath()
 	if err != nil {
-		return err
+		return system.Spec{}, "", err
 	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if err := tmp.Chmod(mode); err != nil {
-		_ = tmp.Close()
-		return err
+	configPath, err := userConfigPath()
+	if err != nil {
+		return system.Spec{}, "", err
 	}
-	if _, err := tmp.Write(raw); err != nil {
-		_ = tmp.Close()
-		return err
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return system.Spec{}, "", err
 	}
-	if err := tmp.Close(); err != nil {
-		return err
+	return system.Spec{
+		Name:        CLIName,
+		Description: "NusaLLM",
+		Exec:        bin,
+		Args:        []string{"serve"},
+		WorkingDir:  serviceWorkingDir(home, configPath),
+		Env:         map[string]string{"CONFIG_PATH": configPath},
+	}, configPath, nil
+}
+
+// installWebService registers the WebUI service with the selected host
+// manager. A manager that is not available degrades to a warning — the
+// CLI copy already stands by the time this runs.
+func installWebService(svc system.Service, linger bool, stdout, stderr io.Writer) int {
+	spec, configPath, err := webServiceSpec()
+	if err != nil {
+		fmt.Fprintln(stderr, CLIName+":", err)
+		return 1
 	}
-	return os.Rename(tmpName, path)
+	if err := svc.Available(); err != nil {
+		fmt.Fprintf(stderr, "%s: %s; service was not installed\n", CLIName, err)
+		return 0
+	}
+	if err := svc.Register(spec); err != nil {
+		fmt.Fprintln(stderr, CLIName+":", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "%s: WebUI available at http://127.0.0.1:%d (starts at login)\n", CLIName, listenPort(configPath))
+	if linger {
+		if err := svc.PersistAcrossLogout(); err != nil {
+			if errors.Is(err, system.ErrUnsupported) {
+				fmt.Fprintf(stderr, "%s: the %s cannot keep the service running after logout; --linger skipped\n", CLIName, svc.Name())
+			} else {
+				fmt.Fprintln(stderr, CLIName+":", err)
+			}
+		}
+	}
+	return 0
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
@@ -13,6 +14,11 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
+
+// Transient upstream failures earn one provider call plus this many
+// retries; the wait stays short — a provider that stays down is a
+// definitive failure, not a stall to sit out.
+var sendRetryBackoff = []time.Duration{750 * time.Millisecond, 1500 * time.Millisecond}
 
 // runTurn is the agent loop shared by send and edit: provider call →
 // persist → execute pending tool calls → provider call — until the model
@@ -127,19 +133,47 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 				onEvent(ev)
 			}
 		}
-		err := svc.Send(ctx, conv, gw, wireModel, captureEvent)
-		added := conv.Messages()[before:]
+		// Provider call — one attempt plus bounded retries for
+		// transient upstream failures (rate limit, 5xx, transport).
+		// A retry is only honest while nothing reached the client: a
+		// delta already emitted or a message already appended would
+		// duplicate on a second call, so those failures — like client
+		// statuses and cancels — stay definitive.
+		var added []entity.Message
+		var err error
+		var canceled bool
+		for attempt := 0; ; attempt++ {
+			// Output capture resets per attempt — a retried call
+			// rebuilds parts from its own stream only.
+			parts = nil
+			err = svc.Send(ctx, conv, gw, wireModel, captureEvent)
+			added = conv.Messages()[before:]
+			canceled = err != nil && (ctx.Err() != nil || apperror.As(err).StatusCode() == 408)
+			if err == nil || canceled {
+				break
+			}
+			status := apperror.As(err).StatusCode()
+			transient := status == 429 || status >= 500
+			if !transient || attempt == len(sendRetryBackoff) ||
+				len(added) > 0 || len(parts) > 0 {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return apperror.New(408, "turn canceled", ctx.Err())
+			case <-time.After(sendRetryBackoff[attempt]):
+			}
+		}
 		// A canceled stream may already have appended the text and
 		// reasoning that arrived, plus tool calls whose argument deltas
 		// finished. Persist that partial message and mark those calls
 		// interrupted instead of dropping the turn from history.
-		canceled := err != nil && (ctx.Err() != nil || apperror.As(err).StatusCode() == 408)
-		if err != nil && !canceled && apperror.As(err).StatusCode() == 413 && !didCompact && len(added) == 0 && conv.CanManualCompact(ccfg.CompactKeepTail) {
+		if err != nil && !canceled && apperror.As(err).StatusCode() == 413 && !didCompact && len(added) == 0 && len(parts) == 0 && conv.CanManualCompact(ccfg.CompactKeepTail) {
 			// The provider says overflow even though our estimate
 			// disagreed — believe the provider once: compact and retry.
-			// Retrying needs a clean call: with a partial message
-			// already appended, the error propagates instead — the
-			// in-memory entry was never persisted.
+			// Retrying needs a clean call: with output already emitted
+			// or appended, the error propagates instead — the in-memory
+			// entry was never persisted.
 			if err := d.compact(ctx, convID, conv, gw, wireModel, svc, ccfg.CompactKeepTail); err != nil {
 				return err
 			}

@@ -17,8 +17,9 @@ Before changing behavior, identify the rule's owner and inspect that layer's
 - `infrastructure/service`: provider protocol translation, network/process
   I/O, and tool execution. Storage I/O goes through repository ports.
 - `infrastructure/config`, `infrastructure/worker`, `infrastructure/prompt`,
-  `infrastructure/error`, `infrastructure/redact`, `cmd`: supporting mechanisms
-  and composition, not homes for conversation or gateway policy.
+  `infrastructure/error`, `infrastructure/redact`, `infrastructure/system`,
+  `cmd`: supporting mechanisms and composition, not homes for conversation
+  or gateway policy.
 
 When a change spans layers, put each decision at its owner and update its
 callers. If ownership is unclear, trace the behavior from use case through

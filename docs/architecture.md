@@ -45,7 +45,7 @@ flowchart TB
     subgraph adapters["infrastructure — adapters & mechanisms"]
         repo["repository/ — JSONL store · sqlite secrets"]
         svc["service/ — four text wire adapters · tools · slash commands · workspace"]
-        mech["config · worker · prompt · error · redact"]
+        mech["config · worker · prompt · error · redact · system"]
     end
 
     main --> tui
@@ -78,7 +78,7 @@ flowchart TB
 | `infrastructure/domain` | Pure domain: `aggregate/`, `entity/`, `enum/`, `valueobject/`, `event/`, plus ports in `repository/` and `service/` |
 | `infrastructure/repository` | Storage adapters: conversation JSONL and tool output, gateway JSON, sqlite secrets, logs, config documents, workspace files, CLI history, and directory metadata |
 | `infrastructure/service` | Outbound adapters: four `core/text/*` wire adapters (completion, responses, messages, generatecontent), `tool/` implementations, `command/` slash-command handlers, workspace attachment logic, and `wire/` encoding helpers; storage goes through injected repository ports |
-| `infrastructure/config`, `worker`, `prompt`, `error`, `redact` | Mechanisms: settings parsing, the serial job executor, embedded prompts, the error contract, credential scrubbing |
+| `infrastructure/config`, `worker`, `prompt`, `error`, `redact`, `system` | Mechanisms: settings parsing, the serial job executor, embedded prompts, the error contract, credential scrubbing, host-OS integration (the service-manager port and its per-manager implementations — systemd today, selected by build tag + presence probe) |
 
 ## The dependency rule
 

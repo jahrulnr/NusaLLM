@@ -5,7 +5,7 @@
 //
 // Entry shape:
 //   { id, text, room, opts, ordinal, state, inputId, turnId, recallId,
-//     held, note, retryMessageId }
+//     held }
 // - room: the target conversation id captured at submission, or the
 //   fresh:<n> token of the un-minted view — rebound by bindRoom when
 //   that token's send mints a room.
@@ -19,9 +19,6 @@
 // - held: the pause owns this entry specifically — entries captured
 //   while already held wait for Resume; lines enqueued after the pause
 //   flow freely once their room is dispatchable.
-// - note: one status line the row shows under the text (failure
-//   reason), and retryMessageId: the persisted user line a failed turn
-//   retries against.
 //
 // States:
 //   queued      — local text waiting for a free turn
@@ -29,14 +26,14 @@
 //   steering    — acked; waiting to be consumed at a safe point
 //   recalling   — turn.steer_recall in flight
 //   unknown     — transmitted, outcome lost (never auto-retried)
-//   failed      — a turn ended with a definitive failure; the row
-//                 offers an explicit retry, never an automatic one
+//
+// A failed TURN is not a queue state — it owns a card on the message
+// thread instead, where its retry lives next to the failed input.
 export const QUEUED = 'queued';
 export const SUBMITTING = 'submitting';
 export const STEERING = 'steering';
 export const RECALLING = 'recalling';
 export const UNKNOWN = 'unknown';
-export const FAILED = 'failed';
 
 export function createQueue() {
   // notice: one inline status line the panel shows instead of toasts
@@ -86,7 +83,7 @@ export function enqueue(q, { text, room, opts }) {
     id: `p${q.next}`, ordinal: q.next++,
     text, room: room ?? null, opts: { ...(opts || {}) },
     state: QUEUED, inputId: null, turnId: null, recallId: null,
-    held: false, note: '', retryMessageId: null, historyIds: null,
+    held: false,
   };
   q.items.push(e);
   return e;
@@ -99,7 +96,7 @@ export function steer(q, { text, room, opts, turnId, inputId }) {
     id: `p${q.next}`, ordinal: q.next++,
     text, room: room ?? null, opts: { ...(opts || {}) },
     state: SUBMITTING, inputId, turnId, recallId: null,
-    held: false, note: '', retryMessageId: null, historyIds: null,
+    held: false,
   };
   q.items.push(e);
   return e;

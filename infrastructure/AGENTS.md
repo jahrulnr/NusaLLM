@@ -16,6 +16,10 @@ or use case, then make the mechanism obey that contract.
 - `prompt/` loads prompt text; prompt content must not silently redefine a
   domain invariant.
 - `error/` and `redact/` provide shared error and diagnostic mechanics.
+- `system/` is the host-OS integration boundary — the service-manager
+  port plus per-manager implementations selected by build tag and
+  presence probing. Verbs are intent-shaped; manager vocabulary stays
+  inside the implementation.
 - `delivery/` is a transport boundary when implemented; parse requests,
   invoke application methods, and render responses there.
 

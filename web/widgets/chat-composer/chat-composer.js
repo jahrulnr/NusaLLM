@@ -31,13 +31,12 @@ const STATE_LABELS = {
   steering: 'Waiting for next step',
   recalling: 'Recalling…',
   unknown: 'Delivery unknown',
-  failed: 'Turn failed',
 };
 
 // The fields a pending row is built from — when none changed the row
 // node is reused, so focus and scroll survive unrelated updates.
 function rowSig(item) {
-  return [item.state, item.text, item.roomLabel, item.foreign, item.online, item.note, item.retryable].join('');
+  return [item.state, item.text, item.roomLabel, item.foreign, item.online].join('');
 }
 
 class ChatComposer extends Widget {
@@ -66,6 +65,7 @@ class ChatComposer extends Widget {
   set selection(sel) { this._selection = sel; this._syncButton(); }
   set canSend(v) { this._canSend = !!v; this._syncButton(); }
   set context(stats) { this._context = stats || null; this._syncButton(); }
+  get context() { return this._context; }
   // Steer is visible only while the current view owns an opened send
   // turn — a foreign room shows nothing rather than a dead button.
   set canSteer(v) { this._canSteer = !!v; this._syncButton(); }
@@ -202,7 +202,6 @@ class ChatComposer extends Widget {
       ]),
       el('div', { class: 'pending-text', text: item.text }),
     );
-    if (item.note) row.append(el('div', { class: 'pending-note', text: item.note }));
     const actions = el('div', { class: 'pending-actions' });
     const action = (label, event, { aria = label, disabled = false, title = '', focusInput = true } = {}) =>
       el('button', {
@@ -227,22 +226,9 @@ class ChatComposer extends Widget {
       }));
       // In-flight receipts stay undismissable; everything else can be
       // let go — the room may not even exist to Open into.
-      if (item.state === 'unknown' || item.state === 'failed' || item.state === 'queued') {
+      if (item.state === 'unknown' || item.state === 'queued') {
         actions.append(action('Dismiss', 'queue-dismiss', { aria: 'Dismiss entry' }));
       }
-    } else if (item.state === 'failed') {
-      // A definitive turn failure — never auto-retried. Retry re-runs
-      // the turn from its own user line, and only while that line is
-      // still the tail — turn.edit would drop anything after it.
-      actions.append(
-        action('Retry', 'queue-retry', {
-          aria: 'Retry the failed turn',
-          disabled: !item.retryable,
-          title: item.retryable ? ''
-            : 'Later messages exist — retrying would rewind them',
-        }),
-        action('Dismiss', 'queue-dismiss', { aria: 'Dismiss failed turn', focusInput: false }),
-      );
     } else if (item.state === 'queued') {
       actions.append(
         action('Restore', 'queue-restore', { aria: 'Restore queued text to draft' }),

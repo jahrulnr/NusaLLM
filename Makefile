@@ -11,7 +11,7 @@ serve: build
 	./bin/nusallm serve
 
 install: build
-	./bin/nusallm install
+	./bin/nusallm serve install
 
 test: build
 	go vet ./...

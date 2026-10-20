@@ -17,6 +17,7 @@ import (
 	repofiletree "github.com/jahrulnr/nusallm/infrastructure/repository/filetree"
 	repohistory "github.com/jahrulnr/nusallm/infrastructure/repository/history"
 	repoworkspace "github.com/jahrulnr/nusallm/infrastructure/repository/workspace"
+	"github.com/jahrulnr/nusallm/infrastructure/system"
 )
 
 func main() {
@@ -57,15 +58,11 @@ func main() {
 			}
 			fmt.Fprintln(os.Stderr, "usage: nusallm conversation repair <id> --discard-duplicate|--commit|--finish-rewrite")
 			os.Exit(2)
-		case "install":
-			os.Exit(admin.Install(args[1:], os.Stdout, os.Stderr))
-		case "uninstall":
-			os.Exit(admin.Uninstall(args[1:], os.Stdout, os.Stderr))
 		case "serve":
 			if len(args) > 1 && admin.IsServeAdmin(args[1]) {
-				os.Exit(admin.ServeAdmin(args[1:], os.Stdout, os.Stderr))
+				os.Exit(admin.ServeAdmin(args[1:], os.Stdout, os.Stderr, system.New()))
 			}
-			if err := serve(args[1:]); err != nil {
+			if err := serve(args[1:], system.New()); err != nil {
 				fmt.Fprintln(os.Stderr, admin.CLIName+":", err)
 				os.Exit(1)
 			}
@@ -91,12 +88,9 @@ Usage:
   ` + admin.CLIName + ` gateway <...>    manage provider routes — list/show/add/set/delete
   ` + admin.CLIName + ` config <...>     inspect and patch the config file — show/path/set/unset/validate
   ` + admin.CLIName + ` conversation repair <id> --discard-duplicate|--commit|--finish-rewrite (offline recovery)
-  ` + admin.CLIName + ` install [--no-service] [--linger]
-                               copy this binary to ~/.local/bin and start the WebUI at login
-  ` + admin.CLIName + ` uninstall        remove the binary and the user service; keep config and data
   ` + admin.CLIName + ` serve [--port N] local WebUI — loopback only (default port 10998 from server.port)
   ` + admin.CLIName + ` serve install|start|stop|status|uninstall
-                               manage the WebUI systemd user service
+                               install the WebUI for the current user; manage the host service
   ` + admin.CLIName + ` --help           this text
 
 Environment:

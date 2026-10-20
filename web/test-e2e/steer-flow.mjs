@@ -401,6 +401,7 @@ class Hub {
   }
 
   delta(turnId, text) { this._emit(turnId, 'turn.delta', { text }); }
+  stepFinished(turnId, payload = {}) { this._emit(turnId, 'turn.step_finished', payload); }
   steerAck(turnId, inputId) { this._emit(turnId, 'turn.steer_ack', { inputId }); }
   openPending() {
     for (const turnId of this.pendingSends.splice(0)) {
@@ -651,25 +652,36 @@ await scenarioRun('persistence-authority', async (s) => {
   s.hub().complete('t4', {});
   await poll(() => sends().length === 5);
   check('post-completion drain dispatches the tail', true);
-  // A persisted failure parks a retry row — never a silent resend.
+  // A persisted failure parks a retry card on the thread — never a
+  // silent resend and never a queue row. The persisted tail models the
+  // real record: the user line plus its non-editable workspace pin.
   s.fixture.messages.get('c1').push(
-    { id: 'u-fail', role: 'user', userType: 'origin', content: 'will not persist' });
+    { id: 'u-fail', role: 'user', userType: 'origin', content: 'will not persist' },
+    { id: 'w-fail', role: 'user', userType: 'system', content: '',
+      toolCalls: [{ id: 'w-call', type: 'injection', name: 'workspace', input: '{}', output: 'workspace changed to /w' }] });
   s.hub().complete('t5', { failed: true, message: 'provider rejected the request (HTTP 502)', persistedUser: true });
-  await poll(async () => (await rows(s).count()) === 1);
+  const card = s.page.locator('nusa-message-thread .turn-fail');
+  await poll(async () => (await card.count()) === 1);
   await poll(() => s.page.evaluate(
-    () => document.querySelector('nusa-app').messages.length === 1));
-  check('persisted failure parks a retry row', true);
+    () => document.querySelector('nusa-app').messages.length === 2));
+  check('persisted failure parks a retry card on the thread', true);
+  check('failure owns no composer row', (await rows(s).count()) === 0);
   check('no phantom draft for a persisted failure',
     (await input(s).inputValue()) === '');
+  // Retry arms once the refreshed history pins the failed line — the
+  // workspace record trailing it is no obstacle.
+  await poll(async () => !(await card.locator('.fail-retry').isDisabled()));
+  check('retry armed against the real tail', true);
   // Retry re-issues turn.edit against the failed turn's own line.
-  await s.page.locator('.pending-item .pending-action', { hasText: 'Retry' }).click();
+  await card.locator('.fail-retry').click();
   await poll(() => s.hub().all('turn.edit').length === 1);
   const retried = s.hub().all('turn.edit')[0];
   check('retry re-runs the failed turn via turn.edit',
     retried.conversationId === 'c1' &&
     retried.payload.messageId === 'u-fail' &&
     retried.payload.content === 'will not persist');
-  check('retry row consumed by dispatch', (await rows(s).count()) === 0);
+  await poll(async () => !(await card.isVisible()));
+  check('card released once the retry turn opens', true);
 });
 
 await scenarioRun('preopen-error-cancel', async (s) => {
@@ -1872,6 +1884,32 @@ await scenarioRun('sidebar-load-more', async (s) => {
   await search.fill('Thread 229');
   await poll(async () => (await items.count()) === 1);
   check('tail page searchable once loaded', true);
+});
+
+await scenarioRun('context-badge-live-usage', async (s) => {
+  await open(s, '#conversation=c1');
+  const pct = () => s.page.locator('nusa-chat-composer .context-pct').textContent();
+  // The fixture answers {estimate:420, total:8192} — the resting 5%.
+  await poll(async () => (await pct()) === '5%');
+  check('resting badge shows the estimate', true);
+  await typeEnter(s, 'run a task');
+  await poll(() => s.hub().find('turn.opened'));
+  // Mid-turn each finished step's provider-reported input is the real
+  // fill — the badge moves without waiting for a terminal refresh.
+  s.hub().stepFinished('t1', { finishReason: 'tool_calls', usage: { totalInputTokens: 4096 } });
+  await poll(async () => (await pct()) === '50%');
+  check('step usage moves the badge mid-turn', true);
+  s.hub().stepFinished('t1', { finishReason: 'tool_calls', usage: { totalInputTokens: 7200 } });
+  await poll(async () => (await pct()) === '88%');
+  check('the next step keeps climbing', true);
+  // A step reporting nothing doesn't erase the last real reading.
+  s.hub().stepFinished('t1', { finishReason: 'tool_calls' });
+  await poll(async () => (await pct()) === '88%');
+  check('unreported usage keeps the last reading', true);
+  // Settle: the REST estimate is authoritative again at rest.
+  s.hub().complete('t1', {});
+  await poll(async () => (await pct()) === '5%');
+  check('terminal settles back to the estimate', true);
 });
 
 // --- teardown --------------------------------------------------------------

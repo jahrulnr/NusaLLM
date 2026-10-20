@@ -21,6 +21,8 @@ class MessageThread extends Widget {
     this._earlierLoading = false; // an earlier-page request is in flight
     this._earlierBtn = null;
     this._compactState = null;
+    this._failedTurn = null; // {note, retryable} — the turn-failed card
+    this._failSig = null;
     this._editingId = null;
     this._editDraft = null; // typed edit kept when the shell vetoes dispatch
     this._commandsBusy = false;
@@ -136,6 +138,13 @@ class MessageThread extends Widget {
     this._compactState = state;
     if (this.compactEl) this._renderCompactState();
   }
+  // The failed turn's terminal card — a dedicated node updated in
+  // place like the compact status, so it never forces a thread
+  // rebuild. {note, retryable} or null.
+  set failedTurn(v) {
+    this._failedTurn = v || null;
+    this._renderFailed();
+  }
   // While a command is in flight, edit affordances hide — an edit must
   // never overwrite the in-flight command's sequencing.
   set commandsBusy(v) {
@@ -154,6 +163,40 @@ class MessageThread extends Widget {
       ? 'Context compacting'
       : 'Context compacted';
     if (state && this._pinned) this._scrollToEnd();
+  }
+
+  _renderFailed() {
+    if (!this.failEl) return;
+    const f = this._failedTurn;
+    // Every queue sync re-projects the card — skip the rebuild when
+    // nothing changed so a focused Retry keeps its focus.
+    const sig = f ? `${f.note || ''}|${!!f.retryable}` : '';
+    if (sig === this._failSig) return;
+    this._failSig = sig;
+    clear(this.failEl);
+    this.failEl.hidden = !f;
+    if (!f) return;
+    this.failEl.append(
+      el('div', { class: 'fail-note' }, [
+        el('span', { class: 'fail-title', text: 'Turn failed' }),
+        el('span', { class: 'fail-detail', text: f.note || '' }),
+      ]),
+      el('div', { class: 'fail-actions' }, [
+        el('button', {
+          class: 'fail-retry', type: 'button',
+          disabled: !f.retryable || null,
+          title: f.retryable
+            ? 'Resend the failed input'
+            : 'Retry needs the failed line to stay the last input',
+          onclick: () => emit(this, 'turn-retry'),
+        }, [el('span', { text: 'Retry' })]),
+        el('button', {
+          class: 'fail-dismiss', type: 'button',
+          onclick: () => emit(this, 'turn-failed-dismiss'),
+        }, [el('span', { text: 'Dismiss' })]),
+      ]),
+    );
+    if (this._pinned) this._scrollToEnd();
   }
   // stream: a live turn projection, or null. A different projection id
   // resets all segment widget instances and the announcement cursor —
@@ -456,9 +499,11 @@ class MessageThread extends Widget {
       el('span', { class: 'compact-symbol', 'aria-hidden': 'true', text: '⇥' }),
       this.compactText,
     ]);
-    this.root.append(this.streamEl, this.compactEl, this.liveEl);
+    this.failEl = el('div', { class: 'turn-fail', role: 'alert', hidden: true });
+    this.root.append(this.streamEl, this.compactEl, this.failEl, this.liveEl);
     this._contentResize.observe(this.streamEl);
     this._renderCompactState();
+    this._renderFailed();
     this._renderStream();
   }
 

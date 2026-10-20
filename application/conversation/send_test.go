@@ -752,11 +752,13 @@ func TestLockEvictedAfterSend(t *testing.T) {
 }
 
 // A failed send on a fresh room persists the binding — retry with
-// route/modelID "" reaches upstream instead of 400.
+// route/modelID "" reaches upstream instead of 400. The failure must
+// outlast the turn's own bounded retry: a lone 429 is now absorbed
+// inside the turn, so the stub fails the whole three-call budget.
 func TestFailedFreshSendStaysRetryable(t *testing.T) {
 	var calls int32
 	app, _ := fixture(t, func(w http.ResponseWriter, r *http.Request) {
-		if atomic.AddInt32(&calls, 1) == 1 {
+		if atomic.AddInt32(&calls, 1) <= 3 {
 			w.WriteHeader(429)
 			return
 		}
@@ -768,7 +770,7 @@ func TestFailedFreshSendStaysRetryable(t *testing.T) {
 	if _, err := app.Send(t.Context(), "retry", "", "", "ping", nil, appjob.SendOptions{}, nil); err != nil {
 		t.Fatalf("retry on stored binding: %v", err)
 	}
-	if got := atomic.LoadInt32(&calls); got != 2 {
+	if got := atomic.LoadInt32(&calls); got != 4 {
 		t.Fatalf("retry never reached upstream: %d calls", got)
 	}
 }

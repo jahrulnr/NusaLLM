@@ -41,7 +41,7 @@ build` produces the whole product.
 
 ```sh
 go build -o nusallm ./cmd/nusallm
-./nusallm install    # CLI on PATH, WebUI at login
+./nusallm serve install    # CLI on PATH, WebUI at login
 ./nusallm onboard    # pick a provider, paste a key
 ./nusallm            # you're in
 ```

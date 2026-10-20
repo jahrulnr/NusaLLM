@@ -24,6 +24,7 @@ import (
 	wsconversation "github.com/jahrulnr/nusallm/infrastructure/delivery/websocket/conversation"
 	repoconfig "github.com/jahrulnr/nusallm/infrastructure/repository/config"
 	repofiletree "github.com/jahrulnr/nusallm/infrastructure/repository/filetree"
+	"github.com/jahrulnr/nusallm/infrastructure/system"
 	"github.com/jahrulnr/nusallm/web"
 )
 
@@ -32,7 +33,7 @@ const serveUsage = `Usage: ` + admin.CLIName + ` serve [--port N]
 
 Local WebUI — embedded browser UI, HTTP API, and WebSocket turn channel.
 Binds 127.0.0.1 only; port defaults to server.port in config.
-install/start/stop/status/uninstall manage the systemd user service
+install/start/stop/status/uninstall manage the host service
 that runs this same binary.
 
 Flags:
@@ -43,7 +44,7 @@ Flags:
 // WebSocket turn channel — on 127.0.0.1. The port and accepted HTTP
 // hostnames come from server settings; --port can override the configured
 // port for one process invocation.
-func serve(args []string) (serveErr error) {
+func serve(args []string, svc system.Service) (serveErr error) {
 	if serveHelpRequested(args) {
 		fmt.Print(serveUsage)
 		return nil
@@ -138,6 +139,15 @@ func serve(args []string) (serveErr error) {
 	// IPv4 loopback interface, independent of the configured host list.
 	ln, err := net.Listen("tcp", listenAuthority)
 	if err != nil {
+		if errors.Is(err, syscall.EADDRINUSE) {
+			// Name the likeliest holder: the installed service — but
+			// only when this process isn't the service itself, or a
+			// unit losing its own bind race would blame itself.
+			if svc.ActiveElsewhere(admin.CLIName) {
+				return fmt.Errorf("listen on %s: the %s is already serving this port — `%s serve stop` it or pass --port", listenAuthority, svc.Name(), admin.CLIName)
+			}
+			return fmt.Errorf("listen on %s: address already in use by another process", listenAuthority)
+		}
 		return fmt.Errorf("listen on %s: %w", listenAuthority, err)
 	}
 	srv := &http.Server{Handler: handler}

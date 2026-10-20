@@ -45,17 +45,18 @@ Running from source without building also works:
 go run ./cmd/nusallm
 ```
 
-Install that same binary for the current user. `nusallm install` copies
-it to `~/.local/bin/nusallm` and enables a systemd user service whose
-program is `nusallm serve`. The CLI and the WebUI are one executable:
-the service is the binary launched with `serve`, and it starts at login.
+Install that same binary for the current user. `nusallm serve install`
+copies it to `~/.local/bin/nusallm` and registers a WebUI service with
+the host's service manager — a systemd user unit where systemd is
+available, other managers through `infrastructure/system`. The CLI and
+the WebUI are one executable: the service is the binary launched with
+`serve`, and it starts at login.
 
 ```sh
-make install                      # build, install CLI, start WebUI at login
-./nusallm install                 # same, from a binary you already built
-./nusallm install --no-service    # CLI only
-./nusallm serve install           # service only, after the CLI is installed
-./nusallm uninstall               # remove the binary and the service
+make install                            # build, install CLI, start WebUI at login
+./nusallm serve install                 # same, from a binary you already built
+./nusallm serve install --no-service    # CLI only
+./nusallm serve uninstall               # remove the binary and the service
 ```
 
 `~/.local/bin` is already on `PATH` for a login shell once the directory
@@ -63,10 +64,11 @@ exists. If the current shell does not see it, install prints the single
 `export` line to add. It does not edit shell startup files.
 
 `nusallm serve start`, `stop`, `status`, and `uninstall` manage that
-user service. `--linger` on `install` or `serve install` runs
-`loginctl enable-linger` so the WebUI keeps running after logout. Without
-it, the service starts at login and stops when the session ends. Config
-and data directories are left in place by uninstall.
+service through the same manager port. `--linger` on `serve install`
+asks the manager to keep the WebUI running after logout — on systemd
+that is `loginctl enable-linger`. Without it, the service starts at
+login and stops when the session ends. Config and data directories are
+left in place by uninstall.
 
 There is no system-wide unit and no desktop entry. The listener stays on
 loopback; open the URL install prints.
@@ -83,7 +85,7 @@ Two soft dependencies are worth knowing about:
 The client locates one config file and one data directory.
 
 - **Config file** — depends on which binary is running. The copy at
-  `~/.local/bin/nusallm` (`nusallm install`, `make install`) defaults to
+  `~/.local/bin/nusallm` (`nusallm serve install`, `make install`) defaults to
   `~/.config/nusallm/config.json` (`$XDG_CONFIG_HOME/nusallm/config.json`
   when that variable is set), including when a `.env` in the working
   directory names some other file. A source build (`./bin/nusallm`,
@@ -105,7 +107,7 @@ The client locates one config file and one data directory.
 - **Data directory** — `storage.dir` in the config file. The tag default
   is `./data`, relative to the working directory, which is what a checkout
   uses when its `.env` points `CONFIG_PATH` at `./data/config.json`. The
-  file created by `nusallm install` stores an absolute directory instead.
+  file created by `nusallm serve install` stores an absolute directory instead.
   Created on demand. Everything persistent lives under it:
 
 | Path under `storage.dir` | Contents |

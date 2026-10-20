@@ -189,26 +189,35 @@ function failTurn(app, ws, payload) {
 }
 const flush = () => new Promise((r) => setTimeout(r));
 
-test('a persisted failure keeps a retry row; fresh input still sends', async () => {
+// The persisted tail a failed turn really leaves: the failed user
+// line plus the non-editable workspace record every turn pins after it.
+const failedTail = [
+  { id: 'm1', role: 'user', content: 'hi' },
+  { id: 'w1', role: 'user', userType: 'system', content: '', toolCalls: [{ type: 'injection', name: 'workspace' }] },
+];
+
+test('a persisted failure parks a retry card, never a queue row', async () => {
   const { app, ws } = makeApp();
   app.composer.value = '';
   failTurn(app, ws, { status: 502, message: 'upstream exploded', userMessagePersisted: true });
-  const e = app.queue.items.find((x) => x.state === 'failed');
-  assert.ok(e, 'failed row parked');
-  assert.equal(e.text, 'hi');
-  assert.equal(e.room, 'c1');
-  assert.equal(e.note, 'upstream exploded');
-  assert.equal(e.retryMessageId, null); // resolved lazily from history
-  // Nothing else was queued — the pause owns only what it captured,
-  // and an empty backlog means nothing is held.
+  const f = app.failedTurns.get('c1');
+  assert.ok(f, 'failed card parked');
+  assert.equal(f.text, 'hi');
+  assert.equal(f.note, 'upstream exploded');
+  assert.equal(f.retryMessageId, null); // resolved lazily from history
+  // The composer queue models submissions — a turn outcome is not one.
+  assert.equal(app.queue.items.length, 0);
   assert.equal(app.queue.paused, false);
   await flush(); // the barrier refresh lands and clears the gate
   // "." is fresh intent — a definitive failure does not capture it.
+  // The card outlives dispatch: it clears only once the new turn
+  // actually opens, so a pre-open rejection keeps the retry standing.
   app._send('.');
   assert.equal(app.command.kind, 'send');
   assert.equal(ws.sent.filter((f) => f.type === 'turn.send').length, 2);
-  // The failed row itself is still there waiting on an explicit call.
-  assert.equal(app.queue.items.filter((x) => x.state === 'failed').length, 1);
+  assert.ok(app.failedTurns.has('c1'));
+  app._onFrame({ type: 'turn.opened', requestId: app.command.requestId, turnId: 't2', conversationId: 'c1', seq: 3 });
+  assert.equal(app.failedTurns.has('c1'), false);
 });
 
 test('retry re-issues turn.edit against the failed user line', async () => {
@@ -216,31 +225,46 @@ test('retry re-issues turn.edit against the failed user line', async () => {
   app.composer.value = '';
   failTurn(app, ws, { status: 502, message: 'boom', userMessagePersisted: true });
   await flush();
-  const e = app.queue.items.find((x) => x.state === 'failed');
-  app.messages = [{ id: 'm1', role: 'user', content: 'hi' }];
-  app._queueRetry(e.id);
+  app.messages = failedTail.slice();
+  assert.equal(app.failedTurns.get('c1').retryMessageId, null);
+  app._turnRetry();
   const edit = ws.sent.find((f) => f.type === 'turn.edit');
   assert.equal(edit.conversationId, 'c1');
+  // The workspace record after the line does not block the target —
+  // the retried turn regenerates it.
   assert.equal(edit.payload.messageId, 'm1');
   assert.equal(edit.payload.content, 'hi');
   assert.equal(app.command.kind, 'edit');
-  assert.equal(app.queue.items.length, 0); // consumed by the dispatch
+  // The card releases when the retry turn opens — a rejected dispatch
+  // would leave it standing.
+  app._onFrame({ type: 'turn.opened', requestId: app.command.requestId, turnId: 't2', conversationId: 'c1', seq: 3 });
+  assert.equal(app.failedTurns.has('c1'), false);
 });
 
-test('an unpersisted failure restores text instead of parking a retry row', async () => {
+test('the failed turn\'s own output does not block its retry', async () => {
+  const { app } = makeApp();
+  app.composer.value = '';
+  failTurn(app, null, { status: 502, message: 'boom', userMessagePersisted: true });
+  await flush();
+  // Debris the dead turn persisted — the retried turn replaces it.
+  app.messages = failedTail.concat([{ id: 'a1', role: 'assistant', content: 'partial' }]);
+  assert.equal(app._failedTargetId(app.failedTurns.get('c1')), 'm1');
+});
+
+test('an unpersisted failure restores text instead of parking a card', async () => {
   const { app } = makeApp();
   app.composer.value = '';
   failTurn(app, null, { status: 502, message: 'boom', userMessagePersisted: false });
-  assert.equal(app.queue.items.filter((x) => x.state === 'failed').length, 0);
+  assert.equal(app.failedTurns.size, 0);
   // Owning view gets its text back in the draft.
   assert.equal(app.composer.value, 'hi');
 });
 
-test('an interrupted turn never parks a retry row', () => {
+test('an interrupted turn never parks a card', () => {
   const { app } = makeApp();
   app.composer.value = '';
   failTurn(app, null, { status: 408, code: 'interrupted', userMessagePersisted: true });
-  assert.equal(app.queue.items.filter((x) => x.state === 'failed').length, 0);
+  assert.equal(app.failedTurns.size, 0);
 });
 
 test('retry target skips an older identical line via dispatch-time history ids', async () => {
@@ -248,38 +272,62 @@ test('retry target skips an older identical line via dispatch-time history ids',
   app.composer.value = '';
   failTurn(app, ws, { status: 502, message: 'boom', userMessagePersisted: true });
   await flush();
-  const e = app.queue.items.find((x) => x.state === 'failed');
+  const f = app.failedTurns.get('c1');
   // The send's own line is the NEWER identical record — the older one
   // predates the dispatch and rides historyIds.
-  e.historyIds = new Set(['m-old']);
+  f.historyIds = new Set(['m-old']);
   app.messages = [
     { id: 'm-old', role: 'user', content: 'hi' },
     { id: 'm-new', role: 'user', content: 'hi' },
+    { id: 'w1', role: 'user', userType: 'system', content: '' },
   ];
-  assert.equal(app._retryMessageId(e), 'm-new');
-  app._queueRetry(e.id);
+  assert.equal(app._retryMessageId(f), 'm-new');
+  app._turnRetry();
   const edit = ws.sent.find((f) => f.type === 'turn.edit');
   assert.equal(edit.payload.messageId, 'm-new');
 });
 
-test('a failed line no longer at the tail cannot retry — only dismiss', async () => {
+test('a failed line followed by newer input cannot retry — only dismiss', async () => {
   const { app, ws } = makeApp();
   app.composer.value = '';
   failTurn(app, ws, { status: 502, message: 'boom', userMessagePersisted: true });
   await flush();
-  const e = app.queue.items.find((x) => x.state === 'failed');
-  // A later message landed after the failure — editing the failed
-  // line now would silently rewind it.
-  app.messages = [
-    { id: 'm1', role: 'user', content: 'hi' },
-    { id: 'm2', role: 'user', content: 'sent after' },
-  ];
-  assert.equal(app._retryTargetId(e), null);
-  app._queueRetry(e.id);
+  const f = app.failedTurns.get('c1');
+  // A later user line landed after the failure — editing the failed
+  // line now would silently rewind its turn.
+  app.messages = failedTail.concat([{ id: 'm2', role: 'user', content: 'sent after' }]);
+  assert.equal(app._failedTargetId(f), null);
+  app._turnRetry();
   assert.equal(ws.sent.filter((f) => f.type === 'turn.edit').length, 0);
-  assert.ok(app.queue.items.includes(e)); // the row itself survives
-  app._queueDismiss(e.id);
-  assert.equal(app.queue.items.length, 0);
+  assert.ok(app.failedTurns.has('c1')); // the card itself survives
+  app._turnFailedDismiss();
+  assert.equal(app.failedTurns.has('c1'), false);
+});
+
+test('a completed turn clears the room\'s card — foreign or watched', () => {
+  const { app } = makeApp();
+  app.activeId = 'c1';
+  app.failedTurns.set('c1', { text: 'hi', note: 'boom', retryMessageId: 'm1', historyIds: null });
+  // Another tab's turn finishing in this room supersedes the failure.
+  app._onFrame({ type: 'turn.completed', turnId: 't-x', conversationId: 'c1', seq: 9, payload: {} });
+  assert.equal(app.failedTurns.has('c1'), false);
+  // A watched turn completing does the same — its reply must never be
+  // rewound by a stale armed Retry.
+  app.failedTurns.set('c1', { text: 'hi', note: 'boom', retryMessageId: 'm1', historyIds: null });
+  app._attachLiveTurn({ id: 'c1', activeTurnId: 't-w', activeTurnKind: 'send' });
+  app._onFrame({ type: 'turn.completed', turnId: 't-w', conversationId: 'c1', seq: 10, payload: {} });
+  assert.equal(app.failedTurns.has('c1'), false);
+});
+
+test('a failure in another room stays its own card', () => {
+  const { app, ws } = makeApp();
+  app.activeId = 'c1';
+  app.failedTurns.set('c2', { text: 'hi', note: 'boom', retryMessageId: 'm1', historyIds: null });
+  app.messages = [{ id: 'm1', role: 'user', content: 'hi' }];
+  // The view's retry acts on its own room's card — there is none.
+  app._turnRetry();
+  assert.equal(ws.sent.filter((f) => f.type === 'turn.edit').length, 0);
+  assert.ok(app.failedTurns.has('c2'));
 });
 
 test('resume while offline keeps the held backlog held', async () => {
@@ -297,15 +345,87 @@ test('resume while offline keeps the held backlog held', async () => {
   assert.equal(app.queue.notice, 'Reconnect before resuming the queue');
 });
 
-test('a failed row in another room never retries through this view', async () => {
-  const { app, ws } = makeApp();
+// The context badge: REST estimate at rest, provider-reported usage
+// (turn.step_finished.usage.totalInputTokens) while a turn is live.
+function spyContext(app) {
+  const calls = [];
+  app.api.contextStats = async (args) => { calls.push(args); return { estimate: 1, total: 2 }; };
+  return calls;
+}
+
+test('a finished step merges provider usage into the viewed room\'s badge', () => {
+  const { app } = makeApp();
   app.activeId = 'c1';
-  const { enqueue } = await import('../lib/pending-queue.js');
-  const e = enqueue(app.queue, { text: 'hi', room: 'c2', opts: {} });
-  e.state = 'failed';
-  e.retryMessageId = 'm1';
-  app.messages = [{ id: 'm1', role: 'user', content: 'hi' }];
-  app._queueRetry(e.id);
-  assert.equal(ws.sent.filter((f) => f.type === 'turn.edit').length, 0);
-  assert.ok(app.queue.items.includes(e));
+  app.composer.context = { estimate: 420, total: 8192 };
+  // No command owns t1 — the merge keys on the viewed room, not the slot.
+  assert.equal(app.command, null);
+  app._onFrame({
+    type: 'turn.step_finished', conversationId: 'c1', turnId: 't1', seq: 4,
+    payload: { finishReason: 'tool_calls', usage: { totalInputTokens: 4096 } },
+  });
+  assert.equal(app.composer.context.estimate, 4096);
+  assert.equal(app.composer.context.total, 8192);
+  // Another room's usage never moves this view's badge.
+  app._onFrame({
+    type: 'turn.step_finished', conversationId: 'c2', turnId: 't2', seq: 1,
+    payload: { finishReason: 'stop', usage: { totalInputTokens: 7000 } },
+  });
+  assert.equal(app.composer.context.estimate, 4096);
+});
+
+test('unreported usage leaves the heuristic estimate standing', () => {
+  const { app } = makeApp();
+  app.activeId = 'c1';
+  app.composer.context = { estimate: 420, total: 8192 };
+  for (const usage of [undefined, {}, { totalInputTokens: 0 }]) {
+    app._onFrame({
+      type: 'turn.step_finished', conversationId: 'c1', turnId: 't1', seq: 1,
+      payload: { finishReason: 'stop', usage },
+    });
+    assert.equal(app.composer.context.estimate, 420);
+  }
+  // A null context has no capacity to merge into — no crash, no badge.
+  app.composer.context = null;
+  app._onFrame({
+    type: 'turn.step_finished', conversationId: 'c1', turnId: 't1', seq: 2,
+    payload: { usage: { totalInputTokens: 4096 } },
+  });
+  assert.equal(app.composer.context, null);
+});
+
+test('turn.opened refreshes the badge only for the room on screen', () => {
+  const { app, ws } = makeApp();
+  const calls = spyContext(app);
+  app.composer.value = '';
+  app.activeId = 'c1';
+  // Own send opening in the viewed room — its user line just persisted.
+  app._send('hi');
+  app._onFrame({ type: 'turn.opened', requestId: app.command.requestId, turnId: 't1', conversationId: 'c1', seq: 1 });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].conversationId, 'c1');
+  // A foreign turn opening in the viewed room fetches too — its user
+  // line landed; a different room's opening does not touch the badge.
+  app._onFrame({ type: 'turn.opened', requestId: 'other', turnId: 't9', conversationId: 'c1', seq: 1 });
+  app._onFrame({ type: 'turn.opened', requestId: 'other2', turnId: 't8', conversationId: 'c2', seq: 1 });
+  assert.equal(calls.length, 2);
+  assert.equal(ws.sent.filter((f) => f.type === 'turn.send').length, 1);
+});
+
+test('a foreign turn settling via conversation.activity refreshes the badge', () => {
+  const { app } = makeApp();
+  const calls = spyContext(app);
+  app._refresh = async () => 'ok';
+  app._refreshList = async () => 'ok';
+  app.activeId = 'c1';
+  app._onFrame({
+    type: 'conversation.activity', conversationId: 'c1',
+    payload: { requestId: 'other', state: 'idle' },
+  });
+  assert.equal(calls.length, 1);
+  // Activity in another room is list-level only.
+  app._onFrame({
+    type: 'conversation.activity', conversationId: 'c2',
+    payload: { requestId: 'other', state: 'idle' },
+  });
+  assert.equal(calls.length, 1);
 });

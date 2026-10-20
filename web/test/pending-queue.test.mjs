@@ -6,7 +6,7 @@ import {
   markInFlightUnknown, pauseQueue, unpauseQueue,
   markTurnUnknown, steerAcked, steerProjected, steerRecalled,
   reconcileSnapshot,
-  QUEUED, SUBMITTING, STEERING, RECALLING, UNKNOWN, FAILED,
+  QUEUED, SUBMITTING, STEERING, RECALLING, UNKNOWN,
 } from '../lib/pending-queue.js';
 
 const opts = { route: 'r', modelId: 'm', effort: '', provider: '', workspace: '' };
@@ -319,18 +319,4 @@ test('a requeue inherits the hold only inside a held lane', () => {
   requeue(q, other);
   assert.equal(other.held, false);
   assert.equal(takeQueued(q, 'b').text, 'elsewhere');
-});
-
-test('FAILED entries never gate dispatch or reconciliation', () => {
-  const q = createQueue();
-  const e = enqueue(q, { text: 'turn text', room: 'a', opts });
-  e.state = FAILED;
-  e.note = 'provider rejected the request (HTTP 502)';
-  e.retryMessageId = null;
-  assert.equal(hasQueuedForRoom(q, 'a'), false);
-  assert.equal(takeQueued(q, 'a'), null);
-  assert.equal(markInFlightUnknown(q), false);
-  assert.equal(markTurnUnknown(q, 't1'), false);
-  assert.deepEqual(reconcileSnapshot(q, 't1', []).unknown, []);
-  assert.equal(q.items.length, 1); // dismissed/retried explicitly only
 });
