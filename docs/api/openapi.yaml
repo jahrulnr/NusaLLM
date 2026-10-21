@@ -1209,6 +1209,10 @@ components:
           type: integer
           minimum: 0
           description: Max completion tokens the provider declares; `0` = unknown.
+        maxImages:
+          type: integer
+          minimum: 0
+          description: Per-request image cap this serving enforces; `0` = none declared (fail open).
         name:
           type: string
           description: Display name the provider publishes.
@@ -1264,6 +1268,7 @@ components:
           enum: [text, embedding, video, image, speech, transcription, audio, rerank, decision]
         contextWindow: { type: integer, minimum: 0 }
         outputLimit: { type: integer, minimum: 0 }
+        maxImages: { type: integer, minimum: 0 }
         name: { type: string }
         canonical: { type: string }
         aliasOf: { type: string }

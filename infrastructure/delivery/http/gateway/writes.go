@@ -65,6 +65,7 @@ func (b *upsertBody) toInput(id string) (appgateway.GatewayInput, error) {
 			Canonical:        mb.Canonical,
 			AliasOf:          mb.AliasOf,
 			OutputLimit:      mb.OutputLimit,
+			MaxImages:        mb.MaxImages,
 		}
 		for _, e := range mb.SupportedEfforts {
 			mi.SupportedEfforts = append(mi.SupportedEfforts, enum.Effort(e))
@@ -111,6 +112,7 @@ type modelInputBody struct {
 	Canonical        string      `json:"canonical"`
 	AliasOf          string      `json:"aliasOf"`
 	OutputLimit      int         `json:"outputLimit"`
+	MaxImages        int         `json:"maxImages"`
 	SupportedEfforts []string    `json:"supportedEfforts"`
 }
 

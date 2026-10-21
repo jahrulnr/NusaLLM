@@ -224,6 +224,31 @@ func (c *Conversation) NeedCompaction(budget int) bool {
 	return budget > 0 && c.EstimatedTokens() >= budget
 }
 
+// MediaCount reports how many live attachments carry the modality —
+// user-side and tool-produced alike. Every replayed request re-sends
+// them, so the count is what a per-request media limit checks against.
+// It counts what the history holds, not what the wire will emit —
+// adapters may degrade some references at encode time, so the real
+// request can carry fewer; the gate errs on the conservative side.
+func (c *Conversation) MediaCount(mod enum.Modality) int {
+	n := 0
+	for _, m := range c.messages {
+		for _, a := range m.Attachments() {
+			if a.Modality() == mod {
+				n++
+			}
+		}
+		for _, tc := range m.ToolCalls() {
+			for _, a := range tc.OutputAttachments() {
+				if a.Modality() == mod {
+					n++
+				}
+			}
+		}
+	}
+	return n
+}
+
 func (c Conversation) ID() string                      { return c.id }
 func (c Conversation) Route() string                   { return c.route }
 func (c Conversation) ModelID() string                 { return c.modelID }

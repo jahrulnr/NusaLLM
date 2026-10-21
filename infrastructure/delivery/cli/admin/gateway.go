@@ -417,6 +417,9 @@ func printModelRow(w io.Writer, m entity.Model) {
 	if m.OutputLimit() > 0 {
 		extra = append(extra, fmt.Sprintf("out=%d", m.OutputLimit()))
 	}
+	if m.MaxImages() > 0 {
+		extra = append(extra, fmt.Sprintf("img=%d", m.MaxImages()))
+	}
 	if t := m.ModelType(); t != "" {
 		extra = append(extra, "type="+t.String())
 	}

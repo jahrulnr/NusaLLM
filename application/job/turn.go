@@ -58,6 +58,10 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 	// so the pin's call name resolves — they stay off the wire's list.
 	conv.SetTools(driver.ToolSchemas())
 	didCompact := false
+	// Set by the media gate below when a tool's image output had to be
+	// withheld for the serving's per-request cap — the fold that frees
+	// the count happens at the next step or turn end.
+	hitMediaLimit := false
 	// pinnedID is the record the last pin attempt left the tail on — a
 	// kept tail ending on it must not take a second pin after a fold.
 	// The dedup inside appendWorkspaceContext makes this a fast path:
@@ -101,8 +105,11 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 			// would summarize the previous checkpoint at full cost. The
 			// budget is a share of the model's window so headroom stays
 			// reserved for the reply; a checkpoint that would drop zero
-			// messages is noise in history, not headroom.
-			if conv.NeedCompaction(model.CompactionBudgetTokens(ccfg.CompactBudgetPct)) &&
+			// messages is noise in history, not headroom. The media
+			// gate reuses this fold: a withheld image means the history
+			// is at the serving's cap, so sealing it frees room for the
+			// next call rather than failing on the replayed images.
+			if (hitMediaLimit || conv.NeedCompaction(model.CompactionBudgetTokens(ccfg.CompactBudgetPct))) &&
 				conv.CanManualCompact(ccfg.CompactKeepTail) {
 				if err := d.compact(ctx, convID, conv, gw, model, svc, ccfg.CompactKeepTail); err != nil {
 					return err
@@ -257,6 +264,15 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 		last := &msgs[len(msgs)-1]
 		pending := pendingCalls(*last)
 		if len(pending) == 0 {
+			// The turn ends with images withheld and the history still
+			// at the cap — fold now so the next user turn replays under
+			// the limit. This only fires when the step-top fold above
+			// couldn't (the tail just grew past keepTail on this step).
+			if hitMediaLimit && !didCompact && conv.CanManualCompact(ccfg.CompactKeepTail) {
+				if err := d.compact(ctx, convID, conv, gw, model, svc, ccfg.CompactKeepTail); err != nil {
+					return err
+				}
+			}
 			return nil // the model is done
 		}
 		if step == ccfg.MaxTurnStep-1 {
@@ -310,6 +326,33 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 						return apperror.New(408, "turn canceled", ctx.Err())
 					default:
 						out = "error: " + err.Error()
+					}
+				}
+				// The serving's per-request image cap counts every image
+				// in the replayed history, so a tool result that would
+				// push the live count over it is withheld — the recorded
+				// history stays intact (prompt cache survives) and the
+				// note tells the model why, while hitMediaLimit folds the
+				// history so a later step can see new images again. A 0
+				// cap means the serving declared none — fail open.
+				if limit := model.MaxImages(); limit > 0 {
+					room := limit - conv.MediaCount(enum.ModalityImage)
+					var kept []valueobject.Attachment
+					dropped := 0
+					for _, a := range outAtts {
+						if a.Modality() == enum.ModalityImage {
+							if room <= 0 {
+								dropped++
+								continue
+							}
+							room--
+						}
+						kept = append(kept, a)
+					}
+					if dropped > 0 {
+						outAtts = kept
+						hitMediaLimit = true
+						out += fmt.Sprintf(" (%d image output(s) withheld: this serving accepts at most %d images per request and that limit is now reached — new images cannot be shown until this conversation is compacted)", dropped, limit)
 					}
 				}
 				if err := last.SetToolOutput(call.ID(), out); err != nil {

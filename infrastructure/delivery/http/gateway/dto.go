@@ -40,6 +40,7 @@ type modelDTO struct {
 	Canonical        string   `json:"canonical,omitempty"`
 	AliasOf          string   `json:"aliasOf,omitempty"`
 	OutputLimit      int      `json:"outputLimit,omitempty"`
+	MaxImages        int      `json:"maxImages,omitempty"`
 	SupportedEfforts []string `json:"supportedEfforts,omitempty"`
 }
 
@@ -61,6 +62,7 @@ func toModel(m entity.Model) modelDTO {
 		Canonical:        m.Canonical(),
 		AliasOf:          m.AliasOf(),
 		OutputLimit:      m.OutputLimit(),
+		MaxImages:        m.MaxImages(),
 		Pricing: pricingDTO{
 			InputPerMillionUsd:      p.InputPerM(),
 			OutputPerMillionUsd:     p.OutputPerM(),

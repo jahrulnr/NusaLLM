@@ -158,6 +158,7 @@ test('model editor save emits gateway-save with the full catalog', () => {
 
   byAria(dialog, 'Model name').value = 'Renamed';
   byAria(dialog, 'Context window').value = '2000000';
+  byAria(dialog, 'Max images').value = '8';
   byAria(dialog, 'Effort').value = 'high';
   byAria(dialog, 'Temperature').value = '0.2';
   byAria(dialog, 'Top P').value = '';            // clears the stored 0.9
@@ -182,6 +183,7 @@ test('model editor save emits gateway-save with the full catalog', () => {
   assert.equal(m.name, 'Renamed');
   assert.equal(m.route, 'alpha-v1');
   assert.equal(m.contextWindow, 2000000);
+  assert.equal(m.maxImages, 8);
   assert.equal(m.effort, 'high');
   assert.equal(m.temperature, 0.2);
   assert.deepEqual(m.stopSequences, ['a', 'b']);

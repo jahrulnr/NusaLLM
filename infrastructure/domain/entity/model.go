@@ -54,6 +54,7 @@ type Model struct {
 	contextWindow    int // total context window in tokens, 0 = unknown
 	inputModalities  []enum.Modality
 	outputModalities []enum.Modality
+	maxImages        int // per-request image cap the serving enforces, 0 = none declared
 }
 
 // NewModel creates a model invoked through route — the gateway surface
@@ -288,6 +289,11 @@ func (m Model) AcceptsInput(mod enum.Modality) bool {
 func (m Model) AcceptsOutput(mod enum.Modality) bool {
 	return accepts(m.outputModalities, mod)
 }
+
+// MaxImages is the serving's per-request image cap — 0 means none was
+// declared, so callers fail open (the provider validates).
+func (m Model) MaxImages() int      { return m.maxImages }
+func (m *Model) SetMaxImages(v int) { m.maxImages = v }
 
 func accepts(mods []enum.Modality, mod enum.Modality) bool {
 	if len(mods) == 0 {

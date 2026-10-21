@@ -396,7 +396,7 @@ records may carry credential references.
 `id`, `route`, the generation parameters (`temperature`, `topP`, `topK`,
 `maxOutputTokens`, `presencePenalty`, `frequencyPenalty`, `seed`,
 `stopSequences`, `effort`), and catalog metadata (`modelType`,
-`contextWindow`, `outputLimit`, `name`, `canonical`, `aliasOf`,
+`contextWindow`, `outputLimit`, `maxImages`, `name`, `canonical`, `aliasOf`,
 `supportedEfforts`, `pricing` with per-million `inputPerM`/`outputPerM`/
 `cacheReadPerM`/`cacheWritePerM`, `inputModalities`, `outputModalities`,
 `optionalContent`). Numeric parameters serialize as pointers' values and

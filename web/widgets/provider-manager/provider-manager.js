@@ -314,6 +314,7 @@ class ProviderManager extends Widget {
       const meta = [el('span', { class: ctx ? 'mm' : 'mm none', text: `ctx ${ctx || '—'}` })];
       const out = fmtCount(m.outputLimit);
       if (out) meta.push(el('span', { class: 'mm', text: `out ${out}` }));
+      if (m.maxImages) meta.push(el('span', { class: 'mm', text: `img ≤${m.maxImages}` }));
       const mods = [
         (m.inputModalities || []).map((v) => MODALITY_LETTERS[v] || v[0]).join(','),
         (m.outputModalities || []).map((v) => MODALITY_LETTERS[v] || v[0]).join(','),
@@ -397,6 +398,7 @@ class ProviderManager extends Widget {
     f.ctx = num(m.contextWindow || '', 'Context window');
     f.outLimit = num(m.outputLimit || '', 'Output limit');
     f.maxOut = num(m.maxOutputTokens ?? '', 'Max output tokens');
+    f.maxImages = num(m.maxImages || '', 'Max images');
 
     f.effort = el('select', { class: 'in', 'aria-label': 'Effort' },
       EFFORTS.map((e) => el('option', { value: e, text: e, selected: (m.effort || 'default') === e })));
@@ -467,6 +469,7 @@ class ProviderManager extends Widget {
       if (!applyZero('contextWindow', f.ctx, 'context window')) return;
       if (!applyZero('outputLimit', f.outLimit, 'output limit')) return;
       if (!apply('maxOutputTokens', f.maxOut, true, 'max output tokens')) return;
+      if (!applyZero('maxImages', f.maxImages, 'max images')) return;
       if (f.effort.value === 'default') delete next.effort; else next.effort = f.effort.value;
       if (f.modelType.value) next.modelType = f.modelType.value; else delete next.modelType;
       const sup = pick(f.supEff);
@@ -513,8 +516,9 @@ class ProviderManager extends Widget {
       sec('limits', el('div', { class: 'stack' }, [
         el('div', { class: 'sec-cols' }, [
           field('context window', f.ctx), field('output limit', f.outLimit), field('max output tokens', f.maxOut),
+          field('max images', f.maxImages),
         ]),
-        el('div', { class: 'hint', text: 'empty = provider catalog decides' }),
+        el('div', { class: 'hint', text: 'empty = provider catalog decides; max images = per-request cap this serving enforces' }),
       ])),
       sec('behavior', el('div', { class: 'stack' }, [
         el('div', { class: 'sec-cols' }, [field('effort', f.effort), field('model type', f.modelType)]),

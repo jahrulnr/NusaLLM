@@ -242,6 +242,14 @@ model is decided per request at encode time by the bound model's
 `AcceptsInput`; an unsupported modality degrades to a text placeholder,
 which is why the bound model changing between turns is safe.
 
+Because every request replays the whole live history, a serving's
+per-request image cap is really a *history* cap: the turn loop counts live
+image attachments (`Conversation.MediaCount`) before recording a tool's
+output and, past the bound model's `maxImages`, withholds the new images
+with a note in the tool output — the recorded history is never rewritten —
+then folds via the normal compaction pipeline so the sealed images stop
+counting. `maxImages` is manually declared per serving; `0` fails open.
+
 ### Model — `entity/model.go`
 
 `Model` is a request-scoped route descriptor: which route (gateway
@@ -261,7 +269,7 @@ with no common field ride in `optionalContent` under adapter-namespaced
 keys.
 
 **Catalog metadata** — `name`, `canonical`, `aliasOf`, `outputLimit`,
-`supportedEfforts`, `mtype`, `pricing`, `contextWindow`,
+`maxImages`, `supportedEfforts`, `mtype`, `pricing`, `contextWindow`,
 `inputModalities`, `outputModalities` — is descriptive, hydrated from the
 gateway's model list, and never sent as request parameters. A zero
 `contextWindow` means *unknown* rather than *zero*: `EffectiveContextWindow`

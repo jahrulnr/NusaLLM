@@ -87,6 +87,34 @@ func TestConversationEstimatedTokens(t *testing.T) {
 	}
 }
 
+func TestConversationMediaCount(t *testing.T) {
+	c := mustConv(t)
+	img, _ := valueobject.NewAttachment("file://shot.png", "image/png")
+	audio, _ := valueobject.NewAttachment("file://clip.mp3", "audio/mpeg")
+
+	user, _ := entity.NewMessage(enum.RoleUser, "look")
+	user.AddAttachment(img)
+	user.AddAttachment(audio)
+	c.Append(user)
+
+	am, _ := entity.NewMessage(enum.RoleAssistant, "")
+	tc, _ := entity.NewToolCall("c1", "read_media", `{}`, enum.TooltypeOrigin)
+	tc.SetStoredOutput("loaded", "")
+	tc.SetOutputAttachments([]valueobject.Attachment{img, img})
+	am.AddToolCall(tc)
+	c.Append(am)
+
+	if got := c.MediaCount(enum.ModalityImage); got != 3 {
+		t.Fatalf("image count = %d, want 3", got)
+	}
+	if got := c.MediaCount(enum.ModalityAudio); got != 1 {
+		t.Fatalf("audio count = %d, want 1", got)
+	}
+	if got := c.MediaCount(enum.ModalityVideo); got != 0 {
+		t.Fatalf("video count = %d, want 0", got)
+	}
+}
+
 func TestConversationNeedCompaction(t *testing.T) {
 	c := mustConv(t)
 	m, _ := entity.NewMessage(enum.RoleUser, strings.Repeat("x", 400))

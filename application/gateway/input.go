@@ -65,6 +65,7 @@ type ModelInput struct {
 	Canonical        string
 	AliasOf          string
 	OutputLimit      int
+	MaxImages        int
 	SupportedEfforts []enum.Effort
 }
 
@@ -136,6 +137,7 @@ func InputFromInfo(info GatewayInfo) GatewayInput {
 			Canonical:        m.Canonical(),
 			AliasOf:          m.AliasOf(),
 			OutputLimit:      m.OutputLimit(),
+			MaxImages:        m.MaxImages(),
 			SupportedEfforts: m.SupportedEfforts(),
 		})
 	}
@@ -149,10 +151,10 @@ func (app *GatewayApp) buildModel(in ModelInput) (entity.Model, error) {
 	if err != nil {
 		return entity.Model{}, apperror.New(400, "invalid model", err)
 	}
-	for _, n := range []int{in.ContextWindow, in.OutputLimit, app.derefInt(in.TopK), app.derefInt(in.MaxOutputTokens)} {
+	for _, n := range []int{in.ContextWindow, in.OutputLimit, in.MaxImages, app.derefInt(in.TopK), app.derefInt(in.MaxOutputTokens)} {
 		if n < 0 {
 			return entity.Model{}, apperror.New(400, "invalid model",
-				fmt.Errorf("model %q: negative token count %d", in.ID, n))
+				fmt.Errorf("model %q: negative value %d", in.ID, n))
 		}
 	}
 	m.SetTemperature(in.Temperature)
@@ -182,6 +184,7 @@ func (app *GatewayApp) buildModel(in ModelInput) (entity.Model, error) {
 	m.SetCanonical(in.Canonical)
 	m.SetAliasOf(in.AliasOf)
 	m.SetOutputLimit(in.OutputLimit)
+	m.SetMaxImages(in.MaxImages)
 	var supported []enum.Effort
 	for _, v := range in.SupportedEfforts {
 		e, ok := enum.ParseEffort(v.String())

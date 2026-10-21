@@ -46,6 +46,7 @@ type modelRecord struct {
 	Canonical        string   `json:"canonical,omitempty"`
 	AliasOf          string   `json:"aliasOf,omitempty"`
 	OutputLimit      int      `json:"outputLimit,omitempty"`
+	MaxImages        int      `json:"maxImages,omitempty"`
 	SupportedEfforts []string `json:"supportedEfforts,omitempty"`
 }
 
@@ -85,6 +86,7 @@ func encodeGateway(g *aggregate.Gateway) gatewayRecord {
 			Canonical:        m.Canonical(),
 			AliasOf:          m.AliasOf(),
 			OutputLimit:      m.OutputLimit(),
+			MaxImages:        m.MaxImages(),
 		}
 		for _, e := range m.SupportedEfforts() {
 			mr.SupportedEfforts = append(mr.SupportedEfforts, e.String())
@@ -158,6 +160,7 @@ func decodeGateway(rec gatewayRecord, apiKey string) (*aggregate.Gateway, error)
 		m.SetCanonical(mr.Canonical)
 		m.SetAliasOf(mr.AliasOf)
 		m.SetOutputLimit(mr.OutputLimit)
+		m.SetMaxImages(mr.MaxImages)
 		var efforts []enum.Effort
 		for _, v := range mr.SupportedEfforts {
 			e, ok := enum.ParseEffort(v)
