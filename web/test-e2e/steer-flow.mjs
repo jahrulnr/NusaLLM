@@ -657,7 +657,7 @@ await scenarioRun('persistence-authority', async (s) => {
   // real record: the user line plus its non-editable workspace pin.
   s.fixture.messages.get('c1').push(
     { id: 'u-fail', role: 'user', userType: 'origin', content: 'will not persist' },
-    { id: 'w-fail', role: 'user', userType: 'system', content: '',
+    { id: 'w-fail', role: 'system', content: '',
       toolCalls: [{ id: 'w-call', type: 'injection', name: 'workspace', input: '{}', output: 'workspace changed to /w' }] });
   s.hub().complete('t5', { failed: true, message: 'provider rejected the request (HTTP 502)', persistedUser: true });
   const card = s.page.locator('nusa-message-thread .turn-fail');

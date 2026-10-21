@@ -142,12 +142,13 @@ func TestSteerFoldsIntoRunningTurn(t *testing.T) {
 	}
 	msgs := conv.Messages()
 	// user / context record / assistant+gated call / folded steer /
-	// context record / assistant done
-	if len(msgs) != 6 || msgs[3].Role() != enum.RoleUser || msgs[3].Content() != "also check X" {
+	// assistant done — no second record: the pin after "run it" still
+	// cites this directory.
+	if len(msgs) != 5 || msgs[3].Role() != enum.RoleUser || msgs[3].Content() != "also check X" {
 		t.Fatalf("steer did not fold into history: %d msgs", len(msgs))
 	}
-	if svc.prevSeen != "also check X" || svc.lastSeen != "" {
-		t.Fatalf("second provider call saw prev=%q last=%q, want the steer then its context record", svc.prevSeen, svc.lastSeen)
+	if svc.prevSeen != "need a tool" || svc.lastSeen != "also check X" {
+		t.Fatalf("second provider call saw prev=%q last=%q, want the tool turn then the steer", svc.prevSeen, svc.lastSeen)
 	}
 }
 

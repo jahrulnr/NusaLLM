@@ -287,6 +287,24 @@ func TestUserTurnKeepsInjectedToolEvidence(t *testing.T) {
 	}
 }
 
+// A system-role hydration record — the workspace pin — is a homeless role
+// on this wire: it folds into a user turn's text and emits no
+// functionCall/functionResponse pair.
+func TestSystemHydrationFoldsToUserText(t *testing.T) {
+	msg, _ := entity.NewMessage(enum.RoleSystem, "")
+	call, _ := entity.NewToolCall("call_ws", "workspace", `{"path":"/srv/ws"}`, enum.TooltypeInjection)
+	call.SetStoredOutput("workspace changed to /srv/ws", "")
+	msg.AddToolCall(call)
+	contents := encodeMessage(msg, entity.Model{}, wire.MediaRoot{})
+	if len(contents) != 1 || contents[0].Role != "user" {
+		t.Fatalf("system pin must fold into a user turn: %+v", contents)
+	}
+	text := contents[0].Parts[0].(PartBody).Text
+	if !strings.Contains(text, "workspace changed to /srv/ws") {
+		t.Fatalf("pin output dropped: %q", text)
+	}
+}
+
 func TestSignatureReplayAndMerge(t *testing.T) {
 	// Template: signed thought part → verbatim; text marker → refill;
 	// signed text → verbatim. Plus two parallel unsigned calls whose

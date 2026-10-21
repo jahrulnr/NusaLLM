@@ -8,10 +8,12 @@ package toolweb
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/jahrulnr/searchwire"
 
@@ -45,6 +47,13 @@ type Tool struct {
 	schema     valueobject.ToolSchema
 	outputs    drepo.ToolOutput // conversation-owned spill store; may be nil
 	httpClient *http.Client     // test seam; nil uses the default client
+
+	// webSearchUnsupported records endpoint|model pairs that answered a
+	// Responses web_search call with zero web_search_call items — the
+	// capability is absent, not transient, so later calls skip the probe
+	// instead of paying a doomed provider round-trip per search.
+	unsupportedMu    sync.Mutex
+	unsupportedProbe map[string]bool
 }
 
 // Tools adapts the named searchwire capabilities (searchwire.ToolSearch,
@@ -94,7 +103,7 @@ func (t *Tool) Execute(ctx context.Context, call entity.ToolCall, _ service.Tool
 		return service.ToolResult{}, err
 	}
 	args := json.RawMessage(call.Input())
-	var fallbackErr error
+	var fallbackNote string
 	if p, ok := service.WebProviderFrom(ctx); ok && p.Endpoint != "" {
 		var (
 			out     json.RawMessage
@@ -112,21 +121,31 @@ func (t *Tool) Execute(ctx context.Context, call entity.ToolCall, _ service.Tool
 			}
 			backend = omniRouteBackend
 		case openCodeKinds[p.Kind] && t.def.Name == searchwire.ToolSearch && p.Model != "":
-			out, err = t.openCodeClient().search(ctx, p, args)
-			backend = openCodeBackend
+			probeKey := p.Endpoint + "\x00" + p.Model
+			if !t.probeFailed(probeKey) {
+				out, err = t.openCodeClient().search(ctx, p, args)
+				backend = openCodeBackend
+				if errors.Is(err, errNoWebSearchCall) {
+					t.markProbeFailed(probeKey)
+				}
+			} else {
+				// Skipped, not attempted — say so instead of leaving the
+				// model guessing why the provider backend stayed silent.
+				fallbackNote = "provider native search skipped — this model does not execute web_search (learned from a previous call)"
+			}
 		}
 		if err == nil && out != nil {
-			return t.result(ctx, call, out, backend, nil)
+			return t.result(ctx, call, out, backend, "")
 		}
-		if backend != "" {
-			fallbackErr = err
+		if backend != "" && fallbackNote == "" {
+			fallbackNote = sanitizeFallbackNote(err, p)
 		}
 	}
 	out, err := t.def.Run(ctx, args)
 	if err != nil {
 		return service.ToolResult{}, err
 	}
-	return t.result(ctx, call, out, searchwireBackend, fallbackErr)
+	return t.result(ctx, call, out, searchwireBackend, fallbackNote)
 }
 
 // result annotates the emitted document with the backend that served it,
@@ -135,14 +154,14 @@ func (t *Tool) Execute(ctx context.Context, call entity.ToolCall, _ service.Tool
 // tools — the spill path is reachable via exec like every other tool's),
 // and spills oversized documents the way exec does so the middle-truncated
 // text keeps a recovery pointer instead of silently eliding content.
-func (t *Tool) result(ctx context.Context, call entity.ToolCall, out json.RawMessage, backend string, fallbackErr error) (service.ToolResult, error) {
+func (t *Tool) result(ctx context.Context, call entity.ToolCall, out json.RawMessage, backend, fallbackNote string) (service.ToolResult, error) {
 	var doc map[string]any
 	if err := json.Unmarshal(out, &doc); err != nil {
 		return service.ToolResult{Text: string(out)}, nil
 	}
 	doc["backend"] = backend
-	if fallbackErr != nil {
-		doc["backendFallback"] = boundedErrorText(fallbackErr)
+	if fallbackNote != "" {
+		doc["backendFallback"] = fallbackNote
 	}
 	if src, _ := doc["tempFile"].(string); src != "" {
 		if ref := t.respillArtifact(ctx, call, src); ref != "" {
@@ -233,4 +252,38 @@ func boundedErrorText(err error) string {
 		return s[:backendFallbackMaxLen] + "…"
 	}
 	return s
+}
+
+// sanitizeFallbackNote strips provider internals from the note embedded in
+// the tool document — the endpoint URL and model id are wiring details the
+// model never needs, and leaving them in leaks them into context and UI.
+func sanitizeFallbackNote(err error, p service.WebProvider) string {
+	s := ""
+	if err != nil {
+		s = boundedErrorText(err)
+	}
+	if p.Endpoint != "" {
+		s = strings.ReplaceAll(s, p.Endpoint, "<provider endpoint>")
+	}
+	if p.Model != "" {
+		s = strings.ReplaceAll(s, p.Model, "<model>")
+	}
+	return s
+}
+
+// probeFailed reports whether this endpoint|model already proved it cannot
+// run the web_search server tool.
+func (t *Tool) probeFailed(key string) bool {
+	t.unsupportedMu.Lock()
+	defer t.unsupportedMu.Unlock()
+	return t.unsupportedProbe[key]
+}
+
+func (t *Tool) markProbeFailed(key string) {
+	t.unsupportedMu.Lock()
+	defer t.unsupportedMu.Unlock()
+	if t.unsupportedProbe == nil {
+		t.unsupportedProbe = map[string]bool{}
+	}
+	t.unsupportedProbe[key] = true
 }

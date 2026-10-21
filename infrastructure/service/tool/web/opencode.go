@@ -3,6 +3,7 @@ package toolweb
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -21,6 +22,13 @@ import (
 var openCodeKinds = map[string]bool{"opencode": true, "opencode-go": true}
 
 const openCodeBackend = "opencode"
+
+// errNoWebSearchCall marks the capability failure — the model completed a
+// Responses call but produced zero web_search_call items, meaning the
+// server tool never ran. The caller caches this per endpoint+model and
+// skips the probe on later searches; transient failures (timeouts, HTTP
+// errors) deliberately do not mark it.
+var errNoWebSearchCall = errors.New("model does not execute the web_search server tool")
 
 // openCodeClient calls the gateway's Responses API with the web_search
 // server tool. The output is normalized into the same document shape the
@@ -156,7 +164,7 @@ func (c *openCodeClient) search(ctx context.Context, p service.WebProvider, args
 		}
 	}
 	if searches == 0 {
-		return nil, fmt.Errorf("opencode returned no web_search_call — model %q likely does not execute the web_search server tool", p.Model)
+		return nil, fmt.Errorf("%w (%s)", errNoWebSearchCall, p.Model)
 	}
 	doc := map[string]any{
 		"query":   args.Query,

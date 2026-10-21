@@ -443,8 +443,8 @@ func TestSteerExactTurnLifecycle(t *testing.T) {
 		t.Fatalf("folded steer frame %s — want inputId/text/final", f.Payload)
 	}
 	<-gate2.entered
-	if svc.prev[2] != "hold on" || svc.seen[2] != "" {
-		t.Fatalf("provider call 2 saw prev=%q last=%q, want the folded steer then its context record", svc.prev[2], svc.seen[2])
+	if svc.prev[2] != "need gate1" || svc.seen[2] != "hold on" {
+		t.Fatalf("provider call 2 saw prev=%q last=%q, want the tool turn then the folded steer", svc.prev[2], svc.seen[2])
 	}
 
 	// Persisted input refuses recall while the turn still runs.

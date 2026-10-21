@@ -22,17 +22,17 @@ import (
 )
 
 // requireWorkspaceContext asserts msg is the workspace context record the
-// turn loop appends after an editable user line: a non-editable system
-// user message carrying one injection-typed `workspace` call whose JSON
-// input names dir and whose stored output is exactly `workspace changed
-// to <dir-or-(unset)>` — no measured latency.
+// turn loop appends after an editable user line: a system-role hydration
+// message carrying one completed injection-typed `workspace` call whose
+// JSON input names dir and whose stored output is exactly `workspace
+// changed to <dir-or-(unset)>` — no measured latency.
 func requireWorkspaceContext(t *testing.T, msg entity.Message, dir string) {
 	t.Helper()
-	if msg.Role() != enum.RoleUser || msg.Editable() {
-		t.Fatalf("workspace context = %v editable=%v, want a non-editable user record", msg.Role(), msg.Editable())
+	if msg.Role() != enum.RoleSystem || msg.Editable() {
+		t.Fatalf("workspace context = %v editable=%v, want a synthetic system record", msg.Role(), msg.Editable())
 	}
-	if msg.Content() != "" || msg.UserType() != enum.LLMUserTypeSystem {
-		t.Fatalf("workspace context content=%q userType=%q", msg.Content(), msg.UserType())
+	if msg.Content() != "" {
+		t.Fatalf("workspace context content=%q", msg.Content())
 	}
 	calls := msg.ToolCalls()
 	if len(calls) != 1 || calls[0].Name() != "workspace" || calls[0].Type() != enum.TooltypeInjection {
@@ -59,8 +59,8 @@ func requireWorkspaceContext(t *testing.T, msg entity.Message, dir string) {
 	}
 }
 
-// countWorkspaceContexts tallies the injection records in a history — the
-// turn may append exactly one per editable line.
+// countWorkspaceContexts tallies the injection records in a history — at
+// most one live pin per directory: an unchanged pin is not repeated.
 func countWorkspaceContexts(msgs []entity.Message) int {
 	n := 0
 	for _, m := range msgs {
@@ -598,6 +598,41 @@ func TestRunTurn413FoldRepinsWorkspaceContext(t *testing.T) {
 	requireWorkspaceContext(t, stored.Messages()[2], "/ws/repin")
 }
 
+// A fold whose kept tail retains the live pin must NOT re-pin: the dedup
+// scan sees the surviving same-directory record and suppresses the
+// append — [checkpoint, kept pin, kept call, reply], one pin total.
+func TestRunTurn413FoldKeepsPinSuppressesRepin(t *testing.T) {
+	d := Deps{
+		Convs:  repoconversation.NewConversationRepository(t.TempDir()),
+		Config: config.ConversationConfig{MaxTurnStep: 4, CompactKeepTail: 2},
+	}
+	conv := seedRoom(t, d.Convs, "room", "go")
+	conv.SetWorkspace("/ws/kept")
+	if err := d.Convs.Save(t.Context(), conv); err != nil {
+		t.Fatal(err)
+	}
+	schema, _ := valueobject.NewToolSchema("push", "test tool", nil, true, enum.ToolPermissionAgent)
+	driver := EnvironmentBundle{Tools: map[string]dservice.Tool{"push": pushTool{schema: schema}}}
+	svc := &foldWatchSvc{failAt: 2}
+	if err := d.runTurn(t.Context(), "room", conv, driver, nil, entity.Model{}, svc, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	msgs := conv.Messages()
+	if len(msgs) != 4 {
+		t.Fatalf("history = %d msgs, want checkpoint+pin+call+answer: %+v", len(msgs), msgs)
+	}
+	requireWorkspaceContext(t, msgs[1], "/ws/kept")
+	if msgs[2].Role() != enum.RoleAssistant || !msgs[2].ToolCalls()[0].HasOutput() {
+		t.Fatalf("kept tail = %+v, want the answered assistant call", msgs[2])
+	}
+	if msgs[3].Content() != "done" {
+		t.Fatalf("retried reply = %q", msgs[3].Content())
+	}
+	if got := countWorkspaceContexts(msgs); got != 1 {
+		t.Fatalf("workspace records = %d, want 1 — the kept pin suppresses a second", got)
+	}
+}
+
 // The same loop shape without a fold keeps the old contract: a bare
 // assistant tail is not pinned — the record stays behind the editable
 // line that earned it.
@@ -629,4 +664,50 @@ func TestRunTurnNoFoldLeavesNonEditableTailUnpinned(t *testing.T) {
 	if got := countWorkspaceContexts(msgs); got != 1 {
 		t.Fatalf("workspace records = %d, want the 1 behind the user line", got)
 	}
+}
+
+// A pin already live in the tail for the same directory is not repeated —
+// an identical record per editable line spends tokens without telling the
+// model anything new. A directory change, or a tail that lost the pin to
+// compaction, still records.
+func TestWorkspacePinSkipsWhenUnchanged(t *testing.T) {
+	d := Deps{
+		Convs:  repoconversation.NewConversationRepository(t.TempDir()),
+		Config: config.ConversationConfig{MaxTurnStep: 4},
+	}
+	driver := EnvironmentBundle{DefaultRoot: "/fallback/dir"}
+	conv := seedRoom(t, d.Convs, "room", "first")
+	if err := d.runTurn(t.Context(), "room", conv, driver, nil, entity.Model{}, doneSvc{}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	requireWorkspaceContext(t, conv.Messages()[1], "/fallback/dir")
+
+	// A second turn over the same directory adds no second pin.
+	user2, _ := entity.NewMessage(enum.RoleUser, "second")
+	conv.Append(user2)
+	if _, err := d.Convs.AppendMessage(t.Context(), "room", user2); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.runTurn(t.Context(), "room", conv, driver, nil, entity.Model{}, doneSvc{}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := countWorkspaceContexts(conv.Messages()); got != 1 {
+		t.Fatalf("pins = %d, want 1 — the live pin already cites this dir", got)
+	}
+
+	// A bound workspace change is a real change: the new dir pins again
+	// and the newest record is what the wire cites.
+	conv.SetWorkspace("/other/dir")
+	user3, _ := entity.NewMessage(enum.RoleUser, "third")
+	conv.Append(user3)
+	if _, err := d.Convs.AppendMessage(t.Context(), "room", user3); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.runTurn(t.Context(), "room", conv, driver, nil, entity.Model{}, doneSvc{}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := countWorkspaceContexts(conv.Messages()); got != 2 {
+		t.Fatalf("pins = %d, want 2 — a dir change must re-record", got)
+	}
+	requireWorkspaceContext(t, conv.Messages()[len(conv.Messages())-2], "/other/dir")
 }

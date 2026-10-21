@@ -152,7 +152,7 @@ func TestExportAndTitleAndDeleteLifecycle(t *testing.T) {
 		t.Fatal("send did not bind a conversation")
 	}
 
-	if out := f.run(t, "/status"); !strings.Contains(out, convID) || !strings.Contains(out, "messages    6") {
+	if out := f.run(t, "/status"); !strings.Contains(out, convID) || !strings.Contains(out, "messages    5") {
 		t.Fatalf("status = %q, want conversation + message count", out)
 	}
 	if out := f.run(t, "/title renamed room"); !strings.Contains(out, "title set") {
@@ -164,7 +164,7 @@ func TestExportAndTitleAndDeleteLifecycle(t *testing.T) {
 	if out := f.run(t, "/usage"); !strings.Contains(out, "total        12") {
 		t.Fatalf("usage = %q, want two turns of tokens", out)
 	}
-	if out := f.run(t, "/export transcript.md"); !strings.Contains(out, "exported 6 messages") {
+	if out := f.run(t, "/export transcript.md"); !strings.Contains(out, "exported 5 messages") {
 		t.Fatalf("export = %q", out)
 	}
 	raw, err := os.ReadFile(filepath.Join(f.workspace, "transcript.md"))

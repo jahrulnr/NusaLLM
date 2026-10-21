@@ -193,7 +193,7 @@ const flush = () => new Promise((r) => setTimeout(r));
 // line plus the non-editable workspace record every turn pins after it.
 const failedTail = [
   { id: 'm1', role: 'user', content: 'hi' },
-  { id: 'w1', role: 'user', userType: 'system', content: '', toolCalls: [{ type: 'injection', name: 'workspace' }] },
+  { id: 'w1', role: 'system', content: '', toolCalls: [{ type: 'injection', name: 'workspace' }] },
 ];
 
 test('a persisted failure parks a retry card, never a queue row', async () => {
@@ -279,7 +279,7 @@ test('retry target skips an older identical line via dispatch-time history ids',
   app.messages = [
     { id: 'm-old', role: 'user', content: 'hi' },
     { id: 'm-new', role: 'user', content: 'hi' },
-    { id: 'w1', role: 'user', userType: 'system', content: '' },
+    { id: 'w1', role: 'system', content: '' },
   ];
   assert.equal(app._retryMessageId(f), 'm-new');
   app._turnRetry();
@@ -436,7 +436,7 @@ test('a foreign turn settling via conversation.activity refreshes the badge', ()
 // mark the tail — a static tail reads as "the AI finished".
 const deadTail = [
   { id: 'm1', role: 'user', content: 'hi' },
-  { id: 'w1', role: 'user', userType: 'system', content: '', toolCalls: [{ type: 'injection', name: 'workspace' }] },
+  { id: 'w1', role: 'system', content: '', toolCalls: [{ type: 'injection', name: 'workspace' }] },
   { id: 'a1', role: 'assistant', finishReason: 'tool_calls', toolCalls: [{ id: 'tc1', name: 'exec' }] },
 ];
 

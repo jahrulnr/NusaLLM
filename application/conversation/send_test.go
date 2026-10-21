@@ -248,8 +248,11 @@ func TestSendFailedKeepsUserTurn(t *testing.T) {
 		t.Fatal("failed provider send must report its committed user line")
 	}
 	conv, _ := app.deps.Convs.Load(t.Context(), "c2")
-	if len(conv.Messages()) != 2 || conv.Last().Role() != enum.RoleUser {
-		t.Fatal("failed send must persist user turn without an assistant reply")
+	last := conv.Last()
+	pinOK := last.Role() == enum.RoleSystem && len(last.ToolCalls()) == 1 &&
+		last.ToolCalls()[0].Type() == enum.TooltypeInjection
+	if len(conv.Messages()) != 2 || !pinOK {
+		t.Fatal("failed send must persist user turn + workspace pin, without a reply")
 	}
 	if conv.Title() != "ping" {
 		t.Fatalf("failed first send title = %q, want the persisted user message", conv.Title())
@@ -311,8 +314,10 @@ func TestSendSerializesPerConv(t *testing.T) {
 	close(release)
 	wg.Wait()
 	conv, _ := app.deps.Convs.Load(t.Context(), "ser")
-	if len(conv.Messages()) != 6 { // 2 serialized turns of user+context+answer
-		t.Fatalf("want 6 messages, got %d", len(conv.Messages()))
+	// 2 serialized turns; the second send adds user+answer only — the
+	// unchanged workspace pin is not re-recorded.
+	if len(conv.Messages()) != 5 {
+		t.Fatalf("want 5 messages, got %d", len(conv.Messages()))
 	}
 }
 
@@ -577,8 +582,11 @@ func TestCancelRunningSend(t *testing.T) {
 	}
 	// User turn and its workspace record stay; no assistant reply.
 	conv, _ := app.deps.Convs.Load(t.Context(), "run")
-	if len(conv.Messages()) != 2 || conv.Last().Role() != enum.RoleUser {
-		t.Fatal("canceled send must keep the user turn only")
+	last := conv.Last()
+	pinOK := last.Role() == enum.RoleSystem && len(last.ToolCalls()) == 1 &&
+		last.ToolCalls()[0].Type() == enum.TooltypeInjection
+	if len(conv.Messages()) != 2 || !pinOK {
+		t.Fatal("canceled send must keep the user turn + workspace pin only")
 	}
 }
 
@@ -719,7 +727,9 @@ func TestCancelLeavesQueuedSend(t *testing.T) {
 		t.Fatal("queued send never ran after the cancel")
 	}
 	conv, _ := app.deps.Convs.Load(t.Context(), "q")
-	if len(conv.Messages()) != 5 { // user1+context, user2+context+assistant2 — no assistant1
+	// user1+context, user2+assistant2 — no assistant1, and no second pin:
+	// the workspace record already in the tail cites the same directory.
+	if len(conv.Messages()) != 4 {
 		t.Fatalf("queued turn must land after canceled one: %d msgs", len(conv.Messages()))
 	}
 }
@@ -929,7 +939,11 @@ type environmentService struct{ label string }
 
 func (s environmentService) Send(_ context.Context, conv *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, _ event.TurnEventHandler) error {
 	last := conv.Last()
-	if last.Role() == enum.RoleUser {
+	calls := last.ToolCalls()
+	settled := last.Role() == enum.RoleAssistant && len(calls) > 0 &&
+		calls[len(calls)-1].Type() == enum.TooltypeOrigin && calls[len(calls)-1].HasOutput()
+	if !settled {
+		// User line (or a workspace pin) ends the context → issue a call.
 		m, _ := entity.NewMessage(enum.RoleAssistant, "")
 		call, _ := entity.NewToolCall("call_1", "echo", `{}`, enum.TooltypeOrigin)
 		m.AddToolCall(call)
@@ -937,7 +951,7 @@ func (s environmentService) Send(_ context.Context, conv *aggregate.Conversation
 		conv.Append(m)
 		return nil
 	}
-	m, _ := entity.NewMessage(enum.RoleAssistant, s.label+":"+last.ToolCalls()[0].Output())
+	m, _ := entity.NewMessage(enum.RoleAssistant, s.label+":"+calls[len(calls)-1].Output())
 	m.SetFinishReason(enum.FinishReasonStop)
 	conv.Append(m)
 	return nil
@@ -1036,7 +1050,13 @@ func TestSendSelectsEnvironmentPerConversationAndResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lastUser := beforeEdit.Messages()[len(beforeEdit.Messages())-4]
+	var lastUser entity.Message
+	for i := len(beforeEdit.Messages()) - 1; i >= 0; i-- {
+		if beforeEdit.Messages()[i].Editable() {
+			lastUser = beforeEdit.Messages()[i]
+			break
+		}
+	}
 	if err := app.Edit(t.Context(), "docker-room", lastUser.ID(), "edited", nil); err != nil {
 		t.Fatal(err)
 	}

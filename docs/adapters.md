@@ -120,6 +120,13 @@ Three details matter:
   application-originated; they hydrate as inline text appended to the message
   content rather than posing as provider `tool_calls`, and their output
   attachments are never encoded.
+- **Mid-list `system` messages stay system.** A `RoleSystem` hydration
+  record (the workspace pin) encodes as a `system` wire message wherever
+  it sits in history — a deliberate choice: this wire has a real system
+  role and the record is system-authored context. It is spec-legal but
+  relies on provider leniency: strict chat-template servers that demand
+  a first-position system message may demote or reject it. The other
+  adapters fold homeless roles into a user turn instead.
 - **Tool output attachments ride a synthetic user message.** The
   chat-completions `tool` role is text-only, so media a call produced is sent
   as an openclaw-style follow-up user message labeling the call it came from.
@@ -311,8 +318,10 @@ The wire is role-alternated `contents` of typed parts (`user`/`model` only —
   `generatecontent.parts` — stores signed and thought parts verbatim with
   `{"refill":"text"}`/`{"refill":"functionCall"}` placeholders; a verbatim
   signed call still consumes its domain call slot so refills stay aligned.
-- **Injected evidence.** Output from injection calls joins both model and
-  user turns as bounded untrusted text; it is never dropped on the user path.
+- **Injected evidence.** Output from injection calls folds into the carrying turn
+  as bounded untrusted text — a system-role hydration record lands as
+  system/user turn text per wire, never as a posed provider tool call; it
+  is never dropped on the user path.
 - **Family-aware thinking.** `generationConfig.thinkingConfig` maps effort
   by model family: `gemini-3` ids take `thinkingLevel` (clamped to `high`),
   `gemini-2.5` takes `includeThoughts` alone (invented budgets get

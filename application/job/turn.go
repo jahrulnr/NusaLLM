@@ -56,8 +56,10 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 	// model invents names it was never offered.
 	conv.SetTools(driver.ToolSchemas())
 	didCompact := false
-	// pinnedID is the workspace record this turn appended — a kept tail
-	// that already carries it must not take a second copy after a fold.
+	// pinnedID is the record the last pin attempt left the tail on — a
+	// kept tail ending on it must not take a second pin after a fold.
+	// The dedup inside appendWorkspaceContext makes this a fast path:
+	// an unchanged pin also skips the append there.
 	pinnedID := ""
 	for step := 0; step < ccfg.MaxTurnStep; step++ {
 		if err := ctx.Err(); err != nil {
@@ -413,12 +415,36 @@ func (d Deps) persistInterrupted(ctx context.Context, convID string, msg *entity
 }
 
 // appendWorkspaceContext records the turn's working directory as one
-// injection-typed `workspace` call on a system user message, appended right
-// after the editable line it describes. The record travels history like a
-// tool result — adapters fold it into the next provider call — and
-// renderers show it as a context line, not a user quote. The empty latency
-// marks it as a stored record, not a measured execution.
+// injection-typed `workspace` call on a system-role message, appended
+// right after the editable line it describes — a mid-conversation system
+// turn, not the system prompt (that layer is separate). The record
+// travels history as hydration: adapters fold it into the wire turn's
+// text, renderers show it as a context line, not a user quote. The empty
+// latency marks it as a stored record, not a measured execution.
+//
+// A pin already sitting in the live tail for the same directory is not
+// repeated — re-pinning on every editable line spends tokens without
+// telling the model anything new. A different path, or no pin in the live
+// tail (e.g. the last one was folded into a compaction checkpoint),
+// still records.
 func (d Deps) appendWorkspaceContext(ctx context.Context, convID string, conv *aggregate.Conversation, dir string) error {
+	// Newest workspace pin wins: identical → the tail already cites this
+	// directory; different or absent → record this turn's.
+scan:
+	for i := len(conv.Messages()) - 1; i >= 0; i-- {
+		for _, tc := range conv.Messages()[i].ToolCalls() {
+			if tc.Type() != enum.TooltypeInjection || tc.Name() != "workspace" {
+				continue
+			}
+			var prior struct {
+				Path string `json:"path"`
+			}
+			if err := json.Unmarshal([]byte(tc.Input()), &prior); err == nil && prior.Path == dir {
+				return nil
+			}
+			break scan // newest pin cites a different directory — re-pin
+		}
+	}
 	shown := dir
 	if shown == "" {
 		shown = "(unset)"
@@ -429,11 +455,10 @@ func (d Deps) appendWorkspaceContext(ctx context.Context, convID string, conv *a
 	if err != nil {
 		return apperror.New(500, "workspace context marshal failed", err)
 	}
-	msg, err := entity.NewMessage(enum.RoleUser, "")
+	msg, err := entity.NewMessage(enum.RoleSystem, "")
 	if err != nil {
 		return err
 	}
-	msg.SetUserType(enum.LLMUserTypeSystem)
 	callID, err := valueobject.NewID("call", "")
 	if err != nil {
 		return err

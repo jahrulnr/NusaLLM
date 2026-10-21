@@ -43,16 +43,17 @@ func (c *ExportCommand) Execute(ctx context.Context, _ string, emitter dservice.
 	var out strings.Builder
 	fmt.Fprintf(&out, "# conversation %s\n", c.h.ConversationID())
 	for _, message := range messages {
-		// A pure injection message — user role, no text, every call an
-		// application context record — exports as a context block: one
-		// line per stored output, no empty user heading or tool dumps.
+		// A pure injection message — no text, every call an application
+		// context record — exports as a context block: one line per
+		// stored output, no empty heading or tool dumps. Either carrier
+		// (the old user-role pins, current system-role) takes it.
 		injections := 0
 		for _, call := range message.ToolCalls() {
 			if call.Type() == enum.TooltypeInjection {
 				injections++
 			}
 		}
-		if message.Role() == enum.RoleUser && message.Content() == "" &&
+		if message.Content() == "" &&
 			injections > 0 && injections == len(message.ToolCalls()) {
 			fmt.Fprintf(&out, "\n## context · %s\n\n", message.ID())
 			for _, call := range message.ToolCalls() {

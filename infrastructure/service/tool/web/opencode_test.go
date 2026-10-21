@@ -130,7 +130,48 @@ func TestOpenCodeDroppedToolFallsBackToSearchwire(t *testing.T) {
 	if err := json.Unmarshal([]byte(res.Text), &doc); err != nil {
 		t.Fatalf("text = %q: %v", res.Text, err)
 	}
-	if doc["backend"] != "searchwire" || !strings.Contains(doc["backendFallback"].(string), "no web_search_call") {
+	if doc["backend"] != "searchwire" || !strings.Contains(doc["backendFallback"].(string), "does not execute") {
+		t.Fatalf("doc = %#v", doc)
+	}
+	// The note must not leak provider internals — model id stripped.
+	if strings.Contains(doc["backendFallback"].(string), "deepseek-v4-flash") {
+		t.Fatalf("backendFallback leaks the model name: %v", doc["backendFallback"])
+	}
+}
+
+func TestOpenCodeProbeCachedSkipsLaterCalls(t *testing.T) {
+	// Once a model proves it cannot run the server tool, later searches on
+	// that endpoint|model must not pay another doomed provider round-trip —
+	// the probe result is cached for the tool's lifetime.
+	var hits int
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		hits++
+		return omniResponse(`{"output":[{"type":"message","content":[{"type":"output_text","text":"no tools"}]}]}`), nil
+	})}
+	def := stubDef("search", `{"query":"x","results":[]}`, nil)
+	tool := toolWithClient(t, def, client)
+	ctx := openCodeCtx()
+	call, _ := entity.NewToolCall("c1", "web_search", `{"query":"x"}`, enum.TooltypeOrigin)
+
+	res, err := tool.Execute(ctx, call, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hits != 1 {
+		t.Fatalf("first call hits = %d, want 1", hits)
+	}
+	res, err = tool.Execute(ctx, call, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hits != 1 {
+		t.Fatalf("second call probed again — cache did not stick (hits=%d)", hits)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(res.Text), &doc); err != nil {
+		t.Fatalf("text = %q: %v", res.Text, err)
+	}
+	if doc["backend"] != "searchwire" || !strings.Contains(doc["backendFallback"].(string), "skipped") {
 		t.Fatalf("doc = %#v", doc)
 	}
 }

@@ -1174,11 +1174,14 @@ class AppShell extends Widget {
   //                                 would always continue past this
   //   assistant any other finish    settled — a normal tail
   //
-  // "Real" skips optimistic pending-* lines and system records
-  // (workspace pins, compaction checkpoints persist as role:'user' +
-  // userType:'system' — never turn inputs). Steer folds persist as
-  // ordinary user inputs. Nothing here distinguishes a restart from a
-  // user cancel or an upstream failure — the card stays cause-neutral.
+  // "Real" skips optimistic pending-* lines and harness records:
+  // compaction checkpoints persist as role:'user' + userType:'system',
+  // workspace pins persist as role:'system' carrying an injection call —
+  // neither is a turn input nor a verdict-bearing tail, so the scan only
+  // ever lands on real user input or a real assistant reply. Steer folds
+  // persist as ordinary user inputs. Nothing here distinguishes a restart
+  // from a user cancel or an upstream failure — the card stays
+  // cause-neutral.
   // Skips that keep the card honest:
   //   - conv.activeTurnId / an own command on the room: a live turn's
   //     tail is legitimately open.

@@ -24,14 +24,13 @@ func (passthroughOutput) Write(emitter dservice.CommandEmitter, format string, a
 func (passthroughOutput) SanitizeText(text string) string { return text }
 
 // workspaceContextRecord builds the injection record the turn loop writes
-// after an editable line — system user, no content, one workspace call.
+// after an editable line — system role, no content, one workspace call.
 func workspaceContextRecord(t *testing.T, dir string) entity.Message {
 	t.Helper()
-	msg, err := entity.NewMessage(enum.RoleUser, "")
+	msg, err := entity.NewMessage(enum.RoleSystem, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	msg.SetUserType(enum.LLMUserTypeSystem)
 	call, err := entity.NewToolCall("call_ws", "workspace", fmt.Sprintf(`{"path":%q}`, dir), enum.TooltypeInjection)
 	if err != nil {
 		t.Fatal(err)
@@ -41,7 +40,7 @@ func workspaceContextRecord(t *testing.T, dir string) entity.Message {
 	return msg
 }
 
-// An injection-only user record renders as one plain context line per
+// An injection-only context record renders as one plain context line per
 // call — never a \> quote or a ⏺ dump — while everything around it keeps
 // the ordinary transcript shape.
 func TestWriteRendersInjectionContextLines(t *testing.T) {

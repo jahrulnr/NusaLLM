@@ -340,6 +340,16 @@ class MessageThread extends Widget {
   }
 
   _message(m) {
+    // An injection-only record — application context pinned by the
+    // harness (the workspace binding, role:'system'; older stores carry
+    // role:'user') — renders as plain context lines before role
+    // dispatch; never a bubble or tool card.
+    const calls = m.toolCalls || [];
+    if (m.content === '' && calls.length > 0 &&
+        calls.every((tc) => tc.type === 'injection')) {
+      return el('div', { class: 'context-lines' },
+        calls.map((tc) => el('div', { class: 'context-line', text: tc.output || '' })));
+    }
     if (m.role === 'user') return this._userMessage(m);
     return this._assistantMessage(m);
   }
@@ -359,12 +369,6 @@ class MessageThread extends Widget {
     const injected = calls.filter((tc) => tc.type === 'injection');
     const contextLines = () => el('div', { class: 'context-lines' },
       injected.map((tc) => el('div', { class: 'context-line', text: tc.output || '' })));
-    // An injection-only user record with no text is an application
-    // context entry (the workspace binding): one plain line per call —
-    // never an editable bubble.
-    if (m.content === '' && calls.length > 0 && injected.length === calls.length) {
-      return contextLines();
-    }
     if (this._editingId === m.id) return this._editBlock(m);
     const kids = [el('div', { class: 'user-content', text: m.content })];
     if ((m.attachments || []).length) {

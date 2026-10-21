@@ -787,3 +787,52 @@ func TestSanitizeCompactedTailDropsReasoningDetails(t *testing.T) {
 		t.Fatal("sanitizer mutated the input message")
 	}
 }
+
+// The system-role workspace pin folds into a system wire message — never
+// an orphan tool-role message, which chat-completions rejects.
+func TestSystemHydrationPinFoldsWithoutToolRole(t *testing.T) {
+	var captured RequestBody
+	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&captured)
+		json.NewEncoder(w).Encode(map[string]any{
+			"model": "m", "choices": []any{map[string]any{
+				"index":         0,
+				"message":       map[string]any{"role": "assistant", "content": "ok"},
+				"finish_reason": "stop"}},
+		})
+	})
+
+	conv := newConv(t)
+	u, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(u)
+	pin, _ := entity.NewMessage(enum.RoleSystem, "")
+	call, _ := entity.NewToolCall("call_ws", "workspace", `{"path":"/srv/ws"}`, enum.TooltypeInjection)
+	call.SetStoredOutput("workspace changed to /srv/ws", "")
+	pin.AddToolCall(call)
+	conv.Append(pin)
+
+	model, _ := entity.NewModel("m", "test")
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
+		t.Fatal(err)
+	}
+	var pinMsg *MessageBody
+	for i := range captured.Messages {
+		m := &captured.Messages[i]
+		if m.Role == "tool" {
+			t.Fatalf("injection call must not emit a tool-role message: %+v", captured.Messages)
+		}
+		if m.Role == "system" && m.ToolCalls != nil {
+			t.Fatalf("pin must not emit tool_calls: %+v", m.ToolCalls)
+		}
+		if m.Role == "system" {
+			pinMsg = m
+		}
+	}
+	if pinMsg == nil {
+		t.Fatalf("system pin missing from wire: %+v", captured.Messages)
+	}
+	text, _ := pinMsg.Content.(string)
+	if !strings.Contains(text, "workspace changed to /srv/ws") {
+		t.Fatalf("pin output folded = %q", text)
+	}
+}

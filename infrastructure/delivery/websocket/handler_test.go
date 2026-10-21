@@ -274,9 +274,10 @@ func TestTurnSendEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	// user "ping" / workspace context record / assistant "pong" — the
-	// hydration record trails every editable line as an empty user message.
+	// hydration record trails every editable line as an empty system-role
+	// message carrying one injection-typed workspace call.
 	if len(body.Messages) != 3 || body.Messages[0].Role != "user" || body.Messages[0].Content != "ping" ||
-		body.Messages[1].Role != "user" || body.Messages[1].Content != "" ||
+		body.Messages[1].Role != "system" || body.Messages[1].Content != "" ||
 		body.Messages[2].Role != "assistant" || body.Messages[2].Content != "pong" {
 		t.Fatalf("history: %+v", body.Messages)
 	}
@@ -332,7 +333,7 @@ func TestTurnSendEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(body2.Messages) != 3 || body2.Messages[0].Content != "second" ||
-		body2.Messages[1].Role != "user" || body2.Messages[1].Content != "" ||
+		body2.Messages[1].Role != "system" || body2.Messages[1].Content != "" ||
 		body2.Messages[2].Role != "assistant" {
 		t.Fatalf("post-edit history: %+v", body2.Messages)
 	}

@@ -10,7 +10,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
 	github.com/charmbracelet/x/ansi v0.11.6
 	github.com/gin-gonic/gin v1.11.0
-	github.com/jahrulnr/searchwire v0.0.0-20261020181943-3aaddfcd8322
+	github.com/jahrulnr/searchwire v0.0.0-20261021130355-29f8e5f45adc
 	github.com/mattn/go-runewidth v0.0.19
 	github.com/muesli/termenv v0.16.0
 	github.com/rivo/uniseg v0.4.7

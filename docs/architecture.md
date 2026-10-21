@@ -290,7 +290,8 @@ is reused. Each iteration:
   `dservice.WithWorkspaceDir` for file tools and the `exec` cwd. When
   the latest history message is editable (the submitted line or a folded
   steer), `runTurn` appends a workspace context record before the call:
-  a system user message with no text and one injection-typed `workspace`
+  a system-role message — a mid-conversation system turn, not the
+  system prompt — with no text and one injection-typed `workspace`
   tool call — `{"path":…}` input, stored output citing the active path,
   `(unset)` when neither source supplies one. It persists like any
   message; adapters replay it as untrusted evidence alongside tool

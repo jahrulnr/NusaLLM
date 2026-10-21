@@ -123,11 +123,18 @@ func assistantMessage(t *testing.T, body []byte) map[string]json.RawMessage {
 	if err := json.Unmarshal(body, &req); err != nil {
 		t.Fatalf("decode replay request: %v\n%s", err, body)
 	}
+	// The last assistant message is the model turn under test — earlier
+	// assistant entries are prior turns' answers (workspace pins ride
+	// role:"system" and never match this scan).
+	var last map[string]json.RawMessage
 	for _, m := range req.Messages {
 		var role string
 		if err := json.Unmarshal(m["role"], &role); err == nil && role == "assistant" {
-			return m
+			last = m
 		}
+	}
+	if last != nil {
+		return last
 	}
 	t.Fatalf("replay request has no assistant message:\n%s", body)
 	return nil

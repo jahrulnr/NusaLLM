@@ -500,8 +500,7 @@ func TestMessagesCompletedEmptyToolOutput(t *testing.T) {
 // An injection call — the application's context record — projects its
 // provenance so the UI can render it as context, not model work.
 func TestMessagesInjectionCallType(t *testing.T) {
-	msg, _ := entity.NewMessage(enum.RoleUser, "")
-	msg.SetUserType(enum.LLMUserTypeSystem)
+	msg, _ := entity.NewMessage(enum.RoleSystem, "")
 	call, _ := entity.NewToolCall("call_ws", "workspace", `{"path":"/srv/ws"}`, enum.TooltypeInjection)
 	call.SetStoredOutput("workspace changed to /srv/ws", "")
 	msg.AddToolCall(call)
@@ -518,8 +517,8 @@ func TestMessagesInjectionCallType(t *testing.T) {
 	if got["type"] != "injection" || got["output"] != "workspace changed to /srv/ws" {
 		t.Fatalf("injection call projection wrong: %v", got)
 	}
-	if msgs[0].(map[string]any)["userType"] != "system" {
-		t.Fatalf("context record userType = %v", msgs[0])
+	if msgs[0].(map[string]any)["role"] != "system" {
+		t.Fatalf("context record role = %v", msgs[0])
 	}
 }
 

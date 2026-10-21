@@ -96,9 +96,11 @@ func TestRunTurnFoldsSteerAfterToolResult(t *testing.T) {
 	}
 	msgs := conv.Messages()
 	// user "go" / workspace record / assistant+push call / folded steer /
-	// workspace record / assistant "done"
-	if len(msgs) != 6 {
-		t.Fatalf("folded history = %d msgs, want 6", len(msgs))
+	// assistant "done". The steer is followed by no second record: the pin
+	// after "go" still cites the same directory, so repeating it would
+	// spend tokens without telling the model anything new.
+	if len(msgs) != 5 {
+		t.Fatalf("folded history = %d msgs, want 5", len(msgs))
 	}
 	if msgs[3].Role() != enum.RoleUser || msgs[3].Content() != "also handle X" {
 		t.Fatalf("steer message = %v %q", msgs[3].Role(), msgs[3].Content())
@@ -107,11 +109,10 @@ func TestRunTurnFoldsSteerAfterToolResult(t *testing.T) {
 		t.Fatal("the tool result must be recorded before the steer folded")
 	}
 	requireWorkspaceContext(t, msgs[1], "")
-	requireWorkspaceContext(t, msgs[4], "")
-	// The second provider call saw the steer with its fresh context
-	// record trailing it — the record is the new tail, not the answer.
-	if svc.prevSeen != "also handle X" || svc.lastSeen != "" {
-		t.Fatalf("provider call 2 saw prev=%q last=%q, want the steer then its context record", svc.prevSeen, svc.lastSeen)
+	// The second provider call saw the steer as the tail; the live pin
+	// after "go" is still the citation the wire carries for this dir.
+	if svc.prevSeen != "need a tool" || svc.lastSeen != "also handle X" {
+		t.Fatalf("provider call 2 saw prev=%q last=%q, want the tool turn then the steer", svc.prevSeen, svc.lastSeen)
 	}
 	if !slices.Contains(kinds, enum.TurnEventSteer) {
 		t.Fatalf("no steer event emitted: %v", kinds)
@@ -120,7 +121,7 @@ func TestRunTurnFoldsSteerAfterToolResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(stored.Messages()) != 6 || stored.Messages()[3].Content() != "also handle X" {
+	if len(stored.Messages()) != 5 || stored.Messages()[3].Content() != "also handle X" {
 		t.Fatalf("persisted history missing the fold: %d msgs", len(stored.Messages()))
 	}
 }

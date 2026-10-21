@@ -178,11 +178,10 @@ func TestExportMixedMessageKeepsHeading(t *testing.T) {
 // the renderer test stays independent of the producer.
 func workspaceContextRecord(t *testing.T, dir string) entity.Message {
 	t.Helper()
-	msg, err := entity.NewMessage(enum.RoleUser, "")
+	msg, err := entity.NewMessage(enum.RoleSystem, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	msg.SetUserType(enum.LLMUserTypeSystem)
 	call, err := entity.NewToolCall("call_ws", "workspace", `{"path":"`+dir+`"}`, enum.TooltypeInjection)
 	if err != nil {
 		t.Fatal(err)

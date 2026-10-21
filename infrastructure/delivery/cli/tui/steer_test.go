@@ -281,12 +281,12 @@ func TestSteerFoldsThroughSession(t *testing.T) {
 	}
 	msgs := conv.Messages()
 	// user "go" / workspace record / assistant+echo call / folded steer /
-	// workspace record / assistant "done"
-	if len(msgs) != 6 || msgs[3].Role() != enum.RoleUser || msgs[3].Content() != "check X" {
+	// assistant "done" — the unchanged dir pin is not repeated.
+	if len(msgs) != 5 || msgs[3].Role() != enum.RoleUser || msgs[3].Content() != "check X" {
 		t.Fatalf("steer not in history: %d msgs", len(msgs))
 	}
-	if svc.prevSeen != "check X" || svc.lastSeen != "" {
-		t.Fatalf("provider saw prev=%q last=%q, want the steer then its context record", svc.prevSeen, svc.lastSeen)
+	if svc.prevSeen != "need a tool" || svc.lastSeen != "check X" {
+		t.Fatalf("provider saw prev=%q last=%q, want the tool turn then the steer", svc.prevSeen, svc.lastSeen)
 	}
 
 	// finishTurn drains nothing — the landed steer must not requeue.
@@ -377,8 +377,8 @@ func TestSteerMissQueuesAsMessage(t *testing.T) {
 	if _, ok := next.(sendDoneMsg); !ok {
 		t.Fatalf("requeued turn ended with %T", next)
 	}
-	if svc.prevSeen != "late input" || svc.lastSeen != "" {
-		t.Fatalf("requeued steer reached provider as prev=%q last=%q, want the text then its context record", svc.prevSeen, svc.lastSeen)
+	if svc.prevSeen != "done" || svc.lastSeen != "late input" {
+		t.Fatalf("requeued steer reached provider as prev=%q last=%q, want the answer then the steer text", svc.prevSeen, svc.lastSeen)
 	}
 }
 
