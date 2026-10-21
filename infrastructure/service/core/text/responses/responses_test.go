@@ -610,6 +610,59 @@ func TestImageFileAttachmentBecomesDataURI(t *testing.T) {
 	}
 }
 
+// Tool-output media rides inside its function_call_output — this wire
+// carries parts there, so no role:"user" item may be synthesized.
+func TestToolOutputMediaInsideFunctionCallOutput(t *testing.T) {
+	img := []byte{0x89, 0x50, 0x4e, 0x47}
+	path := filepath.Join(t.TempDir(), "shot.png")
+	os.WriteFile(path, img, 0o644)
+
+	var captured map[string]any
+	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+		captured = decodeReq(t, r)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": "r", "status": "completed",
+			"output": []any{map[string]any{"type": "message", "role": "assistant",
+				"content": []any{map[string]any{"type": "output_text", "text": "ok"}}}},
+		})
+	})
+	svc.fileRoot = filepath.Dir(path)
+
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleAssistant, "")
+	tc, _ := entity.NewToolCall("call_1", "read_media", `{}`, enum.TooltypeOrigin)
+	m.AddToolCall(tc)
+	m.SetToolOutput("call_1", "loaded")
+	a, _ := valueobject.NewAttachment("file://"+path, "image/png")
+	m.SetToolOutputAttachments("call_1", []valueobject.Attachment{a})
+	conv.Append(m)
+
+	model, _ := entity.NewModel("gpt-x", "test")
+	model.SetInputModalities([]enum.Modality{enum.ModalityText, enum.ModalityImage})
+	if err := svc.Send(context.Background(), conv, gw, model, nil); err != nil {
+		t.Fatal(err)
+	}
+	items, _ := captured["input"].([]any)
+	var fco map[string]any
+	for _, it := range items {
+		m2 := it.(map[string]any)
+		if m2["type"] == "message" && m2["role"] == "user" {
+			t.Fatalf("no user item may carry tool media: %+v", m2)
+		}
+		if m2["type"] == "function_call_output" {
+			fco = m2
+		}
+	}
+	parts, ok := fco["output"].([]any)
+	if !ok || len(parts) < 2 {
+		t.Fatalf("output must be parts [text, image], got %+v", fco["output"])
+	}
+	if parts[0].(map[string]any)["type"] != "input_text" ||
+		parts[1].(map[string]any)["type"] != "input_image" {
+		t.Fatalf("output parts: %+v", parts)
+	}
+}
+
 func TestAudioAttachmentOmitted(t *testing.T) {
 	var captured map[string]any
 	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {

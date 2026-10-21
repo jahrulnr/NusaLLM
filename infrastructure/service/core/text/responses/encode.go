@@ -104,10 +104,8 @@ func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool
 // they record — observed evidence rides at tool-output trust, not inside
 // an instruction turn. Anywhere else they hydrate as inline text (legacy
 // user-role records keep their shape). Injection output attachments are
-// never encoded. A call's output attachments ride a user message after
-// the whole output block: function_call_output carries only a string on
-// this surface, so media follows the same convention the completion
-// wire uses.
+// never encoded. A call's output attachments ride inside its
+// function_call_output — this surface carries content parts there.
 func encodeMessage(m entity.Message, model entity.Model, fileRoot wire.MediaRoot) ([]json.RawMessage, error) {
 	var origin, injected []entity.ToolCall
 	for _, tc := range m.ToolCalls() {
@@ -238,29 +236,28 @@ func assistantItems(m entity.Message, text string, origin []entity.ToolCall) []j
 	return items
 }
 
-// toolResultItems emits one function_call_output per origin call, then —
-// after the whole block — a user message carrying each call's media
-// attachments, mirroring the completion wire's convention.
+// toolResultItems emits one function_call_output per origin call; media
+// attachments ride inside its output alongside the text — this wire
+// carries parts there, so nothing is synthesized as a user item.
 func toolResultItems(origin []entity.ToolCall, model entity.Model, fileRoot wire.MediaRoot) []json.RawMessage {
 	if len(origin) == 0 {
 		return nil
 	}
-	var items, media []json.RawMessage
+	var items []json.RawMessage
 	for _, tc := range origin {
 		content := tc.OutputWithUntrustedTagOrInterrupted()
-		out, _ := marshalItem(ItemBody{Type: "function_call_output", CallID: tc.ID(), Output: content})
-		items = append(items, out...)
+		var out any = content
 		if atts := tc.OutputAttachments(); len(atts) > 0 {
-			parts := []any{PartBody{Type: "input_text",
-				Text: "Attached output from tool " + tc.Name() + " (call " + tc.ID() + "):"}}
+			parts := []any{PartBody{Type: "input_text", Text: content}}
 			for _, a := range atts {
 				parts = append(parts, attachmentPart(a, model, fileRoot))
 			}
-			follow, _ := marshalItem(ItemBody{Type: "message", Role: "user", Content: parts})
-			media = append(media, follow...)
+			out = parts
 		}
+		item, _ := marshalItem(ItemBody{Type: "function_call_output", CallID: tc.ID(), Output: out})
+		items = append(items, item...)
 	}
-	return append(items, media...)
+	return items
 }
 
 // marshalItem encodes one input item as a single JSON element — the slice

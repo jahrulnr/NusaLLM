@@ -223,14 +223,15 @@ func encodeMessage(m entity.Message, model entity.Model, fileRoot wire.MediaRoot
 		if atts := tc.OutputAttachments(); len(atts) > 0 {
 			// Per-attachment degrade at send time, not record time: the
 			// bound model can change between turns, and a missing file
-			// must not wedge the whole request. The call id labels the
-			// pairing now that the block is detached from its tool message.
-			parts := []any{map[string]any{"type": "text",
-				"text": "Attached output from tool " + tc.Name() + " (call " + tc.ID() + "):"}}
+			// must not wedge the whole request. Notes about the result
+			// belong to the tool output; a synthesized user message exists
+			// only to carry media parts this wire cannot put in a tool
+			// message — the call id keeps the pairing legible.
+			var parts []any
+			var notes []string
 			for _, a := range atts {
 				if !model.AcceptsInput(a.Modality()) {
-					parts = append(parts, map[string]any{"type": "text",
-						"text": "(" + a.Modality().String() + " output omitted: model does not accept it)"})
+					notes = append(notes, "("+a.Modality().String()+" output omitted: model does not accept it)")
 					continue
 				}
 				p, err := encodeAttachment(a, fileRoot)
@@ -239,12 +240,19 @@ func encodeMessage(m entity.Message, model entity.Model, fileRoot wire.MediaRoot
 					if name := safeAttachmentName(a.Name()); name != "" {
 						label = "(media output unavailable: " + name + ")"
 					}
-					parts = append(parts, map[string]any{"type": "text", "text": label})
+					notes = append(notes, label)
 					continue
 				}
 				parts = append(parts, p)
 			}
-			media = append(media, MessageBody{Role: enum.RoleUser.String(), Content: parts})
+			if len(notes) > 0 {
+				msgs[len(msgs)-1].Content = content + "\n" + strings.Join(notes, "\n")
+			}
+			if len(parts) > 0 {
+				parts = append([]any{map[string]any{"type": "text",
+					"text": "Attached output from tool " + tc.Name() + " (call " + tc.ID() + "):"}}, parts...)
+				media = append(media, MessageBody{Role: enum.RoleUser.String(), Content: parts})
+			}
 		}
 	}
 	return append(msgs, media...), nil

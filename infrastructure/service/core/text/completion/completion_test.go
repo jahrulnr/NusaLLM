@@ -280,30 +280,36 @@ func TestToolOutputAttachmentGatedByModality(t *testing.T) {
 	m.SetToolOutputAttachments("call_1", []valueobject.Attachment{missing})
 	conv.Append(m)
 
-	// text-only model: the attachment must degrade to a text placeholder.
+	// text-only model: the note degrades into the tool output itself —
+	// no media parts survive, so no synthesized user message at all.
 	model, _ := entity.NewModel("m", "test")
 	model.SetInputModalities([]enum.Modality{enum.ModalityText})
 	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
 		t.Fatal(err)
 	}
-	media := captured.Messages[2] // assistant + tool + media carrier
-	parts, _ := media.Content.([]any)
-	text, _ := parts[1].(map[string]any)["text"].(string)
+	if len(captured.Messages) != 2 {
+		t.Fatalf("expected assistant+tool only, got %d messages", len(captured.Messages))
+	}
+	text, _ := captured.Messages[1].Content.(string)
 	if !strings.Contains(text, "omitted") {
-		t.Fatalf("expected omitted placeholder, got %+v", parts[1])
+		t.Fatalf("expected omitted note in tool output, got %q", text)
 	}
 
-	// vision-capable model but the file is gone: placeholder, not a
-	// failed request. Empty modality list fails open.
+	// vision-capable model but the file is gone: same — the note rides in
+	// the tool output, never a fake user turn. (The first reply appended
+	// an assistant message, so the count is three, not two.)
 	model, _ = entity.NewModel("m", "test")
 	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
 		t.Fatal(err)
 	}
-	media = captured.Messages[2]
-	parts, _ = media.Content.([]any)
-	text, _ = parts[1].(map[string]any)["text"].(string)
+	for _, mm := range captured.Messages {
+		if mm.Role == enum.RoleUser.String() {
+			t.Fatalf("no user message may be synthesized, got %+v", mm.Content)
+		}
+	}
+	text, _ = captured.Messages[1].Content.(string)
 	if !strings.Contains(text, "unavailable") {
-		t.Fatalf("expected unavailable placeholder, got %+v", parts[1])
+		t.Fatalf("expected unavailable note in tool output, got %q", text)
 	}
 }
 
@@ -390,10 +396,9 @@ func TestToolOutputAttachmentPinMismatchDegrades(t *testing.T) {
 	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
 		t.Fatal(err)
 	}
-	parts, _ := captured.Messages[2].Content.([]any)
-	text, _ := parts[1].(map[string]any)["text"].(string)
+	text, _ := captured.Messages[1].Content.(string)
 	if !strings.Contains(text, "unavailable") {
-		t.Fatalf("pin mismatch must degrade to placeholder, got %+v", parts[1])
+		t.Fatalf("pin mismatch must degrade in the tool output, got %q", text)
 	}
 	if strings.Contains(text, path) {
 		t.Fatal("placeholder must not leak the workspace path")
