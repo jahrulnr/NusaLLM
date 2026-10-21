@@ -140,7 +140,7 @@ class MessageThread extends Widget {
   }
   // The failed turn's terminal card — a dedicated node updated in
   // place like the compact status, so it never forces a thread
-  // rebuild. {note, retryable} or null.
+  // rebuild. {note, retryable, title} or null.
   set failedTurn(v) {
     this._failedTurn = v || null;
     this._renderFailed();
@@ -170,7 +170,7 @@ class MessageThread extends Widget {
     const f = this._failedTurn;
     // Every queue sync re-projects the card — skip the rebuild when
     // nothing changed so a focused Retry keeps its focus.
-    const sig = f ? `${f.note || ''}|${!!f.retryable}` : '';
+    const sig = f ? `${f.title || ''}|${f.note || ''}|${!!f.retryable}` : '';
     if (sig === this._failSig) return;
     this._failSig = sig;
     clear(this.failEl);
@@ -178,7 +178,7 @@ class MessageThread extends Widget {
     if (!f) return;
     this.failEl.append(
       el('div', { class: 'fail-note' }, [
-        el('span', { class: 'fail-title', text: 'Turn failed' }),
+        el('span', { class: 'fail-title', text: f.title || 'Turn failed' }),
         el('span', { class: 'fail-detail', text: f.note || '' }),
       ]),
       el('div', { class: 'fail-actions' }, [

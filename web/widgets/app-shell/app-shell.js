@@ -57,8 +57,13 @@ class AppShell extends Widget {
     this.queue = createQueue(); // room-bound pending submissions + steer receipts
     // Definitive turn failures, keyed by room — rendered as a card on
     // the thread where the failed input sits, never as a queue row:
-    // the queue models submissions, not turn outcomes.
+    // the queue models submissions, not turn outcomes. Two sources:
+    // terminal-driven (turn.failed) and history-derived (a persisted
+    // dead tail — see _markInterrupted). A dismissed derived card would
+    // re-derive on the next refresh, so dismissal tombstones the tail
+    // it judged; a new tail record invalidates the tombstone.
     this.failedTurns = new Map();
+    this._dismissedTails = new Map();
     this._settledSeq = 0;       // identities settled streams across refreshes
     // The fresh (un-minted) view's stable identity — queue entries and
     // commands bind to it, not to a bare null every new view shares.
@@ -396,6 +401,7 @@ class AppShell extends Widget {
       g.required = false;
       g.failed = false;
       this._attachLiveTurn(conv);
+      this._markInterrupted(conv);
     } catch (err) {
       if (gen !== this.generation) return;
       // A superseded writer's failure belongs to the newer load that
@@ -567,6 +573,7 @@ class AppShell extends Widget {
     const f = this.failedTurns.get(viewKey);
     this.thread.failedTurn = f ? {
       note: f.note,
+      title: f.title,
       retryable: this._dispatchable(viewKey) && this._failedTargetId(f) != null,
     } : null;
   }
@@ -961,7 +968,13 @@ class AppShell extends Widget {
   }
 
   _turnFailedDismiss() {
-    this.failedTurns.delete(this._viewRoomKey());
+    const key = this._viewRoomKey();
+    const f = this.failedTurns.get(key);
+    // A history-derived card re-derives on every authoritative landing
+    // — tombstone the tail it judged so dismissal sticks until the
+    // tail advances (a new turn supersedes it anyway).
+    if (f && f.tailId) this._dismissedTails.set(key, f.tailId);
+    this.failedTurns.delete(key);
     this._syncQueue();
   }
 
@@ -1147,6 +1160,82 @@ class AppShell extends Widget {
     this._syncStream();
   }
 
+  // History-derived interrupted card. A persisted tail can prove a
+  // turn died without any terminal verdict — the hub's turn journal is
+  // process-memory, so a service restart (or an evicted journal) makes
+  // the turn unknowable while history keeps its partial output. The
+  // verdict table, read against the last real record in the window:
+  //
+  //   last real record              verdict
+  //   ──────────────────────────────────────────
+  //   real user input               dead — its send produced nothing
+  //   assistant finish 'tool_calls' dead — runTurn only ends a turn on
+  //                                 a non-tool_calls step; a live turn
+  //                                 would always continue past this
+  //   assistant any other finish    settled — a normal tail
+  //
+  // "Real" skips optimistic pending-* lines and system records
+  // (workspace pins, compaction checkpoints persist as role:'user' +
+  // userType:'system' — never turn inputs). Steer folds persist as
+  // ordinary user inputs. Nothing here distinguishes a restart from a
+  // user cancel or an upstream failure — the card stays cause-neutral.
+  // Skips that keep the card honest:
+  //   - conv.activeTurnId / an own command on the room: a live turn's
+  //     tail is legitimately open.
+  //   - an existing failedTurns card: the terminal's own note wins.
+  //   - a tombstoned tail: the user dismissed this exact dead tail.
+  // Retry pins the LAST real user input by id — turn.edit regenerates
+  // from it, dropping the dead turn's debris; a tail whose origin
+  // scrolled above the window yields a dismiss-only card.
+  _markInterrupted(conv) {
+    if (!conv || !conv.id || conv.id !== this.activeId) return;
+    if (conv.activeTurnId) return;
+    const viewKey = this._viewRoomKey();
+    const cmd = this.command;
+    if (cmd && this._commandRoomKey(cmd) === viewKey) return;
+    if (this.failedTurns.has(viewKey)) return;
+    let lastReal = null, lastUser = null;
+    for (let i = this.messages.length - 1; i >= 0 && (!lastReal || !lastUser); i--) {
+      const m = this.messages[i];
+      if (typeof m.id === 'string' && m.id.startsWith('pending-')) continue;
+      const realInput = m.role === 'user' && m.userType !== 'system';
+      if (realInput && !lastUser) lastUser = m;
+      if (!lastReal && (realInput || m.role === 'assistant')) lastReal = m;
+    }
+    const dead = !!lastReal &&
+      (lastReal.role === 'user' || lastReal.finishReason === 'tool_calls');
+    if (!dead) {
+      this._dismissedTails.delete(viewKey);
+      return;
+    }
+    if (this._dismissedTails.get(viewKey) === lastReal.id) return;
+    this.failedTurns.set(viewKey, {
+      title: 'Turn interrupted',
+      note: 'This turn did not finish — its reply may be incomplete.',
+      text: lastUser ? lastUser.content : '',
+      retryMessageId: lastUser ? lastUser.id : null,
+      historyIds: null,
+      tailId: lastReal.id,
+    });
+    // The card answers the parked UNKNOWN row's question — the send
+    // DID persist and its turn died. Keeping both surfaces armed would
+    // invite a duplicate of the same text.
+    if (lastUser) {
+      for (const e of [...this.queue.items]) {
+        if (e.state === UNKNOWN && e.room === viewKey && e.text === lastUser.content) {
+          removeEntry(this.queue, e);
+        }
+      }
+    }
+    // The settled projection of the dead turn is superseded — the
+    // persisted tail plus the card is the honest view.
+    if (this.settledStream && this.settledStream.conversationId === conv.id) {
+      this.settledStream = null;
+      this._syncStream();
+    }
+    this._syncFailed();
+  }
+
   _onFrame(f) {
     const cmd = this.command;
     switch (f.type) {
@@ -1308,6 +1397,8 @@ class AppShell extends Widget {
             this.command = null;
             this._syncComposer();
             this._syncStream();
+            // A foreign turn's fate never pauses this tab's queue —
+            // but the room still gets the authoritative re-read.
             if (cmd.conversationId) this._refresh(cmd.conversationId);
             break;
           }
@@ -1327,8 +1418,15 @@ class AppShell extends Widget {
             this._syncComposer();
             this._syncStream();
           }
-          pauseQueue(this.queue,
-            f.conversationId || (cmd && this._commandRoomKey(cmd)));
+          // The resync contract requires the authoritative re-read —
+          // it also resolves the room's gates and, when the persisted
+          // tail proves the turn died, parks the interrupted card.
+          const lostRoom = f.conversationId ||
+            (cmd && this._commandRoomKey(cmd));
+          if (lostRoom && !String(lostRoom).startsWith('fresh:')) {
+            this._refresh(lostRoom);
+          }
+          pauseQueue(this.queue, lostRoom);
           this.queue.notice = 'The turn could not be recovered — check history before retrying';
           this._syncQueue();
           break;
@@ -1676,6 +1774,7 @@ class AppShell extends Widget {
             this.thread.messages = this.messages;
             this.thread.historyNotice = page.effectiveStart > 0;
             this._attachLiveTurn(conv);
+            this._markInterrupted(conv);
           }
           // Drop the live projection only after history has the
           // persisted turn — and only when this refresh observed that

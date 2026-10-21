@@ -429,3 +429,152 @@ test('a foreign turn settling via conversation.activity refreshes the badge', ()
   });
   assert.equal(calls.length, 1);
 });
+
+// ── Dead-tail interrupted card ──────────────────────────────────────
+// A persisted tail can prove a turn died without a terminal verdict
+// (service restart wipes the hub's in-memory journal). The card must
+// mark the tail — a static tail reads as "the AI finished".
+const deadTail = [
+  { id: 'm1', role: 'user', content: 'hi' },
+  { id: 'w1', role: 'user', userType: 'system', content: '', toolCalls: [{ type: 'injection', name: 'workspace' }] },
+  { id: 'a1', role: 'assistant', finishReason: 'tool_calls', toolCalls: [{ id: 'tc1', name: 'exec' }] },
+];
+
+test('a tool_calls tail with no active turn parks an interrupted card', () => {
+  const { app } = makeApp();
+  app.activeId = 'c1';
+  app.messages = deadTail.slice();
+  app._markInterrupted({ id: 'c1' });
+  const f = app.failedTurns.get('c1');
+  assert.ok(f);
+  assert.equal(f.title, 'Turn interrupted');
+  assert.equal(f.retryMessageId, 'm1');
+  assert.equal(f.tailId, 'a1');
+  app._syncQueue();
+  assert.equal(app.thread.failedTurn.title, 'Turn interrupted');
+  assert.equal(app.thread.failedTurn.retryable, true);
+});
+
+test('a live turn suppresses the interrupted card', () => {
+  const { app } = makeApp();
+  app.activeId = 'c1';
+  app.messages = deadTail.slice();
+  // Server still owns the turn — the open tail is expected.
+  app._markInterrupted({ id: 'c1', activeTurnId: 't9' });
+  assert.equal(app.failedTurns.has('c1'), false);
+  // A command this tab tracks in the room is equally live.
+  app._send('my send');
+  app._markInterrupted({ id: 'c1' });
+  assert.equal(app.failedTurns.has('c1'), false);
+});
+
+test('a settled tail parks nothing and clears the tombstone', () => {
+  const { app } = makeApp();
+  app.activeId = 'c1';
+  app.messages = [
+    { id: 'm1', role: 'user', content: 'hi' },
+    { id: 'a1', role: 'assistant', finishReason: 'stop', content: 'done' },
+  ];
+  app._dismissedTails.set('c1', 'a1');
+  app._markInterrupted({ id: 'c1' });
+  assert.equal(app.failedTurns.has('c1'), false);
+  assert.equal(app._dismissedTails.has('c1'), false);
+});
+
+test('a user-line tail is dead too — the send produced nothing', () => {
+  const { app } = makeApp();
+  app.activeId = 'c1';
+  app.messages = failedTail.slice(); // user + workspace pin only
+  app._markInterrupted({ id: 'c1' });
+  const f = app.failedTurns.get('c1');
+  assert.ok(f);
+  assert.equal(f.retryMessageId, 'm1');
+  assert.equal(f.tailId, 'm1');
+});
+
+test('a terminal card is never overwritten by detection', () => {
+  const { app, ws } = makeApp();
+  app.composer.value = '';
+  app.activeId = 'c1';
+  app.messages = deadTail.slice();
+  failTurn(app, ws, { status: 500, message: 'boom', userMessagePersisted: true });
+  const before = app.failedTurns.get('c1');
+  app._markInterrupted({ id: 'c1' });
+  assert.equal(app.failedTurns.get('c1'), before);
+  assert.equal(app.failedTurns.get('c1').note, 'boom');
+});
+
+test('a dismissed dead tail stays dismissed until the tail advances', () => {
+  const { app } = makeApp();
+  app.activeId = 'c1';
+  app.messages = deadTail.slice();
+  app._markInterrupted({ id: 'c1' });
+  app._turnFailedDismiss();
+  assert.equal(app.failedTurns.has('c1'), false);
+  assert.equal(app._dismissedTails.get('c1'), 'a1');
+  // Same tail, next refresh — no resurrection.
+  app._markInterrupted({ id: 'c1' });
+  assert.equal(app.failedTurns.has('c1'), false);
+  // The tail advanced — a NEW dead turn must still surface.
+  app.messages = deadTail.slice().concat([
+    { id: 'a2', role: 'assistant', finishReason: 'tool_calls' },
+  ]);
+  app._markInterrupted({ id: 'c1' });
+  assert.ok(app.failedTurns.get('c1'));
+  assert.equal(app.failedTurns.get('c1').tailId, 'a2');
+});
+
+test('a dead tail whose origin scrolled out degrades to dismiss-only', () => {
+  const { app } = makeApp();
+  app.activeId = 'c1';
+  // No real user input in the window — nothing to pin a retry to.
+  app.messages = [{ id: 'a1', role: 'assistant', finishReason: 'tool_calls' }];
+  app._markInterrupted({ id: 'c1' });
+  const f = app.failedTurns.get('c1');
+  assert.ok(f);
+  assert.equal(f.retryMessageId, null);
+  app._syncQueue();
+  assert.equal(app.thread.failedTurn.retryable, false);
+});
+
+test('the card consumes the UNKNOWN queue row it answers', () => {
+  const { app, ws } = makeApp();
+  app.composer.value = '';
+  app.activeId = 'c1';
+  app._send('hi');
+  const cmd = app.command;
+  app._onFrame({ type: 'turn.opened', requestId: cmd.requestId, turnId: 't1', conversationId: 'c1', seq: 1 });
+  app._refresh = async () => 'ok'; // detection driven directly below
+  app._onFrame({
+    type: 'turn.resync_required', turnId: 't1', conversationId: 'c1',
+    payload: { turn: 'unknown' },
+  });
+  assert.equal(app.queue.items.length, 1);
+  assert.equal(app.queue.items[0].state, 'unknown');
+  app.messages = deadTail.slice();
+  app._markInterrupted({ id: 'c1' });
+  assert.equal(app.queue.items.length, 0);
+});
+
+test('resync-unknown refreshes the room — own, watched, and foreign', () => {
+  const { app } = makeApp();
+  app.composer.value = '';
+  const rooms = [];
+  app._refresh = async (id) => { rooms.push(id); return 'ok'; };
+  // Own command.
+  app.activeId = 'c1';
+  app._send('hi');
+  const cmd = app.command;
+  app._onFrame({ type: 'turn.opened', requestId: cmd.requestId, turnId: 't1', conversationId: 'c1', seq: 1 });
+  app._onFrame({ type: 'turn.resync_required', turnId: 't1', conversationId: 'c1', payload: { turn: 'unknown' } });
+  assert.deepEqual(rooms, ['c1']);
+  assert.equal(app.command, null);
+  // Watched turn — no queue pause, but still a re-read.
+  app._attachLiveTurn({ id: 'c1', activeTurnId: 't-f', activeTurnKind: 'send' });
+  app._onFrame({ type: 'turn.resync_required', turnId: 't-f', conversationId: 'c1', payload: { turn: 'unknown' } });
+  assert.deepEqual(rooms, ['c1', 'c1']);
+  assert.equal(app.command, null);
+  // A resync for a turn this tab never tracked refreshes its room too.
+  app._onFrame({ type: 'turn.resync_required', turnId: 't-x', conversationId: 'c3', payload: { turn: 'unknown' } });
+  assert.deepEqual(rooms, ['c1', 'c1', 'c3']);
+});
