@@ -60,7 +60,11 @@ via `embed.go` and served by the same Gin origin as the HTTP API and the
   to route. Each completed layer emits `model-change` — a selection
   applies the moment it's coherent, so closing mid-flow never loses a
   pick — and the emitted selection rides `turn.send` as
-  `effort`/`provider` overrides.
+  `effort`/`provider` overrides. A `Manage models` row under the search
+  list is a navigation exit, not a layer: it emits `manage-models` with
+  the gateway in context (the in-progress pick's route, else the
+  current selection's — hidden when neither exists), and the shell
+  opens `#settings` with that id forwarded to the provider manager.
 - At phone width (≤760px) the header takes two rows: the title row keeps
   the drawer toggle, title, and rename, and `⋯` opens a thread-actions
   sheet (rename, compact, settings, and delete). Delete in that sheet

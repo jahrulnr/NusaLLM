@@ -2,6 +2,7 @@ package entity
 
 import (
 	"errors"
+	"slices"
 	"strings"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
@@ -143,12 +144,7 @@ func (m Model) SupportsEffort(e enum.Effort) bool {
 	if e.IsUnset() || len(m.supportedEfforts) == 0 {
 		return true
 	}
-	for _, v := range m.supportedEfforts {
-		if v == e {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(m.supportedEfforts, e)
 }
 
 // Variant returns the catalog-variant suffix the id carries
@@ -297,10 +293,5 @@ func accepts(mods []enum.Modality, mod enum.Modality) bool {
 	if len(mods) == 0 {
 		return true
 	}
-	for _, v := range mods {
-		if v == mod {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(mods, mod)
 }

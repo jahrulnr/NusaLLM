@@ -143,6 +143,12 @@ class AppShell extends Widget {
 
     on(this.header, 'sidebar-toggle', () => { this.sidebarOpen = !this.sidebarOpen; this._syncSidebar(); });
     on(this.header, 'settings-open', () => this.openSettings());
+    // The picker's manage-models exit opens the same settings page,
+    // pre-pointed at the gateway it was browsing.
+    on(this.header, 'manage-models', ({ gatewayId }) => {
+      if (gatewayId) this.settingsPage.manageModelsFor = gatewayId;
+      this.openSettings();
+    });
     on(this.header, 'model-change', (d) => this._setSelection(d));
     on(this.header, 'workspace-change', (d) => this._setWorkspace(d.workspace));
     on(this.header, 'conversation-rename', ({ title }) => this._rename(title));

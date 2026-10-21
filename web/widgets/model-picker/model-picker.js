@@ -9,7 +9,9 @@ const SHEET = '(max-width: 760px)';
 // Layered model picker: search → model (grouped by gateway) → effort →
 // upstream route (aggregator providers, or Auto). Each completed layer
 // emits model-change immediately — a model pick must apply even if the
-// menu closes before the optional refinement layers finish. Workspace is
+// menu closes before the optional refinement layers finish. The search
+// step's manage row is an exit, not a layer — it emits manage-models
+// for the gateway in context and never touches the draft. Workspace is
 // a separate room-level boundary — nusa-workspace-picker owns it. The
 // document-level dismiss listener is tracked by exact identity — every
 // render/open/close detaches it before any new install, so no capture
@@ -137,6 +139,17 @@ class ModelPicker extends Widget {
     input.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); this._closeMenu(true); } });
     menu.append(input, list);
     this._renderResults(list);
+    // Manage-models navigates to the gateway's settings view — the
+    // draft's route while a pick is in progress, else the current
+    // selection's; with no gateway in context there is nothing to
+    // manage and the row stays out.
+    const gatewayId = this._draft?.route || this._selection?.route;
+    if (gatewayId) {
+      menu.append(el('button', {
+        class: 'menu-manage', type: 'button',
+        onclick: () => { emit(this, 'manage-models', { gatewayId }); this._closeMenu(); },
+      }, [icon('gear', 11), el('span', { text: 'Manage models' })]));
+    }
   }
 
   _renderResults(list) {

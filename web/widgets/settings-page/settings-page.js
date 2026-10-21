@@ -14,6 +14,12 @@ class SettingsPage extends Widget {
   set gatewayImportResult(value) { this.providers.gatewayImportResult = value; }
   set gatewaySaveResult(value) { this.providers.gatewaySaveResult = value; }
   set settings(value) { this.editor.settings = value || {}; }
+  // manage-models entry point: the sections start collapsed, so the
+  // provider section opens before the gateway focus delegates down.
+  set manageModelsFor(id) {
+    this.providers.closest('details').open = true;
+    this.providers.modelsFor = id;
+  }
 
   _render() {
     clear(this.root);
