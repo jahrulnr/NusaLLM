@@ -96,6 +96,7 @@ func fixture(t *testing.T, handler http.HandlerFunc) (*ConversationApp, *aggrega
 		config.NewConfig(),
 		nil,
 		"",
+		nil,
 	)
 	return app, &gw
 }
@@ -799,6 +800,7 @@ func TestAdapterNoAppendIsInternalError(t *testing.T) {
 		config.NewConfig(),
 		nil,
 		"",
+		nil,
 	)
 	result, err := app.Send(t.Context(), "badsvc", "gw1", "m1", "ping", nil, appjob.SendOptions{}, nil)
 	if apperror.As(err).StatusCode() != 500 {
@@ -844,6 +846,7 @@ func TestSendToolLoop(t *testing.T) {
 		config.NewConfig(),
 		nil,
 		"",
+		nil,
 	)
 	var evs []event.TurnEvent
 	onEvent := func(e event.TurnEvent) { evs = append(evs, e) }
@@ -987,7 +990,7 @@ func TestSendSelectsEnvironmentPerConversationAndResume(t *testing.T) {
 			Services:       map[enum.Style]dservice.TextModelService{enum.StyleCompletion: environmentService{label: "docker"}},
 			Tools:          map[string]dservice.Tool{"echo": environmentTool{label: "docker"}, appjob.SummaryToolName: appjob.NewSummaryTool()},
 		},
-	}, config.NewConfig(), nil, "")
+	}, config.NewConfig(), nil, "", nil)
 	t.Cleanup(func() { _ = app.Shutdown(context.Background()) })
 
 	for _, tc := range []struct {

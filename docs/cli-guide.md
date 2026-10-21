@@ -521,6 +521,8 @@ meaning they run without asking you first:
 | `apply_patch` | literal search-and-replace inside a workspace file |
 | `read_media` | load a non-text media file so the model can inspect it — workspace-relative or absolute host path |
 | `exec` | run a shell command, merged stdout/stderr — **unsandboxed** |
+| `exec_session` | open a persistent terminal session — returns output or a session id |
+| `write_stdin` | write to / poll a session opened by `exec_session` |
 
 The file tools are confined to the workspace, except `read_media` which
 also accepts absolute host paths (the returned reference is still
@@ -532,9 +534,19 @@ for up to 600 s) and spills oversized output to
 until the user deletes the conversation; deleting the conversation removes
 them together with its history. `exec` also accepts a `stdin` field —
 one-shot input piped to the command, useful for prompts that read
-scripted answers (`sudo -S`, `read`-driven installers). It is not an
-interactive session: there is no TTY, and anything needing back-and-forth
-input or `/dev/tty` cannot run under it.
+scripted answers (`sudo -S`, `read`-driven installers).
+
+For actual back-and-forth, `exec_session` opens a persistent terminal
+session: the tool waits `yield_time_ms`, then reports either the exit
+code or `Process running with session ID N`. `write_stdin` continues
+that session — `chars` feeds stdin (an empty `chars` polls output; a
+single `` is Ctrl-C), so the model can answer prompts, drive
+installers, or keep a dev server running across tool calls. Sessions
+survive turn interruption and die only with their conversation (room
+delete or shutdown reaps them); `tty:true` upgrades the backend to a real
+pseudo-terminal (Linux) for programs that probe `isatty` — password
+prompts reading `/dev/tty`, REPLs. One-shot `exec` stays the right tool
+for commands that just run to completion.
 `serve install` pins the installer's login `PATH` (plus `~/.local/bin`,
 `~/bin`, `~/go/bin`) into the service unit, so the daemon — and every
 command `exec` spawns — sees the same toolchain your shell does.

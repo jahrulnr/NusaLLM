@@ -391,6 +391,8 @@ backpressure the tool, and chunks are never persisted.
 | `apply_patch` | `tool/file` (`patch.go`) | Literal search/replace — deliberately not unified diff; files > 4 MiB are rejected in favor of `exec`/`sed`; ambiguous anchors must gain context or `replace_all` |
 | `read_media` | `tool/file` (`read_media.go`) | Attaches a non-text file to the result as a pinned `file://` reference — see below |
 | `exec` | `tool/terminal` (`exec.go`) | Shell command, merged output — see below |
+| `exec_session` | `tool/terminal` (`exec_session.go`) | Open a persistent terminal session — see below |
+| `write_stdin` | `tool/terminal` (`write_stdin.go`) | Write/poll an open session; `\x03` maps to Ctrl-C |
 | `web_search` | `tool/web` (`web.go`) | Searchwire metasearch across Brave/Startpage/Wikipedia/GitHub (+ keyed sources); ranked results with partial-failure reporting |
 | `web_fetch` | `tool/web` (`web.go`) | Searchwire fetch — one URL → readable text; truncated output spilled to a `tempFile` for follow-up `read_file` |
 | `summary` | `application/job` (`summary.go`) | Compaction checkpoint contract — not in the agent-facing catalog |
@@ -479,7 +481,8 @@ permission and the application turn are the entire gate. Timeout defaults to
 120s, caller-settable up to 600s; `cmd.WaitDelay` (5s) caps how long `Wait`
 blocks on pipes inherited by stray grandchildren. The optional `stdin` input
 pipes one-shot bytes to the process's stdin (scripted answers, `sudo -S`);
-there is deliberately no interactive session or TTY. The child environment is
+interactive work is delegated to `exec_session`/`write_stdin` below — `exec`
+itself deliberately stays one-shot. The child environment is
 inherited from the daemon — the service unit pins the installer's login
 `PATH` plus the stable user bin dirs, so agent commands resolve the same
 toolchain the user's shell does.
@@ -505,6 +508,51 @@ error in the marker. The spill file remains available until the user deletes
 its conversation; repository deletion removes the whole conversation directory,
 including tool output. No age- or process-based sweep removes live history's
 referenced files.
+
+### `exec_session` / `write_stdin` — terminal sessions
+
+`exec_session` opens a persistent terminal session through the
+`service.TerminalSessions` registry (`tool/terminal/session_store.go`) — one
+instance shared across conversations, keyed by conversation id (resolved from
+the turn's ctx) because tools are constructed once for all rooms. Unlike
+`exec`, the child is spawned without `exec.CommandContext`: a session
+outlives the call that opened it, so `Terminate` — not a job ctx — is the
+only reaper. The session's reader and waiter goroutines are likewise
+detached; ctx cancellation inside `Collect` returns the output gathered so
+far and leaves the process running, which is exactly how an interrupted turn
+keeps background work alive.
+
+The registry registers the session before the first poll (store-before-yield)
+so a racing `TerminateConversation` already sees it; conversely, if
+`exec_session`'s ctx dies before the response is built, the tool kills the
+session through the store itself — an id that never reached the model would
+be an unkillable orphan. `job.Delete` calls `TerminateConversation` for a
+removed room and `ConversationApp.Shutdown` calls `TerminateAll`; a room caps
+at 64 sessions with LRU eviction preferring exited entries and protecting
+the 8 most-recently-touched (mirroring codex's process store).
+
+Two backends share the session contract: pipes (default) run `sh -c` under
+`Setpgid` with a held-open stdin and merged stdout/stderr — same group-kill
+discipline as `exec`; `tty:true` allocates a real PTY on Linux via
+`/dev/ptmx` + `TIOCSPTLCK`/`TIOCGPTN` ioctls, spawning the child `Setsid` +
+`Setctty` so `isatty` probes (password prompts on `/dev/tty`, REPLs) answer
+true — BSD/Windows refuse `tty` with a clear error. Every session inherits
+the daemon env with the interactive-unfriendly keys scrubbed (`TERM=dumb`,
+`PAGER=cat`, `NO_COLOR=1`) so output stays textual. Output lands in a 1 MiB
+rolling buffer drained per `Collect` ("chars since last poll") with an
+`... N bytes omitted ...` marker when the cap dropped bytes; after exit the
+collector waits a short window for the reader's EOF so trailing output is
+not lost.
+
+`write_stdin` resolves `session_id` through the same store, writes `chars`
+(empty `chars` is a pure poll with a longer default wait), then collects —
+a single `\x03` is not written but routed to `Interrupt`, which sends the
+byte through the pty line discipline on TTY sessions and `SIGINT`s the
+process group on pipes. Both tools return the same header contract —
+`Process exited with code N` or `Process running with session ID N` — so
+the model always knows whether another poll is meaningful. Yield bounds
+differ by call shape: open waits default 10 s (clamp 250 ms–30 s), writes
+default 250 ms (cap 30 s), empty polls default 5 s (floor 5 s, cap 300 s).
 
 ### `summary` — the compaction contract
 

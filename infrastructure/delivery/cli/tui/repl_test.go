@@ -91,6 +91,7 @@ func TestREPLSendsListsAndResumesConversation(t *testing.T) {
 		config.NewConfig(),
 		nil,
 		"",
+		nil,
 	)
 	var output, stderr bytes.Buffer
 	input := pipeInput(t, "/route gw1\n/model m1\n/attach shot.png\nhello\n/list\n/history 10\n/exit\n")
@@ -265,6 +266,7 @@ func TestAutoSelectNotifyDoesNotDeadlock(t *testing.T) {
 		config.NewConfig(),
 		nil,
 		"",
+		nil,
 	)
 
 	sess, err := session.New(session.Options{
@@ -413,6 +415,7 @@ func TestCompactJobRunsAsTurnAndConfirms(t *testing.T) {
 		config.NewConfig(),
 		nil,
 		"",
+		nil,
 	)
 	t.Cleanup(func() { _ = conversationApplication.Shutdown(context.Background()) })
 
@@ -498,6 +501,7 @@ func TestPipedCRNeverTriggersPicker(t *testing.T) {
 		config.NewConfig(),
 		nil,
 		"",
+		nil,
 	)
 	t.Cleanup(func() { _ = conversationApplication.Shutdown(context.Background()) })
 
@@ -632,6 +636,7 @@ func TestConversationArgPicker(t *testing.T) {
 		config.NewConfig(),
 		nil,
 		"",
+		nil,
 	)
 	t.Cleanup(func() { _ = conversationApplication.Shutdown(context.Background()) })
 
@@ -816,6 +821,7 @@ func TestToolCallLoopRunsEndToEnd(t *testing.T) {
 		config.NewConfig(),
 		nil,
 		"",
+		nil,
 	)
 
 	var output, stderr bytes.Buffer

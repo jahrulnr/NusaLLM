@@ -77,6 +77,7 @@ func styleFixture(t *testing.T, style enum.Style, svc dservice.TextModelService,
 		config.NewConfig(),
 		nil,
 		"",
+		nil,
 	)
 	return app, &gw
 }

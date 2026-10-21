@@ -204,6 +204,7 @@ func TestTurnSendEndToEnd(t *testing.T) {
 		config.NewConfig(),
 		nil,
 		"",
+		nil,
 	)
 	defer func() { _ = app.Shutdown(context.Background()) }()
 

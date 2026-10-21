@@ -25,6 +25,7 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/config"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
+	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 	"github.com/jahrulnr/nusallm/infrastructure/worker"
 )
@@ -62,6 +63,7 @@ func New(
 	cfg config.Config,
 	configStore config.Store,
 	configPath string,
+	terminals dservice.TerminalSessions,
 ) *ConversationApp {
 	// Normalize once at the boundary — invalid values clamp and zeros
 	// pull their `default` tag, so every downstream read trusts the
@@ -77,6 +79,7 @@ func New(
 			Gateways:     gateways,
 			Environments: environments,
 			Config:       ccfg,
+			Terminals:    terminals,
 		},
 		workers: map[string]*worker.Worker{},
 	}

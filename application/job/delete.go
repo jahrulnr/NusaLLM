@@ -24,6 +24,11 @@ func (j *Delete) IsPreempt() bool { return true }
 // the caller gets the op result, not the sentinel.
 func (j *Delete) Execute(context.Context) (err error) {
 	defer j.finish(&err)
+	// Reap the room's terminal sessions first — they outlive jobs, so
+	// only this lifecycle hook knows the room is gone for good.
+	if j.Deps.Terminals != nil {
+		j.Deps.Terminals.TerminateConversation(j.ConvID())
+	}
 	if err = j.Deps.Convs.Delete(context.Background(), j.ConvID()); err != nil {
 		return err
 	}

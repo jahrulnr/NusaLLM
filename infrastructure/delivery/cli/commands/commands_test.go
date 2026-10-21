@@ -80,6 +80,7 @@ func newCommandFixture(t *testing.T) *commandFixture {
 		config.NewConfig(),
 		nil,
 		"",
+		nil,
 	)
 	t.Cleanup(func() { _ = conversationApplication.Shutdown(context.Background()) })
 	sess, err := session.New(session.Options{

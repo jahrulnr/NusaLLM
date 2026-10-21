@@ -140,7 +140,7 @@ func steerModel(t *testing.T, svc dservice.TextModelService, tools map[string]ds
 			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: svc},
 			Tools:    tools,
 		}},
-		config.NewConfig(), nil, "")
+		config.NewConfig(), nil, "", nil)
 	t.Cleanup(func() { _ = conversationApplication.Shutdown(context.Background()) })
 
 	var schemas []valueobject.ToolSchema

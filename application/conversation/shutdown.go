@@ -34,6 +34,11 @@ func (app *ConversationApp) Shutdown(ctx context.Context) error {
 				<-w.Done()
 			}
 			app.workerWG.Wait()
+			// All jobs are dead — reap every room's terminal sessions so
+			// no child outlives the daemon shutdown path.
+			if terminals := app.depsSnapshot().Terminals; terminals != nil {
+				terminals.TerminateAll()
+			}
 			close(done)
 		}()
 	}

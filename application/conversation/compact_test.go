@@ -141,7 +141,7 @@ func compactApp(t *testing.T, svc dservice.TextModelService, contextWindow int) 
 	return New(convs, gateways,
 		map[enum.Environment]appjob.EnvironmentDriver{enum.EnvironmentLocal: appjob.EnvironmentBundle{
 			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: svc},
-		}}, cfg, nil, ""), convs
+		}}, cfg, nil, "", nil), convs
 }
 
 func TestManualCompactAllowsAnotherFoldWhileTailExceedsKeep(t *testing.T) {

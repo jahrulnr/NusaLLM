@@ -81,7 +81,19 @@ func compose(cfg config.Config, secrets *reposecret.Store, configPath, workspace
 	if err != nil {
 		return nil, err
 	}
-	for _, tool := range []dservice.Tool{readFile, writeFile, patchFile, readMedia, execTool} {
+	// One terminal-session registry shared by every conversation — tools
+	// resolve the room from ctx; the app reaps through it on delete and
+	// shutdown.
+	terminals := toolexec.NewSessionStore()
+	execSession, err := toolexec.NewExecSessionTool(terminals)
+	if err != nil {
+		return nil, err
+	}
+	writeStdin, err := toolexec.NewWriteStdinTool(terminals)
+	if err != nil {
+		return nil, err
+	}
+	for _, tool := range []dservice.Tool{readFile, writeFile, patchFile, readMedia, execTool, execSession, writeStdin} {
 		tools[tool.Schema().Name()] = tool
 	}
 	// Web search/fetch run locally through searchwire so the bound model
@@ -125,7 +137,7 @@ func compose(cfg config.Config, secrets *reposecret.Store, configPath, workspace
 	}
 
 	return &engine{
-		conversations: appconversation.New(convs, gateways, environments, cfg, repoconfig.NewLocal(), configPath),
+		conversations: appconversation.New(convs, gateways, environments, cfg, repoconfig.NewLocal(), configPath, terminals),
 		logger:        logger,
 	}, nil
 }

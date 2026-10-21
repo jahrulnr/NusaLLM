@@ -290,7 +290,9 @@ Implement `repository.Workspace` for that environment and a
 `service.CommandRunner` for its processes. Construct the file and exec tools
 with those ports, then register their catalog and provider adapters together
 as one `job.EnvironmentDriver` under a new `enum.Environment` key in
-`cmd/nusallm/wire.go`. Provider adapters must resolve media through the
+`cmd/nusallm/wire.go`. Note `service.TerminalSessions` is wired once at
+composition and shared across environments — a remote driver wanting
+`exec_session` would need its own registry keyed to that host. Provider adapters must resolve media through the
 same workspace repository as the tools. The conversation stores the selected
 environment and workspace path; Send, Edit, and Compact resolve the bundle
 again for each room. A missing bundle returns an error instead of selecting

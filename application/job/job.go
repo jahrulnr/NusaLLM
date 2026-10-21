@@ -15,6 +15,7 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/config"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
+	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 	"github.com/jahrulnr/nusallm/infrastructure/worker"
 )
@@ -27,6 +28,9 @@ type Deps struct {
 	Gateways     drepo.Gateway
 	Environments map[enum.Environment]EnvironmentDriver
 	Config       config.ConversationConfig
+	// Terminals owns conversation-keyed terminal sessions — reaped here
+	// because sessions outlive the jobs that opened them.
+	Terminals dservice.TerminalSessions
 }
 
 // Base is the shared machinery for room jobs: the bound conversation id,
