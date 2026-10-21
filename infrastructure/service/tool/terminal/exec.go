@@ -48,7 +48,7 @@ func NewExecTool(outputs drepo.ToolOutput, runner service.CommandRunner) (servic
 	schema, err := valueobject.NewToolSchema(
 		"exec",
 		"Run a shell command and return its combined stdout and stderr.",
-		json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute"},"timeout_ms":{"type":"integer","description":"Timeout in milliseconds — default 120000, capped at 600000"}},"required":["command"]}`),
+		json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute"},"stdin":{"type":"string","description":"Optional input piped to the command's stdin — for programs that read scripted answers (e.g. sudo -S). One-shot, not an interactive session"},"timeout_ms":{"type":"integer","description":"Timeout in milliseconds — default 120000, capped at 600000"}},"required":["command"]}`),
 		true,
 		enum.ToolPermissionAgent,
 	)
@@ -72,6 +72,7 @@ func (tool *ExecTool) Execute(ctx context.Context, call entity.ToolCall, emit se
 	}
 	var input struct {
 		Command   string `json:"command"`
+		Stdin     string `json:"stdin"`
 		TimeoutMS int    `json:"timeout_ms"`
 	}
 	if err := json.Unmarshal([]byte(call.Input()), &input); err != nil {
@@ -102,8 +103,13 @@ func (tool *ExecTool) Execute(ctx context.Context, call entity.ToolCall, emit se
 	sink := &outputSink{emit: emit, budget: budget, spill: spill}
 	// The turn's workspace is the shell's working directory. The runner
 	// chooses where the command actually executes; output still flows into
-	// one sink regardless of backend.
-	exit, err := tool.runner.Run(ctx, input.Command, service.WorkspaceDir(ctx), sink)
+	// one sink regardless of backend. stdin is one-shot input, nil when
+	// the call asked for none.
+	var stdin io.Reader
+	if input.Stdin != "" {
+		stdin = strings.NewReader(input.Stdin)
+	}
+	exit, err := tool.runner.Run(ctx, input.Command, service.WorkspaceDir(ctx), stdin, sink)
 	if err != nil {
 		return service.ToolResult{}, fmt.Errorf("exec: %w", err)
 	}

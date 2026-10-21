@@ -12,6 +12,14 @@ import (
 type Workspace interface {
 	CheckRoot(dir string) (string, error)
 	Open(ctx context.Context, dir string) (WorkspaceSession, error)
+	// OpenHost opens a regular file by absolute host path, bypassing the
+	// workspace confinement — read tools opt in when a call names an
+	// absolute path; writes never ride it. Remote drivers reject it: an
+	// absolute host path is meaningless off-machine.
+	OpenHost(ctx context.Context, path string) (io.ReadCloser, fs.FileInfo, error)
+	// HostURI mints the file:// reference for a host-opened file — send-time
+	// resolution re-opens it directly and still enforces the sha256 pin.
+	HostURI(path string) string
 }
 
 type WorkspaceSession interface {

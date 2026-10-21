@@ -416,6 +416,20 @@ func TestInstallRegistersWebService(t *testing.T) {
 	if spec.Env["CONFIG_PATH"] != cfg {
 		t.Fatalf("spec.Env = %v, want CONFIG_PATH=%s", spec.Env, cfg)
 	}
+	// The daemon bakes a PATH into the unit so agent exec sees the
+	// user's toolchain — the installer's PATH led by stable user bins.
+	path := spec.Env["PATH"]
+	for _, want := range []string{
+		filepath.Join(home, ".local", "bin"),
+		filepath.Join(home, "go", "bin"),
+	} {
+		if !strings.Contains(path, want) {
+			t.Fatalf("spec.Env PATH %q missing %s", path, want)
+		}
+	}
+	if host := os.Getenv("PATH"); host != "" && !strings.Contains(path, host) {
+		t.Fatalf("spec.Env PATH %q lost the installer PATH %q", path, host)
+	}
 	data := filepath.Join(home, ".local", "share", "nusallm")
 	if spec.WorkingDir != data {
 		t.Fatalf("spec.WorkingDir = %q, want %q", spec.WorkingDir, data)

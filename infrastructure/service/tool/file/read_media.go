@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -19,9 +20,10 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/service/wire"
 )
 
-// ReadMediaTool attaches a non-text file under the turn's workspace to
-// the call result — the constructor carries the schema and validates the
-// default sandbox boundary; Execute resolves the call input against an
+// ReadMediaTool attaches a non-text file to the call result — under the
+// turn's workspace, or an absolute host path via Workspace.OpenHost.
+// The constructor carries the schema and validates the
+// default sandbox boundary; Execute resolves relative paths against a
 // repository workspace session so `..` traversal and symlink escapes fail
 // alike. Payload bytes never enter the
 // tool: the result carries a file:// reference adapters resolve at send
@@ -47,8 +49,8 @@ func NewReadMediaTool(store drepo.Workspace, root string) (service.Tool, error) 
 	}
 	schema, err := valueobject.NewToolSchema(
 		"read_media",
-		"Load an image, audio, video, or other non-text media file relative to the workspace root so it can be inspected directly. For text files use read_file.",
-		json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Path relative to the workspace root"}},"required":["path"]}`),
+		"Load an image, audio, video, or other non-text media file so it can be inspected directly. For text files use read_file.",
+		json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Path relative to the workspace root, or an absolute host path"}},"required":["path"]}`),
 		true,
 		enum.ToolPermissionAgent,
 	)
@@ -75,18 +77,37 @@ func (tool *ReadMediaTool) Execute(ctx context.Context, call entity.ToolCall, _ 
 	if strings.TrimSpace(input.Path) == "" {
 		return service.ToolResult{}, fmt.Errorf("path is required")
 	}
-	root, err := callRoot(ctx, tool.store, tool.dir)
-	if err != nil {
-		return service.ToolResult{}, err
-	}
-	defer func() {
-		if closeErr := root.Close(); retErr == nil {
-			retErr = closeErr
+	// Absolute host paths bypass the workspace os.Root — an agent working
+	// outside its workspace (a screenshot in /tmp, an asset elsewhere on
+	// disk) names the file directly. The sha256 pin still binds what
+	// send-time serves, so the check-time file is what the model gets.
+	// Both opens produce (file, info, uri); the tail sniffs/caps/pins
+	// identically.
+	var f io.ReadCloser
+	var info fs.FileInfo
+	var uri string
+	if filepath.IsAbs(input.Path) {
+		var err error
+		f, info, err = tool.store.OpenHost(ctx, input.Path)
+		if err != nil {
+			return service.ToolResult{}, fmt.Errorf("%q is not a readable regular file: %w", input.Path, err)
 		}
-	}()
-	f, info, err := root.OpenRegular(input.Path)
-	if err != nil {
-		return service.ToolResult{}, fmt.Errorf("%q is not a readable regular file: %w", input.Path, err)
+		uri = tool.store.HostURI(input.Path)
+	} else {
+		root, err := callRoot(ctx, tool.store, tool.dir)
+		if err != nil {
+			return service.ToolResult{}, err
+		}
+		defer func() {
+			if closeErr := root.Close(); retErr == nil {
+				retErr = closeErr
+			}
+		}()
+		f, info, err = root.OpenRegular(input.Path)
+		if err != nil {
+			return service.ToolResult{}, fmt.Errorf("%q is not a readable regular file: %w", input.Path, err)
+		}
+		uri = root.AttachmentURI(input.Path)
 	}
 	defer func() {
 		if closeErr := f.Close(); retErr == nil {
@@ -102,7 +123,7 @@ func (tool *ReadMediaTool) Execute(ctx context.Context, call entity.ToolCall, _ 
 	}
 	prefix = prefix[:n]
 	mediaType := http.DetectContentType(prefix)
-	att, err := valueobject.NewAttachment(root.AttachmentURI(input.Path), mediaType)
+	att, err := valueobject.NewAttachment(uri, mediaType)
 	if err != nil {
 		return service.ToolResult{}, err
 	}

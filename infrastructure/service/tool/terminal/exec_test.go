@@ -63,10 +63,11 @@ func mustCall(t *testing.T, id, input string, budget int) entity.ToolCall {
 type fakeRunner struct {
 	command   string
 	workspace string
+	stdin     io.Reader
 }
 
-func (r *fakeRunner) Run(_ context.Context, command, workspace string, output io.Writer) (service.ProcessExit, error) {
-	r.command, r.workspace = command, workspace
+func (r *fakeRunner) Run(_ context.Context, command, workspace string, stdin io.Reader, output io.Writer) (service.ProcessExit, error) {
+	r.command, r.workspace, r.stdin = command, workspace, stdin
 	_, err := output.Write([]byte("remote output"))
 	return service.ProcessExit{Code: 7}, err
 }
@@ -92,6 +93,46 @@ func TestExecUsesInjectedRunner(t *testing.T) {
 	}
 	if preview != "remote output" || result.Text != "remote output\n(exit 7)" {
 		t.Fatalf("preview=%q result=%q", preview, result.Text)
+	}
+}
+
+func TestExecStdinReachesRunner(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "c1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{}
+	tool, err := NewExecTool(mustOutputRepo(t, root), runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = tool.Execute(testContext(),
+		mustCall(t, "stdin-1", `{"command":"cat","stdin":"line1\nline2"}`, 0), nil)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	raw, err := io.ReadAll(runner.stdin)
+	if err != nil || string(raw) != "line1\nline2" {
+		t.Fatalf("runner stdin = %q, %v", raw, err)
+	}
+	// No stdin field → nil reader, never an empty pipe.
+	_, err = tool.Execute(testContext(), mustCall(t, "stdin-2", `{"command":"cat"}`, 0), nil)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if runner.stdin != nil {
+		t.Fatalf("absent stdin must not open a pipe, got %v", runner.stdin)
+	}
+}
+
+func TestExecStdinPipesToProcess(t *testing.T) {
+	res, err := newTool(t).Execute(testContext(),
+		mustCall(t, "stdin-3", `{"command":"read a; echo got-$a","stdin":"answer42"}`, 0), nil)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(res.Text, "got-answer42") {
+		t.Fatalf("stdin did not reach the shell: %q", res.Text)
 	}
 }
 

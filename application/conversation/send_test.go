@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -955,6 +957,12 @@ func (virtualWorkspace) CheckRoot(dir string) (string, error) {
 func (virtualWorkspace) Open(context.Context, string) (drepo.WorkspaceSession, error) {
 	return nil, fmt.Errorf("unused by scripted service")
 }
+
+func (virtualWorkspace) OpenHost(context.Context, string) (io.ReadCloser, fs.FileInfo, error) {
+	return nil, nil, fmt.Errorf("host reads unsupported on virtual workspace")
+}
+
+func (virtualWorkspace) HostURI(string) string { return "" }
 
 func (t environmentTool) Execute(context.Context, entity.ToolCall, dservice.ToolEmitter) (dservice.ToolResult, error) {
 	return dservice.ToolResult{Text: t.label}, nil

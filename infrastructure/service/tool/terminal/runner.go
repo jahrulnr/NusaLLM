@@ -13,10 +13,13 @@ type LocalRunner struct{}
 
 func NewLocalRunner() dservice.CommandRunner { return LocalRunner{} }
 
-func (LocalRunner) Run(ctx context.Context, command, workspace string, output io.Writer) (dservice.ProcessExit, error) {
+func (LocalRunner) Run(ctx context.Context, command, workspace string, stdin io.Reader, output io.Writer) (dservice.ProcessExit, error) {
 	cmd := shellCommand(ctx, command)
 	cmd.WaitDelay = waitDelay
 	cmd.Dir = workspace
+	if stdin != nil {
+		cmd.Stdin = stdin
+	}
 	// Sharing the writer makes os/exec merge stdout and stderr in arrival order.
 	cmd.Stdout = output
 	cmd.Stderr = output

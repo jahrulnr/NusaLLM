@@ -15,12 +15,12 @@ func TestLocalRunnerExitSignalAndStartFailure(t *testing.T) {
 	runner := NewLocalRunner()
 	var out bytes.Buffer
 
-	res, err := runner.Run(t.Context(), "exit 5", "", &out)
+	res, err := runner.Run(t.Context(), "exit 5", "", nil, &out)
 	if err != nil || res.Code != 5 || res.Signal != "" || res.Err != nil {
 		t.Fatalf("exit 5 => %+v, err %v", res, err)
 	}
 
-	res, err = runner.Run(t.Context(), "kill -9 $$", "", &out)
+	res, err = runner.Run(t.Context(), "kill -9 $$", "", nil, &out)
 	if err != nil {
 		t.Fatalf("signal death returned a Go error: %v", err)
 	}
@@ -28,7 +28,7 @@ func TestLocalRunnerExitSignalAndStartFailure(t *testing.T) {
 		t.Fatalf("signal death => %+v, want a signal description", res)
 	}
 
-	if _, err := runner.Run(t.Context(), "true", "/nonexistent-workspace-for-runner-test", &out); err == nil {
+	if _, err := runner.Run(t.Context(), "true", "/nonexistent-workspace-for-runner-test", nil, &out); err == nil {
 		t.Fatal("unstartable command must return a Go error")
 	}
 }
@@ -37,7 +37,7 @@ func TestLocalRunnerExitSignalAndStartFailure(t *testing.T) {
 // order rather than concatenating the streams.
 func TestLocalRunnerMergesStreams(t *testing.T) {
 	var out bytes.Buffer
-	if _, err := NewLocalRunner().Run(t.Context(), "echo o1; echo e1 >&2; echo o2", "", &out); err != nil {
+	if _, err := NewLocalRunner().Run(t.Context(), "echo o1; echo e1 >&2; echo o2", "", nil, &out); err != nil {
 		t.Fatal(err)
 	}
 	got := out.String()

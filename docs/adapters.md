@@ -452,14 +452,19 @@ The four file tools receive the same `repository.Workspace` at construction;
 `cmd/nusallm/wire.go` also passes the delivery's workspace root as their
 fallback root (the REPL's cwd, `serve`'s owner home).
 The local repository opens `os.Root` per call so every requested path resolves inside the workspace,
-traversal (`..`) and symlink escapes included. `read_media` and
+traversal (`..`) and symlink escapes included — except `read_media`,
+which additionally accepts absolute host paths through `Workspace.OpenHost`
+(an agent that wrote a screenshot to `/tmp` names it directly). `read_media` and
 `/attach`-style resolution share the same discipline: sniff the first 512
 bytes for `http.DetectContentType` (a `.csv` *is* text and is refused — use
 `read_file`), enforce `wire.MaxAttachmentBytes` from the stat rather than a
-read, then hash the content through the confined handle and pin the
+read, then hash the content through the opened handle and pin the
 `Attachment` with that sha256. The result carries a `file://` reference the
 wire adapter reopens and re-verifies at send time, so a swapped file degrades
-to a placeholder instead of sending unchecked bytes. How those attachments
+to a placeholder instead of sending unchecked bytes. For references outside
+the workspace root the pin is mandatory — `readLocal` only opens a host
+path when a sha256 was recorded by the producing tool, so an unmediated
+`file://` escape stays rejected. How those attachments
 ride back to the model — a labeled synthetic user message after the tool
 block — is covered in the completion adapter section.
 
@@ -472,7 +477,12 @@ which can orphan grandchildren since Windows has no portable group kill). It
 is inherently unsandboxed — there is no root to confine it to — so the schema
 permission and the application turn are the entire gate. Timeout defaults to
 120s, caller-settable up to 600s; `cmd.WaitDelay` (5s) caps how long `Wait`
-blocks on pipes inherited by stray grandchildren.
+blocks on pipes inherited by stray grandchildren. The optional `stdin` input
+pipes one-shot bytes to the process's stdin (scripted answers, `sudo -S`);
+there is deliberately no interactive session or TTY. The child environment is
+inherited from the daemon — the service unit pins the installer's login
+`PATH` plus the stable user bin dirs, so agent commands resolve the same
+toolchain the user's shell does.
 
 stdout and stderr share one `outputSink`, so the merged stream keeps arrival
 order and every `Write` is also a preview chunk to `emit`. Memory stays

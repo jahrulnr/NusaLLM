@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -448,7 +449,16 @@ func webServiceSpec() (system.Spec, string, error) {
 		Exec:        bin,
 		Args:        []string{"serve"},
 		WorkingDir:  serviceWorkingDir(home, configPath),
-		Env:         map[string]string{"CONFIG_PATH": configPath},
+		Env: map[string]string{
+			"CONFIG_PATH": configPath,
+			// The manager launches the daemon under a minimal PATH and
+			// agent exec inherits whatever it bakes in — pin the
+			// installer's own login PATH (version managers included),
+			// led by the stable user bin dirs so they survive even a
+			// bare installer environment.
+			"PATH": home + "/.local/bin:" + home + "/bin:" + home + "/go/bin:" +
+				cmp.Or(os.Getenv("PATH"), "/usr/local/bin:/usr/bin:/bin"),
+		},
 	}, configPath, nil
 }
 

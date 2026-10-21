@@ -245,8 +245,9 @@ tool.
    wrapped in the untrusted-evidence envelope by the provider getter
    (`infrastructure/domain/entity/toolcall.go`) — confirm, don't echo
    (`write.go` returns a byte count, not the content). `Attachments` carry
-   *references*, never bytes: `read_media.go` emits a `file://` URI under
-   the workspace, sniffs the real media type, caps by
+   *references*, never bytes: `read_media.go` emits a `file://` URI —
+   under the workspace, or a host URI via `Workspace.HostURI` for the
+   absolute paths it accepts — sniffs the real media type, caps by
    `wire.MaxAttachmentBytes(modality)`, and pins content with
    `att.SetSHA256` so send-time resolution detects a swapped file. Whether
    attachments reach the model is decided per-request by the bound model's
@@ -256,6 +257,10 @@ tool.
    tools receive `repository.Workspace` and a fallback root; the local
    implementation uses `os.OpenRoot` and `OpenRegular` so traversal,
    symlink escapes, and special files are rejected at the storage boundary.
+   `Workspace.OpenHost` is the deliberate bypass for read tools that accept
+   absolute host paths — references it produces only resolve at send time
+   when a sha256 pin was recorded, so an unmediated `file://` escape stays
+   rejected.
    `exec.go` is the deliberate counterexample:
    there is no root for a shell, and the doc comment says so — its
    permission bit is the entire gate. Don't build an unsandboxed tool

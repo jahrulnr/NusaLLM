@@ -161,3 +161,35 @@ func runReadMedia(t *testing.T, tool service.Tool, input string) (service.ToolRe
 	}
 	return tool.Execute(context.Background(), tc, nil)
 }
+
+func TestReadMediaToolLoadsAbsoluteHostPath(t *testing.T) {
+	root := t.TempDir()
+	tool := mustMediaTool(t, root)
+	// The file lives outside the workspace root — an agent that took a
+	// screenshot to /tmp names it by absolute path.
+	outside := filepath.Join(t.TempDir(), "shot.png")
+	writeFixture(t, filepath.Dir(outside), "shot.png", pngFixture)
+
+	res, err := runReadMedia(t, tool, `{"path":"`+outside+`"}`)
+	if err != nil {
+		t.Fatalf("absolute host path: %v", err)
+	}
+	if len(res.Attachments) != 1 {
+		t.Fatalf("attachments = %d, want 1", len(res.Attachments))
+	}
+	att := res.Attachments[0]
+	if att.URI() != "file://"+outside {
+		t.Fatalf("uri = %q, want file://%s", att.URI(), outside)
+	}
+	if att.Name() != "shot.png" || att.Modality() != enum.ModalityImage {
+		t.Fatalf("attachment = %q %v", att.Name(), att.Modality())
+	}
+	sum := sha256.Sum256(pngFixture)
+	if att.SHA256() != hex.EncodeToString(sum[:]) {
+		t.Fatalf("host read must still pin content: %q", att.SHA256())
+	}
+	// A non-regular absolute path fails the same way a confined one does.
+	if _, err := runReadMedia(t, tool, `{"path":"`+filepath.Dir(outside)+`"}`); err == nil {
+		t.Fatal("absolute directory path must be rejected")
+	}
+}

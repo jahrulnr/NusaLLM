@@ -519,15 +519,25 @@ meaning they run without asking you first:
 | `read_file` | read a UTF-8 text file under the workspace |
 | `write_file` | create or overwrite a text file under the workspace (dirs `0700`, files `0600`) |
 | `apply_patch` | literal search-and-replace inside a workspace file |
-| `read_media` | load a non-text media file so the model can inspect it |
+| `read_media` | load a non-text media file so the model can inspect it — workspace-relative or absolute host path |
 | `exec` | run a shell command, merged stdout/stderr — **unsandboxed** |
 
-The file tools are confined to the workspace; `exec` is not — it runs in
+The file tools are confined to the workspace, except `read_media` which
+also accepts absolute host paths (the returned reference is still
+content-pinned — send-time resolution re-reads the file and verifies the
+sha256 the tool recorded). `exec` is not confined at all — it runs in
 the launch environment with a default 120 s timeout (the model may ask
 for up to 600 s) and spills oversized output to
 `<storage.dir>/conversations/<id>/tool-output/`. Spill files remain available
 until the user deletes the conversation; deleting the conversation removes
-them together with its history.
+them together with its history. `exec` also accepts a `stdin` field —
+one-shot input piped to the command, useful for prompts that read
+scripted answers (`sudo -S`, `read`-driven installers). It is not an
+interactive session: there is no TTY, and anything needing back-and-forth
+input or `/dev/tty` cannot run under it.
+`serve install` pins the installer's login `PATH` (plus `~/.local/bin`,
+`~/bin`, `~/go/bin`) into the service unit, so the daemon — and every
+command `exec` spawns — sees the same toolchain your shell does.
 `/help` says it plainly: *exec is
 unsandboxed — review command activity.* Watch the `exec <tool>` phase in
 the status line.

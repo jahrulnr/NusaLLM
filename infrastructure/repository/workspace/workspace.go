@@ -39,6 +39,33 @@ func (Local) Open(ctx context.Context, dir string) (drepo.WorkspaceSession, erro
 	return &session{root: root, dir: dir}, nil
 }
 
+// OpenHost reads a regular file by absolute host path — the workspace
+// os.Root never enters the picture, and the sha256 pin remains the only
+// guarantee the caller gets about what send-time serves.
+func (Local) OpenHost(ctx context.Context, path string) (io.ReadCloser, fs.FileInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	if !filepath.IsAbs(path) {
+		return nil, nil, fmt.Errorf("host path %q must be absolute", path)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		_ = f.Close()
+		if err == nil {
+			err = fmt.Errorf("path is not a regular file")
+		}
+		return nil, nil, err
+	}
+	return f, info, nil
+}
+
+func (Local) HostURI(path string) string { return "file://" + path }
+
 type session struct {
 	root *os.Root
 	dir  string

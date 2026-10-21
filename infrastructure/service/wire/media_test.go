@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
@@ -176,5 +177,40 @@ func TestFormatName(t *testing.T) {
 		if got := FormatName(in); got != want {
 			t.Fatalf("%s → %s, want %s", in, got, want)
 		}
+	}
+}
+
+func TestResolveURIHostPathRequiresPin(t *testing.T) {
+	root := t.TempDir()
+	rootPath, err := filepath.Abs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "shot.png")
+	content := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x01}
+	if err := os.WriteFile(outside, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fileRoot := localMediaRoot(rootPath)
+
+	// Unmediated outside references stay rejected — only a pinned one
+	// crosses, since the pin proves a tool hashed this exact file.
+	att := mustAttachment(t, "file://"+outside, "image/png")
+	if _, err := ResolveURI(att, fileRoot); err == nil {
+		t.Fatal("unpinned outside attachment must not resolve")
+	}
+	sum := sha256.Sum256(content)
+	att.SetSHA256(hex.EncodeToString(sum[:]))
+	u, err := ResolveURI(att, fileRoot)
+	if err != nil {
+		t.Fatalf("pinned outside attachment should resolve: %v", err)
+	}
+	if !strings.HasPrefix(u, "data:image/png;base64,") {
+		t.Fatalf("resolved = %q", u)
+	}
+	// A swapped pin degrades to rejection, not to unchecked bytes.
+	att.SetSHA256("0" + hex.EncodeToString(sum[:])[1:])
+	if _, err := ResolveURI(att, fileRoot); err == nil {
+		t.Fatal("wrong pin must not resolve")
 	}
 }

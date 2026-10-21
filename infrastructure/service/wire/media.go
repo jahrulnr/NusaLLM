@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"io/fs"
 	"path/filepath"
 	"strings"
 
@@ -92,28 +93,43 @@ func readLocal(a valueobject.Attachment, fileRoot MediaRoot) (raw []byte, err er
 	if err != nil {
 		return nil, err
 	}
-	relative, err := filepath.Rel(absRoot, absPath)
-	if err != nil || relative == ".." || filepath.IsAbs(relative) || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return nil, apperror.New(400, "attachment outside workspace", err)
-	}
-	// Workspace paths are slash-separated on every host; Rel emits host
-	// separators, so normalize before the workspace grammar validates it.
-	workspace, err := valueobject.NewWorkspace(filepath.ToSlash(relative))
-	if err != nil {
-		return nil, apperror.New(400, "attachment outside workspace", err)
-	}
-	root, err := fileRoot.Store.Open(context.Background(), absRoot)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if closeErr := root.Close(); err == nil {
-			err = closeErr
+	var f io.ReadCloser
+	var info fs.FileInfo
+	relative, relErr := filepath.Rel(absRoot, absPath)
+	inside := relErr == nil && relative != ".." && !filepath.IsAbs(relative) &&
+		!strings.HasPrefix(relative, ".."+string(filepath.Separator))
+	if inside {
+		// Workspace paths are slash-separated on every host; Rel emits host
+		// separators, so normalize before the workspace grammar validates it.
+		workspace, err := valueobject.NewWorkspace(filepath.ToSlash(relative))
+		if err != nil {
+			return nil, apperror.New(400, "attachment outside workspace", err)
 		}
-	}()
-	f, info, err := root.OpenRegular(workspace.Path())
-	if err != nil {
-		return nil, apperror.New(400, "attachment unreadable", err)
+		root, err := fileRoot.Store.Open(context.Background(), absRoot)
+		if err != nil {
+			return nil, err
+		}
+		defer func() {
+			if closeErr := root.Close(); err == nil {
+				err = closeErr
+			}
+		}()
+		f, info, err = root.OpenRegular(workspace.Path())
+		if err != nil {
+			return nil, apperror.New(400, "attachment unreadable", err)
+		}
+	} else {
+		// Outside the root only a sha256-pinned reference may cross: pins
+		// are minted by tools at read time, so the file hashed then is
+		// provably what send-time serves. An unmediated file:// outside
+		// the workspace stays rejected.
+		if a.SHA256() == "" {
+			return nil, apperror.New(400, "attachment outside workspace", relErr)
+		}
+		f, info, err = fileRoot.Store.OpenHost(context.Background(), absPath)
+		if err != nil {
+			return nil, apperror.New(400, "attachment unreadable", err)
+		}
 	}
 	defer func() {
 		if closeErr := f.Close(); err == nil {
