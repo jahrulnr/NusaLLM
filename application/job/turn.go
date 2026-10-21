@@ -306,7 +306,9 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 				// Live chunks flow to the frontend scoped by call id —
 				// they are a preview, never history; only the Execute
 				// result lands in output.
+				emitted := false
 				emit := func(chunk string) {
+					emitted = true
 					if onEvent != nil {
 						onEvent(event.NewToolOutputEvent(call, chunk))
 					}
@@ -354,6 +356,14 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 						hitMediaLimit = true
 						out += fmt.Sprintf(" (%d image output(s) withheld: this serving accepts at most %d images per request and that limit is now reached — new images cannot be shown until this conversation is compacted)", dropped, limit)
 					}
+				}
+				// One-shot tools never stream — without a chunk the live
+				// card settles blank, so the settled output crosses as a
+				// single late chunk carrying the same text the record
+				// persists (error results included; the owner reads what
+				// the model reads).
+				if !emitted && out != "" {
+					emit(out)
 				}
 				if err := last.SetToolOutput(call.ID(), out); err != nil {
 					return apperror.New(500, "tool output lost", err)

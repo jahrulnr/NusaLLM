@@ -11,6 +11,7 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
 	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 	repoconversation "github.com/jahrulnr/nusallm/infrastructure/repository/conversation"
 )
@@ -123,6 +124,99 @@ func TestPendingCallsFilter(t *testing.T) {
 	got := pendingCalls(m)
 	if len(got) != 1 || got[0].ID() != "c3" {
 		t.Fatalf("want only the unanswered origin call, got %+v", got)
+	}
+}
+
+// quietTool answers without streaming; chattyTool streams progress.
+// Together they pin the live-exposure rule: a settled output crosses as
+// one late chunk when nothing streamed, and never as a duplicate when
+// the tool already emitted. ghost is unregistered — its error result
+// must cross too.
+type quietTool struct{}
+
+func (quietTool) Schema() valueobject.ToolSchema {
+	s, _ := valueobject.NewToolSchema("quiet", "answers without streaming", nil, true, enum.ToolPermissionAgent)
+	return s
+}
+
+func (quietTool) Execute(context.Context, entity.ToolCall, dservice.ToolEmitter) (dservice.ToolResult, error) {
+	return dservice.ToolResult{Text: "settled output"}, nil
+}
+
+type chattyTool struct{}
+
+func (chattyTool) Schema() valueobject.ToolSchema {
+	s, _ := valueobject.NewToolSchema("chatty", "streams progress", nil, true, enum.ToolPermissionAgent)
+	return s
+}
+
+func (chattyTool) Execute(_ context.Context, _ entity.ToolCall, emit dservice.ToolEmitter) (dservice.ToolResult, error) {
+	emit("progress")
+	return dservice.ToolResult{Text: "final answer"}, nil
+}
+
+// twoToolSvc requests quiet, chatty, and an unregistered call on the
+// first live Send, then answers finally on the second.
+type twoToolSvc struct{ calls int }
+
+func (s *twoToolSvc) Send(_ context.Context, conv *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, _ event.TurnEventHandler) error {
+	s.calls++
+	m, _ := entity.NewMessage(enum.RoleAssistant, "working")
+	if s.calls == 1 {
+		for _, c := range [][2]string{{"c1", "quiet"}, {"c2", "chatty"}, {"c3", "ghost"}} {
+			tc, err := entity.NewToolCall(c[0], c[1], `{}`, enum.TooltypeOrigin)
+			if err != nil {
+				return err
+			}
+			m.AddToolCall(tc)
+		}
+		m.SetFinishReason(enum.FinishReasonToolCalls)
+	}
+	conv.Append(m)
+	return nil
+}
+
+func TestToolOutputExposedLive(t *testing.T) {
+	d := Deps{
+		SummaryTool: mustSummaryTool(t),
+		Convs:       repoconversation.NewConversationRepository(t.TempDir()),
+		Config:      config.ConversationConfig{MaxTurnStep: 4},
+	}
+	conv, _ := aggregate.NewConversation("room")
+	user, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(user)
+	if err := d.Convs.Save(t.Context(), conv); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Convs.AppendMessage(t.Context(), "room", user); err != nil {
+		t.Fatal(err)
+	}
+	svc := &twoToolSvc{}
+	driver := EnvironmentBundle{Tools: map[string]dservice.Tool{
+		"quiet":  quietTool{},
+		"chatty": chattyTool{},
+	}}
+	var chunks []string
+	onEvent := func(ev event.TurnEvent) {
+		if ev.Kind() == enum.TurnEventToolOutput {
+			chunks = append(chunks, ev.ToolCall().ID()+":"+ev.Delta())
+		}
+	}
+	if err := d.runTurn(t.Context(), "room", conv, driver, nil, entity.Model{}, svc, onEvent, nil); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"c1:settled output",
+		"c2:progress",
+		"c3:error: tool not permitted",
+	}
+	if len(chunks) != len(want) {
+		t.Fatalf("tool_output chunks = %v, want %v", chunks, want)
+	}
+	for i := range want {
+		if chunks[i] != want[i] {
+			t.Fatalf("chunk %d = %q, want %q (all: %v)", i, chunks[i], want[i], chunks)
+		}
 	}
 }
 

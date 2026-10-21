@@ -278,7 +278,9 @@ tool.
    history. `exec.go`'s `outputSink` forwards each `Write` as a chunk while
    bounding memory — past the budget it spills the full stream under the
    conversation directory and returns a head+tail excerpt naming where the rest went. Copy
-   that approach for any tool whose output is unbounded.
+   that approach for any tool whose output is unbounded. Tools that never
+   emit still get their settled output exposed — the turn forwards the
+   recorded text as one late chunk so the live card never settles blank.
 
 7. **Register it — or inject it.** Agent-facing tools go in the `tools`
    map in `cmd/nusallm/wire.go`, keyed by `tool.Schema().Name()` in the
