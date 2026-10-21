@@ -9,6 +9,7 @@ import (
 
 	"github.com/jahrulnr/searchwire"
 
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
 )
 
@@ -88,7 +89,14 @@ func (c *openCodeClient) search(ctx context.Context, p service.WebProvider, args
 		return nil, err
 	}
 	var response openCodeResponsesResponse
-	if err := postProviderJSON(ctx, c.http, p, "/responses", payload, &response); err != nil {
+	// OpenCode requires x-opencode-session for routing — the same header the
+	// text adapter sends. Without it Zen answers MissingSessionID and the
+	// call silently degrades to the searchwire fallback every time.
+	var headers map[string]string
+	if convID := service.ConversationID(ctx); convID != "" && strings.Contains(p.Endpoint, string(enum.OpenCode)) {
+		headers = map[string]string{"x-opencode-session": convID}
+	}
+	if err := postProviderJSON(ctx, c.http, p, "/responses", payload, &response, headers); err != nil {
 		return nil, err
 	}
 

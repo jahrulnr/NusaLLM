@@ -77,7 +77,7 @@ func (c *omniRouteClient) search(ctx context.Context, p service.WebProvider, arg
 		return nil, err
 	}
 	var response omniRouteSearchResponse
-	if err := postProviderJSON(ctx, c.http, p, "/search", payload, &response); err != nil {
+	if err := postProviderJSON(ctx, c.http, p, "/search", payload, &response, nil); err != nil {
 		return nil, err
 	}
 	out := omniRouteResult{Query: args.Query}
@@ -124,7 +124,7 @@ func (c *omniRouteClient) fetch(ctx context.Context, p service.WebProvider, args
 		return nil, err
 	}
 	var response omniRouteFetchResponse
-	if err := postProviderJSON(ctx, c.http, p, "/web/fetch", payload, &response); err != nil {
+	if err := postProviderJSON(ctx, c.http, p, "/web/fetch", payload, &response, nil); err != nil {
 		return nil, err
 	}
 	text := strings.TrimSpace(response.Content.Text)
@@ -145,7 +145,9 @@ func (c *omniRouteClient) fetch(ctx context.Context, p service.WebProvider, args
 
 // postProviderJSON is the shared POST helper for provider-native web paths:
 // bearer auth from the bound gateway's own credentials, bounded error body.
-func postProviderJSON(ctx context.Context, client *http.Client, p service.WebProvider, path string, payload []byte, into any) error {
+// extraHeaders carries provider-required session headers (e.g. OpenCode's
+// x-opencode-session) that live outside the shared auth contract.
+func postProviderJSON(ctx context.Context, client *http.Client, p service.WebProvider, path string, payload []byte, into any, extraHeaders map[string]string) error {
 	url := strings.TrimRight(p.Endpoint, "/") + path
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
@@ -154,6 +156,9 @@ func postProviderJSON(ctx context.Context, client *http.Client, p service.WebPro
 	req.Header.Set("Content-Type", "application/json")
 	if p.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+p.APIKey)
+	}
+	for k, v := range extraHeaders {
+		req.Header.Set(k, v)
 	}
 	resp, err := client.Do(req)
 	if err != nil {

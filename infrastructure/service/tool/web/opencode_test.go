@@ -68,6 +68,42 @@ func TestOpenCodeSearchUsesResponsesWebSearchTool(t *testing.T) {
 	}
 }
 
+func TestOpenCodeSearchSendsSessionHeader(t *testing.T) {
+	// OpenCode refuses requests without x-opencode-session (MissingSessionID
+	// 400) — the tool must send the bound conversation id, mirroring the
+	// text adapter. Without a bound conversation the header stays absent.
+	for _, tc := range []struct {
+		name    string
+		convID  string
+		wantHdr string
+	}{
+		{"bound conversation sends session", "conv_42", "conv_42"},
+		{"no conversation sends nothing", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var sawSession string
+			client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				sawSession = r.Header.Get("x-opencode-session")
+				return omniResponse(`{"output":[
+					{"type":"web_search_call","action":{"type":"search","query":"x"}},
+					{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}`), nil
+			})}
+			tool := toolWithClient(t, stubDef("search", `{"results":[]}`, nil), client)
+			call, _ := entity.NewToolCall("c1", "web_search", `{"query":"x"}`, enum.TooltypeOrigin)
+			ctx := openCodeCtx()
+			if tc.convID != "" {
+				ctx = service.WithConversationID(ctx, tc.convID)
+			}
+			if _, err := tool.Execute(ctx, call, nil); err != nil {
+				t.Fatal(err)
+			}
+			if sawSession != tc.wantHdr {
+				t.Fatalf("x-opencode-session = %q, want %q", sawSession, tc.wantHdr)
+			}
+		})
+	}
+}
+
 func TestOpenCodeDroppedToolFallsBackToSearchwire(t *testing.T) {
 	// oa-compat lanes silently drop non-function tools: the response is a
 	// plain message with no web_search_call. That must fail loudly into the
