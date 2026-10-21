@@ -15,12 +15,20 @@ import (
 )
 
 type fakeCatalog struct {
-	ids []string
-	err error
+	ids  []string
+	list []dservice.CatalogModel
+	err  error
 }
 
-func (f fakeCatalog) ListModels(_ context.Context, _ *aggregate.Gateway) ([]string, error) {
-	return f.ids, f.err
+func (f fakeCatalog) ListModels(_ context.Context, _ *aggregate.Gateway) ([]dservice.CatalogModel, error) {
+	if f.list != nil {
+		return f.list, f.err
+	}
+	out := make([]dservice.CatalogModel, 0, len(f.ids))
+	for _, id := range f.ids {
+		out = append(out, dservice.CatalogModel{ID: id})
+	}
+	return out, f.err
 }
 
 func (f fakeCatalog) ListProviders(_ context.Context, _ *aggregate.Gateway, _ string) ([]dservice.UpstreamProvider, error) {
@@ -69,6 +77,59 @@ func TestRefreshModelsMergesDiscovered(t *testing.T) {
 	got = app.RefreshModels(t.Context())
 	if len(got) != 1 || len(got[0].Added) != 0 || got[0].Error != "" {
 		t.Fatalf("second pass must be a no-op: %+v", got)
+	}
+}
+
+// A refresh backfills provider-declared metadata: unknown fields on an
+// existing entry fill in, explicit values stay authoritative, and newly
+// discovered ids arrive with their full declared metadata.
+func TestRefreshModelsMergesCatalogMetadata(t *testing.T) {
+	app, _, _ := newApp(t)
+	in := GatewayInput{
+		ID:       "or",
+		Style:    enum.StyleCompletion,
+		Endpoint: "https://openrouter.ai/api",
+		Models:   []ModelInput{{ID: "a", ContextWindow: 64_000}},
+	}
+	if _, err := app.Upsert(t.Context(), in); err != nil {
+		t.Fatal(err)
+	}
+	app.catalog = fakeCatalog{list: []dservice.CatalogModel{
+		{
+			ID:               "a",
+			Name:             "Model A",
+			ContextWindow:    200_000, // declared — but the record's 64K is explicit
+			OutputLimit:      32_000,
+			SupportedEfforts: []enum.Effort{enum.EffortLow, enum.EffortHigh},
+		},
+		{
+			ID:              "b",
+			ContextWindow:   1_000_000,
+			AliasOf:         "vendor/base",
+			InputModalities: []enum.Modality{enum.ModalityText, enum.ModalityImage},
+		},
+	}}
+
+	got := app.RefreshModels(t.Context())
+	if len(got) != 1 || len(got[0].Added) != 1 || got[0].Added[0] != "b" {
+		t.Fatalf("result mismatch: %+v", got)
+	}
+
+	info, err := app.Get(t.Context(), "or")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := info.Models[0], info.Models[1]
+	if a.ContextWindow() != 64_000 {
+		t.Fatalf("explicit contextWindow must win over the declaration: %d", a.ContextWindow())
+	}
+	if a.Name() != "Model A" || a.OutputLimit() != 32_000 ||
+		len(a.SupportedEfforts()) != 2 || a.SupportedEfforts()[0] != enum.EffortLow {
+		t.Fatalf("undeclared fields must backfill: %+v", a)
+	}
+	if b.ContextWindow() != 1_000_000 || b.AliasOf() != "vendor/base" ||
+		len(b.InputModalities()) != 2 || b.InputModalities()[1] != enum.ModalityImage {
+		t.Fatalf("new entry must carry declared metadata: %+v", b)
 	}
 }
 

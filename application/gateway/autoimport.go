@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
+	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
@@ -100,8 +102,9 @@ func (app *GatewayApp) ImportModels(ctx context.Context, id string) (UpsertOutco
 	return UpsertOutcome{Added: added}, nil
 }
 
-// importModels fetches the provider catalog for one gateway and appends
-// unknown ids to its record. The provider call happens outside mu (network
+// importModels fetches the provider catalog for one gateway and merges it
+// into the record: unknown ids append, known ids backfill the metadata
+// fields they leave unknown. The provider call happens outside mu (network
 // latency must not serialize management ops); the inspect→merge→save window
 // holds it so a concurrent Upsert can't clobber the merged set. The merged
 // record goes through Save, which writes apiKey verbatim — safe only
@@ -112,7 +115,7 @@ func (app *GatewayApp) importModels(ctx context.Context, id string) ([]string, e
 		return nil, err
 	}
 	listCtx, cancel := context.WithTimeout(ctx, catalogListTimeout)
-	ids, err := app.catalog.ListModels(listCtx, loaded)
+	catalog, err := app.catalog.ListModels(listCtx, loaded)
 	cancel()
 	if err != nil {
 		return nil, err
@@ -127,24 +130,30 @@ func (app *GatewayApp) importModels(ctx context.Context, id string) ([]string, e
 		return nil, nil // became unreadable between list and merge — skip
 	}
 	models := snap.Gateway.Models()
-	seen := make(map[string]bool, len(models))
-	for _, m := range models {
-		seen[m.ID()] = true
+	index := make(map[string]int, len(models))
+	for i, m := range models {
+		index[m.ID()] = i
 	}
 	var added []string
-	for _, mid := range ids {
-		if seen[mid] {
+	changed := false
+	for _, cm := range catalog {
+		if i, ok := index[cm.ID]; ok {
+			if applyCatalogModel(&models[i], cm) {
+				changed = true
+			}
 			continue
 		}
-		m, err := entity.NewModel(mid, "")
+		m, err := entity.NewModel(cm.ID, "")
 		if err != nil {
 			continue // a malformed provider id is not fatal to the pass
 		}
+		applyCatalogModel(&m, cm)
 		models = append(models, m)
-		added = append(added, mid)
-		seen[mid] = true
+		added = append(added, cm.ID)
+		index[cm.ID] = len(models) - 1
+		changed = true
 	}
-	if len(added) == 0 {
+	if !changed {
 		return nil, nil
 	}
 	snap.Gateway.SetModels(models)
@@ -157,4 +166,50 @@ func (app *GatewayApp) importModels(ctx context.Context, id string) ([]string, e
 		return nil, err
 	}
 	return added, nil
+}
+
+// applyCatalogModel backfills provider-declared metadata onto a stored
+// entry: a field fills only while the record leaves it unknown, so an
+// explicit value — user-set or previously declared — stays authoritative.
+// Clearing a field to zero on Upsert re-derives it at the next import.
+// Returns whether anything changed.
+func applyCatalogModel(m *entity.Model, cm dservice.CatalogModel) bool {
+	changed := false
+	if m.Name() == "" && cm.Name != "" {
+		m.SetName(cm.Name)
+		changed = true
+	}
+	if m.Canonical() == "" && cm.Canonical != "" {
+		m.SetCanonical(cm.Canonical)
+		changed = true
+	}
+	if m.AliasOf() == "" && cm.AliasOf != "" {
+		m.SetAliasOf(cm.AliasOf)
+		changed = true
+	}
+	if m.ContextWindow() == 0 && cm.ContextWindow > 0 {
+		m.SetContextWindow(cm.ContextWindow)
+		changed = true
+	}
+	if m.OutputLimit() == 0 && cm.OutputLimit > 0 {
+		m.SetOutputLimit(cm.OutputLimit)
+		changed = true
+	}
+	if len(m.InputModalities()) == 0 && len(cm.InputModalities) > 0 {
+		m.SetInputModalities(cm.InputModalities)
+		changed = true
+	}
+	if len(m.OutputModalities()) == 0 && len(cm.OutputModalities) > 0 {
+		m.SetOutputModalities(cm.OutputModalities)
+		changed = true
+	}
+	if len(m.SupportedEfforts()) == 0 && len(cm.SupportedEfforts) > 0 {
+		m.SetSupportedEfforts(cm.SupportedEfforts)
+		changed = true
+	}
+	if m.Pricing() == (valueobject.Pricing{}) && cm.Pricing != nil {
+		m.SetPricing(*cm.Pricing)
+		changed = true
+	}
+	return changed
 }

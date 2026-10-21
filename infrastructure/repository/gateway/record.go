@@ -39,6 +39,14 @@ type modelRecord struct {
 	InputModalities  []string          `json:"inputModalities,omitempty"`
 	OutputModalities []string          `json:"outputModalities,omitempty"`
 	OptionalContent  map[string]string `json:"optionalContent,omitempty"`
+
+	// Catalog-declared metadata — what the provider's model list last
+	// advertised; zero values mean the gateway stayed silent.
+	Name             string   `json:"name,omitempty"`
+	Canonical        string   `json:"canonical,omitempty"`
+	AliasOf          string   `json:"aliasOf,omitempty"`
+	OutputLimit      int      `json:"outputLimit,omitempty"`
+	SupportedEfforts []string `json:"supportedEfforts,omitempty"`
 }
 
 type pricingRecord struct {
@@ -73,6 +81,13 @@ func encodeGateway(g *aggregate.Gateway) gatewayRecord {
 			ModelType:        m.ModelType().String(),
 			ContextWindow:    m.ContextWindow(),
 			OptionalContent:  m.OptionalContent(),
+			Name:             m.Name(),
+			Canonical:        m.Canonical(),
+			AliasOf:          m.AliasOf(),
+			OutputLimit:      m.OutputLimit(),
+		}
+		for _, e := range m.SupportedEfforts() {
+			mr.SupportedEfforts = append(mr.SupportedEfforts, e.String())
 		}
 		if p := m.Pricing(); p != (valueobject.Pricing{}) {
 			mr.Pricing = &pricingRecord{
@@ -139,6 +154,19 @@ func decodeGateway(rec gatewayRecord, apiKey string) (*aggregate.Gateway, error)
 			m.SetModelType(t)
 		}
 		m.SetContextWindow(mr.ContextWindow)
+		m.SetName(mr.Name)
+		m.SetCanonical(mr.Canonical)
+		m.SetAliasOf(mr.AliasOf)
+		m.SetOutputLimit(mr.OutputLimit)
+		var efforts []enum.Effort
+		for _, v := range mr.SupportedEfforts {
+			e, ok := enum.ParseEffort(v)
+			if !ok {
+				return nil, fmt.Errorf("gateway %q: model %q: unknown supported effort %q", rec.ID, mr.ID, v)
+			}
+			efforts = append(efforts, e)
+		}
+		m.SetSupportedEfforts(efforts)
 		if mr.Pricing != nil {
 			p, err := valueobject.NewPricing(mr.Pricing.InputPerM, mr.Pricing.OutputPerM,
 				mr.Pricing.CacheReadPerM, mr.Pricing.CacheWritePerM)

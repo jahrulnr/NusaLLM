@@ -414,6 +414,9 @@ func printModelRow(w io.Writer, m entity.Model) {
 	if m.ContextWindow() > 0 {
 		extra = append(extra, fmt.Sprintf("ctx=%d", m.ContextWindow()))
 	}
+	if m.OutputLimit() > 0 {
+		extra = append(extra, fmt.Sprintf("out=%d", m.OutputLimit()))
+	}
 	if t := m.ModelType(); t != "" {
 		extra = append(extra, "type="+t.String())
 	}
@@ -423,6 +426,13 @@ func printModelRow(w io.Writer, m entity.Model) {
 			s = append(s, mod.String())
 		}
 		extra = append(extra, "in="+strings.Join(s, ","))
+	}
+	if effs := m.SupportedEfforts(); len(effs) > 0 {
+		var s []string
+		for _, e := range effs {
+			s = append(s, e.String())
+		}
+		extra = append(extra, "efforts="+strings.Join(s, ","))
 	}
 	fmt.Fprintf(w, "    %s  route=%s", m.ID(), m.Route())
 	if len(extra) > 0 {

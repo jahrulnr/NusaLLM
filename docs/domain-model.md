@@ -260,14 +260,21 @@ of a pointer (`""` and `"default"` both mean omit the field). Parameters
 with no common field ride in `optionalContent` under adapter-namespaced
 keys.
 
-**Catalog metadata** — `mtype`, `pricing`, `contextWindow`,
+**Catalog metadata** — `name`, `canonical`, `aliasOf`, `outputLimit`,
+`supportedEfforts`, `mtype`, `pricing`, `contextWindow`,
 `inputModalities`, `outputModalities` — is descriptive, hydrated from the
 gateway's model list, and never sent as request parameters. A zero
 `contextWindow` means *unknown* rather than *zero*: `EffectiveContextWindow`
 substitutes `DefaultUnknownContextWindow` (256K) for UI budgeting, and
-`ApplyUnknownContextDefaults` returns a copy with the 256K window and 64K
-`DefaultUnknownMaxOutputTokens` filled in for wire defaults while persisted
-records stay as-is.
+`ApplyUnknownContextDefaults` returns a copy with the 256K window and the
+output reserve (`maxOutputTokens` or a capped declared `outputLimit`)
+filled in for wire defaults while persisted records stay as-is. Catalog
+import (`ModelCatalog.ListModels`) backfills these fields from provider
+declarations onto entries that leave them unknown. `Family()` groups a
+model to its alias target or canonical base (minus `:variant` suffix and
+trailing `-YYYYMMDD` snapshot date); `Variant()` reports the colon suffix
+the id carries. `SupportsEffort` gates effort selection against the
+declared `supportedEfforts` list — undeclared fails open like `Accepts*`.
 
 **Modality predicates fail open.** `AcceptsInput(mod)` /
 `AcceptsOutput(mod)` return true when the catalog declared no modality list
@@ -280,7 +287,8 @@ gets the benefit of the doubt; a permission check that can leak does not.
 estimated input size that triggers proactive compaction — a percentage of
 `compactionInputAllowance`, which reserves output headroom: unknown
 windows assume 256K total minus the reply reserve, declared windows below
-256K reserve 64K, wider declared windows count the full total.
+256K reserve the request `maxOutputTokens`, else the declared
+`outputLimit` capped at 64K, wider declared windows count the full total.
 `CompactionInputAllowance` exposes the same number for the UI's
 `~estimate/total` footer.
 

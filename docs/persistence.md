@@ -396,7 +396,8 @@ records may carry credential references.
 `id`, `route`, the generation parameters (`temperature`, `topP`, `topK`,
 `maxOutputTokens`, `presencePenalty`, `frequencyPenalty`, `seed`,
 `stopSequences`, `effort`), and catalog metadata (`modelType`,
-`contextWindow`, `pricing` with per-million `inputPerM`/`outputPerM`/
+`contextWindow`, `outputLimit`, `name`, `canonical`, `aliasOf`,
+`supportedEfforts`, `pricing` with per-million `inputPerM`/`outputPerM`/
 `cacheReadPerM`/`cacheWritePerM`, `inputModalities`, `outputModalities`,
 `optionalContent`). Numeric parameters serialize as pointers' values and
 are `omitempty` — unset means "don't send", not zero. Hydration again goes

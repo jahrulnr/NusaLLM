@@ -2,7 +2,7 @@ import { Widget, el, emit, clear } from '../../lib/dom.js';
 import { icon } from '../../lib/icons.js';
 import { APIClient } from '../../lib/api-client.js';
 
-const EFFORTS = ['default', 'none', 'low', 'medium', 'high', 'xhigh', 'max'];
+const EFFORTS = ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 // On phones the menu is a bottom sheet instead of a popover.
 const SHEET = '(max-width: 760px)';
 
@@ -145,7 +145,7 @@ class ModelPicker extends Widget {
     const groups = usable
       .map((g) => ({
         g,
-        models: q ? g.models.filter((m) => m.id.toLowerCase().includes(q) || g.id.toLowerCase().includes(q) || (g.name || '').toLowerCase().includes(q)) : g.models,
+        models: q ? g.models.filter((m) => m.id.toLowerCase().includes(q) || (m.name || '').toLowerCase().includes(q) || g.id.toLowerCase().includes(q) || (g.name || '').toLowerCase().includes(q)) : g.models,
       }))
       .filter(({ models }) => models.length);
     if (!groups.length) {
@@ -177,7 +177,16 @@ class ModelPicker extends Widget {
     menu.append(this._stepTitle(this._draft.modelId));
     const current = this._selection && this._selection.route === this._draft.route
       && this._selection.modelId === this._draft.modelId ? this._selection.effort : '';
-    for (const e of EFFORTS) {
+    // A catalog-declared effort list narrows the choices; an undeclared
+    // one keeps the full set — the provider remains the final validator.
+    // Declared entries are re-sorted to the canonical order — providers
+    // emit them in arbitrary order.
+    const model = (this._gateways.find((g) => g.id === this._draft.route)?.models || [])
+      .find((m) => m.id === this._draft.modelId);
+    const efforts = model?.supportedEfforts?.length
+      ? EFFORTS.filter((e) => e === 'default' || model.supportedEfforts.includes(e))
+      : EFFORTS;
+    for (const e of efforts) {
       menu.append(this._item(e, e === 'default' ? 'provider decides' : '', () => {
         this._draft.effort = e;
         this._emitDraft();
@@ -189,7 +198,7 @@ class ModelPicker extends Widget {
         this.api.discoverGatewayProviders(this._draft.route, this._draft.modelId)
           .then((res) => { if (gen === this._gen) { this._providers = (res && res.data) || []; this._render(); } })
           .catch(() => { if (gen === this._gen) { this._providers = []; this._providersFailed = true; this._render(); } });
-      }, current === e || (!current && e === 'default')));
+      }, current === e || (e === 'default' && (!current || !efforts.includes(current))));
     }
   }
 

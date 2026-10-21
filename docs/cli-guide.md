@@ -540,8 +540,11 @@ For actual back-and-forth, `exec_session` opens a persistent terminal
 session: the tool waits `yield_time_ms`, then reports either the exit
 code or `Process running with session ID N`. `write_stdin` continues
 that session — `chars` feeds stdin (an empty `chars` polls output; a
-single `` is Ctrl-C), so the model can answer prompts, drive
-installers, or keep a dev server running across tool calls. Sessions
+single `` is Ctrl-C on either backend), so the model can answer prompts,
+drive installers, or keep a dev server running across tool calls.
+Interactive stdin requires `tty:true` — the default pipes backend gives
+the child a closed stdin, and a write attempt fails with guidance to
+respawn with `tty`. Sessions
 survive turn interruption and die only with their conversation (room
 delete or shutdown reaps them); `tty:true` upgrades the backend to a real
 pseudo-terminal (Linux) for programs that probe `isatty` — password

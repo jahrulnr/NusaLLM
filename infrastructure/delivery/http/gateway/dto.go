@@ -34,6 +34,13 @@ type modelDTO struct {
 	Pricing          pricingDTO `json:"pricing"`
 	InputModalities  []string   `json:"inputModalities,omitempty"`
 	OutputModalities []string   `json:"outputModalities,omitempty"`
+
+	// Catalog-declared metadata, as imported or written.
+	Name             string   `json:"name,omitempty"`
+	Canonical        string   `json:"canonical,omitempty"`
+	AliasOf          string   `json:"aliasOf,omitempty"`
+	OutputLimit      int      `json:"outputLimit,omitempty"`
+	SupportedEfforts []string `json:"supportedEfforts,omitempty"`
 }
 
 func toModel(m entity.Model) modelDTO {
@@ -50,6 +57,10 @@ func toModel(m entity.Model) modelDTO {
 		Seed:             m.Seed(),
 		ModelType:        m.ModelType().String(),
 		ContextWindow:    m.ContextWindow(),
+		Name:             m.Name(),
+		Canonical:        m.Canonical(),
+		AliasOf:          m.AliasOf(),
+		OutputLimit:      m.OutputLimit(),
 		Pricing: pricingDTO{
 			InputPerMillionUsd:      p.InputPerM(),
 			OutputPerMillionUsd:     p.OutputPerM(),
@@ -66,6 +77,9 @@ func toModel(m entity.Model) modelDTO {
 	}
 	for _, mod := range m.OutputModalities() {
 		out.OutputModalities = append(out.OutputModalities, mod.String())
+	}
+	for _, e := range m.SupportedEfforts() {
+		out.SupportedEfforts = append(out.SupportedEfforts, e.String())
 	}
 	return out
 }

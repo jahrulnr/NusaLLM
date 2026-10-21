@@ -42,6 +42,11 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 	m.SetEffort(enum.EffortHigh)
 	m.SetModelType(enum.ModelTypeText)
 	m.SetContextWindow(200_000)
+	m.SetName("Claude Opus 4")
+	m.SetCanonical("anthropic/claude-opus-4-20250514")
+	m.SetAliasOf("anthropic/claude-opus-4")
+	m.SetOutputLimit(32_000)
+	m.SetSupportedEfforts([]enum.Effort{enum.EffortLow, enum.EffortMax})
 	m.SetInputModalities([]enum.Modality{enum.ModalityText, enum.ModalityImage})
 	p, _ := valueobject.NewPricing(15, 75, 1.5, 18.75)
 	m.SetPricing(p)
@@ -74,6 +79,12 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 	}
 	if gm.Pricing().InputPerM() != 15 {
 		t.Fatal("pricing lost")
+	}
+	if gm.Name() != "Claude Opus 4" || gm.Canonical() != "anthropic/claude-opus-4-20250514" ||
+		gm.AliasOf() != "anthropic/claude-opus-4" ||
+		gm.OutputLimit() != 32_000 || len(gm.SupportedEfforts()) != 2 ||
+		gm.SupportedEfforts()[1] != enum.EffortMax {
+		t.Fatalf("catalog metadata lost: %+v", gm)
 	}
 	if gm.OptionalContent()["openrouter.provider_order"] != "anthropic" {
 		t.Fatal("optionalContent lost")

@@ -61,6 +61,13 @@ func (b *upsertBody) toInput(id string) (appgateway.GatewayInput, error) {
 			Effort:           enum.Effort(mb.Effort),
 			ModelType:        enum.ModelType(mb.ModelType),
 			ContextWindow:    mb.ContextWindow,
+			Name:             mb.Name,
+			Canonical:        mb.Canonical,
+			AliasOf:          mb.AliasOf,
+			OutputLimit:      mb.OutputLimit,
+		}
+		for _, e := range mb.SupportedEfforts {
+			mi.SupportedEfforts = append(mi.SupportedEfforts, enum.Effort(e))
 		}
 		for _, mod := range mb.InputModalities {
 			mi.InputModalities = append(mi.InputModalities, enum.Modality(mod))
@@ -100,6 +107,11 @@ type modelInputBody struct {
 	Pricing          *pricingDTO `json:"pricing"`
 	InputModalities  []string    `json:"inputModalities"`
 	OutputModalities []string    `json:"outputModalities"`
+	Name             string      `json:"name"`
+	Canonical        string      `json:"canonical"`
+	AliasOf          string      `json:"aliasOf"`
+	OutputLimit      int         `json:"outputLimit"`
+	SupportedEfforts []string    `json:"supportedEfforts"`
 }
 
 // put replaces the whole readable document at :id — Upsert owns apiKey

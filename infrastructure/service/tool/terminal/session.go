@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -26,15 +25,21 @@ const (
 	postExitDrainWait = 50 * time.Millisecond
 )
 
-// scrubEnv keeps session output textual: a dumb TERM and cat pagers stop
-// interactive programs from emitting escape-heavy UI the model cannot
-// drive — codex scrubs the same fixed set for exactly this reason.
+// scrubEnv keeps session output textual and deterministic — codex's
+// UNIFIED_EXEC_ENV set: a dumb TERM and cat pagers stop escape-heavy
+// interactive UI, the C.UTF-8 locale pins output encoding, and
+// NUSALLM_CI marks the environment the way CODEX_CI marks codex's.
 var scrubEnv = map[string]string{
-	"NO_COLOR":  "1",
-	"TERM":      "dumb",
-	"PAGER":     "cat",
-	"GIT_PAGER": "cat",
-	"GH_PAGER":  "cat",
+	"NO_COLOR":   "1",
+	"TERM":       "dumb",
+	"LANG":       "C.UTF-8",
+	"LC_CTYPE":   "C.UTF-8",
+	"LC_ALL":     "C.UTF-8",
+	"COLORTERM":  "",
+	"PAGER":      "cat",
+	"GIT_PAGER":  "cat",
+	"GH_PAGER":   "cat",
+	"NUSALLM_CI": "1",
 }
 
 // terminalSession is one long-lived child. Its reader and waiter
@@ -48,18 +53,21 @@ type terminalSession struct {
 	env []string
 	dir string
 
-	// stdin feeds the pipes backend; master serves the pty backend for
-	// both reads and writes. Exactly one is non-nil.
-	stdin  io.WriteCloser
+	// master serves the pty backend for both reads and writes; pipes
+	// sessions hold no stdin handle at all — their child reads EOF.
 	master *os.File
 
-	done       chan struct{} // closed when Wait() returns
-	readerEOF  chan struct{} // closed when the output stream hits EOF
-	notify     chan struct{} // cap 1 — output appended
-	exitCode   int           // written before done closes
-	exited     atomic.Bool
-	lastUsed   atomic.Int64 // unixnano — store's LRU clock
-	terminated atomic.Bool
+	done      chan struct{} // closed when Wait() returns
+	readerEOF chan struct{} // closed when the output stream hits EOF
+	notify    chan struct{} // cap 1 — output appended
+	// interaction is a cap-1 semaphore serializing store-level
+	// write/poll interactions — codex's interaction_lock: calls on one
+	// session share the draining buffer, so they queue instead of racing.
+	interaction chan struct{}
+	exitCode    int // written before done closes
+	exited      atomic.Bool
+	lastUsed    atomic.Int64 // unixnano — store's LRU clock
+	terminated  atomic.Bool
 
 	mu      sync.Mutex // pending + omitted
 	writeMu sync.Mutex // serialize stdin/master writes
@@ -89,12 +97,13 @@ func sessionEnv() []string {
 // deliberately not used. Terminate is the only reaper.
 func spawnSession(convID string, id int, req dservice.TerminalOpenRequest) (*terminalSession, error) {
 	sess := &terminalSession{
-		id:        id,
-		tty:       req.TTY,
-		done:      make(chan struct{}),
-		readerEOF: make(chan struct{}),
-		notify:    make(chan struct{}, 1),
-		dir:       req.Dir,
+		id:          id,
+		tty:         req.TTY,
+		done:        make(chan struct{}),
+		readerEOF:   make(chan struct{}),
+		notify:      make(chan struct{}, 1),
+		interaction: make(chan struct{}, 1),
+		dir:         req.Dir,
 	}
 	sess.env = sessionEnv()
 	sess.touch()
@@ -112,27 +121,23 @@ func spawnSession(convID string, id int, req dservice.TerminalOpenRequest) (*ter
 }
 
 // spawnPipes runs the command with merged stdout/stderr — assigning the
-// same writer to both makes os/exec share one pipe — plus a held-open
-// stdin pipe. os/exec's own copy goroutine feeds append(), so no reader
-// goroutine is needed here.
+// same writer to both makes os/exec share one pipe. os/exec's own copy
+// goroutine feeds append(), so no reader goroutine is needed here. Stdin
+// stays nil — codex's stdin_open=false for non-tty: the child gets
+// /dev/null, so a program reading stdin hits EOF instead of blocking on
+// a pipe Write would refuse to feed anyway.
 func (s *terminalSession) spawnPipes(command string) error {
 	cmd := sessionCommand(command)
 	cmd.Dir = s.dir
 	cmd.Env = s.env
 	cmd.WaitDelay = waitDelay
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return err
-	}
 	out := appendWriter{s}
 	cmd.Stdout = out
 	cmd.Stderr = out
 	if err := cmd.Start(); err != nil {
-		stdin.Close()
 		return err
 	}
 	s.cmd = cmd
-	s.stdin = stdin
 	return nil
 }
 
@@ -237,17 +242,20 @@ func (s *terminalSession) append(p []byte) {
 }
 
 // drain empties pending — the "chars since last Collect" window — and
-// prepends the omission marker when the cap dropped bytes.
-func (s *terminalSession) drain() string {
+// prepends the omission marker when the cap dropped bytes. The returned
+// count is the bytes that flowed through this drain (retained + omitted)
+// so a Collect can report the honest pre-truncation total.
+func (s *terminalSession) drain() (string, int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	flowed := len(s.pending) + s.omitted
 	if len(s.pending) == 0 {
 		if s.omitted > 0 {
 			marker := fmt.Sprintf("... %d bytes omitted ...\n", s.omitted)
 			s.omitted = 0
-			return marker
+			return marker, flowed
 		}
-		return ""
+		return "", 0
 	}
 	out := string(s.pending)
 	s.pending = nil
@@ -255,12 +263,26 @@ func (s *terminalSession) drain() string {
 		out = fmt.Sprintf("... %d bytes omitted ...\n", s.omitted) + out
 		s.omitted = 0
 	}
-	return out
+	return out, flowed
 }
 
 func (s *terminalSession) ID() int   { return s.id }
 func (s *terminalSession) TTY() bool { return s.tty }
 func (s *terminalSession) touch()    { s.lastUsed.Store(time.Now().UnixNano()) }
+
+// tryInteraction mirrors codex's try_lock_owned on the interaction lock:
+// true means the semaphore was free (acquired then released here), false
+// means a write/poll interaction currently holds it — the store's
+// eviction uses this to leave in-flight sessions alone.
+func (s *terminalSession) tryInteraction() bool {
+	select {
+	case s.interaction <- struct{}{}:
+		<-s.interaction
+		return true
+	default:
+		return false
+	}
+}
 
 // Exited reports process death with the code published before done
 // closed — the pair is always consistent.
@@ -271,12 +293,17 @@ func (s *terminalSession) Exited() (bool, int) {
 	return true, s.exitCode
 }
 
-// WriteSession feeds stdin — master for pty, the held pipe otherwise.
-// A dead process reports EPIPE; a live one that ignores stdin may block
-// the write until Terminate lands.
+// Write feeds stdin through the pty master — TTY sessions only. Pipes
+// sessions report ErrTerminalStdinClosed, matching codex: interactive
+// input requires the tty backend, and \x03 goes through Interrupt. A dead
+// process reports "session exited"; a live one that ignores stdin may
+// block the write until Terminate lands.
 func (s *terminalSession) Write(p []byte) error {
 	if len(p) == 0 {
 		return nil
+	}
+	if !s.tty {
+		return dservice.ErrTerminalStdinClosed
 	}
 	s.touch()
 	if s.exited.Load() {
@@ -284,12 +311,7 @@ func (s *terminalSession) Write(p []byte) error {
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	var err error
-	if s.tty {
-		_, err = s.master.Write(p)
-	} else {
-		_, err = s.stdin.Write(p)
-	}
+	_, err := s.master.Write(p)
 	return err
 }
 
@@ -317,8 +339,11 @@ func (s *terminalSession) Collect(ctx context.Context, maxWait time.Duration, si
 	deadline := time.NewTimer(maxWait)
 	defer deadline.Stop()
 	var out strings.Builder
+	var total int
 	flush := func() {
-		if chunk := s.drain(); chunk != "" {
+		chunk, n := s.drain()
+		total += n
+		if chunk != "" {
 			if sink != nil {
 				sink(chunk)
 			}
@@ -337,24 +362,24 @@ func (s *terminalSession) Collect(ctx context.Context, maxWait time.Duration, si
 			}
 			flush()
 			_, code := s.Exited()
-			return dservice.TerminalPoll{Output: out.String(), ExitCode: code}
+			return dservice.TerminalPoll{Output: out.String(), ExitCode: code, TotalBytes: total}
 		}
 		select {
 		case <-s.notify:
 		case <-s.done:
 		case <-ctx.Done():
-			return s.pollState(out.String())
+			return s.pollState(out.String(), total)
 		case <-deadline.C:
-			return s.pollState(out.String())
+			return s.pollState(out.String(), total)
 		}
 	}
 }
 
-func (s *terminalSession) pollState(out string) dservice.TerminalPoll {
+func (s *terminalSession) pollState(out string, total int) dservice.TerminalPoll {
 	if exited, code := s.Exited(); exited {
-		return dservice.TerminalPoll{Output: out, ExitCode: code}
+		return dservice.TerminalPoll{Output: out, ExitCode: code, TotalBytes: total}
 	}
-	return dservice.TerminalPoll{Output: out, Running: true}
+	return dservice.TerminalPoll{Output: out, Running: true, TotalBytes: total}
 }
 
 // Terminate kills the process tree and waits out the goroutines. The
@@ -367,9 +392,6 @@ func (s *terminalSession) Terminate() {
 	s.terminateProcess()
 	// Close the write side first — a blocked Write unblocks on EPIPE;
 	// master close also ends the pty reader loop.
-	if s.stdin != nil {
-		s.stdin.Close()
-	}
 	if s.master != nil {
 		s.master.Close()
 	}

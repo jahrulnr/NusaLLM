@@ -59,15 +59,35 @@ func (s *SessionStore) Open(ctx context.Context, convID string, req dservice.Ter
 	return sess, nil
 }
 
-func (s *SessionStore) Get(convID string, id int) (dservice.TerminalSession, bool) {
+// Interact serializes one write/poll interaction against the session —
+// concurrent calls on one session share the draining output buffer, so
+// they queue on its interaction semaphore (codex's interaction_lock)
+// instead of racing. After the semaphore lands, the registry entry is
+// re-validated by identity: an id reaped, evicted, or reused while the
+// call queued reports ErrTerminalSessionGone and fn never runs.
+func (s *SessionStore) Interact(ctx context.Context, convID string, id int, fn func(dservice.TerminalSession) error) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	sess, ok := s.rooms[convID][id]
+	s.mu.Unlock()
 	if !ok {
-		return nil, false
+		return dservice.ErrTerminalSessionGone
 	}
+	select {
+	case sess.interaction <- struct{}{}:
+		defer func() { <-sess.interaction }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	s.mu.Lock()
+	current, ok := s.rooms[convID][id]
+	s.mu.Unlock()
+	if !ok || current != sess {
+		return dservice.ErrTerminalSessionGone
+	}
+	// Touch after the wait, not before it — a call parked behind a long
+	// poll must not hold a stale LRU stamp while its fn runs.
 	sess.touch()
-	return sess, true
+	return fn(sess)
 }
 
 // Terminate kills one session. The session is removed from the registry
@@ -151,6 +171,11 @@ func (s *SessionStore) pruneLocked(room map[int]*terminalSession) []*terminalSes
 		}
 		if len(sessions)-i <= protectedSessions {
 			break
+		}
+		// Codex skips processes whose interaction lock is held — a
+		// write/poll in flight must not be SIGKILLed mid-collect.
+		if !sess.tryInteraction() {
+			continue
 		}
 		evicted = append(evicted, sess)
 		delete(room, sess.id)

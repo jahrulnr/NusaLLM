@@ -35,8 +35,8 @@ func NewExecSessionTool(store dservice.TerminalSessions) (dservice.Tool, error) 
 	}
 	schema, err := valueobject.NewToolSchema(
 		"exec_session",
-		"Run a shell command in a persistent terminal session. Waits yield_time_ms, then returns the output plus either the exit code or a session id for ongoing interaction through write_stdin. Use tty only for programs that require a real terminal (isatty checks — password prompts, REPLs); the default pipes backend suits everything else. Sessions survive turn interruption and die with the conversation.",
-		json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute"},"tty":{"type":"boolean","description":"Allocate a pseudo-terminal — only for isatty-checking programs; default false"},"yield_time_ms":{"type":"integer","description":"Milliseconds to wait for initial output before returning the session id — default 10000, clamped 250-30000"}},"required":["command"]}`),
+		"Run a shell command in a persistent terminal session. Waits yield_time_ms, then returns the output plus either the exit code or a session id for ongoing interaction through write_stdin. Use tty only for programs that require a real terminal or interactive stdin (isatty checks, password prompts, REPLs) — the default pipes backend suits everything else but has closed stdin, so write_stdin on it only accepts the Ctrl-C byte. Sessions survive turn interruption and die with the conversation.",
+		json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute"},"tty":{"type":"boolean","description":"Allocate a pseudo-terminal — required for isatty-checking programs and any interactive stdin through write_stdin; default false"},"yield_time_ms":{"type":"integer","description":"Milliseconds to wait for initial output before returning the session id — default 10000, clamped 250-30000"}},"required":["command"]}`),
 		true,
 		enum.ToolPermissionAgent,
 	)
@@ -118,9 +118,13 @@ func clampYield(ms int, fallback, floor, cap time.Duration) time.Duration {
 }
 
 // formatPoll renders the codex contract: an exit line or the session-id
-// line the model uses to keep driving the process, then the drained
-// output windowed to the call budget — head+tail with an omission
-// marker, same rule the entity applies to oversized tool output.
+// line the model uses to keep driving the process, the wall time, and
+// the pre-truncation byte count — codex's original_token_count, in the
+// bytes unit our budgets use — so the model always knows the scale of
+// what was collected before windowing, including bytes the buffer cap
+// dropped. The drained output itself is windowed to the call budget —
+// head+tail with an omission marker, same rule the entity applies to
+// oversized tool output.
 func formatPoll(id int, poll dservice.TerminalPoll, start time.Time, body string) string {
 	var header string
 	if poll.Running {
@@ -128,5 +132,5 @@ func formatPoll(id int, poll dservice.TerminalPoll, start time.Time, body string
 	} else {
 		header = fmt.Sprintf("Process exited with code %d", poll.ExitCode)
 	}
-	return fmt.Sprintf("%s\nWall time: %.3f seconds\nOutput:\n%s", header, time.Since(start).Seconds(), body)
+	return fmt.Sprintf("%s\nWall time: %.3f seconds\nOriginal output: %d bytes\nOutput:\n%s", header, time.Since(start).Seconds(), poll.TotalBytes, body)
 }

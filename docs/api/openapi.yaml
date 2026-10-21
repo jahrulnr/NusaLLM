@@ -1196,7 +1196,7 @@ components:
           items: { type: string }
         effort:
           type: string
-          enum: [default, none, low, medium, high, xhigh, max]
+          enum: [default, none, minimal, low, medium, high, xhigh, max]
           description: Reasoning effort; `default`/absent omits it from the wire.
         modelType:
           type: string
@@ -1205,6 +1205,23 @@ components:
           type: integer
           minimum: 0
           description: Total context window in tokens; `0` = unknown (the engine budgets against a floor).
+        outputLimit:
+          type: integer
+          minimum: 0
+          description: Max completion tokens the provider declares; `0` = unknown.
+        name:
+          type: string
+          description: Display name the provider publishes.
+        canonical:
+          type: string
+          description: Stable base id the catalog declares (survives id churn); empty = undeclared.
+        aliasOf:
+          type: string
+          description: Target id when the entry is a pure alias; empty = not an alias.
+        supportedEfforts:
+          type: array
+          items: { type: string, enum: [none, minimal, low, medium, high, xhigh, max] }
+          description: Effort levels the catalog declares; empty = unknown (picker fails open).
         pricing: { $ref: "#/components/schemas/Pricing" }
         inputModalities:
           type: array
@@ -1241,11 +1258,18 @@ components:
           items: { type: string }
         effort:
           type: string
-          enum: [default, none, low, medium, high, xhigh, max]
+          enum: [default, none, minimal, low, medium, high, xhigh, max]
         modelType:
           type: string
           enum: [text, embedding, video, image, speech, transcription, audio, rerank, decision]
         contextWindow: { type: integer, minimum: 0 }
+        outputLimit: { type: integer, minimum: 0 }
+        name: { type: string }
+        canonical: { type: string }
+        aliasOf: { type: string }
+        supportedEfforts:
+          type: array
+          items: { type: string, enum: [none, minimal, low, medium, high, xhigh, max] }
         pricing: { $ref: "#/components/schemas/Pricing" }
         inputModalities:
           type: array

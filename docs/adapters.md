@@ -397,7 +397,7 @@ backpressure the tool, and chunks are never persisted.
 | `read_media` | `tool/file` (`read_media.go`) | Attaches a non-text file to the result as a pinned `file://` reference — see below |
 | `exec` | `tool/terminal` (`exec.go`) | Shell command, merged output — see below |
 | `exec_session` | `tool/terminal` (`exec_session.go`) | Open a persistent terminal session — see below |
-| `write_stdin` | `tool/terminal` (`write_stdin.go`) | Write/poll an open session; `\x03` maps to Ctrl-C |
+| `write_stdin` | `tool/terminal` (`write_stdin.go`) | Write/poll an open session; writes need `tty`, `\x03` maps to Ctrl-C |
 | `web_search` | `tool/web` (`web.go`) | Searchwire metasearch across Brave/Startpage/Wikipedia/GitHub (+ keyed sources); ranked results with partial-failure reporting |
 | `web_fetch` | `tool/web` (`web.go`) | Searchwire fetch — one URL → readable text; truncated output spilled to a `tempFile` for follow-up `read_file` |
 | `workspace` | `tool/workspace` | Harness-side hydration record — `ToolPermissionSystem`, pins the turn's working directory into history as a completed call |
@@ -538,27 +538,45 @@ at 64 sessions with LRU eviction preferring exited entries and protecting
 the 8 most-recently-touched (mirroring codex's process store).
 
 Two backends share the session contract: pipes (default) run `sh -c` under
-`Setpgid` with a held-open stdin and merged stdout/stderr — same group-kill
-discipline as `exec`; `tty:true` allocates a real PTY on Linux via
-`/dev/ptmx` + `TIOCSPTLCK`/`TIOCGPTN` ioctls, spawning the child `Setsid` +
-`Setctty` so `isatty` probes (password prompts on `/dev/tty`, REPLs) answer
-true — BSD/Windows refuse `tty` with a clear error. Every session inherits
-the daemon env with the interactive-unfriendly keys scrubbed (`TERM=dumb`,
-`PAGER=cat`, `NO_COLOR=1`) so output stays textual. Output lands in a 1 MiB
-rolling buffer drained per `Collect` ("chars since last poll") with an
-`... N bytes omitted ...` marker when the cap dropped bytes; after exit the
-collector waits a short window for the reader's EOF so trailing output is
-not lost.
+`Setpgid` with merged stdout/stderr and a *closed* stdin — the child reads
+EOF immediately, so a blocked `read` can never wait on input no call may
+send (codex's `stdin_open=false` for non-tty); `tty:true` allocates a real
+PTY on Linux via `/dev/ptmx` + `TIOCSPTLCK`/`TIOCGPTN` ioctls, spawning the
+child `Setsid` + `Setctty` so `isatty` probes (password prompts on
+`/dev/tty`, REPLs) answer true and stdin stays open for `write_stdin` —
+BSD/Windows refuse `tty` with a clear error. Every session inherits the
+daemon env with the interactive-unfriendly keys scrubbed — codex's set:
+`TERM=dumb`, `NO_COLOR=1`, `COLORTERM=`, `PAGER`/`GIT_PAGER`/`GH_PAGER=cat`,
+`C.UTF-8` locale, `NUSALLM_CI=1` — so output stays textual and
+deterministic. Output lands in a 1 MiB rolling buffer drained per `Collect`
+("chars since last poll") with an `... N bytes omitted ...` marker when the
+cap dropped bytes; after exit the collector waits a short window for the
+reader's EOF so trailing output is not lost.
 
-`write_stdin` resolves `session_id` through the same store, writes `chars`
-(empty `chars` is a pure poll with a longer default wait), then collects —
-a single `\x03` is not written but routed to `Interrupt`, which sends the
-byte through the pty line discipline on TTY sessions and `SIGINT`s the
-process group on pipes. Both tools return the same header contract —
-`Process exited with code N` or `Process running with session ID N` — so
-the model always knows whether another poll is meaningful. Yield bounds
-differ by call shape: open waits default 10 s (clamp 250 ms–30 s), writes
-default 250 ms (cap 30 s), empty polls default 5 s (floor 5 s, cap 300 s).
+`write_stdin` resolves `session_id` through the store's `Interact`, which
+holds the session's interaction semaphore for the whole write+poll —
+concurrent calls on one session share the draining buffer, so they queue
+rather than race — and re-checks the registry by identity once the lock
+lands, so an id reaped or reused while the call queued fails with
+"not found" instead of landing on the wrong process (codex's
+interaction_lock + ptr-eq guard). The same serialization means a `\x03`
+queued behind an in-flight call waits it out — a long empty poll can hold
+the semaphore up to the 300 s cap before the interrupt lands. Inside the
+interaction, `chars` writes
+to the tty master — pipes sessions reject it with "stdin is closed for
+this session; rerun exec_session with tty=true" — while an empty `chars`
+is a pure poll with a longer default wait. A single `\x03` is not written
+but routed to `Interrupt`, which sends the byte through the pty line
+discipline on TTY sessions and `SIGINT`s the process group on pipes — it
+is accepted on both backends. Both tools return the same header contract —
+`Process exited with code N` or `Process running with session ID N`, then
+`Wall time` and `Original output: N bytes` (the pre-truncation count —
+codex's `original_token_count`, in the bytes unit our budgets use) — so the
+model always knows whether another poll is meaningful and the scale of
+what was collected. Yield bounds differ by call shape: open waits default
+10 s (clamp 250 ms–30 s), writes default 250 ms (clamp 250 ms–30 s, with a
+100 ms settle after a tty write so the reaction lands in the same window),
+empty polls default 5 s (clamp 5 s–300 s).
 
 ### `summary` — the compaction contract
 

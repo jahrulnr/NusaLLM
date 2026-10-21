@@ -1,4 +1,4 @@
-// Package catalog translates provider model-list APIs into model IDs.
+// Package catalog translates provider model-list APIs into catalog entries.
 package catalog
 
 import (
@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
@@ -25,11 +27,112 @@ func New(client *http.Client) *Catalog {
 	return &Catalog{client: client}
 }
 
+// catalogEntry is the OpenRouter-shaped model payload — also what
+// OpenRouter-compatible relays and Anthropic's /v1/models answer with a
+// subset of. Every field is optional on the wire; undeclared metadata
+// stays zero so the merge reads it as "the provider did not say".
+type catalogEntry struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	DisplayName   string `json:"display_name"` // Anthropic-style name key
+	CanonicalSlug string `json:"canonical_slug"`
+	AliasTarget   *struct {
+		Slug string `json:"slug"`
+	} `json:"alias_target"`
+	ContextLength int `json:"context_length"`
+	TopProvider   *struct {
+		MaxCompletionTokens int `json:"max_completion_tokens"`
+	} `json:"top_provider"`
+	Architecture *struct {
+		InputModalities  []string `json:"input_modalities"`
+		OutputModalities []string `json:"output_modalities"`
+	} `json:"architecture"`
+	Reasoning *struct {
+		SupportedEfforts []string `json:"supported_efforts"`
+	} `json:"reasoning"`
+	Pricing *struct {
+		Prompt          string `json:"prompt"`
+		Completion      string `json:"completion"`
+		InputCacheRead  string `json:"input_cache_read"`
+		InputCacheWrite string `json:"input_cache_write"`
+	} `json:"pricing"`
+}
+
+// toCatalogModel normalizes one wire entry. Provider vocabulary that the
+// domain does not know (a new effort level, an unseen modality) drops
+// silently — the next catalog pass re-derives it once the enum learns it.
+func (e catalogEntry) toCatalogModel() dservice.CatalogModel {
+	m := dservice.CatalogModel{
+		ID:            e.ID,
+		Name:          e.Name,
+		Canonical:     e.CanonicalSlug,
+		ContextWindow: e.ContextLength,
+	}
+	if m.Name == "" {
+		m.Name = e.DisplayName
+	}
+	if e.AliasTarget != nil {
+		m.AliasOf = e.AliasTarget.Slug
+	}
+	if e.TopProvider != nil {
+		m.OutputLimit = e.TopProvider.MaxCompletionTokens
+	}
+	if e.Architecture != nil {
+		for _, v := range e.Architecture.InputModalities {
+			if mod, ok := enum.ParseModality(v); ok {
+				m.InputModalities = append(m.InputModalities, mod)
+			}
+		}
+		for _, v := range e.Architecture.OutputModalities {
+			if mod, ok := enum.ParseModality(v); ok {
+				m.OutputModalities = append(m.OutputModalities, mod)
+			}
+		}
+	}
+	if e.Reasoning != nil {
+		for _, v := range e.Reasoning.SupportedEfforts {
+			if eff, ok := enum.ParseEffort(v); ok && !eff.IsUnset() {
+				m.SupportedEfforts = append(m.SupportedEfforts, eff)
+			}
+		}
+	}
+	if e.Pricing != nil {
+		if p, ok := perTokenPricing(e.Pricing.Prompt, e.Pricing.Completion,
+			e.Pricing.InputCacheRead, e.Pricing.InputCacheWrite); ok {
+			m.Pricing = &p
+		}
+	}
+	return m
+}
+
+// perTokenPricing converts a provider's USD-per-token strings into the
+// per-1M rate card. A provided rate that fails to parse drops the whole
+// pricing block — a zeroed-out card would read as "free", not "unknown".
+func perTokenPricing(prompt, completion, cacheRead, cacheWrite string) (valueobject.Pricing, bool) {
+	at := func(s string) float64 {
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return 0
+		}
+		return f * 1_000_000
+	}
+	for _, s := range []string{prompt, completion, cacheRead, cacheWrite} {
+		if s == "" {
+			continue
+		}
+		if _, err := strconv.ParseFloat(s, 64); err != nil {
+			return valueobject.Pricing{}, false
+		}
+	}
+	p, err := valueobject.NewPricing(at(prompt), at(completion), at(cacheRead), at(cacheWrite))
+	return p, err == nil
+}
+
 // ListModels reads every page of the provider catalog. Existing gateway
 // model settings are deliberately outside this adapter's responsibility.
-func (c *Catalog) ListModels(ctx context.Context, gateway *aggregate.Gateway) ([]string, error) {
+func (c *Catalog) ListModels(ctx context.Context, gateway *aggregate.Gateway) ([]dservice.CatalogModel, error) {
 	base := strings.TrimRight(gateway.Endpoint(), "/") + "/models"
-	ids := make([]string, 0)
+	models := make([]dservice.CatalogModel, 0)
 	seenIDs := make(map[string]bool)
 	seenPages := make(map[string]bool)
 	page := ""
@@ -78,11 +181,12 @@ func (c *Catalog) ListModels(ctx context.Context, gateway *aggregate.Gateway) ([
 			return nil, apperror.New(502, fmt.Sprintf("provider model list failed (HTTP %d)", resp.StatusCode), fmt.Errorf("upstream status %d", resp.StatusCode))
 		}
 		var body struct {
-			Data []struct {
-				ID string `json:"id"`
-			} `json:"data"`
+			Data   []catalogEntry `json:"data"`
 			Models []struct {
 				Name                       string   `json:"name"`
+				DisplayName                string   `json:"displayName"`
+				InputTokenLimit            int      `json:"inputTokenLimit"`
+				OutputTokenLimit           int      `json:"outputTokenLimit"`
 				SupportedGenerationMethods []string `json:"supportedGenerationMethods"`
 			} `json:"models"`
 			HasMore       bool   `json:"has_more"`
@@ -99,10 +203,10 @@ func (c *Catalog) ListModels(ctx context.Context, gateway *aggregate.Gateway) ([
 			return nil, apperror.New(502, "invalid provider model list", fmt.Errorf("model array missing"))
 		}
 		if gateway.Style() == enum.StyleGenerateContent {
-			for _, model := range body.Models {
-				if len(model.SupportedGenerationMethods) > 0 {
+			for _, entry := range body.Models {
+				if len(entry.SupportedGenerationMethods) > 0 {
 					chat := false
-					for _, method := range model.SupportedGenerationMethods {
+					for _, method := range entry.SupportedGenerationMethods {
 						if method == "generateContent" {
 							chat = true
 							break
@@ -112,18 +216,23 @@ func (c *Catalog) ListModels(ctx context.Context, gateway *aggregate.Gateway) ([
 						continue
 					}
 				}
-				id := strings.TrimPrefix(model.Name, "models/")
+				id := strings.TrimPrefix(entry.Name, "models/")
 				if id != "" && !seenIDs[id] {
-					ids = append(ids, id)
+					models = append(models, dservice.CatalogModel{
+						ID:            id,
+						Name:          entry.DisplayName,
+						ContextWindow: entry.InputTokenLimit,
+						OutputLimit:   entry.OutputTokenLimit,
+					})
 					seenIDs[id] = true
 				}
 			}
 			page = body.NextPageToken
 		} else {
-			for _, model := range body.Data {
-				if model.ID != "" && !seenIDs[model.ID] {
-					ids = append(ids, model.ID)
-					seenIDs[model.ID] = true
+			for _, entry := range body.Data {
+				if entry.ID != "" && !seenIDs[entry.ID] {
+					models = append(models, entry.toCatalogModel())
+					seenIDs[entry.ID] = true
 				}
 			}
 			if gateway.Style() == enum.StyleMessages && body.HasMore {
@@ -143,7 +252,7 @@ func (c *Catalog) ListModels(ctx context.Context, gateway *aggregate.Gateway) ([
 		}
 		seenPages[page] = true
 	}
-	return ids, nil
+	return models, nil
 }
 
 // ListProviders reads OpenRouter's per-model endpoints and returns the

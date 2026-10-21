@@ -44,7 +44,7 @@ func TestParseRoundtrips(t *testing.T) {
 			t.Fatalf("TurnEventKind %q roundtrip failed", v)
 		}
 	}
-	for _, v := range []Effort{EffortDefault, EffortNone, EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax} {
+	for _, v := range []Effort{EffortDefault, EffortNone, EffortMinimal, EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax} {
 		if got, f := ParseEffort(v.String()); !f || got != v {
 			t.Fatalf("Effort %q roundtrip failed", v)
 		}

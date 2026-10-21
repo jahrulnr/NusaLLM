@@ -57,6 +57,15 @@ type ModelInput struct {
 	InputModalities  []enum.Modality
 	OutputModalities []enum.Modality
 	OptionalContent  map[string]string
+
+	// Catalog-declared metadata — same fields an import backfills. Set
+	// them only for gateways whose catalog stays silent; a provider
+	// declaration fills these on empty fields during merge.
+	Name             string
+	Canonical        string
+	AliasOf          string
+	OutputLimit      int
+	SupportedEfforts []enum.Effort
 }
 
 // GatewayInfo is the sanitized read projection for transports: the whole
@@ -123,6 +132,11 @@ func InputFromInfo(info GatewayInfo) GatewayInput {
 			InputModalities:  m.InputModalities(),
 			OutputModalities: m.OutputModalities(),
 			OptionalContent:  m.OptionalContent(),
+			Name:             m.Name(),
+			Canonical:        m.Canonical(),
+			AliasOf:          m.AliasOf(),
+			OutputLimit:      m.OutputLimit(),
+			SupportedEfforts: m.SupportedEfforts(),
 		})
 	}
 	return in
@@ -135,7 +149,7 @@ func (app *GatewayApp) buildModel(in ModelInput) (entity.Model, error) {
 	if err != nil {
 		return entity.Model{}, apperror.New(400, "invalid model", err)
 	}
-	for _, n := range []int{in.ContextWindow, app.derefInt(in.TopK), app.derefInt(in.MaxOutputTokens)} {
+	for _, n := range []int{in.ContextWindow, in.OutputLimit, app.derefInt(in.TopK), app.derefInt(in.MaxOutputTokens)} {
 		if n < 0 {
 			return entity.Model{}, apperror.New(400, "invalid model",
 				fmt.Errorf("model %q: negative token count %d", in.ID, n))
@@ -164,6 +178,22 @@ func (app *GatewayApp) buildModel(in ModelInput) (entity.Model, error) {
 		m.SetModelType(t)
 	}
 	m.SetContextWindow(in.ContextWindow)
+	m.SetName(in.Name)
+	m.SetCanonical(in.Canonical)
+	m.SetAliasOf(in.AliasOf)
+	m.SetOutputLimit(in.OutputLimit)
+	var supported []enum.Effort
+	for _, v := range in.SupportedEfforts {
+		e, ok := enum.ParseEffort(v.String())
+		if !ok {
+			return entity.Model{}, app.badModel(in.ID, "supportedEfforts", v.String())
+		}
+		if e.IsUnset() {
+			continue // "default"/"" are sentinels, not levels the provider offers
+		}
+		supported = append(supported, e)
+	}
+	m.SetSupportedEfforts(supported)
 	if in.Pricing != nil {
 		m.SetPricing(*in.Pricing)
 	}
