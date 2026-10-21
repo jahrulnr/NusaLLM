@@ -198,7 +198,7 @@ class ModelPicker extends Widget {
         this.api.discoverGatewayProviders(this._draft.route, this._draft.modelId)
           .then((res) => { if (gen === this._gen) { this._providers = (res && res.data) || []; this._render(); } })
           .catch(() => { if (gen === this._gen) { this._providers = []; this._providersFailed = true; this._render(); } });
-      }, current === e || (e === 'default' && (!current || !efforts.includes(current))));
+      }, current === e || (e === 'default' && (!current || !efforts.includes(current)))));
     }
   }
 
