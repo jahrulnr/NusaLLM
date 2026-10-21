@@ -30,6 +30,7 @@ import (
 	reposecret "github.com/jahrulnr/nusallm/infrastructure/repository/secret"
 	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
 	textcompletion "github.com/jahrulnr/nusallm/infrastructure/service/core/text/completion"
+	toolsummary "github.com/jahrulnr/nusallm/infrastructure/service/tool/summary"
 )
 
 type sendOutcome struct {
@@ -96,6 +97,8 @@ func fixture(t *testing.T, handler http.HandlerFunc) (*ConversationApp, *aggrega
 		config.NewConfig(),
 		nil,
 		"",
+		nil,
+
 		nil,
 	)
 	return app, &gw
@@ -811,6 +814,7 @@ func TestAdapterNoAppendIsInternalError(t *testing.T) {
 		nil,
 		"",
 		nil,
+		nil,
 	)
 	result, err := app.Send(t.Context(), "badsvc", "gw1", "m1", "ping", nil, appjob.SendOptions{}, nil)
 	if apperror.As(err).StatusCode() != 500 {
@@ -856,6 +860,7 @@ func TestSendToolLoop(t *testing.T) {
 		config.NewConfig(),
 		nil,
 		"",
+		nil,
 		nil,
 	)
 	var evs []event.TurnEvent
@@ -1002,9 +1007,9 @@ func TestSendSelectsEnvironmentPerConversationAndResume(t *testing.T) {
 		enum.EnvironmentDocker: appjob.EnvironmentBundle{
 			WorkspaceStore: virtualWorkspace{},
 			Services:       map[enum.Style]dservice.TextModelService{enum.StyleCompletion: environmentService{label: "docker"}},
-			Tools:          map[string]dservice.Tool{"echo": environmentTool{label: "docker"}, appjob.SummaryToolName: appjob.NewSummaryTool()},
+			Tools:          map[string]dservice.Tool{"echo": environmentTool{label: "docker"}, toolsummary.ToolName: mustSummaryTool(t)},
 		},
-	}, config.NewConfig(), nil, "", nil)
+	}, config.NewConfig(), nil, "", nil, nil)
 	t.Cleanup(func() { _ = app.Shutdown(context.Background()) })
 
 	for _, tc := range []struct {

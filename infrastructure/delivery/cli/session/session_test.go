@@ -44,7 +44,7 @@ func TestEffectiveRouteModelUsesConversationBinding(t *testing.T) {
 	}
 
 	s := &Session{
-		Conversations:  appconversation.New(convs, gateways, nil, config.NewConfig(), nil, "", nil),
+		Conversations:  appconversation.New(convs, gateways, nil, config.NewConfig(), nil, "", nil, nil),
 		ConversationID: "room",
 	}
 
@@ -75,7 +75,7 @@ func TestResolveRouteAutoSelectsAndNotifies(t *testing.T) {
 
 	var notes []string
 	s := &Session{
-		Conversations: appconversation.New(convs, gateways, nil, config.NewConfig(), nil, "", nil),
+		Conversations: appconversation.New(convs, gateways, nil, config.NewConfig(), nil, "", nil, nil),
 		Gateways:      gwApp,
 		Notify:        func(text string) { notes = append(notes, text) },
 	}
@@ -103,7 +103,7 @@ func TestResolveRouteUnboundErrors(t *testing.T) {
 	gateways := repogateway.NewGatewayRepository(t.TempDir(), secrets)
 	convs := repoconversation.NewConversationRepository(t.TempDir())
 	s := &Session{
-		Conversations: appconversation.New(convs, gateways, nil, config.NewConfig(), nil, "", nil),
+		Conversations: appconversation.New(convs, gateways, nil, config.NewConfig(), nil, "", nil, nil),
 		Gateways:      appgateway.New(gateways, secrets, nil),
 		Notify:        func(string) {},
 	}

@@ -130,7 +130,7 @@ func gatedApp(t *testing.T, svc *scriptSvc, tools map[string]*gatedTool) *appcon
 			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: svc},
 			Tools:    envTools,
 		}},
-		config.NewConfig(), nil, "", nil)
+		config.NewConfig(), nil, "", nil, nil)
 	seed, _ := aggregate.NewConversation("room")
 	seed.SetTools(schemas)
 	seed.SetRoute("gw1")

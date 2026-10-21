@@ -99,11 +99,15 @@ func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool
 // by function_call_output items and any media follow-up user items. Items
 // arrive pre-marshaled: template entries are raw bytes that must pass
 // through untouched, so a typed item envelope can't carry them.
-// Injection calls hydrate as inline text (application-originated; their
-// output attachments are never encoded). A call's output attachments ride
-// a user message after the whole output block: function_call_output
-// carries only a string on this surface, so media follows the same
-// convention the completion wire uses.
+// Injection calls are application-originated hydration: on a system-role
+// record they encode as the function_call + function_call_output pair
+// they record — observed evidence rides at tool-output trust, not inside
+// an instruction turn. Anywhere else they hydrate as inline text (legacy
+// user-role records keep their shape). Injection output attachments are
+// never encoded. A call's output attachments ride a user message after
+// the whole output block: function_call_output carries only a string on
+// this surface, so media follows the same convention the completion
+// wire uses.
 func encodeMessage(m entity.Message, model entity.Model, fileRoot wire.MediaRoot) ([]json.RawMessage, error) {
 	var origin, injected []entity.ToolCall
 	for _, tc := range m.ToolCalls() {
@@ -112,6 +116,21 @@ func encodeMessage(m entity.Message, model entity.Model, fileRoot wire.MediaRoot
 		} else {
 			origin = append(origin, tc)
 		}
+	}
+
+	// A system-role hydration record with calls to show takes the
+	// completed-call wire shape: function_call items immediately answered
+	// by function_call_output items (output items — no assistant
+	// message wrapper needed on this surface).
+	if m.Role() == enum.RoleSystem && len(injected) > 0 {
+		var items []json.RawMessage
+		if m.Content() != "" {
+			it, _ := marshalItem(ItemBody{Type: "message", Role: m.Role().String(), Content: m.Content()})
+			items = append(items, it...)
+		}
+		calls := append(append([]entity.ToolCall(nil), injected...), origin...)
+		items = append(items, assistantItems(m, "", calls)...)
+		return append(items, toolResultItems(calls, model, fileRoot)...), nil
 	}
 
 	text := m.Content()
@@ -208,7 +227,9 @@ func assistantItems(m entity.Message, text string, origin []entity.ToolCall) []j
 			items = append(items, entry)
 		}
 	}
-	if !msgDone && (text != "" || len(items) == 0) {
+	if !msgDone && (text != "" || (len(items) == 0 && len(origin) == 0)) {
+		// An empty output_text is only the fallback when the turn carries
+		// nothing else — never filler ahead of function_call items.
 		emitMsg("", nil)
 	}
 	for used < len(origin) {

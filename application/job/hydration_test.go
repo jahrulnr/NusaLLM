@@ -19,7 +19,18 @@ import (
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 	repoconversation "github.com/jahrulnr/nusallm/infrastructure/repository/conversation"
 	repogateway "github.com/jahrulnr/nusallm/infrastructure/repository/gateway"
+	toolsummary "github.com/jahrulnr/nusallm/infrastructure/service/tool/summary"
 )
+
+// mustSummaryTool builds the injected compaction contract once per Deps.
+func mustSummaryTool(t *testing.T) dservice.Tool {
+	t.Helper()
+	tool, err := toolsummary.NewSummaryTool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tool
+}
 
 // requireWorkspaceContext asserts msg is the workspace context record the
 // turn loop appends after an editable user line: a system-role hydration
@@ -114,8 +125,9 @@ func hydrationDeps(t *testing.T, svc dservice.TextModelService) Deps {
 		t.Fatal(err)
 	}
 	return Deps{
-		Convs:    repoconversation.NewConversationRepository(t.TempDir()),
-		Gateways: gateways,
+		SummaryTool: mustSummaryTool(t),
+		Convs:       repoconversation.NewConversationRepository(t.TempDir()),
+		Gateways:    gateways,
 		Environments: map[enum.Environment]EnvironmentDriver{
 			enum.EnvironmentLocal: EnvironmentBundle{
 				Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: svc},
@@ -130,8 +142,9 @@ func hydrationDeps(t *testing.T, svc dservice.TextModelService) Deps {
 // the system prompt stays verbatim, and the write persists.
 func TestRunTurnAppendsWorkspaceContextAfterEditableLine(t *testing.T) {
 	d := Deps{
-		Convs:  repoconversation.NewConversationRepository(t.TempDir()),
-		Config: config.ConversationConfig{MaxTurnStep: 4},
+		SummaryTool: mustSummaryTool(t),
+		Convs:       repoconversation.NewConversationRepository(t.TempDir()),
+		Config:      config.ConversationConfig{MaxTurnStep: 4},
 	}
 	dir := `/tmp/work "quoted"\dir` // exercises JSON escaping end to end
 	conv := seedRoom(t, d.Convs, "room", "hi")
@@ -170,8 +183,9 @@ func TestRunTurnAppendsWorkspaceContextAfterEditableLine(t *testing.T) {
 // with neither it renders "(unset)" and binds nothing into tool context.
 func TestRunTurnWorkspaceContextFallbackAndUnset(t *testing.T) {
 	d := Deps{
-		Convs:  repoconversation.NewConversationRepository(t.TempDir()),
-		Config: config.ConversationConfig{MaxTurnStep: 4},
+		SummaryTool: mustSummaryTool(t),
+		Convs:       repoconversation.NewConversationRepository(t.TempDir()),
+		Config:      config.ConversationConfig{MaxTurnStep: 4},
 	}
 	conv := seedRoom(t, d.Convs, "room", "hi")
 	svc := &captureSvc{}
@@ -194,8 +208,9 @@ func TestRunTurnWorkspaceContextFallbackAndUnset(t *testing.T) {
 // ends on an assistant message, so no second record lands.
 func TestRunTurnSingleContextThroughToolLoop(t *testing.T) {
 	d := Deps{
-		Convs:  repoconversation.NewConversationRepository(t.TempDir()),
-		Config: config.ConversationConfig{MaxTurnStep: 4},
+		SummaryTool: mustSummaryTool(t),
+		Convs:       repoconversation.NewConversationRepository(t.TempDir()),
+		Config:      config.ConversationConfig{MaxTurnStep: 4},
 	}
 	conv := seedRoom(t, d.Convs, "room", "go")
 	schema, _ := valueobject.NewToolSchema("push", "test tool", nil, true, enum.ToolPermissionAgent)
@@ -225,9 +240,9 @@ type overflowOnceSvc struct{ realCalls atomic.Int32 }
 
 func (s *overflowOnceSvc) Send(_ context.Context, conv *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, _ event.TurnEventHandler) error {
 	for _, tool := range conv.Tools() {
-		if tool.Name() == SummaryToolName {
+		if tool.Name() == toolsummary.ToolName {
 			m, _ := entity.NewMessage(enum.RoleAssistant, "")
-			tc, err := entity.NewToolCall("sum_1", SummaryToolName, `{"text":"CHECKPOINT"}`, enum.TooltypeOrigin)
+			tc, err := entity.NewToolCall("sum_1", toolsummary.ToolName, `{"text":"CHECKPOINT"}`, enum.TooltypeOrigin)
 			if err != nil {
 				return err
 			}
@@ -251,8 +266,9 @@ func (s *overflowOnceSvc) Send(_ context.Context, conv *aggregate.Conversation, 
 // retried reply — and the retry does not append a duplicate.
 func TestRunTurn413KeepTailOneLeavesSingleContext(t *testing.T) {
 	d := Deps{
-		Convs:  repoconversation.NewConversationRepository(t.TempDir()),
-		Config: config.ConversationConfig{MaxTurnStep: 4, CompactKeepTail: 1},
+		SummaryTool: mustSummaryTool(t),
+		Convs:       repoconversation.NewConversationRepository(t.TempDir()),
+		Config:      config.ConversationConfig{MaxTurnStep: 4, CompactKeepTail: 1},
 	}
 	conv := seedRoom(t, d.Convs, "room", "hi")
 	svc := &overflowOnceSvc{}
@@ -380,13 +396,70 @@ func (s *dirProbeSvc) Send(_ context.Context, conv *aggregate.Conversation, _ *a
 	return nil
 }
 
+// wsImitator scripts the model imitating the hydration call it observed.
+type wsImitator struct{ calls atomic.Int32 }
+
+func (s *wsImitator) Send(_ context.Context, conv *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, _ event.TurnEventHandler) error {
+	var m entity.Message
+	if s.calls.Add(1) == 1 {
+		m, _ = entity.NewMessage(enum.RoleAssistant, "checking the workspace")
+		tc, err := entity.NewToolCall("call_1", "workspace", `{"path":"/somewhere"}`, enum.TooltypeOrigin)
+		if err != nil {
+			return err
+		}
+		m.AddToolCall(tc)
+		m.SetFinishReason(enum.FinishReasonToolCalls)
+	} else {
+		m, _ = entity.NewMessage(enum.RoleAssistant, "done")
+		m.SetFinishReason(enum.FinishReasonStop)
+	}
+	conv.Append(m)
+	return nil
+}
+
+// A model that imitates the workspace pin it observed gets the permission
+// gate, not the executor: the call name resolves in the catalog but
+// ToolPermissionSystem keeps it out of the agent's reach.
+func TestWorkspaceImitationDeniedByPermissionGate(t *testing.T) {
+	d := Deps{
+		SummaryTool: mustSummaryTool(t),
+		Convs:       repoconversation.NewConversationRepository(t.TempDir()),
+		Config:      config.ConversationConfig{MaxTurnStep: 4},
+	}
+	wsSchema, _ := valueobject.NewToolSchema("workspace", "hydration record", nil, true, enum.ToolPermissionSystem)
+	driver := EnvironmentBundle{
+		DefaultRoot: "/ws",
+		Tools:       map[string]dservice.Tool{"workspace": &dirProbe{schema: wsSchema}},
+	}
+	conv := seedRoom(t, d.Convs, "room", "go")
+	if err := d.runTurn(t.Context(), "room", conv, driver, nil, entity.Model{}, &wsImitator{}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	msgs := conv.Messages()
+	var denied bool
+	for _, m := range msgs {
+		for _, tc := range m.ToolCalls() {
+			if tc.Name() == "workspace" && tc.Type() == enum.TooltypeOrigin {
+				denied = true
+				if tc.Output() != "error: tool not permitted" {
+					t.Fatalf("imitated call output = %q, want the permission denial", tc.Output())
+				}
+			}
+		}
+	}
+	if !denied {
+		t.Fatal("imitated workspace call missing from history")
+	}
+}
+
 // TurnWorkspace resolves one value per turn — the binding first, then the
 // driver's default — and runTurn binds that single value into tool
 // execution context (exec cwd included) and into the record's text.
 func TestTurnWorkspaceBindingFallbackAndExecution(t *testing.T) {
 	d := Deps{
-		Convs:  repoconversation.NewConversationRepository(t.TempDir()),
-		Config: config.ConversationConfig{MaxTurnStep: 4},
+		SummaryTool: mustSummaryTool(t),
+		Convs:       repoconversation.NewConversationRepository(t.TempDir()),
+		Config:      config.ConversationConfig{MaxTurnStep: 4},
 	}
 	probeSchema, _ := valueobject.NewToolSchema("probe", "captures dir", nil, true, enum.ToolPermissionAgent)
 
@@ -452,9 +525,9 @@ type foldWatchSvc struct {
 
 func (s *foldWatchSvc) Send(_ context.Context, conv *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, _ event.TurnEventHandler) error {
 	for _, tool := range conv.Tools() {
-		if tool.Name() == SummaryToolName {
+		if tool.Name() == toolsummary.ToolName {
 			m, _ := entity.NewMessage(enum.RoleAssistant, "")
-			tc, err := entity.NewToolCall("sum_1", SummaryToolName, `{"text":"CHECKPOINT"}`, enum.TooltypeOrigin)
+			tc, err := entity.NewToolCall("sum_1", toolsummary.ToolName, `{"text":"CHECKPOINT"}`, enum.TooltypeOrigin)
 			if err != nil {
 				return err
 			}
@@ -498,8 +571,9 @@ func (s *foldWatchSvc) Send(_ context.Context, conv *aggregate.Conversation, _ *
 // that follows: [checkpoint, answered call, fresh record, reply].
 func TestRunTurnCompactRepinsWorkspaceContext(t *testing.T) {
 	d := Deps{
-		Convs:  repoconversation.NewConversationRepository(t.TempDir()),
-		Config: config.ConversationConfig{MaxTurnStep: 4, CompactBudgetPct: 100, CompactKeepTail: 1},
+		SummaryTool: mustSummaryTool(t),
+		Convs:       repoconversation.NewConversationRepository(t.TempDir()),
+		Config:      config.ConversationConfig{MaxTurnStep: 4, CompactBudgetPct: 100, CompactKeepTail: 1},
 	}
 	conv := seedRoom(t, d.Convs, "room", "go")
 	conv.SetWorkspace("/ws/repin")
@@ -552,8 +626,9 @@ func TestRunTurnCompactRepinsWorkspaceContext(t *testing.T) {
 // [checkpoint, answered call, fresh record, reply].
 func TestRunTurn413FoldRepinsWorkspaceContext(t *testing.T) {
 	d := Deps{
-		Convs:  repoconversation.NewConversationRepository(t.TempDir()),
-		Config: config.ConversationConfig{MaxTurnStep: 4, CompactKeepTail: 1},
+		SummaryTool: mustSummaryTool(t),
+		Convs:       repoconversation.NewConversationRepository(t.TempDir()),
+		Config:      config.ConversationConfig{MaxTurnStep: 4, CompactKeepTail: 1},
 	}
 	conv := seedRoom(t, d.Convs, "room", "go")
 	conv.SetWorkspace("/ws/repin")
@@ -603,8 +678,9 @@ func TestRunTurn413FoldRepinsWorkspaceContext(t *testing.T) {
 // append — [checkpoint, kept pin, kept call, reply], one pin total.
 func TestRunTurn413FoldKeepsPinSuppressesRepin(t *testing.T) {
 	d := Deps{
-		Convs:  repoconversation.NewConversationRepository(t.TempDir()),
-		Config: config.ConversationConfig{MaxTurnStep: 4, CompactKeepTail: 2},
+		SummaryTool: mustSummaryTool(t),
+		Convs:       repoconversation.NewConversationRepository(t.TempDir()),
+		Config:      config.ConversationConfig{MaxTurnStep: 4, CompactKeepTail: 2},
 	}
 	conv := seedRoom(t, d.Convs, "room", "go")
 	conv.SetWorkspace("/ws/kept")
@@ -638,8 +714,9 @@ func TestRunTurn413FoldKeepsPinSuppressesRepin(t *testing.T) {
 // line that earned it.
 func TestRunTurnNoFoldLeavesNonEditableTailUnpinned(t *testing.T) {
 	d := Deps{
-		Convs:  repoconversation.NewConversationRepository(t.TempDir()),
-		Config: config.ConversationConfig{MaxTurnStep: 4, CompactBudgetPct: 100, CompactKeepTail: 1},
+		SummaryTool: mustSummaryTool(t),
+		Convs:       repoconversation.NewConversationRepository(t.TempDir()),
+		Config:      config.ConversationConfig{MaxTurnStep: 4, CompactBudgetPct: 100, CompactKeepTail: 1},
 	}
 	conv := seedRoom(t, d.Convs, "room", "go")
 	schema, _ := valueobject.NewToolSchema("push", "test tool", nil, true, enum.ToolPermissionAgent)
@@ -672,8 +749,9 @@ func TestRunTurnNoFoldLeavesNonEditableTailUnpinned(t *testing.T) {
 // compaction, still records.
 func TestWorkspacePinSkipsWhenUnchanged(t *testing.T) {
 	d := Deps{
-		Convs:  repoconversation.NewConversationRepository(t.TempDir()),
-		Config: config.ConversationConfig{MaxTurnStep: 4},
+		SummaryTool: mustSummaryTool(t),
+		Convs:       repoconversation.NewConversationRepository(t.TempDir()),
+		Config:      config.ConversationConfig{MaxTurnStep: 4},
 	}
 	driver := EnvironmentBundle{DefaultRoot: "/fallback/dir"}
 	conv := seedRoom(t, d.Convs, "room", "first")

@@ -49,7 +49,7 @@ func TestContextFooterStats(t *testing.T) {
 
 	app := New(convs, gateways, map[enum.Environment]appjob.EnvironmentDriver{
 		enum.EnvironmentLocal: appjob.EnvironmentBundle{},
-	}, config.NewConfig(), nil, "", nil)
+	}, config.NewConfig(), nil, "", nil, nil)
 	stats, err := app.ContextFooterStats(t.Context(), "room", "", "")
 	if err != nil {
 		t.Fatal(err)
@@ -101,7 +101,7 @@ func TestContextFooterStatsUnknownWindow(t *testing.T) {
 
 	app := New(convs, gateways, map[enum.Environment]appjob.EnvironmentDriver{
 		enum.EnvironmentLocal: appjob.EnvironmentBundle{},
-	}, config.NewConfig(), nil, "", nil)
+	}, config.NewConfig(), nil, "", nil, nil)
 	stats, err := app.ContextFooterStats(t.Context(), "room", "", "")
 	if err != nil {
 		t.Fatal(err)

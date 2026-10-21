@@ -132,8 +132,10 @@ func (c *Conversation) SetSystemPrompt(prompt string) {
 	c.systemPrompt = prompt
 }
 
-// SetTools records the tool schemas the agent may call in this conversation.
-// Adapters translate them into the provider's tool definition array.
+// SetTools records this conversation's registered tool catalog — including
+// harness-side `ToolPermissionSystem` entries like the workspace record.
+// Adapters emit only the `CallableByAgent` subset as the provider's tool
+// definition array.
 func (c *Conversation) SetTools(tools []valueobject.ToolSchema) {
 	c.tools = tools
 }

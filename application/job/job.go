@@ -31,6 +31,11 @@ type Deps struct {
 	// Terminals owns conversation-keyed terminal sessions — reaped here
 	// because sessions outlive the jobs that opened them.
 	Terminals dservice.TerminalSessions
+	// SummaryTool is the compaction checkpoint contract — the scratch
+	// dialogue offers only this schema and the job reads the checkpoint
+	// back out of the model's call. Injected by composition; it is never
+	// part of a room's agent-facing catalog.
+	SummaryTool dservice.Tool
 }
 
 // Base is the shared machinery for room jobs: the bound conversation id,

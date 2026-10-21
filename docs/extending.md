@@ -127,8 +127,10 @@ verbatim).
      through `model.AcceptsInput` — never silently dropped.
    - Tool calls the model originated decode as `entity.NewToolCall(id, name,
      args, enum.TooltypeOrigin)`; `enum.TooltypeInjection` entries are
-     application-supplied hydration and must not pose as provider tool calls
-     (see how `encodeMessage` separates the two).
+     application-supplied hydration — on a `RoleSystem` carrier they emit
+     as the completed call + result pair they record; on any other carrier
+     they fold into text instead (see how `encodeMessage` separates the
+     two).
    - Usage normalization goes through `valueobject.NewUsage` (disjoint
      counters) or `valueobject.NewUsageFromTotal` (inclusive total plus a
      cached subset). `decodeUsage` uses the latter because this wire's
@@ -227,7 +229,11 @@ tool.
    `application/job/turn.go` permits a call only when a schema on the
    conversation is `CallableByAgent()`, and a denied or unregistered call
    records `error: tool not permitted` / `error: unknown tool` as its
-   output. Your tool never re-checks permission; it executes.
+   output. Your tool never re-checks permission; it executes. The
+   canonical `ToolPermissionSystem` example is `tool/workspace` — a
+   schema-only record tool: the turn writes its completed injection call
+   to pin the working directory, and registration in `Tools` makes the
+   name resolve while keeping it off the provider's tool list.
 
 3. **Treat `call.Input()` as untrusted JSON.** Unmarshal it into a local
    struct, validate the fields (`exec.go` rejects an empty command even
@@ -274,15 +280,16 @@ tool.
    conversation directory and returns a head+tail excerpt naming where the rest went. Copy
    that approach for any tool whose output is unbounded.
 
-7. **Register it — or don't.** Agent-facing tools go in the `tools` map in
-   `cmd/nusallm/wire.go`, keyed by `tool.Schema().Name()` in the existing
-   loop. The selected `EnvironmentDriver.ToolSchemas()` catalog is sorted by name
-   every turn. The counterexample is `application/job/summary.go`: the
-   compaction job owns the contract itself and binds only its schema to
-   the scratch conversation, so it's never in the main map and never
-   offered in ordinary turns. If your capability exists for one use
-   case's private dialogue, that is the pattern — keep the contract in
-   the use case's own package, not in a service adapter.
+7. **Register it — or inject it.** Agent-facing tools go in the `tools`
+   map in `cmd/nusallm/wire.go`, keyed by `tool.Schema().Name()` in the
+   existing loop. The selected `EnvironmentDriver.ToolSchemas()` catalog
+   is sorted by name every turn. A tool owned by one use case's private
+   dialogue instead skips the map: `infrastructure/service/tool/summary`
+   is constructed at the composition root and injected through
+   `Deps.SummaryTool` (the same seam as `Deps.Terminals`), so only the
+   compaction job's scratch conversation ever offers it. The tool package
+   still lives under `tool/` — the difference is the delivery channel,
+   not the boundary.
 
 ## Recipe: a new execution environment
 

@@ -33,6 +33,7 @@ import (
 	repoworkspace "github.com/jahrulnr/nusallm/infrastructure/repository/workspace"
 	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
 	textcompletion "github.com/jahrulnr/nusallm/infrastructure/service/core/text/completion"
+	toolsummary "github.com/jahrulnr/nusallm/infrastructure/service/tool/summary"
 	toolexec "github.com/jahrulnr/nusallm/infrastructure/service/tool/terminal"
 )
 
@@ -91,6 +92,7 @@ func TestREPLSendsListsAndResumesConversation(t *testing.T) {
 		config.NewConfig(),
 		nil,
 		"",
+		nil,
 		nil,
 	)
 	var output, stderr bytes.Buffer
@@ -267,6 +269,7 @@ func TestAutoSelectNotifyDoesNotDeadlock(t *testing.T) {
 		nil,
 		"",
 		nil,
+		nil,
 	)
 
 	sess, err := session.New(session.Options{
@@ -406,6 +409,10 @@ func TestCompactJobRunsAsTurnAndConfirms(t *testing.T) {
 		t.Fatal(err)
 	}
 	conversationRepository := repoconversation.NewConversationRepository(filepath.Join(storage, "conversations"))
+	summaryTool, err := toolsummary.NewSummaryTool()
+	if err != nil {
+		t.Fatal(err)
+	}
 	conversationApplication := appconversation.New(
 		conversationRepository,
 		gatewayRepository,
@@ -416,6 +423,7 @@ func TestCompactJobRunsAsTurnAndConfirms(t *testing.T) {
 		nil,
 		"",
 		nil,
+		summaryTool,
 	)
 	t.Cleanup(func() { _ = conversationApplication.Shutdown(context.Background()) })
 
@@ -501,6 +509,7 @@ func TestPipedCRNeverTriggersPicker(t *testing.T) {
 		config.NewConfig(),
 		nil,
 		"",
+		nil,
 		nil,
 	)
 	t.Cleanup(func() { _ = conversationApplication.Shutdown(context.Background()) })
@@ -636,6 +645,7 @@ func TestConversationArgPicker(t *testing.T) {
 		config.NewConfig(),
 		nil,
 		"",
+		nil,
 		nil,
 	)
 	t.Cleanup(func() { _ = conversationApplication.Shutdown(context.Background()) })
@@ -821,6 +831,7 @@ func TestToolCallLoopRunsEndToEnd(t *testing.T) {
 		config.NewConfig(),
 		nil,
 		"",
+		nil,
 		nil,
 	)
 

@@ -202,7 +202,7 @@ func TestEditPreemptsRunningTool(t *testing.T) {
 			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: svc},
 			Tools:    map[string]dservice.Tool{"blocking": tool},
 		}},
-		config.NewConfig(), nil, "", nil)
+		config.NewConfig(), nil, "", nil, nil)
 	seed, _ := aggregate.NewConversation("room")
 	seed.SetTools([]valueobject.ToolSchema{tool.Schema()})
 	seed.SetRoute("gw1")
@@ -311,7 +311,7 @@ func TestEditResolvesEnvironmentBeforeRewrite(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	app := New(convs, gateways, map[enum.Environment]appjob.EnvironmentDriver{}, config.NewConfig(), nil, "", nil)
+	app := New(convs, gateways, map[enum.Environment]appjob.EnvironmentDriver{}, config.NewConfig(), nil, "", nil, nil)
 	t.Cleanup(func() { _ = app.Shutdown(context.Background()) })
 
 	if err := app.Edit(t.Context(), "room", user.ID(), "edited", nil); apperror.As(err).StatusCode() != 400 {

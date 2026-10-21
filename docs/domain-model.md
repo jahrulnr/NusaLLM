@@ -204,9 +204,14 @@ signature bound to one function call).
 executed by the application — from `TooltypeInjection` calls, which are
 hydration entries the application inserts (announcements, subagent
 results). The distinction is load-bearing on the wire: the completion
-adapter encodes origin calls as real `tool_calls` while injection calls
-hydrate as inline text precisely so app-originated context cannot pose as
-provider tool calls.
+adapter encodes origin calls as real `tool_calls`. Injection calls on a
+system-role record (the workspace pin) encode as the completed call +
+result pair they record — the harness ran them on the model's behalf —
+so observed evidence rides at tool-output trust. The pin's `workspace`
+name resolves against a real `ToolPermissionSystem` schema registered
+with the room's tool catalog (`tool/workspace`), so the call the model
+observed is a known-but-not-agent-callable tool. Injection calls on any
+other carrier (legacy user-role records) still fold to inline text.
 
 `SetOutput` retains raw output even when it exceeds `outputBudget` (default
 32000, tunable via `SetOutputBudget`) and fixes the call latency at completion.

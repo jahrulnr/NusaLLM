@@ -17,7 +17,7 @@ func New(h appcommand.SlashSession) dservice.SlashCommand { return &ToolsCommand
 
 func (c *ToolsCommand) Name() string        { return "tools" }
 func (c *ToolsCommand) Usage() string       { return "/tools" }
-func (c *ToolsCommand) Description() string { return "list the agent's tools" }
+func (c *ToolsCommand) Description() string { return "list the room's registered tools" }
 
 func (c *ToolsCommand) Execute(ctx context.Context, _ string, emitter dservice.CommandEmitter, args ...string) error {
 	raw := ""

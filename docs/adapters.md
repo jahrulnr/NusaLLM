@@ -117,16 +117,12 @@ message followed by `tool`-role messages when it carries executed calls.
 Three details matter:
 
 - **Injection vs origin calls.** Calls of `enum.TooltypeInjection` are
-  application-originated; they hydrate as inline text appended to the message
-  content rather than posing as provider `tool_calls`, and their output
-  attachments are never encoded.
-- **Mid-list `system` messages stay system.** A `RoleSystem` hydration
-  record (the workspace pin) encodes as a `system` wire message wherever
-  it sits in history — a deliberate choice: this wire has a real system
-  role and the record is system-authored context. It is spec-legal but
-  relies on provider leniency: strict chat-template servers that demand
-  a first-position system message may demote or reject it. The other
-  adapters fold homeless roles into a user turn instead.
+  application-originated hydration. On a `RoleSystem` record (the workspace
+  pin) they encode as the completed `tool_calls` + `tool` pair they record —
+  the harness ran them on the model's behalf — so observed evidence rides at
+  tool-output trust rather than inside an instruction turn. On any other
+  carrier (legacy user-role records) they fold into the message text
+  instead, and their output attachments are never encoded.
 - **Tool output attachments ride a synthetic user message.** The
   chat-completions `tool` role is text-only, so media a call produced is sent
   as an openclaw-style follow-up user message labeling the call it came from.
@@ -318,10 +314,10 @@ The wire is role-alternated `contents` of typed parts (`user`/`model` only —
   `generatecontent.parts` — stores signed and thought parts verbatim with
   `{"refill":"text"}`/`{"refill":"functionCall"}` placeholders; a verbatim
   signed call still consumes its domain call slot so refills stay aligned.
-- **Injected evidence.** Output from injection calls folds into the carrying turn
-  as bounded untrusted text — a system-role hydration record lands as
-  system/user turn text per wire, never as a posed provider tool call; it
-  is never dropped on the user path.
+- **Injected evidence.** A system-role hydration record emits its
+  injection calls as the completed call + result pair they record —
+  bounded untrusted output at tool-evidence trust. Injection calls on
+  other carriers still fold into turn text; output is never dropped.
 - **Family-aware thinking.** `generationConfig.thinkingConfig` maps effort
   by model family: `gemini-3` ids take `thinkingLevel` (clamped to `high`),
   `gemini-2.5` takes `includeThoughts` alone (invented budgets get
@@ -404,7 +400,8 @@ backpressure the tool, and chunks are never persisted.
 | `write_stdin` | `tool/terminal` (`write_stdin.go`) | Write/poll an open session; `\x03` maps to Ctrl-C |
 | `web_search` | `tool/web` (`web.go`) | Searchwire metasearch across Brave/Startpage/Wikipedia/GitHub (+ keyed sources); ranked results with partial-failure reporting |
 | `web_fetch` | `tool/web` (`web.go`) | Searchwire fetch — one URL → readable text; truncated output spilled to a `tempFile` for follow-up `read_file` |
-| `summary` | `application/job` (`summary.go`) | Compaction checkpoint contract — not in the agent-facing catalog |
+| `workspace` | `tool/workspace` | Harness-side hydration record — `ToolPermissionSystem`, pins the turn's working directory into history as a completed call |
+| `summary` | `tool/summary` | Compaction checkpoint contract — injected into `Deps`, never in a room's agent-facing catalog |
 
 The `web_*` tools are thin adapters over `github.com/jahrulnr/searchwire`
 `Searcher.Tools()` — searchwire owns the tool contract (name, description,
@@ -565,13 +562,14 @@ default 250 ms (cap 30 s), empty polls default 5 s (floor 5 s, cap 300 s).
 
 ### `summary` — the compaction contract
 
-The summary contract (`application/job/summary.go`) is not a user-or-agent
-tool in the usual sense: its `text` field *is* the result, and `Execute`
-merely extracts it. The compaction job (`application/job/compact.go`)
-builds a scratch conversation containing only this tool's schema and
-drives `Send` until the model answers through it, accepting plain text as
-a fallback. It is never registered in the `tools` map in
-`cmd/nusallm/wire.go`.
+The summary contract (`infrastructure/service/tool/summary`) is not a
+user-or-agent tool in the usual sense: its `text` field *is* the result,
+and `Execute` merely extracts it. The compaction job
+(`application/job/compact.go`) builds a scratch conversation containing
+only this tool's schema and drives `Send` until the model answers through
+it, accepting plain text as a fallback. It is never registered in a
+driver's `Tools` map — the composition root injects it through
+`Deps.SummaryTool` like the terminal-session port.
 
 **Prefix-bound replay artifacts.** Signed thinking cannot survive a fold.
 The summary scratch replaces the tool catalog and the checkpoint replaces

@@ -117,9 +117,13 @@ func thinkingConfig(model entity.Model) *ThinkingConfigBody {
 // parts when the message carries executed calls. Roles with no wire home
 // (system/developer inside the list) encode as user turns — mid-
 // conversation system turns are model-conditional on this surface.
-// Injection calls hydrate as trailing text on the model turn. A call's
-// output attachments ride inlineData parts in the same user turn — this
-// wire carries media there natively.
+// Injection calls are application-originated hydration: on a system-role
+// record they encode as the functionCall + functionResponse pair they
+// record — observed evidence rides at tool-output trust, not inside an
+// instruction turn. Anywhere else they hydrate as trailing text (legacy
+// user-role records keep their shape). A call's output attachments ride
+// inlineData parts in the same user turn — this wire carries media
+// there natively.
 func encodeMessage(m entity.Message, model entity.Model, fileRoot wire.MediaRoot) []ContentBody {
 	var origin, injected []entity.ToolCall
 	for _, tc := range m.ToolCalls() {
@@ -128,6 +132,22 @@ func encodeMessage(m entity.Message, model entity.Model, fileRoot wire.MediaRoot
 		} else {
 			origin = append(origin, tc)
 		}
+	}
+
+	// A system-role hydration record with calls to show takes the
+	// completed-call wire shape: a model turn of functionCall parts
+	// immediately answered by a user turn of functionResponse parts.
+	if m.Role() == enum.RoleSystem && len(injected) > 0 {
+		var contents []ContentBody
+		if m.Content() != "" {
+			contents = append(contents, ContentBody{Role: "user",
+				Parts: []any{PartBody{Text: m.Content()}}})
+		}
+		calls := append(append([]entity.ToolCall(nil), injected...), origin...)
+		contents = append(contents,
+			ContentBody{Role: "model", Parts: modelParts(m, "", "", calls)},
+			toolResultContents(calls, model, fileRoot))
+		return contents
 	}
 
 	text := m.Content()
@@ -233,7 +253,9 @@ func modelParts(m entity.Message, text, injectedText string, origin []entity.Too
 			parts = append(parts, entry) // executableCode etc. — verbatim
 		}
 	}
-	if !textDone && (text != "" || len(parts) == 0) {
+	if !textDone && (text != "" || (len(parts) == 0 && len(origin) == 0)) {
+		// An empty text part is only the fallback when the turn carries
+		// nothing else — never filler ahead of functionCall parts.
 		emitText()
 	}
 	for used < len(origin) {

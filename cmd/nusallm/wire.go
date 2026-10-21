@@ -24,8 +24,10 @@ import (
 	textmessages "github.com/jahrulnr/nusallm/infrastructure/service/core/text/messages"
 	textresponses "github.com/jahrulnr/nusallm/infrastructure/service/core/text/responses"
 	toolfile "github.com/jahrulnr/nusallm/infrastructure/service/tool/file"
+	toolsummary "github.com/jahrulnr/nusallm/infrastructure/service/tool/summary"
 	toolexec "github.com/jahrulnr/nusallm/infrastructure/service/tool/terminal"
 	toolweb "github.com/jahrulnr/nusallm/infrastructure/service/tool/web"
+	toolworkspace "github.com/jahrulnr/nusallm/infrastructure/service/tool/workspace"
 	"github.com/jahrulnr/searchwire"
 )
 
@@ -93,7 +95,20 @@ func compose(cfg config.Config, secrets *reposecret.Store, configPath, workspace
 	if err != nil {
 		return nil, err
 	}
-	for _, tool := range []dservice.Tool{readFile, writeFile, patchFile, readMedia, execTool, execSession, writeStdin} {
+	// The workspace record is a harness-side hydration tool: registering
+	// it lets its name resolve in every room's catalog while
+	// ToolPermissionSystem keeps it out of the provider's tool list.
+	workspaceRecord, err := toolworkspace.NewWorkspaceTool()
+	if err != nil {
+		return nil, err
+	}
+	// The compaction checkpoint contract rides no room catalog — the
+	// compaction job offers it alone inside its scratch dialogue.
+	summaryTool, err := toolsummary.NewSummaryTool()
+	if err != nil {
+		return nil, err
+	}
+	for _, tool := range []dservice.Tool{readFile, writeFile, patchFile, readMedia, execTool, execSession, writeStdin, workspaceRecord} {
 		tools[tool.Schema().Name()] = tool
 	}
 	// Web search/fetch run locally through searchwire so the bound model
@@ -137,7 +152,7 @@ func compose(cfg config.Config, secrets *reposecret.Store, configPath, workspace
 	}
 
 	return &engine{
-		conversations: appconversation.New(convs, gateways, environments, cfg, repoconfig.NewLocal(), configPath, terminals),
+		conversations: appconversation.New(convs, gateways, environments, cfg, repoconfig.NewLocal(), configPath, terminals, summaryTool),
 		logger:        logger,
 	}, nil
 }

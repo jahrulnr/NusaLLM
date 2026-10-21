@@ -778,3 +778,68 @@ func TestBetaHeaderValueFormats(t *testing.T) {
 		}
 	}
 }
+
+// The system-role workspace pin encodes as the completed-call pair it
+// records — an assistant turn of tool_use blocks immediately answered by
+// a user turn of tool_result blocks, with no empty text block.
+func TestSystemHydrationEmitsToolPair(t *testing.T) {
+	var captured map[string]any
+	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+		captured = decodeReq(t, r)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": "msg_1", "type": "message", "role": "assistant", "model": "claude-x",
+			"content":     []any{map[string]any{"type": "text", "text": "ok"}},
+			"stop_reason": "end_turn",
+			"usage":       map[string]any{"input_tokens": 10, "output_tokens": 5},
+		})
+	})
+
+	conv := newConv(t)
+	u, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(u)
+	pin, _ := entity.NewMessage(enum.RoleSystem, "")
+	call, _ := entity.NewToolCall("call_ws", "workspace", `{"path":"/srv/ws"}`, enum.TooltypeInjection)
+	call.SetStoredOutput("workspace changed to /srv/ws", "")
+	pin.AddToolCall(call)
+	conv.Append(pin)
+
+	model, _ := entity.NewModel("claude-x", "test")
+	if err := svc.Send(context.Background(), conv, gw, model, nil); err != nil {
+		t.Fatal(err)
+	}
+	msgs, _ := captured["messages"].([]any)
+	var use, result map[string]any
+	for _, raw := range msgs {
+		m := raw.(map[string]any)
+		blocks, _ := m["content"].([]any)
+		for _, rawB := range blocks {
+			b := rawB.(map[string]any)
+			switch b["type"] {
+			case "tool_use":
+				if b["name"] == "workspace" {
+					use = b
+					if m["role"] != "assistant" {
+						t.Fatalf("tool_use on %v turn", m["role"])
+					}
+				}
+			case "tool_result":
+				if b["tool_use_id"] == use["id"] {
+					result = b
+					if m["role"] != "user" {
+						t.Fatalf("tool_result on %v turn", m["role"])
+					}
+				}
+			case "text":
+				if b["text"] == "" {
+					t.Fatalf("empty text block emitted for pin turn")
+				}
+			}
+		}
+	}
+	if use == nil || result == nil {
+		t.Fatalf("pin pair missing: %+v", msgs)
+	}
+	if !strings.Contains(result["content"].(string), "workspace changed to /srv/ws") {
+		t.Fatalf("pin output = %v", result["content"])
+	}
+}

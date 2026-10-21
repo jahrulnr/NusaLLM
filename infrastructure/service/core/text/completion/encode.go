@@ -88,10 +88,13 @@ func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool
 
 // encodeMessage emits one wire message for plain turns, or an assistant
 // message followed by tool-role messages when it carries executed calls.
-// Injection calls hydrate the wire as inline text — they are
-// application-originated and must not pose as provider tool calls; their
-// output attachments are likewise never encoded (app-produced context is
-// text by contract).
+// Injection calls are application-originated hydration: on a system-role
+// record they encode as the completed tool_call + tool-result pair they
+// record — observed evidence rides at tool-output trust, not inside an
+// instruction turn. Anywhere else they hydrate as inline text (legacy
+// user-role records keep the shape they were written with). Injection
+// output attachments are never encoded — app-produced context is text
+// by contract.
 // A call's output attachments ride a synthetic user message: the
 // chat-completions tool role is text-only, so the openclaw-style
 // follow-up is the portable shape — Responses-style wires would put the
@@ -100,8 +103,6 @@ func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool
 // tool messages behind tool_calls, so a media-bearing earlier call must
 // not push its user message between two tool results.
 func encodeMessage(m entity.Message, model entity.Model, fileRoot wire.MediaRoot) ([]MessageBody, error) {
-	out := MessageBody{Role: m.Role().String()}
-
 	var origin, injected []entity.ToolCall
 	for _, tc := range m.ToolCalls() {
 		if tc.Type() == enum.TooltypeInjection {
@@ -111,6 +112,36 @@ func encodeMessage(m entity.Message, model entity.Model, fileRoot wire.MediaRoot
 		}
 	}
 
+	// A system-role hydration record with calls to show takes the
+	// completed-call wire shape: assistant tool_calls immediately
+	// answered by tool messages.
+	if m.Role() == enum.RoleSystem && len(injected) > 0 {
+		var msgs []MessageBody
+		if m.Content() != "" {
+			msgs = append(msgs, MessageBody{Role: m.Role().String(), Content: m.Content()})
+		}
+		calls := append(append([]entity.ToolCall(nil), injected...), origin...)
+		callMsg := MessageBody{Role: enum.RoleAssistant.String()}
+		for _, tc := range calls {
+			var wb ToolCallBody
+			wb.ID = tc.ID()
+			wb.Type = "function"
+			wb.Function.Name = tc.Name()
+			wb.Function.Arguments = tc.Input()
+			callMsg.ToolCalls = append(callMsg.ToolCalls, wb)
+		}
+		msgs = append(msgs, callMsg)
+		for _, tc := range calls {
+			msgs = append(msgs, MessageBody{
+				Role:       "tool",
+				ToolCallID: tc.ID(),
+				Content:    tc.OutputWithUntrustedTagOrInterrupted(),
+			})
+		}
+		return msgs, nil
+	}
+
+	out := MessageBody{Role: m.Role().String()}
 	text := m.Content()
 	for _, tc := range injected {
 		if tc.HasOutput() {

@@ -788,9 +788,11 @@ func TestSanitizeCompactedTailDropsReasoningDetails(t *testing.T) {
 	}
 }
 
-// The system-role workspace pin folds into a system wire message — never
-// an orphan tool-role message, which chat-completions rejects.
-func TestSystemHydrationPinFoldsWithoutToolRole(t *testing.T) {
+// The system-role workspace pin encodes as the completed-call pair it
+// records: an assistant message of tool_calls immediately answered by
+// tool messages — observed evidence at tool-output trust, never an
+// orphan result or a mid-list system message.
+func TestSystemHydrationPinEmitsToolPair(t *testing.T) {
 	var captured RequestBody
 	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
 		json.NewDecoder(r.Body).Decode(&captured)
@@ -815,24 +817,27 @@ func TestSystemHydrationPinFoldsWithoutToolRole(t *testing.T) {
 	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
 		t.Fatal(err)
 	}
-	var pinMsg *MessageBody
+	var callMsg, resultMsg *MessageBody
 	for i := range captured.Messages {
 		m := &captured.Messages[i]
-		if m.Role == "tool" {
-			t.Fatalf("injection call must not emit a tool-role message: %+v", captured.Messages)
-		}
-		if m.Role == "system" && m.ToolCalls != nil {
-			t.Fatalf("pin must not emit tool_calls: %+v", m.ToolCalls)
-		}
-		if m.Role == "system" {
-			pinMsg = m
+		switch {
+		case m.Role == "system" && i > 0:
+			t.Fatalf("pin must not emit a mid-list system message: %+v", captured.Messages)
+		case len(m.ToolCalls) > 0:
+			callMsg = m
+		case m.Role == "tool":
+			resultMsg = m
 		}
 	}
-	if pinMsg == nil {
-		t.Fatalf("system pin missing from wire: %+v", captured.Messages)
+	if callMsg == nil || callMsg.Role != "assistant" ||
+		len(callMsg.ToolCalls) != 1 || callMsg.ToolCalls[0].Function.Name != "workspace" {
+		t.Fatalf("pin call missing on wire: %+v", captured.Messages)
 	}
-	text, _ := pinMsg.Content.(string)
+	if resultMsg == nil || resultMsg.ToolCallID != callMsg.ToolCalls[0].ID {
+		t.Fatalf("pin result missing or unpaired: %+v", captured.Messages)
+	}
+	text, _ := resultMsg.Content.(string)
 	if !strings.Contains(text, "workspace changed to /srv/ws") {
-		t.Fatalf("pin output folded = %q", text)
+		t.Fatalf("pin output = %q", text)
 	}
 }

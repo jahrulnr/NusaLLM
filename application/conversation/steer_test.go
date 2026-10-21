@@ -94,7 +94,7 @@ func gatedStack(t *testing.T) (*ConversationApp, *repoconversation.ConversationR
 			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: svc},
 			Tools:    map[string]dservice.Tool{"gated": tool},
 		}},
-		config.NewConfig(), nil, "", nil)
+		config.NewConfig(), nil, "", nil, nil)
 	seed, _ := aggregate.NewConversation("room")
 	seed.SetTools([]valueobject.ToolSchema{tool.Schema()})
 	seed.SetRoute("gw1")

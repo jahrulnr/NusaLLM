@@ -94,13 +94,14 @@ application.
 
 The application layer speaks almost only to those ports.
 `application/job.Deps` (`application/job/job.go`) is the whole reach of a
-use case: two repository ports, a map of environment drivers, and
-normalized config. Each driver bundles its workspace repository, provider
-adapters, and tool executors. Compaction's scratch dialogue is itself the
-use case, so its contract — the `summary` tool the model must answer
-through — lives in the layer (`application/job/summary.go`) rather than
-behind a port or in a service adapter. Everything else in `application/`
-is port-shaped: nothing there knows what JSONL is or what SSE stands for.
+use case: two repository ports, a map of environment drivers, injected
+use-case tools, and normalized config. Each driver bundles its workspace
+repository, provider adapters, and tool executors. Compaction's scratch
+dialogue offers one contract — the `summary` tool the model must answer
+through — which lives in `infrastructure/service/tool/summary` like every
+tool implementation and reaches the job as an injected `service.Tool`
+port on `Deps`. Everything else in `application/` is port-shaped: nothing
+there knows what JSONL is or what SSE stands for.
 
 Everything concrete meets in `cmd/nusallm`. `run` and `serve` load
 config and open the sqlite secret store through `admin.LoadBoot`;
@@ -342,8 +343,10 @@ endpoint) takes effect without touching the service.
 
 `encodeRequest` maps domain state onto the OpenAI-shaped body: system
 prompt to a system message, messages through `encodeMessage` (model-origin
-calls become `tool_calls` plus `tool` role messages; injection calls are
-folded into text — they must not pose as provider calls; output media ride
+calls become `tool_calls` plus `tool` role messages; injection calls on a
+system-role record emit as the completed call + result pair they record —
+observed evidence at tool-output trust — while injection calls on any
+other carrier fold into text; output media ride
 a synthetic user message after the tool block because the tool role is
 text-only), only `CallableByAgent` schemas reach the wire, pointer-based
 generation params omit themselves when unset, and `optionalContent` keys

@@ -15,6 +15,7 @@ import (
 	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
 	textmessages "github.com/jahrulnr/nusallm/infrastructure/service/core/text/messages"
 	textresponses "github.com/jahrulnr/nusallm/infrastructure/service/core/text/responses"
+	toolsummary "github.com/jahrulnr/nusallm/infrastructure/service/tool/summary"
 )
 
 // setFixtureModelOptional updates the catalog model the app will load on
@@ -98,7 +99,7 @@ func TestMessagesCompactionSanitizesSignedThinking(t *testing.T) {
 				io.WriteString(w, `{"type":"error","error":{"type":"invalid_request_error","message":"Invalid signature in thinking block"}}`)
 				return
 			}
-			writeMessagesResponse(w, `[{"type":"tool_use","id":"sum_1","name":"`+appjob.SummaryToolName+`","input":{"text":"CHECKPOINT"}}]`, "tool_use")
+			writeMessagesResponse(w, `[{"type":"tool_use","id":"sum_1","name":"`+toolsummary.ToolName+`","input":{"text":"CHECKPOINT"}}]`, "tool_use")
 		default:
 			replay = raw
 			writeMessagesResponse(w, `[{"type":"text","text":"three"}]`, "end_turn")

@@ -287,21 +287,28 @@ func TestUserTurnKeepsInjectedToolEvidence(t *testing.T) {
 	}
 }
 
-// A system-role hydration record — the workspace pin — is a homeless role
-// on this wire: it folds into a user turn's text and emits no
-// functionCall/functionResponse pair.
-func TestSystemHydrationFoldsToUserText(t *testing.T) {
+// A system-role hydration record — the workspace pin — encodes as the
+// completed-call pair it records: a model turn of functionCall parts
+// answered by a user turn of functionResponse parts.
+func TestSystemHydrationEmitsCallPair(t *testing.T) {
 	msg, _ := entity.NewMessage(enum.RoleSystem, "")
 	call, _ := entity.NewToolCall("call_ws", "workspace", `{"path":"/srv/ws"}`, enum.TooltypeInjection)
 	call.SetStoredOutput("workspace changed to /srv/ws", "")
 	msg.AddToolCall(call)
 	contents := encodeMessage(msg, entity.Model{}, wire.MediaRoot{})
-	if len(contents) != 1 || contents[0].Role != "user" {
-		t.Fatalf("system pin must fold into a user turn: %+v", contents)
+	if len(contents) != 2 || contents[0].Role != "model" || contents[1].Role != "user" {
+		t.Fatalf("pin must emit model+user pair: %+v", contents)
 	}
-	text := contents[0].Parts[0].(PartBody).Text
-	if !strings.Contains(text, "workspace changed to /srv/ws") {
-		t.Fatalf("pin output dropped: %q", text)
+	fc, ok := contents[0].Parts[0].(PartBody)
+	if !ok || fc.FunctionCall == nil || fc.FunctionCall.Name != "workspace" {
+		t.Fatalf("pin functionCall missing: %+v", contents[0].Parts)
+	}
+	fr, ok := contents[1].Parts[0].(PartBody)
+	if !ok || fr.FunctionResponse == nil || fr.FunctionResponse.Name != "workspace" {
+		t.Fatalf("pin functionResponse missing: %+v", contents[1].Parts)
+	}
+	if !strings.Contains(string(fr.FunctionResponse.Response), "workspace changed to /srv/ws") {
+		t.Fatalf("pin output dropped: %s", fr.FunctionResponse.Response)
 	}
 }
 

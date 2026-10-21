@@ -38,8 +38,9 @@ func (s *loopSvc) Send(ctx context.Context, conv *aggregate.Conversation, _ *agg
 
 func TestRunTurnStepCap(t *testing.T) {
 	d := Deps{
-		Convs:  repoconversation.NewConversationRepository(t.TempDir()),
-		Config: config.ConversationConfig{MaxTurnStep: 2},
+		SummaryTool: mustSummaryTool(t),
+		Convs:       repoconversation.NewConversationRepository(t.TempDir()),
+		Config:      config.ConversationConfig{MaxTurnStep: 2},
 	}
 	conv, _ := aggregate.NewConversation("room")
 	user, _ := entity.NewMessage(enum.RoleUser, "hi")
@@ -74,8 +75,9 @@ func (s *partial413Svc) Send(_ context.Context, conv *aggregate.Conversation, _ 
 
 func TestRunTurn413WithAppendedMessagePropagates(t *testing.T) {
 	d := Deps{
-		Convs:  repoconversation.NewConversationRepository(t.TempDir()),
-		Config: config.ConversationConfig{MaxTurnStep: 2},
+		SummaryTool: mustSummaryTool(t),
+		Convs:       repoconversation.NewConversationRepository(t.TempDir()),
+		Config:      config.ConversationConfig{MaxTurnStep: 2},
 	}
 	conv, _ := aggregate.NewConversation("room")
 	if err := d.Convs.Save(t.Context(), conv); err != nil {
@@ -159,7 +161,8 @@ func TestEnvironmentRejectsNilAndUnregisteredDrivers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := Deps{Environments: map[enum.Environment]EnvironmentDriver{enum.EnvironmentLocal: nil}}
+	d := Deps{
+		SummaryTool: mustSummaryTool(t), Environments: map[enum.Environment]EnvironmentDriver{enum.EnvironmentLocal: nil}}
 	if _, err := d.environment(conv); apperror.As(err).StatusCode() != 400 {
 		t.Fatalf("nil driver => %v, want 400", err)
 	}

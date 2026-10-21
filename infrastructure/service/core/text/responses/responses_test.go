@@ -683,3 +683,68 @@ func TestMergeIncludeKeepsDefaults(t *testing.T) {
 		}
 	}
 }
+
+// The system-role workspace pin encodes as the completed-call pair it
+// records — a function_call item immediately answered by a
+// function_call_output item — never a role:"system" input message.
+func TestSystemHydrationEmitsCallPair(t *testing.T) {
+	var captured map[string]any
+	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+		captured = decodeReq(t, r)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": "resp_1", "status": "completed",
+			"output": []any{map[string]any{
+				"type": "message", "role": "assistant",
+				"content": []any{map[string]any{"type": "output_text", "text": "ok"}},
+			}},
+			"usage": map[string]any{"input_tokens": 10, "output_tokens": 5},
+		})
+	})
+
+	conv := newConv(t)
+	u, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(u)
+	pin, _ := entity.NewMessage(enum.RoleSystem, "")
+	call, _ := entity.NewToolCall("call_ws", "workspace", `{"path":"/srv/ws"}`, enum.TooltypeInjection)
+	call.SetStoredOutput("workspace changed to /srv/ws", "")
+	pin.AddToolCall(call)
+	conv.Append(pin)
+
+	model, _ := entity.NewModel("gpt-x", "test")
+	if err := svc.Send(context.Background(), conv, gw, model, nil); err != nil {
+		t.Fatal(err)
+	}
+	input, _ := captured["input"].([]any)
+	var callItem, outItem map[string]any
+	for _, raw := range input {
+		m := raw.(map[string]any)
+		switch m["type"] {
+		case "function_call":
+			if m["name"] == "workspace" {
+				callItem = m
+			}
+		case "function_call_output":
+			if callItem != nil && m["call_id"] == callItem["call_id"] {
+				outItem = m
+			}
+		case "message":
+			if m["role"] == "system" {
+				t.Fatalf("pin must not emit a role:system input item: %+v", input)
+			}
+			if c, ok := m["content"].([]any); ok {
+				for _, p := range c {
+					if pm, ok := p.(map[string]any); ok && pm["text"] == "" {
+						t.Fatalf("empty output_text item emitted for pin turn")
+					}
+				}
+			}
+		}
+	}
+	if callItem == nil || outItem == nil {
+		t.Fatalf("pin pair missing from input: %+v", input)
+	}
+	out, _ := outItem["output"].(string)
+	if !strings.Contains(out, "workspace changed to /srv/ws") {
+		t.Fatalf("pin output = %q", out)
+	}
+}

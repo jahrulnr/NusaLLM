@@ -64,6 +64,7 @@ func New(
 	configStore config.Store,
 	configPath string,
 	terminals dservice.TerminalSessions,
+	summaryTool dservice.Tool,
 ) *ConversationApp {
 	// Normalize once at the boundary — invalid values clamp and zeros
 	// pull their `default` tag, so every downstream read trusts the
@@ -80,6 +81,7 @@ func New(
 			Environments: environments,
 			Config:       ccfg,
 			Terminals:    terminals,
+			SummaryTool:  summaryTool,
 		},
 		workers: map[string]*worker.Worker{},
 	}

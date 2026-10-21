@@ -44,8 +44,9 @@ func (s *flakySvc) Send(_ context.Context, conv *aggregate.Conversation, _ *aggr
 // call and completes — the user never sees the blip.
 func TestRunTurnRetriesTransientUpstreamFailure(t *testing.T) {
 	d := Deps{
-		Convs:  repoconversation.NewConversationRepository(t.TempDir()),
-		Config: config.ConversationConfig{MaxTurnStep: 4},
+		SummaryTool: mustSummaryTool(t),
+		Convs:       repoconversation.NewConversationRepository(t.TempDir()),
+		Config:      config.ConversationConfig{MaxTurnStep: 4},
 	}
 	conv := seedRoom(t, d.Convs, "room", "hi")
 	svc := &flakySvc{fails: 2, status: 502}
@@ -63,8 +64,9 @@ func TestRunTurnRetriesTransientUpstreamFailure(t *testing.T) {
 // Client statuses never clear on their own — one call and out.
 func TestRunTurnNoRetryOnClientError(t *testing.T) {
 	d := Deps{
-		Convs:  repoconversation.NewConversationRepository(t.TempDir()),
-		Config: config.ConversationConfig{MaxTurnStep: 4},
+		SummaryTool: mustSummaryTool(t),
+		Convs:       repoconversation.NewConversationRepository(t.TempDir()),
+		Config:      config.ConversationConfig{MaxTurnStep: 4},
 	}
 	conv := seedRoom(t, d.Convs, "room", "hi")
 	svc := &flakySvc{fails: 9, status: 400}
@@ -80,8 +82,9 @@ func TestRunTurnNoRetryOnClientError(t *testing.T) {
 // fails — the backlog never stalls on it.
 func TestRunTurnRetryExhaustion(t *testing.T) {
 	d := Deps{
-		Convs:  repoconversation.NewConversationRepository(t.TempDir()),
-		Config: config.ConversationConfig{MaxTurnStep: 4},
+		SummaryTool: mustSummaryTool(t),
+		Convs:       repoconversation.NewConversationRepository(t.TempDir()),
+		Config:      config.ConversationConfig{MaxTurnStep: 4},
 	}
 	conv := seedRoom(t, d.Convs, "room", "hi")
 	svc := &flakySvc{fails: 9, status: 503}
@@ -111,8 +114,9 @@ func (s *emitThenFailSvc) Send(_ context.Context, _ *aggregate.Conversation, _ *
 // retry, no second copy of the delta on the stream.
 func TestRunTurnNoRetryAfterEmittedDelta(t *testing.T) {
 	d := Deps{
-		Convs:  repoconversation.NewConversationRepository(t.TempDir()),
-		Config: config.ConversationConfig{MaxTurnStep: 4},
+		SummaryTool: mustSummaryTool(t),
+		Convs:       repoconversation.NewConversationRepository(t.TempDir()),
+		Config:      config.ConversationConfig{MaxTurnStep: 4},
 	}
 	conv := seedRoom(t, d.Convs, "room", "hi")
 	svc := &emitThenFailSvc{status: 502}
@@ -138,8 +142,9 @@ func TestRunTurnNoRetryAfterEmittedDelta(t *testing.T) {
 // delta already crossed the wire, so the overflow error propagates.
 func TestRunTurn413AfterEmittedDeltaPropagates(t *testing.T) {
 	d := Deps{
-		Convs:  repoconversation.NewConversationRepository(t.TempDir()),
-		Config: config.ConversationConfig{MaxTurnStep: 4},
+		SummaryTool: mustSummaryTool(t),
+		Convs:       repoconversation.NewConversationRepository(t.TempDir()),
+		Config:      config.ConversationConfig{MaxTurnStep: 4},
 	}
 	conv, _ := aggregate.NewConversation("room")
 	if err := d.Convs.Save(t.Context(), conv); err != nil {

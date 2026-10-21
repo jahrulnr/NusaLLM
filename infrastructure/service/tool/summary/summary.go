@@ -1,4 +1,10 @@
-package job
+// Package summary provides the compaction checkpoint contract tool.
+// The compaction job builds a scratch conversation whose whole catalog
+// is this schema and reads the checkpoint back out of the model's call —
+// the call input IS the result, so Execute only extracts it. The tool is
+// never registered in a driver's Tools map: it is offered ad hoc inside
+// the scratch dialogue, not part of a room's agent-facing surface.
+package summary
 
 import (
 	"context"
@@ -12,32 +18,28 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 )
 
-// SummaryToolName is the harness contract compaction.md mandates: the model
+// ToolName is the harness contract compaction.md mandates: the model
 // answers only through this tool's `text` field.
-const SummaryToolName = "summary"
+const ToolName = "summary"
 
-// SummaryTool is the compaction checkpoint contract — unlike ordinary
-// tools the call input IS the result, so Execute just extracts it. The
-// compaction job owns the dialogue; this type only carries the schema
-// and the input contract. It is part of the use case, not the
-// environment's agent-facing catalog — never register it in a driver's
-// Tools map.
+// SummaryTool carries the checkpoint schema and input contract; the
+// compaction job owns the dialogue around it.
 type SummaryTool struct {
 	schema valueobject.ToolSchema
 }
 
-func NewSummaryTool() *SummaryTool {
+func NewSummaryTool() (dservice.Tool, error) {
 	schema, err := valueobject.NewToolSchema(
-		SummaryToolName,
+		ToolName,
 		"Write the compaction handoff checkpoint in the text field.",
 		json.RawMessage(`{"type":"object","properties":{"text":{"type":"string","description":"The complete handover checkpoint"}}, "required":["text"]}`),
 		true,
 		enum.ToolPermissionAgent,
 	)
 	if err != nil {
-		panic("job: summary schema: " + err.Error()) // a constant malformed at init is a bug, not a runtime condition
+		return nil, err
 	}
-	return &SummaryTool{schema: schema}
+	return &SummaryTool{schema: schema}, nil
 }
 
 func (tool *SummaryTool) Schema() valueobject.ToolSchema {

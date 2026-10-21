@@ -18,6 +18,7 @@ import (
 	repoconversation "github.com/jahrulnr/nusallm/infrastructure/repository/conversation"
 	repogateway "github.com/jahrulnr/nusallm/infrastructure/repository/gateway"
 	reposecret "github.com/jahrulnr/nusallm/infrastructure/repository/secret"
+	toolsummary "github.com/jahrulnr/nusallm/infrastructure/service/tool/summary"
 )
 
 // compactSvc answers the scratch dialogue (the conv carrying the summary
@@ -32,7 +33,7 @@ type environmentCompactSvc struct {
 
 func (s *environmentCompactSvc) Send(ctx context.Context, conv *aggregate.Conversation, gw *aggregate.Gateway, model entity.Model, onEvent event.TurnEventHandler) error {
 	for _, tool := range conv.Tools() {
-		if tool.Name() == appjob.SummaryToolName {
+		if tool.Name() == toolsummary.ToolName {
 			s.scratchEnvironment = conv.Environment()
 			s.scratchWorkspace = conv.Workspace()
 		}
@@ -76,9 +77,9 @@ func TestManualCompactKeepsEnvironmentAndWorkspace(t *testing.T) {
 func (s *compactSvc) Send(_ context.Context, conv *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, _ event.TurnEventHandler) error {
 	s.calls.Add(1)
 	for _, t := range conv.Tools() {
-		if t.Name() == appjob.SummaryToolName {
+		if t.Name() == toolsummary.ToolName {
 			m, _ := entity.NewMessage(enum.RoleAssistant, "")
-			tc, err := entity.NewToolCall("sum_1", appjob.SummaryToolName, `{"text":"CHECKPOINT: earlier turns summarized"}`, enum.TooltypeOrigin)
+			tc, err := entity.NewToolCall("sum_1", toolsummary.ToolName, `{"text":"CHECKPOINT: earlier turns summarized"}`, enum.TooltypeOrigin)
 			if err != nil {
 				return err
 			}
@@ -105,7 +106,7 @@ type overflowSvc struct {
 
 func (s *overflowSvc) Send(ctx context.Context, conv *aggregate.Conversation, gw *aggregate.Gateway, m entity.Model, h event.TurnEventHandler) error {
 	for _, t := range conv.Tools() {
-		if t.Name() == appjob.SummaryToolName {
+		if t.Name() == toolsummary.ToolName {
 			s.sawCompact.Store(true)
 			return s.inner.Send(ctx, conv, gw, m, h)
 		}
@@ -141,7 +142,17 @@ func compactApp(t *testing.T, svc dservice.TextModelService, contextWindow int) 
 	return New(convs, gateways,
 		map[enum.Environment]appjob.EnvironmentDriver{enum.EnvironmentLocal: appjob.EnvironmentBundle{
 			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: svc},
-		}}, cfg, nil, "", nil), convs
+		}}, cfg, nil, "", nil, mustSummaryTool(t)), convs
+}
+
+// mustSummaryTool builds the injected compaction contract for test Deps.
+func mustSummaryTool(t *testing.T) dservice.Tool {
+	t.Helper()
+	tool, err := toolsummary.NewSummaryTool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tool
 }
 
 func TestManualCompactAllowsAnotherFoldWhileTailExceedsKeep(t *testing.T) {
@@ -221,7 +232,7 @@ type deadEndSvc struct {
 
 func (s *deadEndSvc) Send(ctx context.Context, conv *aggregate.Conversation, gw *aggregate.Gateway, m entity.Model, h event.TurnEventHandler) error {
 	for _, t := range conv.Tools() {
-		if t.Name() == appjob.SummaryToolName {
+		if t.Name() == toolsummary.ToolName {
 			s.sawCompact.Store(true)
 			return s.inner.Send(ctx, conv, gw, m, h)
 		}

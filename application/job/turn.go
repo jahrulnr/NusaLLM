@@ -53,7 +53,9 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 	// The call surface is live config: a stored conversation can predate
 	// the catalog, so apply the current set every turn — never trust what
 	// the record hydrated. Without this the wire carries no tools and the
-	// model invents names it was never offered.
+	// model invents names it was never offered. The catalog already
+	// carries the harness's ToolPermissionSystem tools (e.g. workspace)
+	// so the pin's call name resolves — they stay off the wire's list.
 	conv.SetTools(driver.ToolSchemas())
 	didCompact := false
 	// pinnedID is the record the last pin attempt left the tail on — a
@@ -417,10 +419,12 @@ func (d Deps) persistInterrupted(ctx context.Context, convID string, msg *entity
 // appendWorkspaceContext records the turn's working directory as one
 // injection-typed `workspace` call on a system-role message, appended
 // right after the editable line it describes — a mid-conversation system
-// turn, not the system prompt (that layer is separate). The record
-// travels history as hydration: adapters fold it into the wire turn's
-// text, renderers show it as a context line, not a user quote. The empty
-// latency marks it as a stored record, not a measured execution.
+// turn marking harness-injected context, not the system prompt (that
+// layer is separate). Adapters emit it as the completed tool_call +
+// result pair it records, so the evidence rides at tool-output trust;
+// renderers show it as a context line, not a user quote or tool card.
+// The empty latency marks it as a stored record, not a measured
+// execution.
 //
 // A pin already sitting in the live tail for the same directory is not
 // repeated — re-pinning on every editable line spends tokens without

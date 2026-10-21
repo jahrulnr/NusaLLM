@@ -71,8 +71,9 @@ func (t pushTool) Execute(context.Context, entity.ToolCall, dservice.ToolEmitter
 // call — as an ordinary user message with a steer event.
 func TestRunTurnFoldsSteerAfterToolResult(t *testing.T) {
 	d := Deps{
-		Convs:  repoconversation.NewConversationRepository(t.TempDir()),
-		Config: config.ConversationConfig{MaxTurnStep: 4},
+		SummaryTool: mustSummaryTool(t),
+		Convs:       repoconversation.NewConversationRepository(t.TempDir()),
+		Config:      config.ConversationConfig{MaxTurnStep: 4},
 	}
 	conv, _ := aggregate.NewConversation("room")
 	user, _ := entity.NewMessage(enum.RoleUser, "go")
@@ -152,8 +153,9 @@ func (s *captureSvc) Send(_ context.Context, conv *aggregate.Conversation, _ *ag
 // worker's earlier work — folds at step zero, before the first call.
 func TestRunTurnFoldsSteerBeforeFirstCall(t *testing.T) {
 	d := Deps{
-		Convs:  repoconversation.NewConversationRepository(t.TempDir()),
-		Config: config.ConversationConfig{MaxTurnStep: 4},
+		SummaryTool: mustSummaryTool(t),
+		Convs:       repoconversation.NewConversationRepository(t.TempDir()),
+		Config:      config.ConversationConfig{MaxTurnStep: 4},
 	}
 	conv, _ := aggregate.NewConversation("room")
 	user, _ := entity.NewMessage(enum.RoleUser, "hi")
@@ -200,8 +202,9 @@ func (s doneSvc) Send(_ context.Context, conv *aggregate.Conversation, _ *aggreg
 // it must not leak into history.
 func TestRunTurnLeavesUnconsumedSteer(t *testing.T) {
 	d := Deps{
-		Convs:  repoconversation.NewConversationRepository(t.TempDir()),
-		Config: config.ConversationConfig{MaxTurnStep: 4},
+		SummaryTool: mustSummaryTool(t),
+		Convs:       repoconversation.NewConversationRepository(t.TempDir()),
+		Config:      config.ConversationConfig{MaxTurnStep: 4},
 	}
 	conv, _ := aggregate.NewConversation("room")
 	user, _ := entity.NewMessage(enum.RoleUser, "hi")
@@ -339,7 +342,8 @@ func TestRunTurnSteerAppendCommittedDespiteError(t *testing.T) {
 		committed bool
 		err       error
 	}{true, errors.New("post-commit flush")})
-	d := Deps{Convs: convs, Config: config.ConversationConfig{MaxTurnStep: 4}}
+	d := Deps{
+		SummaryTool: mustSummaryTool(t), Convs: convs, Config: config.ConversationConfig{MaxTurnStep: 4}}
 	steers := NewSteeringInput()
 	receipt := steers.Submit("steer me")
 	err := d.runTurn(t.Context(), "room", conv, EnvironmentBundle{}, nil, entity.Model{}, doneSvc{}, nil, steers)
@@ -362,7 +366,8 @@ func TestRunTurnSteerAppendFailureLeavesUnconsumed(t *testing.T) {
 		committed bool
 		err       error
 	}{false, errors.New("disk gone")})
-	d := Deps{Convs: convs, Config: config.ConversationConfig{MaxTurnStep: 4}}
+	d := Deps{
+		SummaryTool: mustSummaryTool(t), Convs: convs, Config: config.ConversationConfig{MaxTurnStep: 4}}
 	steers := NewSteeringInput()
 	failed := steers.Submit("first line")
 	drained := steers.Submit("second line")

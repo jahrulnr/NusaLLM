@@ -30,7 +30,7 @@ func (j *blockingShutdownJob) Execute(execCtx context.Context) error {
 }
 
 func TestShutdownCancelsWaitsAndRejectsPosts(t *testing.T) {
-	app := New(nil, nil, nil, config.NewConfig(), nil, "", nil)
+	app := New(nil, nil, nil, config.NewConfig(), nil, "", nil, nil)
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	unblock := func() { releaseOnce.Do(func() { close(release) }) }

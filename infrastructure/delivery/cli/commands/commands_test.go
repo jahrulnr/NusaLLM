@@ -26,6 +26,7 @@ import (
 	repoworkspace "github.com/jahrulnr/nusallm/infrastructure/repository/workspace"
 	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
 	textcompletion "github.com/jahrulnr/nusallm/infrastructure/service/core/text/completion"
+	toolsummary "github.com/jahrulnr/nusallm/infrastructure/service/tool/summary"
 )
 
 // commandFixture wires a session+registry against a stub provider the way
@@ -37,6 +38,15 @@ type commandFixture struct {
 	convs     drepo.Conversation
 	app       *appconversation.ConversationApp
 	workspace string
+}
+
+func mustSummaryTool(t *testing.T) dservice.Tool {
+	t.Helper()
+	tool, err := toolsummary.NewSummaryTool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tool
 }
 
 func newCommandFixture(t *testing.T) *commandFixture {
@@ -75,12 +85,13 @@ func newCommandFixture(t *testing.T) *commandFixture {
 		gatewayRepository,
 		map[enum.Environment]appjob.EnvironmentDriver{enum.EnvironmentLocal: appjob.EnvironmentBundle{
 			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: textcompletion.New(coretext.Options{FileRoot: workspace, FileStore: repoworkspace.NewLocal()})},
-			Tools:    map[string]dservice.Tool{appjob.SummaryToolName: appjob.NewSummaryTool()},
+			Tools:    map[string]dservice.Tool{toolsummary.ToolName: mustSummaryTool(t)},
 		}},
 		config.NewConfig(),
 		nil,
 		"",
 		nil,
+		mustSummaryTool(t),
 	)
 	t.Cleanup(func() { _ = conversationApplication.Shutdown(context.Background()) })
 	sess, err := session.New(session.Options{
@@ -132,7 +143,7 @@ func TestSessionCommandsReportState(t *testing.T) {
 	if out := f.run(t, "/pwd"); !strings.Contains(out, f.workspace) {
 		t.Fatalf("pwd = %q, want workspace", out)
 	}
-	if out := f.run(t, "/tools"); !strings.Contains(out, appjob.SummaryToolName) {
+	if out := f.run(t, "/tools"); !strings.Contains(out, toolsummary.ToolName) {
 		t.Fatalf("tools = %q, want the summary tool listed", out)
 	}
 	if out := f.run(t, "/attach"); !strings.Contains(out, "no pending attachments") {

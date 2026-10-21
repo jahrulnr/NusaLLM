@@ -50,7 +50,10 @@ func (d Deps) compact(ctx context.Context, convID string, conv *aggregate.Conver
 	}
 	instruction.SetUserType(enum.LLMUserTypeSystem)
 	scratch.Append(instruction)
-	summary := NewSummaryTool()
+	summary := d.SummaryTool
+	if summary == nil {
+		return apperror.New(500, "compaction unavailable", fmt.Errorf("no summary tool injected"))
+	}
 	scratch.SetTools([]valueobject.ToolSchema{summary.Schema()})
 
 	// The scratch dialogue should answer with a single summary tool call,
@@ -79,7 +82,7 @@ func (d Deps) compact(ctx context.Context, convID string, conv *aggregate.Conver
 				continue // an empty message deserves another attempt, not a checkpoint
 			}
 			for _, call := range pending {
-				if call.Name() != SummaryToolName {
+				if call.Name() != summary.Schema().Name() {
 					_ = last.SetToolOutput(call.ID(), "error: only the summary tool is available")
 					continue
 				}

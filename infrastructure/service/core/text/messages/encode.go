@@ -132,11 +132,14 @@ func contentBlocks(content any) []any {
 // encodeMessage emits one wire turn for plain messages, or an assistant
 // turn followed by a user turn of tool_result blocks when the domain
 // message carries executed calls — Anthropic has no tool role, results
-// ride inside the next user turn. Injection calls hydrate as inline text
-// (they are application-originated; their output attachments are never
-// encoded). A call's own output attachments ride inside its tool_result
-// block — this wire carries media there natively, no synthetic user
-// message needed.
+// ride inside the next user turn. Injection calls are application-
+// originated hydration: on a system-role record they encode as the
+// tool_use + tool_result pair they record — observed evidence rides at
+// tool-output trust, not inside an instruction turn. Anywhere else they
+// hydrate as inline text (legacy user-role records keep their shape).
+// Injection output attachments are never encoded. A call's own output
+// attachments ride inside its tool_result block — this wire carries
+// media there natively, no synthetic user message needed.
 func encodeMessage(m entity.Message, model entity.Model, fileRoot wire.MediaRoot) ([]MessageBody, error) {
 	role := "user"
 	if m.Role() == enum.RoleAssistant {
@@ -153,6 +156,26 @@ func encodeMessage(m entity.Message, model entity.Model, fileRoot wire.MediaRoot
 		} else {
 			origin = append(origin, tc)
 		}
+	}
+
+	// A system-role hydration record with calls to show takes the
+	// completed-call wire shape: assistant tool_use blocks immediately
+	// answered by a user turn of tool_result blocks.
+	if m.Role() == enum.RoleSystem && len(injected) > 0 {
+		var msgs []MessageBody
+		if m.Content() != "" {
+			msgs = append(msgs, MessageBody{Role: "user", Content: m.Content()})
+		}
+		calls := append(append([]entity.ToolCall(nil), injected...), origin...)
+		msgs = append(msgs, MessageBody{Role: "assistant",
+			Content: encodeAssistantBlocks(m, "", calls)})
+		var results []any
+		for _, tc := range calls {
+			results = append(results, ContentBlock{Type: "tool_result",
+				ToolUseID: tc.ID(), Content: tc.OutputWithUntrustedTagOrInterrupted()})
+		}
+		msgs = append(msgs, MessageBody{Role: "user", Content: results})
+		return msgs, nil
 	}
 
 	text := m.Content()
@@ -238,7 +261,10 @@ func encodeAssistantBlocks(m entity.Message, text string, origin []entity.ToolCa
 			blocks = append(blocks, entry) // verbatim — signatures must not be reserialized
 		}
 	}
-	if !textDone && (text != "" || len(blocks) == 0) {
+	if !textDone && (text != "" || (len(blocks) == 0 && len(origin) == 0)) {
+		// Emit a text block when content exists or the turn would carry
+		// nothing — but not a filler "" ahead of tool_use blocks:
+		// Anthropic rejects empty text blocks.
 		emitText()
 	}
 	for used < len(origin) {
