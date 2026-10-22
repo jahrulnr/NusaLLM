@@ -30,6 +30,7 @@ type modelDTO struct {
 	StopSequences    []string   `json:"stopSequences,omitempty"`
 	Effort           string     `json:"effort,omitempty"`
 	ModelType        string     `json:"modelType,omitempty"`
+	Style            string     `json:"style,omitempty"`
 	ContextWindow    int        `json:"contextWindow"`
 	Pricing          pricingDTO `json:"pricing"`
 	InputModalities  []string   `json:"inputModalities,omitempty"`
@@ -70,9 +71,13 @@ func toModel(m entity.Model) modelDTO {
 			CacheWritePerMillionUsd: p.CacheWritePerM(),
 		},
 	}
-	// "Unset ≠ zero": absent effort never serializes as a value.
+	// "Unset ≠ zero": absent effort never serializes as a value — same
+	// for a style override, which only exists as an explicit pin.
 	if e := m.Effort(); !e.IsUnset() {
 		out.Effort = e.String()
+	}
+	if s := m.Style(); s != "" {
+		out.Style = s.String()
 	}
 	for _, mod := range m.InputModalities() {
 		out.InputModalities = append(out.InputModalities, mod.String())

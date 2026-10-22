@@ -193,6 +193,53 @@ test('model editor save emits gateway-save with the full catalog', () => {
   assert.deepEqual(m.supportedEfforts, ['low', 'medium', 'high']);
 });
 
+test('model api style: select pin, inherit reset, and row chip', () => {
+  const gw = { ...GW, models: [{ id: 'model-a', style: 'messages' }, { id: 'model-b' }] };
+  const pm = new PM();
+  pm.gateways = [gw];
+  pm.modelsFor = 'gw1';
+
+  // A pinned model shows its override as a meta chip; an inheriting one does not.
+  const rows = byClass(pm.root, 'model-row');
+  const texts = (row) => all(row).map((n) => n.textContent).filter(Boolean);
+  assert.ok(texts(rows[0]).includes('messages'), 'pin rendered as chip');
+  assert.ok(!texts(rows[1]).includes('messages'), 'no chip without a pin');
+
+  // The editor labels the empty choice with the gateway's own style and
+  // marks the pinned option selected.
+  rows[0].fire('click');
+  let dialog = openDialog(pm);
+  const styleSel = byAria(dialog, 'API style');
+  const optByValue = (sel, v) =>
+    all(dialog).find((n) => n.tagName === 'OPTION' && n.value === v && sel.children.includes(n));
+  assert.ok(optByValue(styleSel, 'messages'), 'style option exists');
+  assert.notEqual(optByValue(styleSel, 'messages').selected, undefined, 'pinned option selected');
+  assert.ok(optByValue(styleSel, ''), 'inherit option exists');
+  assert.ok(all(dialog).some((n) => n.tagName === 'OPTION' && n.textContent === 'gateway default (completion)'),
+    'inherit option names the gateway style');
+
+  // Switching back to the default drops the key — inheritance, not "".
+  styleSel.value = '';
+  saveBtn(dialog).fire('click');
+  let evt = pm.events.find((e) => e.type === 'gateway-save');
+  assert.ok(!('style' in evt.detail.body.models[0]), 'reset deletes the style key');
+
+  // Pinning writes the style key on the wire.
+  const pm2 = new PM();
+  pm2.gateways = [gw];
+  pm2.modelsFor = 'gw1';
+  byClass(pm2.root, 'model-row')[1].fire('click');
+  dialog = openDialog(pm2);
+  const sel2 = byAria(dialog, 'API style');
+  const opt2 = (v) => all(dialog).find((n) => n.tagName === 'OPTION' && n.value === v && sel2.children.includes(n));
+  assert.notEqual(opt2('').selected, undefined, 'unpinned starts at the gateway default');
+  assert.equal(opt2('responses').selected, undefined, 'no override marked');
+  sel2.value = 'responses';
+  saveBtn(dialog).fire('click');
+  evt = pm2.events.find((e) => e.type === 'gateway-save');
+  assert.equal(evt.detail.body.models[1].style, 'responses');
+});
+
 test('a clean save result applies models and keeps the models view', () => {
   const pm = new PM();
   pm.gateways = [GW];

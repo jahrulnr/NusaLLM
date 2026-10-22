@@ -52,6 +52,7 @@ type ModelInput struct {
 	StopSequences    []string
 	Effort           enum.Effort
 	ModelType        enum.ModelType
+	Style            enum.Style // wire-surface override — "" inherits the gateway
 	ContextWindow    int
 	Pricing          *valueobject.Pricing
 	InputModalities  []enum.Modality
@@ -128,6 +129,7 @@ func InputFromInfo(info GatewayInfo) GatewayInput {
 			StopSequences:    m.StopSequences(),
 			Effort:           m.Effort(),
 			ModelType:        m.ModelType(),
+			Style:            m.Style(),
 			ContextWindow:    m.ContextWindow(),
 			Pricing:          &pricing,
 			InputModalities:  m.InputModalities(),
@@ -178,6 +180,13 @@ func (app *GatewayApp) buildModel(in ModelInput) (entity.Model, error) {
 			return entity.Model{}, app.badModel(in.ID, "modelType", in.ModelType.String())
 		}
 		m.SetModelType(t)
+	}
+	if in.Style != "" {
+		s, ok := enum.ParseStyle(in.Style.String())
+		if !ok {
+			return entity.Model{}, app.badModel(in.ID, "style", in.Style.String())
+		}
+		m.SetStyle(s)
 	}
 	m.SetContextWindow(in.ContextWindow)
 	m.SetName(in.Name)

@@ -3,6 +3,7 @@ package job
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/jahrulnr/nusallm/infrastructure/config"
@@ -14,6 +15,7 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 	repoconversation "github.com/jahrulnr/nusallm/infrastructure/repository/conversation"
+	repogateway "github.com/jahrulnr/nusallm/infrastructure/repository/gateway"
 )
 
 // loopSvc asks for a tool on every provider call — the model that never
@@ -109,6 +111,65 @@ func TestRunTurn413WithAppendedMessagePropagates(t *testing.T) {
 	}
 	if svc.calls != 1 {
 		t.Fatalf("compact-retry fired despite the appended message: calls=%d", svc.calls)
+	}
+}
+
+// markerSvc only exists to be told apart — resolveRoute's job is picking
+// the right adapter, which this compares by identity.
+type markerSvc struct{ name string }
+
+func (s *markerSvc) Send(context.Context, *aggregate.Conversation, *aggregate.Gateway, entity.Model, event.TurnEventHandler) error {
+	return nil
+}
+
+// A model-level style pin outranks the gateway's declared style — one
+// mixed-protocol endpoint then serves each family on its own surface.
+func TestResolveRouteModelStyleOverride(t *testing.T) {
+	gw, err := aggregate.NewGateway("gw1", "stub", "http://unused", enum.StyleCompletion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned, _ := entity.NewModel("claude-x", "gw1")
+	pinned.SetStyle(enum.StyleMessages)
+	plain, _ := entity.NewModel("deepseek-x", "gw1")
+	unwired, _ := entity.NewModel("luna-x", "gw1")
+	unwired.SetStyle(enum.StyleResponses)
+	gw.SetModels([]entity.Model{pinned, plain, unwired})
+	gateways := repogateway.NewGatewayRepository(t.TempDir(), nil)
+	if err := gateways.Save(t.Context(), &gw); err != nil {
+		t.Fatal(err)
+	}
+	d := Deps{Gateways: gateways}
+	completionSvc := &markerSvc{name: "completion"}
+	messagesSvc := &markerSvc{name: "messages"}
+	driver := EnvironmentBundle{Services: map[enum.Style]dservice.TextModelService{
+		enum.StyleCompletion: completionSvc,
+		enum.StyleMessages:   messagesSvc,
+	}}
+	conv, _ := aggregate.NewConversation("room")
+
+	_, _, svc, err := d.resolveRoute(t.Context(), "room", conv, driver, "gw1", "claude-x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if svc != messagesSvc {
+		t.Fatalf("pinned model must route to its own adapter, got %v", svc)
+	}
+	_, _, svc, err = d.resolveRoute(t.Context(), "room", conv, driver, "gw1", "deepseek-x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if svc != completionSvc {
+		t.Fatalf("unpinned model must inherit the gateway style, got %v", svc)
+	}
+	// An override naming a style the deployment never wired is a 500
+	// naming the effective style, not the gateway's.
+	_, _, _, err = d.resolveRoute(t.Context(), "room", conv, driver, "gw1", "luna-x")
+	if apperror.As(err).StatusCode() != 500 {
+		t.Fatalf("unwired style → %v, want 500", err)
+	}
+	if !strings.Contains(apperror.As(err).Caused(), "responses") {
+		t.Fatalf("error must name the effective style: %v", err)
 	}
 }
 

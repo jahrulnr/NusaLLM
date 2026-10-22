@@ -43,6 +43,7 @@ func TestUpsertGetRoundtrip(t *testing.T) {
 			MaxOutputTokens: &maxOut,
 			Effort:          enum.EffortHigh,
 			ModelType:       enum.ModelTypeText,
+			Style:           enum.StyleMessages,
 			ContextWindow:   200_000,
 			InputModalities: []enum.Modality{enum.ModalityText, enum.ModalityImage},
 			Pricing:         &valueobject.Pricing{},
@@ -77,9 +78,15 @@ func TestUpsertGetRoundtrip(t *testing.T) {
 	}
 	m := info.Models[0]
 	if m.Effort() != enum.EffortHigh || m.ModelType() != enum.ModelTypeText ||
+		m.Style() != enum.StyleMessages ||
 		m.ContextWindow() != 200_000 || !m.AcceptsInput(enum.ModalityImage) ||
 		m.MaxOutputTokens() == nil || *m.MaxOutputTokens() != 4096 {
 		t.Fatalf("model fields mismatch: %+v", m)
+	}
+	// The read-modify-write codec must carry the pin — a projection-based
+	// rewrite (rename, key rotate) must never silently drop it.
+	if got := InputFromInfo(info).Models[0].Style; got != enum.StyleMessages {
+		t.Fatalf("InputFromInfo dropped the style pin: %q", got)
 	}
 }
 
@@ -181,6 +188,13 @@ func TestUpsertValidation(t *testing.T) {
 	bad.Models = []ModelInput{{ID: "a", InputModalities: []enum.Modality{enum.Modality("bogus")}}}
 	if _, err := app.Upsert(t.Context(), bad); apperror.As(err).StatusCode() != 400 {
 		t.Fatalf("bad modality → %v, want 400", err)
+	}
+
+	bad = base
+	bad.Style = enum.StyleMessages
+	bad.Models = []ModelInput{{ID: "a", Style: enum.Style("bogus")}}
+	if _, err := app.Upsert(t.Context(), bad); apperror.As(err).StatusCode() != 400 {
+		t.Fatalf("bad model style → %v, want 400", err)
 	}
 }
 

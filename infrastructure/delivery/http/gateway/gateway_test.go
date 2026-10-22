@@ -38,13 +38,15 @@ func (f *fakeReader) DiscoverProviders(context.Context, string, string) ([]dserv
 
 type fakeWriter struct {
 	deleted       []string
+	lastInput     appgateway.GatewayInput
 	outcome       appgateway.UpsertOutcome
 	err           error
 	importOutcome appgateway.UpsertOutcome
 	importErr     error
 }
 
-func (f *fakeWriter) Upsert(context.Context, appgateway.GatewayInput) (appgateway.UpsertOutcome, error) {
+func (f *fakeWriter) Upsert(_ context.Context, in appgateway.GatewayInput) (appgateway.UpsertOutcome, error) {
+	f.lastInput = in
 	return f.outcome, f.err
 }
 
@@ -176,6 +178,48 @@ func TestPutGatewayCatalogErrorStill200(t *testing.T) {
 	}
 	if models, ok := doc["models"].([]any); !ok || len(models) != 1 {
 		t.Fatalf("stored models must ride along: %v", doc["models"])
+	}
+}
+
+// A model-level style pin rides the write body into the input and the
+// read projection back out; an absent pin stays absent.
+func TestModelStyleRoundTrip(t *testing.T) {
+	pinned, err := entity.NewModel("claude-x", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned.SetStyle(enum.StyleMessages)
+	plain, err := entity.NewModel("deepseek-x", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := &fakeWriter{}
+	r := router(Deps{
+		Reads: &fakeReader{infos: []appgateway.GatewayInfo{
+			{ID: "g", Endpoint: "https://x", Models: []entity.Model{pinned, plain}},
+		}},
+		Writes: w,
+	})
+	rec := doJSON(r, "PUT", "/api/gateways/g",
+		`{"name":"G","style":"completion","endpoint":"https://x","models":[{"id":"claude-x","style":"messages"},{"id":"deepseek-x"}]}`)
+	if rec.Code != 200 {
+		t.Fatalf("want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(w.lastInput.Models) != 2 || w.lastInput.Models[0].Style != enum.StyleMessages ||
+		w.lastInput.Models[1].Style != "" {
+		t.Fatalf("style must parse per model: %+v", w.lastInput.Models)
+	}
+	var doc struct {
+		Models []map[string]any `json:"models"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Models[0]["style"] != "messages" {
+		t.Fatalf("pinned style must project: %v", doc.Models[0])
+	}
+	if _, present := doc.Models[1]["style"]; present {
+		t.Fatalf("inheriting model must omit style: %v", doc.Models[1])
 	}
 }
 

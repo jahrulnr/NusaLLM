@@ -89,7 +89,7 @@ func TestRefreshModelsMergesCatalogMetadata(t *testing.T) {
 		ID:       "or",
 		Style:    enum.StyleCompletion,
 		Endpoint: "https://openrouter.ai/api",
-		Models:   []ModelInput{{ID: "a", ContextWindow: 64_000}},
+		Models:   []ModelInput{{ID: "a", ContextWindow: 64_000, Style: enum.StyleMessages}},
 	}
 	if _, err := app.Upsert(t.Context(), in); err != nil {
 		t.Fatal(err)
@@ -126,6 +126,11 @@ func TestRefreshModelsMergesCatalogMetadata(t *testing.T) {
 	if a.Name() != "Model A" || a.OutputLimit() != 32_000 ||
 		len(a.SupportedEfforts()) != 2 || a.SupportedEfforts()[0] != enum.EffortLow {
 		t.Fatalf("undeclared fields must backfill: %+v", a)
+	}
+	// The wire-style pin is user-set and server-owned — the catalog has
+	// no notion of it, so a merge must never clear it.
+	if a.Style() != enum.StyleMessages {
+		t.Fatalf("merge must preserve the style pin: %q", a.Style())
 	}
 	if b.ContextWindow() != 1_000_000 || b.AliasOf() != "vendor/base" ||
 		len(b.InputModalities()) != 2 || b.InputModalities()[1] != enum.ModalityImage {

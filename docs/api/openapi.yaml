@@ -1201,6 +1201,10 @@ components:
         modelType:
           type: string
           enum: [text, embedding, video, image, speech, transcription, audio, rerank, decision]
+        style:
+          type: string
+          enum: [completion, responses, messages, generatecontent]
+          description: Wire-surface override for this model — absent means the request speaks the gateway's `style`. For models that only exist on one surface (e.g. `claude-*` on messages, `gpt-*-luna` on responses behind a mixed-protocol endpoint).
         contextWindow:
           type: integer
           minimum: 0
@@ -1266,6 +1270,10 @@ components:
         modelType:
           type: string
           enum: [text, embedding, video, image, speech, transcription, audio, rerank, decision]
+        style:
+          type: string
+          enum: [completion, responses, messages, generatecontent]
+          description: Wire-surface override; absent/empty = inherit the gateway's `style`.
         contextWindow: { type: integer, minimum: 0 }
         outputLimit: { type: integer, minimum: 0 }
         maxImages: { type: integer, minimum: 0 }

@@ -121,14 +121,19 @@ budgeting concern, never a hard gate.
 | `models` | Catalog of `entity.Model` entries the gateway can serve |
 | `stream` | Whether streaming mode is enabled; `NewGateway` defaults it to `true` |
 
-**Style lives on the gateway, not the model**, because one model id can be
-spoken through multiple paradigms depending on the route — OpenRouter, for
-example, accepts an OpenAI-style request and routes it to a messages-style
-backend. Each registered execution-environment driver keeps a
+**Style defaults to the gateway; a model may pin an override.** One model id
+can be spoken through multiple paradigms depending on the route — OpenRouter,
+for example, accepts an OpenAI-style request and routes it to a messages-style
+backend — and one endpoint may host families that only exist on their native
+surface (zen/go fronts `claude-*` on `/messages` and `gpt-*-luna` on
+`/responses` only). `Model.Style()` carries the explicit pin; `""` inherits
+the gateway's, and `Model.WireStyle(gwStyle)` owns the resolution rule. Each
+registered execution-environment driver keeps a
 `map[enum.Style]TextModelService` (`application/job/environment.go`). The
 application first selects the conversation's persisted environment, then
-chooses that driver's adapter by `gw.Style()` at send time. A conversation
-switching gateways changes wire formats without touching history.
+chooses that driver's adapter by `model.WireStyle(gw.Style())` at send time.
+A conversation switching gateways changes wire formats without touching
+history.
 
 `Gateway.Model(id)` resolves a catalog entry — the resume path resolves
 `Conversation.ModelID()` through it. `ApiKey()` returns whatever is stored:

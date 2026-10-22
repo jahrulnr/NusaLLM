@@ -32,6 +32,7 @@ class FakeEl {
     (this.listeners[e.type] || []).forEach((fn) => fn.call(this, e));
     return true;
   }
+  clear() {}
   fire(type, e = {}) { this.dispatchEvent({ type, target: this, ...e }); }
   push(...items) { (this.pushed ||= []).push(...items); }
   getBoundingClientRect() {
@@ -476,7 +477,7 @@ test('a pre-open edit failure restores the window it cut — no silent skip', as
 
   // The user edits a message — the command snapshots the cut history.
   assert.equal(app._edit('m150', 'edited'), true);
-  const edit = app.command;
+  const edit = app._viewCommand();
   assert.equal(edit.kind, 'edit');
   assert.equal(edit.turnId, null, 'still pre-open');
 
@@ -489,7 +490,7 @@ test('a pre-open edit failure restores the window it cut — no silent skip', as
   // The edit then fails before opening: the cut messages come back.
   ws._message({ type: 'error', requestId: edit.requestId, code: 'edit', message: 'rejected' });
   await flush();
-  assert.equal(app.command, null);
+  assert.equal(app._viewCommand(), null);
   assert.equal(app.messages.length, 100);
   assert.equal(app.messages[0].id, 'm150');
 
@@ -540,7 +541,7 @@ test('an earlier page in flight across a pre-open edit failure still lands', asy
 
   // The user edits a message — the command snapshots the cut history.
   assert.equal(app._edit('m150', 'edited'), true);
-  const edit = app.command;
+  const edit = app._viewCommand();
   assert.equal(edit.turnId, null, 'still pre-open');
 
   // A "Load earlier" goes on the wire while the edit is still pre-open.
@@ -558,7 +559,7 @@ test('an earlier page in flight across a pre-open edit failure still lands', asy
     // and with them the window they describe — start is 150 again.
     ws._message({ type: 'error', requestId: edit.requestId, code: 'edit', message: 'rejected' });
     await flush();
-    assert.equal(app.command, null);
+    assert.equal(app._viewCommand(), null);
     assert.equal(app.messages.length, 100);
     assert.equal(app.messages[0].id, 'm150');
     assert.equal(app.history.start, 150);

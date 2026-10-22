@@ -41,6 +41,7 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 	m.SetMaxOutputTokens(ptr(4096))
 	m.SetEffort(enum.EffortHigh)
 	m.SetModelType(enum.ModelTypeText)
+	m.SetStyle(enum.StyleMessages)
 	m.SetContextWindow(200_000)
 	m.SetName("Claude Opus 4")
 	m.SetCanonical("anthropic/claude-opus-4-20250514")
@@ -71,7 +72,7 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 	}
 	if *gm.Temperature() != 0.7 || *gm.MaxOutputTokens() != 4096 ||
 		gm.Effort() != enum.EffortHigh || gm.ModelType() != enum.ModelTypeText ||
-		gm.ContextWindow() != 200_000 {
+		gm.Style() != enum.StyleMessages || gm.ContextWindow() != 200_000 {
 		t.Fatalf("model fields mismatch: %+v", gm)
 	}
 	if !gm.AcceptsInput(enum.ModalityImage) || gm.AcceptsInput(enum.ModalityVideo) {

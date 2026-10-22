@@ -238,6 +238,17 @@ from `RequestBody.Extra`. This is how interleaved-thinking and context-
 management betas reach the wire — putting them in the request body would be
 ignored by Anthropic.
 
+Unlike open-source reasoning models, claude emits thinking blocks only when
+asked, and the opt-in shape depends on the generation parsed out of the
+`claude-*` id: ids older than 3.7 (2.x, 3.0/3.5) reject the field entirely
+and get nothing; 3.7 through 4.5 take `{"type":"enabled","budget_tokens":n}`
+with the budget mapped from the configured effort (skipped when effort is
+unset, or when the budget would not fit under `max_tokens`); 4.6 and newer
+take `{"type":"adaptive","display":"summarized"}` so the summary actually
+reaches the user. `effort: none` sends nothing — there is no safe disabled
+wire across generations. A `messages.thinking` optionalContent entry
+suppresses the default entirely, keeping the verbatim escape hatch.
+
 Tool results ride `tool_result` blocks inside the next user turn (the wire
 has no tool role); a call's output attachments nest inside its own
 `tool_result` block natively, and an interrupted call yields an
@@ -283,7 +294,9 @@ Streaming is named SSE: text/reasoning deltas stream live,
 loop closes on it rather than waiting for server EOF), with accumulated
 `output_item.done` items as a fallback. `status: "incomplete"` +
 `max_output_tokens` maps to finish reason `length`. Effort maps to
-`reasoning.effort` with `xhigh`/`max` clamped to `high` — the wire ceiling.
+`reasoning.effort` with `xhigh`/`max` clamped to `high` — the wire ceiling —
+and asks for `reasoning.summary: "auto"` as well so the reasoning actually
+surfaces to the user rather than running silently.
 
 ## The generatecontent adapter — `core/text/generatecontent`
 

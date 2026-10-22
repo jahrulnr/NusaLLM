@@ -713,8 +713,37 @@ func TestEffortClampAndEscapeHatch(t *testing.T) {
 	if reasoning["effort"] != "high" {
 		t.Fatalf("effort: %+v", reasoning)
 	}
+	// Effort implies a reasoning model — the summary opt-in rides with it
+	// or its reasoning returns nothing the user can see.
+	if reasoning["summary"] != "auto" {
+		t.Fatalf("summary opt-in: %+v", reasoning)
+	}
 	if captured["service_tier"] != "flex" {
 		t.Fatalf("escape hatch: %+v", captured["service_tier"])
+	}
+}
+
+func TestNoEffortSendsNoReasoning(t *testing.T) {
+	var captured map[string]any
+	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+		captured = decodeReq(t, r)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": "r", "status": "completed",
+			"output": []any{map[string]any{"type": "message", "role": "assistant",
+				"content": []any{map[string]any{"type": "output_text", "text": "ok"}}}},
+		})
+	})
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(m)
+	// Unset effort means provider default — a non-reasoning model must
+	// never see a reasoning object (it would reject the unknown effort).
+	model, _ := entity.NewModel("gpt-x", "test")
+	if err := svc.Send(context.Background(), conv, gw, model, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, sent := captured["reasoning"]; sent {
+		t.Fatalf("unset effort must not send reasoning: %+v", captured["reasoning"])
 	}
 }
 

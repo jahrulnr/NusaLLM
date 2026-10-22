@@ -18,6 +18,7 @@ type RequestBody struct {
 	Messages      []MessageBody              `json:"messages"`
 	Tools         []ToolBody                 `json:"tools,omitempty"`
 	OutputConfig  *OutputConfig              `json:"output_config,omitempty"`
+	Thinking      *ThinkingBody              `json:"thinking,omitempty"`
 	StopSequences []string                   `json:"stop_sequences,omitempty"`
 	Temperature   *float64                   `json:"temperature,omitempty"`
 	TopP          *float64                   `json:"top_p,omitempty"`
@@ -51,6 +52,17 @@ func (b RequestBody) MarshalJSON() ([]byte, error) {
 // OutputConfig carries output shaping — effort on current models.
 type OutputConfig struct {
 	Effort string `json:"effort,omitempty"`
+}
+
+// ThinkingBody is the explicit thinking opt-in. Adaptive asks the model
+// to decide and returns the summarized blocks; enabled+budget_tokens is
+// the ≤4.5-generation contract newer models removed (a 400). Type names
+// the wire contract, so no enum — anything else is the provider's to
+// reject.
+type ThinkingBody struct {
+	Type         string `json:"type"`                    // adaptive | enabled
+	BudgetTokens int    `json:"budget_tokens,omitempty"` // enabled-era only
+	Display      string `json:"display,omitempty"`       // summarized | omitted
 }
 
 // MetadataBody carries opaque abuse-detection correlation — a conversation

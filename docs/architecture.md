@@ -257,8 +257,9 @@ The body reads plainly because the rules are already placed:
    stored binding — and resolves them to live objects: the `Gateway`
    aggregate via `Gateways.Load` (key refs dereference here, and only
    here), the `Model` from `gw.Model(modelID)`, and the adapter from
-   `Services[gw.Style()]`. No adapter registered for the style is a 500
-   "deployment defect, not a user error."
+   `Services[model.WireStyle(gw.Style())]` — a model may pin a style that
+   overrides the gateway default. No adapter registered for the style is
+   a 500 "deployment defect, not a user error."
 3. Build the user `entity.Message`, attach uploads, `conv.Append`.
 4. On a fresh room, bind route/model and derive the title from the first
    line *before* the first write — a failed send still leaves a room that

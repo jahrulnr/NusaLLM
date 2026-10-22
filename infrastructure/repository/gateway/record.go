@@ -34,6 +34,7 @@ type modelRecord struct {
 	StopSequences    []string          `json:"stopSequences,omitempty"`
 	Effort           string            `json:"effort,omitempty"`
 	ModelType        string            `json:"modelType,omitempty"`
+	Style            string            `json:"style,omitempty"`
 	ContextWindow    int               `json:"contextWindow,omitempty"`
 	Pricing          *pricingRecord    `json:"pricing,omitempty"`
 	InputModalities  []string          `json:"inputModalities,omitempty"`
@@ -80,6 +81,7 @@ func encodeGateway(g *aggregate.Gateway) gatewayRecord {
 			StopSequences:    m.StopSequences(),
 			Effort:           m.Effort().String(),
 			ModelType:        m.ModelType().String(),
+			Style:            m.Style().String(),
 			ContextWindow:    m.ContextWindow(),
 			OptionalContent:  m.OptionalContent(),
 			Name:             m.Name(),
@@ -154,6 +156,13 @@ func decodeGateway(rec gatewayRecord, apiKey string) (*aggregate.Gateway, error)
 				return nil, fmt.Errorf("gateway %q: model %q: unknown type %q", rec.ID, mr.ID, mr.ModelType)
 			}
 			m.SetModelType(t)
+		}
+		if mr.Style != "" {
+			s, ok := enum.ParseStyle(mr.Style)
+			if !ok {
+				return nil, fmt.Errorf("gateway %q: model %q: unknown style %q", rec.ID, mr.ID, mr.Style)
+			}
+			m.SetStyle(s)
 		}
 		m.SetContextWindow(mr.ContextWindow)
 		m.SetName(mr.Name)

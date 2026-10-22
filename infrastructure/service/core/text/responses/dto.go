@@ -47,9 +47,12 @@ func (b RequestBody) MarshalJSON() ([]byte, error) {
 	return json.Marshal(m)
 }
 
-// ReasoningBody carries effort for reasoning models.
+// ReasoningBody carries effort for reasoning models — and the summary
+// opt-in visible reasoning needs. OpenAI reasoning models never return
+// summary parts unless asked; "auto" lets the model pick its detail.
 type ReasoningBody struct {
-	Effort string `json:"effort,omitempty"`
+	Effort  string `json:"effort,omitempty"`
+	Summary string `json:"summary,omitempty"`
 }
 
 // ItemBody is one input item on the wire — a message, a function_call the

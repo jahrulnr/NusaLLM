@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"path"
+	"strconv"
 	"strings"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
@@ -88,8 +89,13 @@ func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool
 	// frequency penalty and seed don't exist on this surface; the provider
 	// validates what it receives.
 	if e := model.Effort(); !e.IsUnset() && e != enum.EffortNone {
-		body.OutputConfig = &OutputConfig{Effort: e.String()}
+		effort := e.String()
+		if e == enum.EffortMinimal {
+			effort = enum.EffortLow.String() // no minimal on this wire
+		}
+		body.OutputConfig = &OutputConfig{Effort: effort}
 	}
+	body.Thinking = thinkingRequest(model, body.MaxTokens)
 	// Adapter-namespaced escape hatch: "messages.<param>" lands verbatim —
 	// this is how thinking config and cache_control ride through without
 	// dedicated fields. Beta selectors are headers, not body fields.
@@ -109,6 +115,154 @@ func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool
 		}
 	}
 	return body, nil
+}
+
+// thinkingRequest builds the explicit thinking opt-in Anthropic requires
+// for visible reasoning — unlike open-source reasoning models (DeepSeek,
+// GLM), which emit reasoning by default, claude returns thinking blocks
+// only when asked. Only claude-* ids qualify: the contract is
+// Anthropic's, and an anthropic-compatible gateway may front families
+// that reject the field outright. A configured messages.thinking
+// optionalContent suppresses the default entirely — the escape hatch
+// then carries exactly what the operator wrote (including a real
+// {"type":"disabled"}). effort:none stays silent: the disabled contract
+// only exists on some 5.x models at ≤high and 400s elsewhere, so there
+// is no safe wire for it.
+//
+// Generation split, verified against the wire:
+//   - Thinking exists on claude-3.7+ only — older ids reject the field
+//     entirely, so they get nothing.
+//   - 3.7 through 4.5 take enabled + budget_tokens — the only thinking
+//     contract they know. They never think by default, so the request
+//     rides the user's effort pick rather than firing unconditionally.
+//   - ≥4.6 (and anything unparseable — treated as current) takes
+//     adaptive + display summarized. On 5.x adaptive thinking already
+//     runs with display omitted — this asks the same default to surface
+//     its summary. On 4.6–4.8 thinking defaults OFF, so this is a
+//     capability opt-in, not just visibility: deliberate — it matches
+//     the open-source behavior where reasoning reaches the user
+//     whenever the model reasons. Adaptive still lets the model decide
+//     whether a prompt warrants thinking at all.
+func thinkingRequest(model entity.Model, maxTokens int) *ThinkingBody {
+	if claudeMarker(model.ID()) < 0 {
+		return nil
+	}
+	if _, configured := model.OptionalContent()["messages.thinking"]; configured {
+		return nil
+	}
+	effort := model.Effort()
+	if effort == enum.EffortNone {
+		return nil
+	}
+	if claudeEnabledEra(model.ID()) {
+		if effort.IsUnset() {
+			return nil
+		}
+		budget := thinkingBudget(effort)
+		// budget_tokens must stay under max_tokens — the answer needs
+		// headroom. A cap too small to hold the budget skips thinking
+		// rather than silently lowering the effort the user asked for.
+		if budget <= 0 || budget >= maxTokens {
+			return nil
+		}
+		return &ThinkingBody{Type: "enabled", BudgetTokens: budget}
+	}
+	if !claudeThinks(model.ID()) {
+		return nil
+	}
+	return &ThinkingBody{Type: "adaptive", Display: "summarized"}
+}
+
+// claudeThinks reports whether the id's generation knows thinking at
+// all — the contract arrived with claude-3.7; older ids (or ids whose
+// version sits below it) reject the field. Unparseable reads as current:
+// new generations keep the adaptive contract.
+func claudeThinks(id string) bool {
+	major, minor, ok := claudeVersion(id)
+	if !ok {
+		return true
+	}
+	return major >= 4 || (major == 3 && minor >= 7)
+}
+
+// claudeEnabledEra reports whether the id names a generation that
+// accepts the enabled/budget thinking contract — claude-3.7 through 4.5;
+// 4.6 dropped it for adaptive and newer ids 400 on it. A missing minor
+// reads as .0 — claude-sonnet-4-20250514 is 4.0, still enabled-era.
+func claudeEnabledEra(id string) bool {
+	major, minor, ok := claudeVersion(id)
+	if !ok {
+		return false
+	}
+	return (major == 3 && minor >= 7) || (major == 4 && minor <= 5)
+}
+
+// claudeVersion parses the generation out of a claude-* id: the first
+// all-digit run after the "claude-" marker is the major, the next
+// ≤2-digit run the minor — an -YYYYMMDD date suffix never counts, and
+// dot-form versions ("claude-3.5-sonnet") parse like dash-form.
+// "claude-sonnet-4-5" → (4,5); "claude-3-5-sonnet-20241022" → (3,5).
+func claudeVersion(id string) (major, minor int, ok bool) {
+	i := claudeMarker(id)
+	if i < 0 {
+		return 0, 0, false
+	}
+	for _, seg := range strings.FieldsFunc(id[i+len("claude-"):], func(r rune) bool {
+		return r == '-' || r == '.'
+	}) {
+		// Pure-digit segments only — name words, dot minors, and date
+		// suffixes all fail Atoi and are not version components.
+		n, err := strconv.Atoi(seg)
+		if err != nil {
+			if ok {
+				break
+			}
+			continue
+		}
+		if !ok {
+			major, ok = n, true
+			continue
+		}
+		if len(seg) <= 2 {
+			minor = n
+		}
+		break
+	}
+	return major, minor, ok
+}
+
+// claudeMarker locates the "claude-" marker when it starts a segment —
+// "claude-haiku-5-5" and "anthropic/claude-sonnet-4" qualify, but
+// "notaclaude-v2" doesn't: the family marker can't tail another word.
+func claudeMarker(id string) int {
+	i := strings.Index(id, "claude-")
+	if i > 0 {
+		if c := id[i-1]; c == '_' || (c >= 'a' && c <= 'z') ||
+			(c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+			return -1
+		}
+	}
+	return i
+}
+
+// thinkingBudget maps effort onto the ≤4.5 wire's required budget_tokens
+// floor of 1024 — the generation's only depth dial.
+func thinkingBudget(e enum.Effort) int {
+	switch e {
+	case enum.EffortMinimal:
+		return 1024
+	case enum.EffortLow:
+		return 2048
+	case enum.EffortMedium:
+		return 4096
+	case enum.EffortHigh:
+		return 8192
+	case enum.EffortXHigh:
+		return 12288
+	case enum.EffortMax:
+		return 16000
+	}
+	return 0
 }
 
 // contentBlocks normalizes a turn's content to a block array — bare

@@ -180,6 +180,24 @@ func TestModelFamilyVariant(t *testing.T) {
 	}
 }
 
+func TestModelWireStyle(t *testing.T) {
+	m, _ := NewModel("m", "r")
+	// Unset inherits the gateway's declared style.
+	if m.Style() != "" || m.WireStyle(enum.StyleCompletion) != enum.StyleCompletion {
+		t.Fatalf("unset must inherit: style=%q wire=%q", m.Style(), m.WireStyle(enum.StyleCompletion))
+	}
+	// An explicit pin beats the gateway default — one mixed-protocol
+	// endpoint then serves the model on its own surface.
+	m.SetStyle(enum.StyleMessages)
+	if m.WireStyle(enum.StyleCompletion) != enum.StyleMessages {
+		t.Fatalf("override must win: %q", m.WireStyle(enum.StyleCompletion))
+	}
+	m.SetStyle("")
+	if m.WireStyle(enum.StyleResponses) != enum.StyleResponses {
+		t.Fatalf("clearing must restore the gateway default: %q", m.WireStyle(enum.StyleResponses))
+	}
+}
+
 func TestModelEffort(t *testing.T) {
 	m, _ := NewModel("m", "r")
 	if !m.Effort().IsUnset() {

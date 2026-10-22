@@ -108,12 +108,15 @@ via `embed.go` and served by the same Gin origin as the HTTP API and the
   panel above the input shows a count header, every entry's state
   (`Queued`, `Waiting for next step`, `Delivery unknown`), its owning
   room, and its full text in a bounded scroll area. Queued lines keep
-  global submission order, dispatch oldest-first for the *visible*
-  view only — a fresh (un-minted) view is its own queue key, so a
-  second "New thread" never hijacks another's lines — and only after
-  the previous turn's history refresh succeeded; the refresh is a
-  per-room barrier, so nothing — Enter, Resume, navigation, a fresh
-  view — sends into a room whose history is still settling. A failed
+  global submission order, dispatch oldest-first per room — a fresh
+  (un-minted) view is its own queue key, so a second "New thread"
+  never hijacks another's lines — and only after the previous turn's
+  history refresh succeeded; the refresh is a per-room barrier, so
+  nothing — Enter, Resume, navigation, a fresh view — sends into a
+  room whose history is still settling. Turns run per room in
+  parallel: a send in one room never blocks another room's composer,
+  and composer drafts are per-room — switching rooms stashes the
+  outgoing text and restores the incoming one. A failed
   or canceled turn, a socket drop, or a failed refresh pauses the
   queue: the pause **holds the backlog it captured** — a held head
   blocks its room's lane until an explicit Resume, while lines

@@ -312,6 +312,7 @@ class ProviderManager extends Widget {
       // catalog never declared it); the rest appear only when declared.
       const ctx = fmtCount(m.contextWindow);
       const meta = [el('span', { class: ctx ? 'mm' : 'mm none', text: `ctx ${ctx || '—'}` })];
+      if (m.style) meta.push(el('span', { class: 'mm', text: m.style }));
       const out = fmtCount(m.outputLimit);
       if (out) meta.push(el('span', { class: 'mm', text: `out ${out}` }));
       if (m.maxImages) meta.push(el('span', { class: 'mm', text: `img ≤${m.maxImages}` }));
@@ -402,6 +403,10 @@ class ProviderManager extends Widget {
 
     f.effort = el('select', { class: 'in', 'aria-label': 'Effort' },
       EFFORTS.map((e) => el('option', { value: e, text: e, selected: (m.effort || 'default') === e })));
+    f.style = el('select', { class: 'in', 'aria-label': 'API style' }, [
+      el('option', { value: '', text: `gateway default (${g.style || ''})`, selected: !m.style }),
+      ...STYLES.map((s) => el('option', { value: s, text: s, selected: m.style === s })),
+    ]);
     f.modelType = el('select', { class: 'in', 'aria-label': 'Model type' }, [
       el('option', { value: '', text: 'unset', selected: !m.modelType }),
       ...MODEL_TYPES.map((t) => el('option', { value: t, text: t, selected: m.modelType === t })),
@@ -471,6 +476,7 @@ class ProviderManager extends Widget {
       if (!apply('maxOutputTokens', f.maxOut, true, 'max output tokens')) return;
       if (!applyZero('maxImages', f.maxImages, 'max images')) return;
       if (f.effort.value === 'default') delete next.effort; else next.effort = f.effort.value;
+      if (f.style.value) next.style = f.style.value; else delete next.style;
       if (f.modelType.value) next.modelType = f.modelType.value; else delete next.modelType;
       const sup = pick(f.supEff);
       if (sup.length) next.supportedEfforts = sup; else delete next.supportedEfforts;
@@ -512,7 +518,10 @@ class ProviderManager extends Widget {
 
     const form = el('div', { class: 'editor-form' }, [
       sec('identity', identity),
-      sec('basics', el('div', { class: 'sec-cols' }, [field('name', f.name), field('route', f.route)])),
+      sec('basics', el('div', { class: 'stack' }, [
+        el('div', { class: 'sec-cols' }, [field('name', f.name), field('route', f.route), field('api style', f.style)]),
+        el('div', { class: 'hint', text: 'api style overrides the gateway\'s — for models that only exist on one surface (claude → messages, luna → responses)' }),
+      ])),
       sec('limits', el('div', { class: 'stack' }, [
         el('div', { class: 'sec-cols' }, [
           field('context window', f.ctx), field('output limit', f.outLimit), field('max output tokens', f.maxOut),

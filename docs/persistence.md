@@ -393,7 +393,8 @@ records may carry credential references.
 `style` is the wire family (`completion`, `responses`, `messages`,
 `generatecontent`).
 `models` is the catalog; each `modelRecord` mirrors every `Model` field —
-`id`, `route`, the generation parameters (`temperature`, `topP`, `topK`,
+`id`, `route`, the wire-surface override `style` (empty = inherit the
+gateway's), the generation parameters (`temperature`, `topP`, `topK`,
 `maxOutputTokens`, `presencePenalty`, `frequencyPenalty`, `seed`,
 `stopSequences`, `effort`), and catalog metadata (`modelType`,
 `contextWindow`, `outputLimit`, `maxImages`, `name`, `canonical`, `aliasOf`,

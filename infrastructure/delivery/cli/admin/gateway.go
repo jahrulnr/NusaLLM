@@ -423,6 +423,9 @@ func printModelRow(w io.Writer, m entity.Model) {
 	if t := m.ModelType(); t != "" {
 		extra = append(extra, "type="+t.String())
 	}
+	if s := m.Style(); s != "" {
+		extra = append(extra, "style="+s.String())
+	}
 	if mods := m.InputModalities(); len(mods) > 0 {
 		var s []string
 		for _, mod := range mods {

@@ -741,7 +741,7 @@ await scenarioRun('resync-active-consumed-terminal', async (s) => {
   // Wait for the terminal to be processed — command retired — rather
   // than sleeping a fixed beat.
   await poll(() => s.page.evaluate(
-    () => document.querySelector('nusa-app').command === null));
+    () => document.querySelector('nusa-app')._commandFor('c1') == null));
   check('terminal snapshot duplicates nothing', (await rows(s).count()) === 0);
 });
 
@@ -790,47 +790,50 @@ await scenarioRun('resync-unknown-expired', async (s) => {
   check('copy restored text exactly once', (await rows(s).count()) === 0);
 });
 
-await scenarioRun('multi-room-fresh-ownership', async (s) => {
+// Per-room turns: a running turn gates only its own room. Other rooms
+// dispatch immediately, drafts stay per-room, and busy/stop/stream
+// follow the room that owns the turn — never the tab.
+await scenarioRun('multi-room-parallel-turns', async (s) => {
   await open(s, '#conversation=c1');
   await typeEnter(s, 'c1 busy task');
   await poll(() => s.hub().find('turn.send'));
-  // Queue a line for c2 while viewing c2 — it must not dispatch on c1's
-  // settle, and must not mutate c1's draft.
+  // Room Two is free — Enter dispatches immediately while c1 still runs.
   await s.page.locator('nusa-nav-sidebar').getByText('Room Two').click();
   await poll(async () => (await s.page.locator('nusa-conversation-header').getByText('Room Two').count()) > 0);
   await typeEnter(s, 'for room two');
-  await poll(async () => (await rows(s).count()) === 1);
-  check('c2 line captured while c1 busy', true);
-  // New conversation — a DIFFERENT fresh token.
+  await poll(() => s.hub().all('turn.send').length === 2);
+  const second = s.hub().all('turn.send')[1];
+  check('room two dispatched immediately', second.conversationId === 'c2' &&
+    second.payload.content === 'for room two', JSON.stringify(second));
+  check('nothing queued for a free room', (await rows(s).count()) === 0);
+  // c2's own turn is running — Stop IS armed here, and a draft typed
+  // on top of it stays c2's when the view moves on.
+  check('stop armed for room two\'s own turn', await stopBtn(s).isVisible());
+  await input(s).fill('c2 draft');
+  // A fresh view is its own room — it dispatches while two turns run,
+  // then claims the room it minted.
   await s.page.locator('nusa-nav-sidebar').getByText('New thread').click();
+  check('no stream on the fresh view', (await s.page.evaluate(
+    () => document.querySelector('nusa-app').thread.stream)) == null);
+  check('stop hidden with no own turn', !(await stopBtn(s).isVisible()));
+  check('fresh view drafts empty', (await input(s).inputValue()) === '');
   await typeEnter(s, 'fresh line');
-  await poll(async () => (await rows(s).count()) === 2);
-  check('fresh line captured on its own view', true);
-  // c1 completes — the CURRENT view's queue (the fresh line) drains and
-  // mints its own room; c2's line stays put, never dispatched by a
-  // foreign settle and never touching the fresh draft.
+  await poll(() => s.hub().all('turn.send').length === 3);
+  check('fresh line dispatched and minted', s.hub().all('turn.send')[2].conversationId === null);
+  // c1 completes — its settle frees c1 only; c2's draft and turn are
+  // untouched by a foreign room's terminal.
   s.fixture.messages.get('c1').push({ id: 'u1', role: 'user', userType: 'origin', content: 'c1 busy task' });
   s.hub().complete('t1', {});
-  await poll(() => s.hub().all('turn.send').length === 2);
-  const freshSend = s.hub().all('turn.send')[1];
-  check('own view line drained after settle', freshSend.payload.content === 'fresh line');
-  check('fresh line minted a new room', freshSend.conversationId === null);
-  check('c2 line never dispatched', !s.hub().all('turn.send')
-    .some((c) => c.payload.content === 'for room two'));
-  check('foreign row offers Open not Restore',
-    (await s.page.locator('.pending-action', { hasText: 'Open' }).count()) >= 1);
-  check('foreign row offers no draft-mutating Restore',
-    (await s.page.locator('.pending-action', { hasText: 'Restore' }).count()) === 0);
-  // The minted turn still runs — c2's line honestly waits for it.
-  s.fixture.messages.get('m1').push({ id: 'u2', role: 'user', userType: 'origin', content: 'fresh line' });
-  s.hub().complete('t2', {});
-  await poll(() => s.fixture.getLog.includes('/api/conversations/m1/messages'));
-  // Open navigates to the owning room — then its queue drains there.
-  await s.page.locator('.pending-action', { hasText: 'Open' }).first().click();
-  await poll(() => s.hub().all('turn.send').length === 3);
-  const third = s.hub().all('turn.send')[2];
-  check('opened room drained its own line', third.payload.content === 'for room two');
-  check('dispatched into the right room', third.conversationId === 'c2');
+  await poll(() => s.fixture.getLog.includes('/api/conversations/c1/messages'));
+  // Back on c2 its draft and running turn are exactly as left.
+  await s.page.locator('nusa-nav-sidebar').getByText('Room Two').click();
+  await poll(async () => (await s.page.locator('nusa-conversation-header').getByText('Room Two').count()) > 0);
+  check('room two draft restored', (await input(s).inputValue()) === 'c2 draft');
+  check('room two turn still owns stop', await stopBtn(s).isVisible());
+  // c1's draft is its own — the foreign draft never leaked.
+  await s.page.locator('nusa-nav-sidebar').getByText('Room One').click();
+  await poll(async () => (await s.page.locator('nusa-conversation-header').getByText('Room One').count()) > 0);
+  check('room one draft is its own empty', (await input(s).inputValue()) === '');
 });
 
 await scenarioRun('composer-ux-states', async (s) => {
@@ -1016,7 +1019,7 @@ await scenarioRun('fresh-ownership-guards', async (s) => {
   await input(s).fill('fresh preopen');
   s.hub().openPending();
   await poll(() => s.page.evaluate(
-    () => document.querySelector('nusa-app').command?.turnId === 't1'));
+    () => document.querySelector('nusa-app')._commandFor('m1')?.turnId === 't1'));
   check('foreign identical draft survives opened',
     (await input(s).inputValue()) === 'fresh preopen');
   // The minted turn keeps running — its room is m1.
@@ -1025,36 +1028,32 @@ await scenarioRun('fresh-ownership-guards', async (s) => {
   s.hub().autoOpen = true;
   s.hub().complete('t1', {});
   await poll(() => s.fixture.getLog.includes('/api/conversations/m1/messages'));
-  // A queued fresh send that mints its own room and then fails
-  // unpersisted must rejoin the MINTED room — the fresh token is dead.
-  await s.page.locator('nusa-nav-sidebar').getByText('Room One').click();
-  await poll(async () =>
-    (await s.page.locator('nusa-conversation-header').getByText('Room One').count()) > 0);
-  await typeEnter(s, 'c1 busy again');
-  await poll(() => s.hub().all('turn.send').length === 2);
+  // A QUEUED fresh send — captured because a dropped socket made even
+  // a free fresh view undispatchable — that mints its own room and
+  // then fails unpersisted must rejoin the MINTED room, not the dead
+  // fresh token.
   await s.page.locator('nusa-nav-sidebar').getByText('New thread').click();
+  s.hub().ws.close();
   await typeEnter(s, 'fresh queued line');
   await poll(async () => (await rows(s).count()) === 1);
-  s.fixture.messages.get('c1').push(
-    { id: 'u2', role: 'user', userType: 'origin', content: 'c1 busy again' });
-  s.hub().autoOpen = false;
-  s.hub().complete('t2', {});
-  // The fresh line drains on the fresh view and mints m2.
-  await poll(() => s.hub().all('turn.send').length === 3);
-  const mintSend = s.hub().all('turn.send')[2];
+  check('offline line captured on its own fresh view', true);
+  // The reconnect drains the fresh view's line — it dispatches and
+  // mints m2 on the new hub.
+  await poll(() => s.hubs.length === 2, { timeout: 8000 });
+  await poll(() => s.hub().all('turn.send').length === 1);
+  const mintSend = s.hub().all('turn.send')[0];
   check('fresh queue dispatched', mintSend.conversationId === null);
-  s.hub().openPending(); // let its opened arrive → mints m2, entry re-homed
+  // hub2 auto-opens — the send mints m2 and claims the view.
   await poll(() => s.page.evaluate(
-    () => document.querySelector('nusa-app').command?.turnId === 't3'));
-  s.hub().autoOpen = true;
-  s.hub().complete('t3', { failed: true, message: 'x', persistedUser: false });
+    () => document.querySelector('nusa-app')._commandFor('m2')?.turnId === 't2'));
+  s.hub().complete('t2', { failed: true, message: 'x', persistedUser: false });
   await poll(async () => (await rows(s).count()) === 1);
   // Resume — the requeued line must send into m2, not mint a new room.
   await poll(async () =>
     (await resumeBtn(s).isVisible()) && !(await resumeBtn(s).isDisabled()));
   await resumeBtn(s).click();
-  await poll(() => s.hub().all('turn.send').length === 4);
-  const retry = s.hub().all('turn.send')[3];
+  await poll(() => s.hub().all('turn.send').length === 2);
+  const retry = s.hub().all('turn.send')[1];
   check('requeued line returns to its minted room',
     retry.conversationId === 'm2' && retry.payload.content === 'fresh queued line',
     JSON.stringify(retry));
@@ -1455,7 +1454,7 @@ await scenarioRun('optimistic-repeated-text', async (s) => {
   await open(s, '#conversation=c1');
   await typeEnter(s, 'same text');
   await poll(() => s.page.evaluate(
-    () => document.querySelector('nusa-app').command?.turnId === 't1'));
+    () => document.querySelector('nusa-app')._commandFor('c1')?.turnId === 't1'));
   const pendingCount = () => s.page.evaluate(
     () => document.querySelector('nusa-app').messages
       .filter((m) => String(m.id).startsWith('pending-')).length);
@@ -1482,7 +1481,7 @@ await scenarioRun('idle-after-completed-turn', async (s) => {
   s.fixture.messages.get('c1').push(
     { id: 'u1', role: 'user', userType: 'origin', content: 'done soon' });
   s.hub().complete('t1', {});
-  await poll(() => s.page.evaluate(() => document.querySelector('nusa-app').command === null));
+  await poll(() => s.page.evaluate(() => document.querySelector('nusa-app')._commandFor('c1') == null));
   await poll(async () => (await sendBtn(s).getAttribute('aria-label')) === 'Send message');
   check('settled primary is send', true);
   check('settled primary has no caption', (await sendBtn(s).innerText()).trim() === '');
@@ -1589,8 +1588,9 @@ await scenarioRun('reload-watches-live-turn', async (s) => {
   check('reload attaches with turn.watch', true);
   await poll(() => s.page.evaluate(() => {
     const app = document.querySelector('nusa-app');
+    const cmd = app._commandFor('c1');
     const g = app._gate('c1');
-    return app.command?.turnId === 't-live' && app.command.watched === true && !g.pending;
+    return cmd?.turnId === 't-live' && cmd.watched === true && !g.pending;
   }));
   check('stop armed in the owning room', await stopBtn(s).isVisible());
   s.hub().delta('t-live', 'STILL-RUNNING');
@@ -1626,7 +1626,7 @@ await scenarioRun('select-watches-live-turn', async (s) => {
   await poll(() => s.hub().find('turn.watch', (c) => c.turnId === 't-live'));
   check('selecting the room attaches', true);
   await poll(() => s.page.evaluate(
-    () => document.querySelector('nusa-app').command?.kind === 'edit'));
+    () => document.querySelector('nusa-app')._commandFor('c1')?.kind === 'edit'));
   check('edit turn does not offer steer', !(await steerBtn(s).isVisible()));
   check('stop armed for the reattached edit', await stopBtn(s).isVisible());
 });

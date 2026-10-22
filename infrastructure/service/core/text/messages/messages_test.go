@@ -636,7 +636,7 @@ func TestEffortAndEscapeHatch(t *testing.T) {
 	conv.Append(m)
 	model, _ := entity.NewModel("claude-x", "test")
 	model.SetEffort(enum.EffortXHigh)
-	model.SetOptionalContent("messages.thinking", `{"type":"adaptive","display":"summarized"}`)
+	model.SetOptionalContent("messages.thinking", `{"type":"enabled","budget_tokens":4096}`)
 	model.SetOptionalContent("completion.reasoning_effort", `"high"`) // other adapter's prefix — must not leak
 	if err := svc.Send(context.Background(), conv, gw, model, nil); err != nil {
 		t.Fatal(err)
@@ -644,12 +644,131 @@ func TestEffortAndEscapeHatch(t *testing.T) {
 	if captured["output_config"].(map[string]any)["effort"] != "xhigh" {
 		t.Fatalf("output_config: %+v", captured["output_config"])
 	}
+	// The escape hatch lands verbatim — overriding the adapter's own
+	// adaptive default for this id.
 	th, ok := captured["thinking"].(map[string]any)
-	if !ok || th["type"] != "adaptive" || th["display"] != "summarized" {
+	if !ok || th["type"] != "enabled" || th["budget_tokens"] != float64(4096) {
 		t.Fatalf("thinking escape hatch: %+v", captured["thinking"])
 	}
 	if _, leaked := captured["reasoning_effort"]; leaked {
 		t.Fatal("completion.-prefixed param leaked onto messages wire")
+	}
+}
+
+// Anthropic needs the explicit opt-in or reasoning never reaches the
+// user — open-source reasoning models emit by default, claude does not.
+// The generation split keeps the contract each era accepts: enabled
+// budgets for ≤4.5, adaptive+summarized for current ids.
+func TestThinkingOptIn(t *testing.T) {
+	cases := []struct {
+		name       string
+		modelID    string
+		effort     enum.Effort
+		maxOut     *int
+		want       map[string]any // nil → no thinking key on the wire
+		wantEffort string         // "" → no output_config assertion
+	}{
+		{"adaptive-era asks for the summary by default", "claude-haiku-5-5", "", nil,
+			map[string]any{"type": "adaptive", "display": "summarized"}, ""},
+		{"adaptive-era ignores effort for the shape", "claude-haiku-5-5", enum.EffortMax, nil,
+			map[string]any{"type": "adaptive", "display": "summarized"}, "max"},
+		{"4.5-era rides the user's effort", "claude-sonnet-4-5", enum.EffortHigh, nil,
+			map[string]any{"type": "enabled", "budget_tokens": float64(8192)}, "high"},
+		{"4.5-era date suffix is not a minor", "claude-sonnet-4-5-20250929", enum.EffortMedium, nil,
+			map[string]any{"type": "enabled", "budget_tokens": float64(4096)}, ""},
+		{"missing minor reads as .0 — still enabled-era", "claude-sonnet-4-20250514", enum.EffortLow, nil,
+			map[string]any{"type": "enabled", "budget_tokens": float64(2048)}, ""},
+		{"namespaced prefix id qualifies", "anthropic/claude-sonnet-4-5", enum.EffortLow, nil,
+			map[string]any{"type": "enabled", "budget_tokens": float64(2048)}, ""},
+		{"minimal clamps to low on the wire", "claude-sonnet-4-5", enum.EffortMinimal, nil,
+			map[string]any{"type": "enabled", "budget_tokens": float64(1024)}, "low"},
+		{"3.7 is where thinking arrived", "claude-3-7-sonnet-20250219", enum.EffortMedium, nil,
+			map[string]any{"type": "enabled", "budget_tokens": float64(4096)}, ""},
+		{"4.5-era silent without effort", "claude-sonnet-4-5", "", nil, nil, ""},
+		{"3.5 predates thinking — the field would 400", "claude-3-5-sonnet-20241022", enum.EffortHigh, nil, nil, ""},
+		{"3.5 dot-form parses the same", "claude-3.5-sonnet", enum.EffortHigh, nil, nil, ""},
+		{"claude 2 never thinks", "claude-2.1", enum.EffortHigh, nil, nil, ""},
+		{"4.6 dropped the enabled contract", "claude-sonnet-4-6", enum.EffortHigh, nil,
+			map[string]any{"type": "adaptive", "display": "summarized"}, ""},
+		{"none stays silent — no safe disabled wire", "claude-haiku-5-5", enum.EffortNone, nil, nil, ""},
+		{"non-claude family keeps the escape hatch", "qwen3-coder", enum.EffortHigh, nil, nil, ""},
+		{"a claude-ish name without the marker stays out", "notaclaude-v2", "", nil, nil, ""},
+		{"unparseable id reads as current", "claude-x", "", nil,
+			map[string]any{"type": "adaptive", "display": "summarized"}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var captured map[string]any
+			svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+				captured = decodeReq(t, r)
+				json.NewEncoder(w).Encode(map[string]any{
+					"id": "m", "role": "assistant",
+					"content":     []any{map[string]any{"type": "text", "text": "ok"}},
+					"stop_reason": "end_turn",
+				})
+			})
+			conv := newConv(t)
+			m, _ := entity.NewMessage(enum.RoleUser, "hi")
+			conv.Append(m)
+			model, _ := entity.NewModel(tc.modelID, "test")
+			if tc.effort != "" {
+				model.SetEffort(tc.effort)
+			}
+			if tc.maxOut != nil {
+				model.SetMaxOutputTokens(tc.maxOut)
+			}
+			if err := svc.Send(context.Background(), conv, gw, model, nil); err != nil {
+				t.Fatal(err)
+			}
+			got, sent := captured["thinking"].(map[string]any)
+			if tc.want == nil {
+				if sent {
+					t.Fatalf("thinking must stay silent: %+v", got)
+				}
+				return
+			}
+			if !sent {
+				t.Fatalf("thinking opt-in missing: %+v", captured)
+			}
+			for k, v := range tc.want {
+				if got[k] != v {
+					t.Fatalf("thinking.%s = %v, want %v (body %+v)", k, got[k], v, got)
+				}
+			}
+			if tc.wantEffort != "" {
+				oc, _ := captured["output_config"].(map[string]any)
+				if oc["effort"] != tc.wantEffort {
+					t.Fatalf("output_config.effort = %v, want %s", oc["effort"], tc.wantEffort)
+				}
+			}
+		})
+	}
+}
+
+// A budget that can't fit under max_tokens skips thinking rather than
+// silently shrinking the effort the user asked for.
+func TestThinkingBudgetNeedsHeadroom(t *testing.T) {
+	var captured map[string]any
+	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+		captured = decodeReq(t, r)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": "m", "role": "assistant",
+			"content":     []any{map[string]any{"type": "text", "text": "ok"}},
+			"stop_reason": "end_turn",
+		})
+	})
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(m)
+	model, _ := entity.NewModel("claude-sonnet-4-5", "test")
+	model.SetEffort(enum.EffortHigh) // 8192 budget vs a 2048 cap
+	cap := 2048
+	model.SetMaxOutputTokens(&cap)
+	if err := svc.Send(context.Background(), conv, gw, model, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, sent := captured["thinking"]; sent {
+		t.Fatalf("budget >= max_tokens must not send: %+v", captured["thinking"])
 	}
 }
 

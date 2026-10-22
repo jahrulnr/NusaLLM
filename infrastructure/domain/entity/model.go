@@ -18,9 +18,10 @@ const (
 )
 
 // Model is a request-scoped route descriptor: which route (gateway surface,
-// which owns the wire style), which model id, and which generation
-// parameters to apply. Models are switchable — the service layer may
-// substitute another Model on fallback without touching conversation state.
+// which declares the default wire style the model may override), which
+// model id, and which generation parameters to apply. Models are
+// switchable — the service layer may substitute another Model on fallback
+// without touching conversation state.
 type Model struct {
 	id    string
 	route string // optional gateway selector resolved by the service layer, e.g. "openrouter" or "codex/work-account" — empty for catalog models, which resolve through their owning Gateway
@@ -39,7 +40,8 @@ type Model struct {
 
 	// effort uses the enum's IsUnset sentinel instead of a pointer.
 	effort          enum.Effort
-	upstream        string // upstream provider pin inside the route (e.g. an aggregator's backends); empty = the gateway decides
+	upstream        string     // upstream provider pin inside the route (e.g. an aggregator's backends); empty = the gateway decides
+	style           enum.Style // wire-surface override — empty inherits the gateway's style
 	optionalContent map[string]string
 
 	// Catalog metadata, hydrated from the gateway's model list — descriptive,
@@ -58,9 +60,9 @@ type Model struct {
 }
 
 // NewModel creates a model invoked through route — the gateway surface
-// (including account selection when the gateway is multi-account) that owns
-// the wire style for this call. route may be empty for catalog entries;
-// not every gateway models named accounts.
+// (including account selection when the gateway is multi-account) that
+// declares the default wire style for this call. route may be empty for
+// catalog entries; not every gateway models named accounts.
 func NewModel(id string, route string) (Model, error) {
 	m := Model{id: id, route: route}
 	return m, m.validate()
@@ -102,6 +104,27 @@ func (m *Model) SetStopSequences(v []string)    { m.stopSequences = v }
 func (m *Model) SetEffort(v enum.Effort) { m.effort = v }
 
 func (m Model) Upstream() string { return m.upstream }
+
+// Style is the wire surface this model explicitly speaks — "" means it
+// inherits the gateway's declared style. One endpoint may host models
+// that only exist on their native surface (zen/go fronts claude-* on
+// messages only, gpt-*-luna on responses only); the override lets a
+// mixed catalog ride one gateway record.
+func (m Model) Style() enum.Style { return m.style }
+
+// SetStyle pins the adapter surface for this model; "" restores the
+// gateway default.
+func (m *Model) SetStyle(v enum.Style) { m.style = v }
+
+// WireStyle is the adapter key — the model's own style when set, else
+// the gateway's. Every caller resolving a TextModelService must use it
+// so an override holds for send, edit, and compaction alike.
+func (m Model) WireStyle(gwStyle enum.Style) enum.Style {
+	if m.style != "" {
+		return m.style
+	}
+	return gwStyle
+}
 
 // SetUpstream pins which upstream provider inside the route serves this
 // request — aggregator gateways (OpenRouter-style) fan a model id out to

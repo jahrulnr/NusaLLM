@@ -18,7 +18,7 @@ class FakeEl {
   addEventListener() {}
   setAttribute(k, v) { this[k] = v; }
   dispatchEvent() { return true; }
-  clear() {}
+  clear() { this.value = ''; }
   push(...items) { (this.pushed ||= []).push(...items); }
   get firstChild() { return this.children[0] || null; }
   removeChild(c) { this.children = this.children.filter((x) => x !== c); return c; }
@@ -73,7 +73,7 @@ test('a watched turn gates only its own room', () => {
   const { app, ws } = makeApp();
   app.activeId = 'c1';
   app._attachLiveTurn({ id: 'c1', activeTurnId: 't-foreign', activeTurnKind: 'send' });
-  assert.equal(app.command.watched, true);
+  assert.equal(app._viewCommand().watched, true);
   assert.equal(ws.sent.filter((f) => f.type === 'turn.watch').length, 1);
   // Its own room is gated — Enter captures locally instead of sending.
   assert.equal(app._dispatchable('c1'), false);
@@ -81,13 +81,15 @@ test('a watched turn gates only its own room', () => {
   assert.equal(app.queue.items.length, 1);
   assert.equal(app.queue.items[0].room, 'c1');
   // Another room is free — Enter dispatches, and the new command takes
-  // the single slot (the foreign watch is displaced).
+  // its OWN room's slot: the foreign watch keeps running untouched.
   app.activeId = 'c2';
   assert.equal(app._dispatchable('c2'), true);
   app._send('other room send');
-  assert.equal(app.command.kind, 'send');
-  assert.equal(app.command.conversationId, 'c2');
-  assert.equal(app.command.watched, undefined);
+  const cmd = app._viewCommand();
+  assert.equal(cmd.kind, 'send');
+  assert.equal(cmd.conversationId, 'c2');
+  assert.equal(cmd.watched, undefined);
+  assert.equal(app._commandFor('c1').turnId, 't-foreign');
   const sent = ws.sent.find((f) => f.type === 'turn.send');
   assert.equal(sent.conversationId, 'c2');
 });
@@ -110,20 +112,28 @@ test('busy/stop/queue affordances follow the watched turn\'s room', () => {
   assert.equal(app.thread.commandsBusy, false);
 });
 
-test('a locally driven command still gates every room', () => {
-  const { app } = makeApp();
+test('a locally driven command gates only its own room', () => {
+  const { app, ws } = makeApp();
   app.activeId = 'c1';
   app._send('my send');
-  assert.equal(app.command.watched, undefined);
-  // Global single-slot: even another room captures locally.
+  assert.equal(app._viewCommand().watched, undefined);
+  // Commands are per-room slots: another room still dispatches.
   app.activeId = 'c2';
-  assert.equal(app._dispatchable('c2'), false);
-  app._send('still local');
-  assert.equal(app.queue.items.length, 1);
-  assert.equal(app.queue.items[0].room, 'c2');
+  assert.equal(app._dispatchable('c2'), true);
+  app._send('parallel send');
+  assert.equal(app.queue.items.length, 0);
+  assert.equal(app._viewCommand().conversationId, 'c2');
+  assert.equal(app.commands.size, 2);
+  const sends = ws.sent.filter((f) => f.type === 'turn.send');
+  assert.equal(sends.length, 2);
+  app._syncComposer();
+  assert.equal(app.composer.busy, true); // c2's own command
+  assert.equal(app.composer.queueMode, true);
+  // Back in c1 its command still gates — and c2's stopped mattering.
+  app.activeId = 'c1';
+  assert.equal(app._viewCommand().conversationId, 'c1');
   app._syncComposer();
   assert.equal(app.composer.busy, true);
-  assert.equal(app.composer.queueMode, true);
 });
 
 test('a fresh un-minted send binds to its fresh token room', () => {
@@ -131,7 +141,7 @@ test('a fresh un-minted send binds to its fresh token room', () => {
   app.activeId = null;
   app.freshToken = 'fresh:9';
   app._send('mint me');
-  const cmd = app.command;
+  const cmd = app._viewCommand();
   assert.equal(cmd.conversationId, null);
   assert.equal(app._commandRoomKey(cmd), 'fresh:9');
   assert.equal(app._commandOwnsView(cmd), true);
@@ -141,41 +151,67 @@ test('a fresh un-minted send binds to its fresh token room', () => {
   assert.equal(app._commandRoomKey(cmd), 'm1');
 });
 
+test('an opened landing off-view drops the send parked as a draft', () => {
+  const { app } = makeApp();
+  app.activeId = 'c1';
+  // The send's text stays visible until opened — navigating away
+  // pre-opened parks it as the room's draft.
+  app.composer.value = 'hi';
+  app._send('hi');
+  const requestId = app._commandFor('c1').requestId;
+  app._stashViewDraft();
+  app.activeId = 'c2';
+  app._loadViewDraft();
+  assert.equal(app.drafts.get('c1'), 'hi');
+  // The opened lands while c2 is on screen — the parked copy WAS the
+  // send, so the stash must drop with it, not restore as a draft.
+  app._onFrame({ type: 'turn.opened', requestId, turnId: 't1', conversationId: 'c1', seq: 1 });
+  assert.equal(app.drafts.get('c1'), undefined);
+  app.activeId = 'c1';
+  app._loadViewDraft();
+  assert.notEqual(app.composer.value, 'hi');
+});
+
 test('a watched turn in the viewed room vetoes edit; elsewhere it does not', () => {
   const { app } = makeApp();
   app.activeId = 'c1';
   app._attachLiveTurn({ id: 'c1', activeTurnId: 't-f', activeTurnKind: 'send' });
   app.messages = [{ id: 'u1', role: 'user', content: 'old' }];
   assert.equal(app._edit('u1', 'new'), false);
-  // In another room the edit dispatches and displaces the watch.
+  // In another room the edit dispatches — c1's watch keeps its own slot.
   app.activeId = 'c2';
   app.messages = [{ id: 'u1', role: 'user', content: 'old' }];
   assert.equal(app._edit('u1', 'new'), true);
-  assert.equal(app.command.kind, 'edit');
-  assert.equal(app.command.conversationId, 'c2');
-  assert.equal(app.command.watched, undefined);
+  const cmd = app._viewCommand();
+  assert.equal(cmd.kind, 'edit');
+  assert.equal(cmd.conversationId, 'c2');
+  assert.equal(cmd.watched, undefined);
+  assert.equal(app._commandFor('c1').watched, true);
 });
 
-test('attach displaces a stale watch but never a local command', () => {
+test('attach replaces a stale watch in its room but never a local command', () => {
   const { app, ws } = makeApp();
   app.activeId = 'c1';
   app._attachLiveTurn({ id: 'c1', activeTurnId: 't-a', activeTurnKind: 'send' });
-  const firstRid = app.command.requestId;
+  const firstRid = app._viewCommand().requestId;
   // Re-attaching the same turn is a no-op — no second turn.watch.
   app._attachLiveTurn({ id: 'c1', activeTurnId: 't-a' });
-  assert.equal(app.command.requestId, firstRid);
+  assert.equal(app._commandFor('c1').requestId, firstRid);
   assert.equal(ws.sent.filter((f) => f.type === 'turn.watch').length, 1);
-  // A different live turn in the room on screen takes the slot.
-  app._attachLiveTurn({ id: 'c2', activeTurnId: 't-b' });
-  assert.equal(app.command.turnId, 't-b');
-  assert.equal(app.command.conversationId, 'c2');
+  // A different live turn in the same room takes that room's slot.
+  app._attachLiveTurn({ id: 'c1', activeTurnId: 't-b' });
+  assert.equal(app._commandFor('c1').turnId, 't-b');
+  // An attach for another room occupies ITS slot — the first stays.
+  app._attachLiveTurn({ id: 'c2', activeTurnId: 't-c' });
+  assert.equal(app._commandFor('c2').turnId, 't-c');
+  assert.equal(app._commandFor('c1').turnId, 't-b');
   // A command this tab drove is never displaced by an attach.
   app.activeId = 'c3';
   app._send('mine');
-  assert.equal(app.command.kind, 'send');
-  app._attachLiveTurn({ id: 'c4', activeTurnId: 't-c' });
-  assert.equal(app.command.kind, 'send');
-  assert.equal(app.command.conversationId, 'c3');
+  assert.equal(app._viewCommand().kind, 'send');
+  app._attachLiveTurn({ id: 'c3', activeTurnId: 't-d' });
+  assert.equal(app._viewCommand().kind, 'send');
+  assert.equal(app._viewCommand().turnId, null);
 });
 
 // A failed turn is driven through _onFrame like the real socket path:
@@ -183,7 +219,7 @@ test('attach displaces a stale watch but never a local command', () => {
 function failTurn(app, ws, payload) {
   app.activeId = 'c1';
   app._send('hi');
-  const cmd = app.command;
+  const cmd = app._viewCommand();
   app._onFrame({ type: 'turn.opened', requestId: cmd.requestId, turnId: 't1', conversationId: 'c1', seq: 1 });
   app._onFrame({ type: 'turn.failed', turnId: 't1', conversationId: 'c1', seq: 2, payload });
 }
@@ -213,10 +249,10 @@ test('a persisted failure parks a retry card, never a queue row', async () => {
   // The card outlives dispatch: it clears only once the new turn
   // actually opens, so a pre-open rejection keeps the retry standing.
   app._send('.');
-  assert.equal(app.command.kind, 'send');
+  assert.equal(app._viewCommand().kind, 'send');
   assert.equal(ws.sent.filter((f) => f.type === 'turn.send').length, 2);
   assert.ok(app.failedTurns.has('c1'));
-  app._onFrame({ type: 'turn.opened', requestId: app.command.requestId, turnId: 't2', conversationId: 'c1', seq: 3 });
+  app._onFrame({ type: 'turn.opened', requestId: app._viewCommand().requestId, turnId: 't2', conversationId: 'c1', seq: 3 });
   assert.equal(app.failedTurns.has('c1'), false);
 });
 
@@ -234,10 +270,10 @@ test('retry re-issues turn.edit against the failed user line', async () => {
   // the retried turn regenerates it.
   assert.equal(edit.payload.messageId, 'm1');
   assert.equal(edit.payload.content, 'hi');
-  assert.equal(app.command.kind, 'edit');
+  assert.equal(app._viewCommand().kind, 'edit');
   // The card releases when the retry turn opens — a rejected dispatch
   // would leave it standing.
-  app._onFrame({ type: 'turn.opened', requestId: app.command.requestId, turnId: 't2', conversationId: 'c1', seq: 3 });
+  app._onFrame({ type: 'turn.opened', requestId: app._viewCommand().requestId, turnId: 't2', conversationId: 'c1', seq: 3 });
   assert.equal(app.failedTurns.has('c1'), false);
 });
 
@@ -358,7 +394,7 @@ test('a finished step merges provider usage into the viewed room\'s badge', () =
   app.activeId = 'c1';
   app.composer.context = { estimate: 420, total: 8192 };
   // No command owns t1 — the merge keys on the viewed room, not the slot.
-  assert.equal(app.command, null);
+  assert.equal(app._viewCommand(), null);
   app._onFrame({
     type: 'turn.step_finished', conversationId: 'c1', turnId: 't1', seq: 4,
     payload: { finishReason: 'tool_calls', usage: { totalInputTokens: 4096 } },
@@ -400,7 +436,7 @@ test('turn.opened refreshes the badge only for the room on screen', () => {
   app.activeId = 'c1';
   // Own send opening in the viewed room — its user line just persisted.
   app._send('hi');
-  app._onFrame({ type: 'turn.opened', requestId: app.command.requestId, turnId: 't1', conversationId: 'c1', seq: 1 });
+  app._onFrame({ type: 'turn.opened', requestId: app._viewCommand().requestId, turnId: 't1', conversationId: 'c1', seq: 1 });
   assert.equal(calls.length, 1);
   assert.equal(calls[0].conversationId, 'c1');
   // A foreign turn opening in the viewed room fetches too — its user
@@ -542,7 +578,7 @@ test('the card consumes the UNKNOWN queue row it answers', () => {
   app.composer.value = '';
   app.activeId = 'c1';
   app._send('hi');
-  const cmd = app.command;
+  const cmd = app._viewCommand();
   app._onFrame({ type: 'turn.opened', requestId: cmd.requestId, turnId: 't1', conversationId: 'c1', seq: 1 });
   app._refresh = async () => 'ok'; // detection driven directly below
   app._onFrame({
@@ -564,16 +600,16 @@ test('resync-unknown refreshes the room — own, watched, and foreign', () => {
   // Own command.
   app.activeId = 'c1';
   app._send('hi');
-  const cmd = app.command;
+  const cmd = app._viewCommand();
   app._onFrame({ type: 'turn.opened', requestId: cmd.requestId, turnId: 't1', conversationId: 'c1', seq: 1 });
   app._onFrame({ type: 'turn.resync_required', turnId: 't1', conversationId: 'c1', payload: { turn: 'unknown' } });
   assert.deepEqual(rooms, ['c1']);
-  assert.equal(app.command, null);
+  assert.equal(app._viewCommand(), null);
   // Watched turn — no queue pause, but still a re-read.
   app._attachLiveTurn({ id: 'c1', activeTurnId: 't-f', activeTurnKind: 'send' });
   app._onFrame({ type: 'turn.resync_required', turnId: 't-f', conversationId: 'c1', payload: { turn: 'unknown' } });
   assert.deepEqual(rooms, ['c1', 'c1']);
-  assert.equal(app.command, null);
+  assert.equal(app._viewCommand(), null);
   // A resync for a turn this tab never tracked refreshes its room too.
   app._onFrame({ type: 'turn.resync_required', turnId: 't-x', conversationId: 'c3', payload: { turn: 'unknown' } });
   assert.deepEqual(rooms, ['c1', 'c1', 'c3']);

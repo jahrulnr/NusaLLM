@@ -60,6 +60,7 @@ func (b *upsertBody) toInput(id string) (appgateway.GatewayInput, error) {
 			StopSequences:    mb.StopSequences,
 			Effort:           enum.Effort(mb.Effort),
 			ModelType:        enum.ModelType(mb.ModelType),
+			Style:            enum.Style(mb.Style),
 			ContextWindow:    mb.ContextWindow,
 			Name:             mb.Name,
 			Canonical:        mb.Canonical,
@@ -104,6 +105,7 @@ type modelInputBody struct {
 	StopSequences    []string    `json:"stopSequences"`
 	Effort           string      `json:"effort"`
 	ModelType        string      `json:"modelType"`
+	Style            string      `json:"style"`
 	ContextWindow    int         `json:"contextWindow"`
 	Pricing          *pricingDTO `json:"pricing"`
 	InputModalities  []string    `json:"inputModalities"`

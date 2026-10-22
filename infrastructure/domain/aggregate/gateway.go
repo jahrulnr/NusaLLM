@@ -13,7 +13,8 @@ import (
 // A gateway may translate paradigms internally — e.g. OpenRouter accepts an
 // OpenAI-style request and routes it to a messages-style backend — so the
 // same model id can be spoken to through different styles depending on the
-// gateway chosen.
+// gateway chosen. The declared style is the catalog's default; a Model may
+// pin its own style for mixed-protocol endpoints (see Model.WireStyle).
 type Gateway struct {
 	id       string
 	name     string // optional

@@ -68,7 +68,12 @@ func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool
 		case enum.EffortXHigh, enum.EffortMax:
 			effort = "high" // no wire equivalent — clamp to the ceiling
 		}
-		body.Reasoning = &ReasoningBody{Effort: effort}
+		// Effort already implies a reasoning model — a non-reasoning
+		// model rejects effort the same with or without summary. Asking
+		// for the auto summary is what makes its reasoning visible;
+		// encrypted_content alone keeps the replay chain but surfaces
+		// nothing to the user.
+		body.Reasoning = &ReasoningBody{Effort: effort, Summary: "auto"}
 	}
 	// Adapter-namespaced escape hatch: "responses.<param>" lands verbatim —
 	// text.verbosity, service_tier, tool_choice, a store:true override…

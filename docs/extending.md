@@ -69,8 +69,9 @@ adapters wired in `cmd/nusallm/wire.go`. Adding a fifth is: extend the enum,
 write one `TextModelService`, register it, done. The gateway admin, the
 persistence layer, and the application turn need no changes —
 `application/job/turn.go` resolves the adapter with
-`d.Services[gw.Style()]`, and a style with no registered adapter fails as a
-deployment defect (500), not a user error.
+`d.Services[model.WireStyle(gw.Style())]` — the model's explicit style pin
+wins, the gateway's is the default — and a style with no registered adapter
+fails as a deployment defect (500), not a user error.
 
 Every text adapter follows the same five-file skeleton — `<style>.go`
 (service lifecycle), `dto.go` (wire shapes), `encode.go` (domain → wire),

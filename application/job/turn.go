@@ -419,11 +419,14 @@ func (d Deps) resolveRoute(ctx context.Context, convID string, conv *aggregate.C
 	if !ok {
 		return nil, model, nil, apperror.NewNotFoundError("model "+modelID, fmt.Errorf("route %s catalog has no such model", route))
 	}
-	svc, ok = driver.TextService(gw.Style())
+	// The effective style is the model's own pin when set, else the
+	// gateway's — one endpoint may serve models across paradigms.
+	style := m.WireStyle(gw.Style())
+	svc, ok = driver.TextService(style)
 	if !ok {
 		// The gateway config is fine; the server simply wired no adapter
 		// for this style — that's a deployment defect, not a user error.
-		return nil, model, nil, apperror.New(500, "no adapter for gateway style", fmt.Errorf("style %s unregistered", gw.Style()))
+		return nil, model, nil, apperror.New(500, "no adapter for wire style", fmt.Errorf("style %s unregistered", style))
 	}
 	return gw, m, svc, nil
 }

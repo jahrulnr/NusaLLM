@@ -70,8 +70,9 @@ distinct invariant, or a meaningful interface boundary.
 
 ## Conventions
 
-- Style lives on `Gateway` — one model id may be spoken through multiple
-  paradigms depending on route.
+- Style lives on `Gateway` as the default — one model id may be spoken
+  through multiple paradigms depending on route, and `Model.style` may pin
+  an override (`WireStyle` owns the resolution).
 - Hydration = `New*` + setters (`SetCallAt`, `SetStoredOutput`, …). No
   reconstitute constructors.
 - Two read paths by consumer: `Load` = live context (what the model sees);

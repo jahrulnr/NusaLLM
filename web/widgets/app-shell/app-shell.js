@@ -18,12 +18,19 @@ import {
 // widgets' events and their properties — it renders no domain markup
 // of its own.
 //
-// Turn lifecycle lives in ONE object, `this.command`:
-//   {kind:'send'|'edit', requestId, turnId:null|string,
+// Turn lifecycle lives in `this.commands`, a Map of per-room slots:
+//   roomKey → {kind:'send'|'edit', requestId, turnId:null|string,
 //    conversationId:null|string, content, ephemeral:false,
-//    stream: createTurnProjection(requestId) — ordered segments
-// Navigation changes only the *view* — the command survives switching
-// rooms and its stream re-projects only into its own room.
+//    stream: createTurnProjection(requestId) — ordered segments}
+// A command gates only the room it occupies — one room's running turn
+// never blocks another room's composer, and the socket carries as many
+// concurrent turns as the hub allows. Navigation changes only the
+// *view*: a command survives switching rooms and its stream re-projects
+// only into its own room.
+//
+// Composer drafts are per-room the same way: the viewed room's text
+// lives in the composer itself, and every other room's waits under its
+// key in `this.drafts` — stash on the way out, restore on the way in.
 class AppShell extends Widget {
   static stylesheet = new URL('./app-shell.css', import.meta.url);
 
@@ -52,8 +59,9 @@ class AppShell extends Widget {
     this._historySeq = 0;       // bumped by every write through _assignHistory
     this._earlierLoading = false; // a load-earlier page is in flight
     this.selection = null;      // {route, modelId, effort, provider, workspace} next-send binding
-    this.command = null;        // the one in-flight command (see above)
-    this.settledStream = null;  // keep the final live view through history refresh
+    this.commands = new Map();       // roomKey → in-flight command (see above)
+    this.settledStreams = new Map(); // convId → last turn's settled projection
+    this.drafts = new Map();         // roomKey → composer text while off screen
     this.queue = createQueue(); // room-bound pending submissions + steer receipts
     // Definitive turn failures, keyed by room — rendered as a card on
     // the thread where the failed input sits, never as a queue row:
@@ -174,18 +182,18 @@ class AppShell extends Widget {
     on(this.composer, 'queue-check', ({ id }) => this._queueCheck(id));
     on(this.composer, 'queue-resume', () => { this._queueResume(); });
     on(this.composer, 'turn-cancel', () => {
-      // The command's own turn is the target — never whatever room the
-      // user happens to be viewing, and never from a foreign view:
-      // Stop is armed only inside the owning room (canStop), and this
-      // guard is the second half of that contract.
-      if (!this._commandOwnsView(this.command)) return;
-      if (this.command.turnId) {
+      // The viewed room's own turn is the target — Stop is armed only
+      // inside the owning room (canStop), and this guard is the second
+      // half of that contract.
+      const cmd = this._viewCommand();
+      if (!cmd) return;
+      if (cmd.turnId) {
         this.socket.cancelTurn({
-          conversationId: this.command.conversationId,
-          turnId: this.command.turnId,
+          conversationId: cmd.conversationId,
+          turnId: cmd.turnId,
         });
       } else {
-        this.command.cancelRequested = true;
+        cmd.cancelRequested = true;
       }
     });
 
@@ -236,7 +244,7 @@ class AppShell extends Widget {
     if (settingsRoute) this.openSettings();
   }
 
-  // --- view selection (never touches this.command) ---------------------
+  // --- view selection (never touches this.commands) --------------------
 
   // Returns true when a (sane) hash requested a conversation. A
   // malformed encoding clears the hash rather than throwing.
@@ -354,6 +362,7 @@ class AppShell extends Widget {
 
   async select(id) {
     this._showChat();
+    this._stashViewDraft(); // the room being left keeps its text
     const gen = ++this.generation;
     this.activeId = id;
     this.viewLoading = true; // blocks send until the room resolves
@@ -383,6 +392,7 @@ class AppShell extends Widget {
     this._syncCompact();
     this.messages = [];
     this.thread.messages = this.messages;
+    this._loadViewDraft();
     this._syncComposer();
     try {
       const [conv, page] = await Promise.all([
@@ -434,9 +444,8 @@ class AppShell extends Widget {
       }
       if (gen === this.generation || settled) this._syncComposer();
       // The last outstanding history writer re-evaluates the drain —
-      // a newer refresh may have cleared the barrier while this one
-      // was still in flight.
-      if (settled) this._drainQueue();
+      // for ITS room, not whatever happens to be on screen now.
+      if (settled) this._drainQueue(id);
     }
   }
 
@@ -452,6 +461,7 @@ class AppShell extends Widget {
   _showFresh(token) {
     this._showChat();
     this.generation++;
+    this._stashViewDraft(); // the room being left keeps its text
     this.activeId = null;
     this.freshToken = token;
     this.viewLoading = false;
@@ -471,8 +481,8 @@ class AppShell extends Widget {
     this._syncComposer();
     this._syncStream();
     this._syncContext();
-    this.composer.clear();
-    this._drainQueue(); // a pre-open queue drains once the view is free
+    this._loadViewDraft();
+    this._drainQueue(token); // a pre-open queue drains once the view is free
   }
 
   // Every sidebar list write goes through here — the widget's coverage
@@ -520,16 +530,16 @@ class AppShell extends Widget {
       : this._usable(this.selection));
     this.composer.canSend = canSend;
     this.composer.selection = this.selection;
-    const cmd = this.command;
-    // A local command stays busy in every room; a watched turn only
-    // busies the room it runs in.
-    const gated = this._commandGates(this._viewRoomKey());
+    const cmd = this._viewCommand();
+    // Busy follows the view's own command — a turn running in another
+    // room leaves this composer free to send.
+    const gated = !!cmd;
     this.composer.busy = gated;
     // Stop/Steer scope to the turn's own room — no hidden global
     // targets while a command runs elsewhere.
-    this.composer.canStop = this._commandOwnsView(cmd);
+    this.composer.canStop = !!cmd;
     this.composer.canSteer = !!(cmd && cmd.kind === 'send' && cmd.turnId &&
-      this._commandOwnsView(cmd) && this.socket.state === 'open');
+      this.socket.state === 'open');
     this.thread.commandsBusy = gated;
     this._syncQueue();
   }
@@ -619,14 +629,43 @@ class AppShell extends Widget {
     return cmd ? cmd.conversationId || cmd.queueRoom : null;
   }
 
-  // Whether the in-flight command gates roomKey for dispatch and busy
-  // affordances. A command this tab drove is the single global
-  // in-flight slot — it gates every room. A watched (foreign-tab) turn
-  // gates only the room it runs in: another room still dispatches,
-  // resumes, or edits, and doing so retires the watch's slot.
+  _commandFor(roomKey) {
+    return this.commands.get(roomKey) || null;
+  }
+
+  // The command occupying the room on screen — the one busy, Stop,
+  // and Steer describe.
+  _viewCommand() {
+    return this._commandFor(this._viewRoomKey());
+  }
+
+  _commandByTurn(turnId) {
+    if (!turnId) return null;
+    for (const cmd of this.commands.values()) {
+      if (cmd.turnId === turnId) return cmd;
+    }
+    return null;
+  }
+
+  _commandByRequest(requestId) {
+    if (!requestId) return null;
+    for (const cmd of this.commands.values()) {
+      if (cmd.requestId === requestId) return cmd;
+    }
+    return null;
+  }
+
+  // Retire the slot — keyed by the room the command occupies NOW (the
+  // minted id once opened), not the key it was dispatched under.
+  _retireCommand(cmd) {
+    this.commands.delete(this._commandRoomKey(cmd));
+  }
+
+  // Whether a command occupies roomKey for dispatch and busy
+  // affordances. Commands are per-room slots — a turn running in one
+  // room gates only that room, watched and local alike.
   _commandGates(roomKey) {
-    const cmd = this.command;
-    return !!cmd && (!cmd.watched || this._commandRoomKey(cmd) === roomKey);
+    return this.commands.has(roomKey);
   }
 
   // Every history writer assigns through here so an in-flight send's
@@ -635,7 +674,7 @@ class AppShell extends Widget {
   // alive and the new page doesn't already hold the committed line.
   _assignHistory(page) {
     let pageMessages = page.messages || [];
-    const edit = this.command;
+    const edit = this._viewCommand();
     // An in-flight edit's optimistic cut survives a refresh that still
     // shows the pre-commit tail. A page that already dropped that tail
     // — or grew messages the cut did not remove — is the newer history
@@ -657,15 +696,15 @@ class AppShell extends Widget {
     }
     const optimistic = this.messages.filter((m) =>
       typeof m.id === 'string' && m.id.startsWith('pending-'));
+    const own = this._viewCommand();
     this.messages = pageMessages;
     for (const m of optimistic) {
-      const owned = this.command &&
-        this.command.turnId === m.id.slice('pending-'.length);
+      const owned = own && own.turnId === m.id.slice('pending-'.length);
       // Committed means a NEW user id carrying the same content — an
       // identical line that predates this dispatch doesn't count.
       const committed = owned && this.messages.some((x) =>
         x.role === 'user' && x.content === m.content &&
-        !(this.command.historyIds && this.command.historyIds.has(x.id)));
+        !(own.historyIds && own.historyIds.has(x.id)));
       if (owned && !committed) this.messages.push(m);
     }
     // The window the view now owns — every writer through here lands
@@ -742,7 +781,10 @@ class AppShell extends Widget {
   // failed. A paused queue is NOT a dispatch brake — the hold lives on
   // the entries it captured, so fresh input still flows.
   _dispatchable(roomKey) {
-    if (this._commandGates(roomKey) || this.viewLoading) return false;
+    if (this._commandGates(roomKey)) return false;
+    // The pending view load blocks only the room ON screen — a
+    // non-viewed room's drain never waits on another room's load.
+    if (roomKey === this._viewRoomKey() && this.viewLoading) return false;
     if (this.socket.state !== 'open') return false;
     const g = this._gate(roomKey);
     return !(g.required || g.pending > 0 || g.failed);
@@ -764,6 +806,36 @@ class AppShell extends Widget {
     this.composer.value = cur.trim() ? `${cur}\n${text}` : text;
   }
 
+  // The viewed room's draft lives in the composer; a room off screen
+  // keeps its text in this.drafts. A dead fresh-token draft stays
+  // parked — queue-open's token navigation is the only path back to it,
+  // and the map stays small.
+  _stashViewDraft() {
+    const key = this._viewRoomKey();
+    const v = this.composer.value;
+    if (v) this.drafts.set(key, v);
+    else this.drafts.delete(key);
+  }
+
+  _loadViewDraft() {
+    const key = this._viewRoomKey();
+    const v = this.drafts.get(key) || '';
+    this.drafts.delete(key);
+    // An empty restore refocuses the input like clear() always did.
+    if (v) this.composer.value = v;
+    else this.composer.clear();
+  }
+
+  // A text parked back in the queue also drops a stored draft that
+  // still equals it — the same rule turn.opened applies to the
+  // composer's live draft: an identical copy was the send, not a draft.
+  _dropStaleDraft(roomKey, text) {
+    const d = this.drafts.get(roomKey);
+    if (d !== undefined && d.trim() === (text || '').trim()) {
+      this.drafts.delete(roomKey);
+    }
+  }
+
   _syncCompact() {
     const conv = this.conversation;
     const running = !!(conv?.id && this.compactPending.has(conv.id));
@@ -777,10 +849,9 @@ class AppShell extends Widget {
 
   // The live stream renders only in the room that owns the command.
   _syncStream() {
-    const cmd = this.command;
-    const visible = this._commandOwnsView(cmd)
-      ? cmd.stream : this.settledStream && this.settledStream.conversationId === this.activeId
-        ? this.settledStream.stream : null;
+    const cmd = this._viewCommand();
+    const settled = this.settledStreams.get(this.activeId);
+    const visible = cmd ? cmd.stream : settled ? settled.stream : null;
     this.thread.stream = visible;
     this._syncFailed();
   }
@@ -801,7 +872,7 @@ class AppShell extends Widget {
       enqueue(this.queue, { text, room: roomKey, opts: this._captureOpts() });
       this.composer.clear();
       this._syncQueue();
-      this._drainQueue();
+      this._drainQueue(roomKey);
       return;
     }
     this._sendCommand({ content: text, room: roomKey, opts: this._captureOpts() });
@@ -818,27 +889,31 @@ class AppShell extends Widget {
       provider: opts.provider || '',
       workspace: opts.workspace || '',
     });
-    // Dispatchable means the slot is free or holds only a watched turn
-    // in ANOTHER room — displacing that watch is safe: the socket keeps
-    // cursor-tracking the foreign turn and its terminal reconciles
-    // through the non-owning path.
-    this.command = {
+    // Dispatchable means THIS room's slot is free — commands in other
+    // rooms run in parallel; the socket multiplexes their turns.
+    const cmd = {
       kind: 'send', requestId, turnId: null,
       conversationId: fresh ? null : room, queueRoom: room,
       content, ephemeral: false,
       cancelRequested: false,
-      // Only a send issued on the fresh view that is STILL the view may
-      // claim the minted room — never force a user who navigated or
-      // opened a newer fresh view back to it.
-      claimFreshView: fresh,
+      // Marks a send born on an un-minted fresh token: it may claim the
+      // minted room's view only while its own token is still on screen —
+      // never drag a user who navigated back — and it pins its fresh
+      // token's queued lines to the minted room.
+      fromFresh: fresh,
       opts: { ...opts }, // captured at submit — never mutable current opts
       fromQueue, // a dispatched queue entry rejoins on an unpersisted failure
       // History ids at dispatch — a refresh landing mid-send tells a
       // NEW committed user line apart from an older identical one
       // (the same text sent twice must not hide this optimistic line).
-      historyIds: new Set(this.messages.map((m) => m.id)),
+      // A room whose window isn't on screen has none to compare —
+      // empty is honest, and the retry scan treats it accordingly.
+      historyIds: room === this._viewRoomKey()
+        ? new Set(this.messages.map((m) => m.id))
+        : new Set(),
       stream: createTurnProjection(requestId),
     };
+    this.commands.set(room, cmd);
     this._syncComposer();
     this._syncStream();
   }
@@ -849,9 +924,9 @@ class AppShell extends Widget {
   _steer(content) {
     const text = (content || '').trim();
     if (!text) return;
-    const cmd = this.command;
+    const cmd = this._viewCommand();
     const eligible = cmd && cmd.kind === 'send' && cmd.turnId &&
-      this._commandOwnsView(cmd) && this.socket.state === 'open';
+      this.socket.state === 'open';
     if (!eligible) {
       this._send(text);
       return;
@@ -869,13 +944,13 @@ class AppShell extends Widget {
     this._syncQueue();
   }
 
-  // The auto-drain: only the current view's queue dispatches, oldest
-  // first — entries for other rooms wait for their own view, a held
-  // head waits for an explicit Resume, and a refresh barrier holds
-  // everything back until history is authoritative.
-  _drainQueue() {
-    if (!this._dispatchable(this._viewRoomKey())) return;
-    const entry = takeQueued(this.queue, this._viewRoomKey());
+  // The auto-drain: the named room's own queue dispatches, oldest
+  // first — a room frees when ITS barriers clear (a terminal refresh,
+  // a finished load) whether or not it's on screen. A held head still
+  // waits for its room's explicit Resume.
+  _drainQueue(roomKey) {
+    if (!this._dispatchable(roomKey)) return;
+    const entry = takeQueued(this.queue, roomKey);
     if (!entry) return;
     this._sendCommand({
       content: entry.text, room: entry.room, opts: entry.opts, fromQueue: entry,
@@ -892,6 +967,7 @@ class AppShell extends Widget {
       return;
     }
     enqueue(this.queue, { text: entry.text, room: entry.room, opts: entry.opts });
+    this._dropStaleDraft(entry.room, entry.text);
     // The returned copy waits for the user's Resume — its own room's
     // lane holds, other rooms keep flowing.
     pauseQueue(this.queue, entry.room);
@@ -1069,7 +1145,7 @@ class AppShell extends Widget {
         return;
       }
     }
-    this._drainQueue();
+    this._drainQueue(key);
     this._syncQueue();
   }
 
@@ -1101,17 +1177,17 @@ class AppShell extends Widget {
     const requestId = this.socket.editTurn({
       conversationId: this.activeId, messageId, content,
     });
-    this.command = {
+    this.commands.set(this._viewRoomKey(), {
       kind: 'edit', requestId, turnId: null,
       conversationId: this.activeId, queueRoom: this._viewRoomKey(),
       content, ephemeral: false,
-      cancelRequested: false, claimFreshView: false,
+      cancelRequested: false, fromFresh: false,
       editMessageId: messageId,
       priorMessages: prior,
       priorHistory,
       removedIds,
       stream: createTurnProjection(requestId),
-    };
+    });
     this._syncComposer();
     this._syncStream();
     return true;
@@ -1140,28 +1216,28 @@ class AppShell extends Widget {
   }
 
   // A room loaded while a transport turn is still running attaches to
-  // it. This tab's own in-flight command is left alone — it is already
-  // subscribed, and replacing it would drop that turn's client state.
-  // A watched command only yields to a DIFFERENT live turn: the slot
-  // follows the room on screen, and re-attaching the same turn is a
-  // no-op.
+  // it — into THAT room's slot. This tab's own in-flight command there
+  // is left alone: it is already subscribed, and replacing it would
+  // drop that turn's client state. A watched command only yields to a
+  // DIFFERENT live turn in the same room; re-attaching the same turn
+  // is a no-op.
   _attachLiveTurn(conv) {
     const turnId = conv && conv.activeTurnId;
     if (!turnId || !conv.id) return;
-    const cmd = this.command;
+    const cmd = this._commandFor(conv.id);
     if (cmd && (!cmd.watched || cmd.turnId === turnId)) return;
     const kind = conv.activeTurnKind === 'edit' ? 'edit' : 'send';
     const requestId = this.socket.watchTurn({
       conversationId: conv.id, turnId, afterSeq: -1,
     });
-    this.command = {
+    this.commands.set(conv.id, {
       kind, requestId, turnId,
       conversationId: conv.id, queueRoom: conv.id,
       content: '', ephemeral: true,
-      cancelRequested: false, claimFreshView: false,
+      cancelRequested: false, fromFresh: false,
       watched: true,
       stream: createTurnProjection(requestId),
-    };
+    });
     this._syncComposer();
     this._syncStream();
   }
@@ -1200,8 +1276,7 @@ class AppShell extends Widget {
     if (!conv || !conv.id || conv.id !== this.activeId) return;
     if (conv.activeTurnId) return;
     const viewKey = this._viewRoomKey();
-    const cmd = this.command;
-    if (cmd && this._commandRoomKey(cmd) === viewKey) return;
+    if (this._commandFor(viewKey)) return;
     if (this.failedTurns.has(viewKey)) return;
     let lastReal = null, lastUser = null;
     for (let i = this.messages.length - 1; i >= 0 && (!lastReal || !lastUser); i--) {
@@ -1238,18 +1313,15 @@ class AppShell extends Widget {
     }
     // The settled projection of the dead turn is superseded — the
     // persisted tail plus the card is the honest view.
-    if (this.settledStream && this.settledStream.conversationId === conv.id) {
-      this.settledStream = null;
-      this._syncStream();
-    }
+    if (this.settledStreams.delete(conv.id)) this._syncStream();
     this._syncFailed();
   }
 
   _onFrame(f) {
-    const cmd = this.command;
     switch (f.type) {
       case 'turn.opened': {
-        if (!cmd || f.requestId !== cmd.requestId) {
+        const cmd = this._commandByRequest(f.requestId);
+        if (!cmd) {
           // A foreign turn opened — in the room on screen its sender's
           // user line just persisted, so the estimate already moved.
           if (f.conversationId === this.activeId) this._syncContext();
@@ -1257,15 +1329,32 @@ class AppShell extends Widget {
         }
         if (cmd.turnId) return;                            // replayed opened — idempotent
         cmd.turnId = f.turnId;
+        const oldKey = this._commandRoomKey(cmd);
         cmd.conversationId = f.conversationId;
+        const roomKey = this._commandRoomKey(cmd);
+        // A fresh send's slot follows the room it just minted — and a
+        // draft stashed under the fresh token follows it too, unless
+        // it's exactly a direct send's text: that copy WAS the send,
+        // not a draft (a queue-dispatched send's text left the draft
+        // at enqueue, so a match there is the user's own typing).
+        if (roomKey !== oldKey) {
+          this.commands.delete(oldKey);
+          this.commands.set(roomKey, cmd);
+          const stashed = this.drafts.get(oldKey);
+          this.drafts.delete(oldKey);
+          if (stashed !== undefined &&
+              (cmd.fromQueue || stashed.trim() !== cmd.content.trim())) {
+            this.drafts.set(roomKey, stashed);
+          }
+        }
         // The room's last failure is superseded once a new own turn
         // actually opens — not at dispatch, so a pre-open rejection
         // leaves the retry card standing.
-        if (!cmd.watched) this.failedTurns.delete(this._commandRoomKey(cmd));
+        if (!cmd.watched) this.failedTurns.delete(roomKey);
         // A send that minted its room pins THE ORIGIN fresh token's
         // queued lines to it — entries on a newer fresh token or a real
         // room are never rebound into this room.
-        if (cmd.claimFreshView && f.conversationId) {
+        if (cmd.fromFresh && f.conversationId) {
           bindRoom(this.queue, cmd.queueRoom, f.conversationId);
           // The in-flight queue entry was detached before dispatch —
           // re-home it too or a later requeue would land in a dead
@@ -1275,7 +1364,7 @@ class AppShell extends Widget {
         // Claim the minted room's view ONLY when the send's own fresh
         // token is still the current view — a user who clicked New or
         // navigated meanwhile is never dragged back.
-        if (cmd.claimFreshView && f.conversationId &&
+        if (cmd.fromFresh && f.conversationId &&
             this.activeId === null && this.freshToken === cmd.queueRoom) {
           this.activeId = f.conversationId;
           this.sidebar.activeId = f.conversationId;
@@ -1293,6 +1382,10 @@ class AppShell extends Widget {
               this.composer.value.trim() === cmd.content.trim()) {
             this.composer.clear();
           }
+          // Same for a stash: a send navigated away from before the
+          // opened parked its still-visible text under its own room —
+          // that copy WAS the send, not a draft to restore.
+          this._dropStaleDraft(roomKey, cmd.content);
         }
         if (cmd.kind === 'send') {
           if (!cmd.ephemeral) {
@@ -1347,7 +1440,8 @@ class AppShell extends Widget {
             estimate: f.payload.usage.totalInputTokens,
           };
         }
-        if (cmd && cmd.turnId === f.turnId) {
+        const cmd = this._commandByTurn(f.turnId);
+        if (cmd) {
           if (f.type === 'turn.steer' && f.payload?.inputId) {
             // A projected steering input — the terminal snapshot knows
             // it landed even if this frame was missed on a reconnect.
@@ -1401,9 +1495,9 @@ class AppShell extends Widget {
           // persistence from content. A turn this tab only watched has
           // no text to park; HTTP history is the record.
           markTurnUnknown(this.queue, f.turnId);
-          const cmd = this.command;
-          if (cmd && cmd.turnId === f.turnId && cmd.watched) {
-            this.command = null;
+          const cmd = this._commandByTurn(f.turnId);
+          if (cmd && cmd.watched) {
+            this._retireCommand(cmd);
             this._syncComposer();
             this._syncStream();
             // A foreign turn's fate never pauses this tab's queue —
@@ -1411,19 +1505,20 @@ class AppShell extends Widget {
             if (cmd.conversationId) this._refresh(cmd.conversationId);
             break;
           }
-          if (cmd && cmd.turnId === f.turnId) {
+          if (cmd) {
             settleTurnProjection(cmd.stream);
-            this.settledStream = {
-              conversationId: cmd.conversationId, turnId: f.turnId,
-              stream: cmd.stream, seq: ++this._settledSeq,
-            };
+            const roomKey = this._commandRoomKey(cmd);
+            this.settledStreams.set(cmd.conversationId, {
+              turnId: f.turnId, stream: cmd.stream, seq: ++this._settledSeq,
+            });
             const lost = enqueue(this.queue, {
               text: cmd.content,
-              room: this._commandRoomKey(cmd),
+              room: roomKey,
               opts: cmd.opts,
             });
             lost.state = UNKNOWN;
-            this.command = null;
+            this._dropStaleDraft(roomKey, cmd.content);
+            this._retireCommand(cmd);
             this._syncComposer();
             this._syncStream();
           }
@@ -1435,7 +1530,9 @@ class AppShell extends Widget {
           if (lostRoom && !String(lostRoom).startsWith('fresh:')) {
             this._refresh(lostRoom);
           }
-          pauseQueue(this.queue, lostRoom);
+          // A frame naming no room holds nothing — pausing with a null
+          // room would freeze every lane.
+          if (lostRoom) pauseQueue(this.queue, lostRoom);
           this.queue.notice = 'The turn could not be recovered — check history before retrying';
           this._syncQueue();
           break;
@@ -1459,8 +1556,11 @@ class AppShell extends Widget {
         // unjournaled. payload.requestId is the opening command's own
         // correlation id: the issuing tab's send/edit flow already
         // refreshes, so only foreign notices act — and a foreign
-        // notice never touches this tab's in-flight command.
-        const own = cmd && f.payload?.requestId === cmd.requestId;
+        // notice never touches this tab's in-flight commands.
+        let own = false;
+        for (const c of this.commands.values()) {
+          if (f.payload?.requestId === c.requestId) { own = true; break; }
+        }
         if (own) break;
         this._refreshList();
         if (f.conversationId !== this.activeId ||
@@ -1490,21 +1590,20 @@ class AppShell extends Widget {
   }
 
   _onTerminal(f) {
-    const cmd = this.command;
-    if (cmd && f.turnId === cmd.turnId) {
+    const cmd = this._commandByTurn(f.turnId);
+    if (cmd) {
       // Settle the projection honestly before the authoritative refresh
       // replaces it.
       settleTurnProjection(cmd.stream);
-      this.settledStream = {
-        conversationId: cmd.conversationId, turnId: f.turnId,
-        stream: cmd.stream, seq: ++this._settledSeq,
-      };
+      this.settledStreams.set(cmd.conversationId, {
+        turnId: f.turnId, stream: cmd.stream, seq: ++this._settledSeq,
+      });
       // The owning room's gate goes up BEFORE the command retires —
       // no path may dispatch into it until history is authoritative.
       const roomKey = this._commandRoomKey(cmd);
       const g = this._gate(roomKey);
       g.required = true;
-      this.command = null;
+      this._retireCommand(cmd);
       // The terminal steering snapshot is authoritative — a consumed
       // input whose event raced past a reconnect still reconciles;
       // recalled inputs return their text to the owner.
@@ -1563,6 +1662,7 @@ class AppShell extends Widget {
           enqueue(this.queue, {
             text: cmd.content, room: ownerKey, opts: cmd.opts,
           });
+          this._dropStaleDraft(ownerKey, cmd.content);
           pauseQueue(this.queue, ownerKey);
         }
       }
@@ -1584,12 +1684,14 @@ class AppShell extends Widget {
           const card = this.failedTurns.get(roomKey);
           if (card && !card.retryMessageId) card.retryMessageId = this._retryMessageId(card);
         }
-        this._drainQueue();
+        this._drainQueue(roomKey);
         this._syncQueue();
       });
       this._syncComposer();
       this._syncStream();
-      this._syncContext(); // usage landed — the estimate moved
+      // Usage landed — the estimate moved, but only the room on screen
+      // has a badge to move.
+      if (f.conversationId === this.activeId) this._syncContext();
       return;
     }
     // A turn this tab didn't drive (watched, or another tab's): refresh
@@ -1626,8 +1728,8 @@ class AppShell extends Widget {
     // A command rejected before turn.opened: the send draft is still in
     // the composer (nothing cleared it); an edit puts back the history
     // the optimistic cut replaced. Only matching requestIds retire the command.
-    if (this.command && f.requestId === this.command.requestId) {
-      const cmd = this.command;
+    const cmd = this._commandByRequest(f.requestId);
+    if (cmd) {
       this._restoreUnopenedEdit(cmd);
       if (cmd.fromQueue) {
         // A queue dispatch rejected pre-open returns to the local
@@ -1645,15 +1747,17 @@ class AppShell extends Widget {
             this._restoreDraft(cmd.content);
           }
         } else {
+          const ownerKey = this._commandRoomKey(cmd);
           enqueue(this.queue, {
             text: cmd.content,
-            room: this._commandRoomKey(cmd),
+            room: ownerKey,
             opts: cmd.opts,
           });
-          pauseQueue(this.queue, this._commandRoomKey(cmd));
+          this._dropStaleDraft(ownerKey, cmd.content);
+          pauseQueue(this.queue, ownerKey);
         }
       }
-      this.command = null;
+      this._retireCommand(cmd);
       this._syncComposer();
       this._syncStream();
     } else if (f.requestId) {
@@ -1697,30 +1801,32 @@ class AppShell extends Widget {
         this.queue.notice = 'A submission may not have reached the server — check history';
       }
       this._syncQueue();
-      if (this.command && !this.command.turnId) {
-        // The command never reached turn.opened — delivery is unknowable.
-        // Never auto-resend: surface it in the panel as unknown, owned
-        // by the room/token captured at submit — not the mutable view.
-        // An edit's optimistic cut is undone; the parked text is the
-        // draft that may not have reached the server.
-        const cmd = this.command;
+      // Any command that never reached turn.opened has unknowable
+      // delivery. Never auto-resend: each surfaces in the panel as
+      // unknown, owned by the room/token captured at submit — not the
+      // mutable view. An edit's optimistic cut is undone; the parked
+      // text is the draft that may not have reached the server.
+      for (const cmd of [...this.commands.values()]) {
+        if (cmd.turnId) continue;
         this._restoreUnopenedEdit(cmd);
         if (cmd.fromQueue) {
           requeue(this.queue, cmd.fromQueue);
           cmd.fromQueue.state = UNKNOWN;
           cmd.fromQueue.turnId = null;
         } else {
+          const roomKey = this._commandRoomKey(cmd);
           const e = enqueue(this.queue, {
             text: cmd.content,
-            room: this._commandRoomKey(cmd),
+            room: roomKey,
             opts: cmd.opts,
           });
           e.state = UNKNOWN;
+          this._dropStaleDraft(roomKey, cmd.content);
         }
-        this.command = null;
-        this._syncStream();
-        this._syncComposer();
+        this._retireCommand(cmd);
       }
+      this._syncStream();
+      this._syncComposer();
     } else if (state === 'open') {
       // A reconnect (not the first open) must settle whatever the
       // server persisted while this tab was detached.
@@ -1728,11 +1834,13 @@ class AppShell extends Widget {
         this._refreshList();
         if (this.activeId) {
           this._refresh(this.activeId).then((ok) => {
-            if (ok === 'ok' && !this._commandGates(this._viewRoomKey())) this._drainQueue();
+            if (ok === 'ok' && !this._commandGates(this._viewRoomKey())) {
+              this._drainQueue(this._viewRoomKey());
+            }
           });
         } else if (hasQueuedForRoom(this.queue, this.freshToken)) {
           // A fresh view needs no history — its queue drains directly.
-          this._drainQueue();
+          this._drainQueue(this.freshToken);
         }
       }
       this._hasOpened = true;
@@ -1789,10 +1897,9 @@ class AppShell extends Widget {
           // persisted turn — and only when this refresh observed that
           // settle, so a stale response can never retire a newer
           // turn's stream.
-          if (this.settledStream &&
-              this.settledStream.conversationId === convId &&
-              this.settledStream.seq <= settledAtStart) {
-            this.settledStream = null;
+          const s = this.settledStreams.get(convId);
+          if (s && s.seq <= settledAtStart) {
+            this.settledStreams.delete(convId);
             this._syncStream();
           }
         } else {
@@ -1801,7 +1908,9 @@ class AppShell extends Widget {
       } catch {
         if (myEpoch === g.epoch) g.failed = true;
       } finally {
-        if (--g.pending === 0) this._drainQueue();
+        // The room whose writers settled is the one whose lane frees —
+        // even while it isn't on screen.
+        if (--g.pending === 0) this._drainQueue(convId);
         if (g.inflight === inflight) g.inflight = null;
       }
       // Refresh outcomes change dispatch eligibility (pending--,
@@ -1930,8 +2039,26 @@ class AppShell extends Widget {
         total: Math.max(0, p.total - 1),
         hasMore: this.allConversations.length < Math.max(0, p.total - 1),
       };
+      // Every piece of per-room state keyed by the id must not outlive
+      // the room — a lingering command, draft, or card would render
+      // against nothing.
+      this.commands.delete(id);
+      this.settledStreams.delete(id);
+      this.drafts.delete(id);
+      this.failedTurns.delete(id);
+      this._dismissedTails.delete(id);
+      this._gates.delete(id);
+      this.compactPending.delete(id);
+      for (const e of [...this.queue.items]) {
+        if (e.room === id) removeEntry(this.queue, e);
+      }
       this._pushConversations();
-      if (this.activeId === id) this.newConversation();
+      if (this.activeId === id) {
+        // Clear first — the fresh view's draft stash reads the composer
+        // while the view key still resolves to the deleted room.
+        this.composer.clear();
+        this.newConversation();
+      }
       this._toast('info', 'Deleted', 'Thread removed.');
     } catch (err) { this._toast('error', 'Delete', this._errText(err)); }
   }
