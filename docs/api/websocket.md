@@ -134,12 +134,23 @@ Common envelope fields:
   "conversationId": "c_k4j9xm2p8q1vz7w0t6nb5r3yhd",
   "payload": {
     "messageId": "m_9p2xv7kq4f1nz8w0t6jb5r3yce",
-    "content": "actually, look at invalidate() in cache.go"
+    "content": "actually, look at invalidate() in cache.go",
+    "route": "openrouter",
+    "modelId": "anthropic/claude-sonnet-4.5",
+    "effort": "high"
   }
 }
 ```
 
 - Same lifecycle as `turn.send` (`turn.opened` → stream → terminal).
+- `payload.route`, `payload.modelId`, `payload.effort`,
+  `payload.provider`, `payload.workspace` — optional per-turn overrides
+  with the same contract as `turn.send` (`""`/absent keeps the stored
+  binding; an unknown `effort` word is `invalid_argument`; a successful
+  turn re-binds `route`/`modelId`/`workspace` to the room — `effort` and
+  `provider` stay per-turn). Carrying the current selection is what lets
+  a retry escape the model that just failed. `environment` is not
+  accepted — an edit never re-homes the room.
 - Only user messages are editable — a non-user `messageId` ends the turn
   `turn.failed` `400`; an id that exists nowhere in history is `404`.
 - **Preempts:** the edit interrupts the room's running job and cuts ahead

@@ -277,6 +277,25 @@ test('retry re-issues turn.edit against the failed user line', async () => {
   assert.equal(app.failedTurns.has('c1'), false);
 });
 
+// The bug this pins: a retry after switching models must reach the NEW
+// model — the edit payload rides the picker's current selection, never
+// the binding that just failed.
+test('retry rides the current picker selection', async () => {
+  const { app, ws } = makeApp();
+  app.composer.value = '';
+  failTurn(app, ws, { status: 402, message: 'balance exhausted', userMessagePersisted: true });
+  await flush();
+  app.messages = failedTail.slice();
+  app.selection = { route: 'gw2', modelId: 'm9', effort: 'high', provider: 'or', workspace: '/w' };
+  app._turnRetry();
+  const edit = ws.sent.find((f) => f.type === 'turn.edit');
+  assert.equal(edit.payload.route, 'gw2');
+  assert.equal(edit.payload.modelId, 'm9');
+  assert.equal(edit.payload.effort, 'high');
+  assert.equal(edit.payload.provider, 'or');
+  assert.equal(edit.payload.workspace, '/w');
+});
+
 test('the failed turn\'s own output does not block its retry', async () => {
   const { app } = makeApp();
   app.composer.value = '';

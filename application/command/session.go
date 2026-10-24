@@ -6,6 +6,7 @@ import (
 	"io/fs"
 
 	appgateway "github.com/jahrulnr/nusallm/application/gateway"
+	appjob "github.com/jahrulnr/nusallm/application/job"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
 	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
@@ -55,7 +56,8 @@ type conversationAPI interface {
 	Delete(ctx context.Context, id string) error
 	Rename(ctx context.Context, id, title string) error
 	Compact(ctx context.Context, id string) error
-	Edit(ctx context.Context, convID, messageID, content string, onEvent event.TurnEventHandler) error
+	Edit(ctx context.Context, convID, route, modelID, messageID, content string,
+		opts appjob.SendOptions, onEvent event.TurnEventHandler) error
 	ToolSchemas(ctx context.Context, convID string) ([]valueobject.ToolSchema, error)
 }
 
@@ -120,8 +122,13 @@ func (f *Facade) RenameConversation(ctx context.Context, id, title string) error
 func (f *Facade) CompactConversation(ctx context.Context, id string) error {
 	return f.convs.Compact(ctx, id)
 }
+
+// EditConversation regenerates under the session's current route/model —
+// the client-side selection overrides the room's stored binding the same
+// way a send does, so an edit after a failed turn can switch models.
 func (f *Facade) EditConversation(ctx context.Context, convID, messageID, content string, onEvent event.TurnEventHandler) error {
-	return f.convs.Edit(ctx, convID, messageID, content, onEvent)
+	return f.convs.Edit(ctx, convID, f.bindings.Route(), f.bindings.ModelID(),
+		messageID, content, appjob.SendOptions{}, onEvent)
 }
 func (f *Facade) ToolSchemas(ctx context.Context, convID string) ([]valueobject.ToolSchema, error) {
 	return f.convs.ToolSchemas(ctx, convID)

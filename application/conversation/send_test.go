@@ -1062,7 +1062,7 @@ func TestSendSelectsEnvironmentPerConversationAndResume(t *testing.T) {
 			break
 		}
 	}
-	if err := app.Edit(t.Context(), "docker-room", lastUser.ID(), "edited", nil); err != nil {
+	if err := app.Edit(t.Context(), "docker-room", "", "", lastUser.ID(), "edited", appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	afterEdit, err := convs.Load(t.Context(), "docker-room")

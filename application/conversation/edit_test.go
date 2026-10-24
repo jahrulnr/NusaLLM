@@ -2,7 +2,9 @@ package appconversation
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -35,7 +37,7 @@ func TestEditRegeneratesFromTarget(t *testing.T) {
 	conv, _ := app.deps.Convs.Load(t.Context(), "room")
 	target := conv.Messages()[0].ID() // first user message
 
-	if err := app.Edit(t.Context(), "room", target, "edited", nil); err != nil {
+	if err := app.Edit(t.Context(), "room", "", "", target, "edited", appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	conv, err := app.deps.Convs.Load(t.Context(), "room")
@@ -56,7 +58,7 @@ func TestEditRegeneratesFromTarget(t *testing.T) {
 func TestEditRejectsEmpty(t *testing.T) {
 	app, _ := fixture(t, okHandler)
 	for _, content := range []string{"", "   "} {
-		if err := app.Edit(t.Context(), "room", "m_x", content, nil); apperror.As(err).StatusCode() != 400 {
+		if err := app.Edit(t.Context(), "room", "", "", "m_x", content, appjob.SendOptions{}, nil); apperror.As(err).StatusCode() != 400 {
 			t.Fatalf("empty edit %q → %v, want 400", content, err)
 		}
 	}
@@ -70,13 +72,13 @@ func TestEditRejectsNonUser(t *testing.T) {
 	}
 	conv, _ := app.deps.Convs.Load(t.Context(), "room")
 	assistant := conv.Messages()[2].ID()
-	if err := app.Edit(t.Context(), "room", assistant, "hijack", nil); apperror.As(err).StatusCode() != 400 {
+	if err := app.Edit(t.Context(), "room", "", "", assistant, "hijack", appjob.SendOptions{}, nil); apperror.As(err).StatusCode() != 400 {
 		t.Fatalf("assistant edit → %v, want 400", err)
 	}
 	// The workspace context record is a non-editable user-role message —
 	// the same predicate excludes it.
 	contextRecord := conv.Messages()[1].ID()
-	if err := app.Edit(t.Context(), "room", contextRecord, "hijack", nil); apperror.As(err).StatusCode() != 400 {
+	if err := app.Edit(t.Context(), "room", "", "", contextRecord, "hijack", appjob.SendOptions{}, nil); apperror.As(err).StatusCode() != 400 {
 		t.Fatalf("context-record edit → %v, want 400", err)
 	}
 }
@@ -86,10 +88,10 @@ func TestEditNotFound(t *testing.T) {
 	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "hi", nil, appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.Edit(t.Context(), "room", "m_nope", "x", nil); apperror.As(err).StatusCode() != 404 {
+	if err := app.Edit(t.Context(), "room", "", "", "m_nope", "x", appjob.SendOptions{}, nil); apperror.As(err).StatusCode() != 404 {
 		t.Fatalf("missing id → %v, want 404", err)
 	}
-	if err := app.Edit(t.Context(), "ghost", "m_x", "x", nil); apperror.As(err).StatusCode() != 404 {
+	if err := app.Edit(t.Context(), "ghost", "", "", "m_x", "x", appjob.SendOptions{}, nil); apperror.As(err).StatusCode() != 404 {
 		t.Fatalf("missing room → %v, want 404", err)
 	}
 	waitWorkers(t, app, 0)
@@ -116,7 +118,7 @@ func TestEditCompactedMessage(t *testing.T) {
 		t.Fatal("setup failed — target must be sealed out of the live tail")
 	}
 
-	if err := app.Edit(t.Context(), "room", target, "new question", nil); err != nil {
+	if err := app.Edit(t.Context(), "room", "", "", target, "new question", appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	conv, _ = app.deps.Convs.Load(t.Context(), "room")
@@ -164,7 +166,7 @@ func TestEditPreemptsRunningSend(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 
-	if err := app.Edit(t.Context(), "room", target, "edited", nil); err != nil {
+	if err := app.Edit(t.Context(), "room", "", "", target, "edited", appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -220,7 +222,7 @@ func TestEditPreemptsRunningTool(t *testing.T) {
 
 	conv, _ := convs.Load(t.Context(), "room")
 	target := conv.Messages()[0].ID()
-	if err := app.Edit(t.Context(), "room", target, "edited instead", nil); err != nil {
+	if err := app.Edit(t.Context(), "room", "", "", target, "edited instead", appjob.SendOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -243,6 +245,154 @@ func TestEditPreemptsRunningTool(t *testing.T) {
 				t.Fatalf("orphaned pending call survived the rewrite: %+v", tc)
 			}
 		}
+	}
+}
+
+// A turn that fails on the bound model must be retryable on another
+// one: the edit carries the caller's new selection upstream, and the
+// successful regenerate re-binds the room to it. Before route/modelID
+// rode turn.edit, a retry always re-resolved the binding that failed.
+func TestEditRetriesWithNewModelSelection(t *testing.T) {
+	var mu sync.Mutex
+	var models []string
+	app, gw := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		models = append(models, body.Model)
+		mu.Unlock()
+		if body.Model == "m1" {
+			w.WriteHeader(http.StatusPaymentRequired) // balance exhausted
+			return
+		}
+		okHandler(w, r)
+	})
+	m1, _ := entity.NewModel("m1", "gw1")
+	m2, _ := entity.NewModel("m2", "gw1")
+	gw.SetModels([]entity.Model{m1, m2})
+	if err := app.deps.Gateways.Save(t.Context(), gw); err != nil {
+		t.Fatal(err)
+	}
+
+	// m1 dies upstream — the fresh room still binds it, the failure the
+	// picker-driven retry must escape.
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "hi", nil, appjob.SendOptions{}, nil); err == nil {
+		t.Fatal("m1 send must fail")
+	}
+	conv, err := app.deps.Convs.Load(t.Context(), "room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := conv.Messages()[0].ID()
+
+	if err := app.Edit(t.Context(), "room", "gw1", "m2", target, "hi", appjob.SendOptions{}, nil); err != nil {
+		t.Fatalf("edit retry on m2: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(models) != 2 || models[0] != "m1" || models[1] != "m2" {
+		t.Fatalf("upstream models = %v, want [m1 m2]", models)
+	}
+	after, err := app.deps.Convs.Load(t.Context(), "room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.ModelID() != "m2" {
+		t.Fatalf("room binding = %q, want m2 after a successful retry", after.ModelID())
+	}
+}
+
+// An override workspace is validated before the rewrite but bound
+// after it: a sealed target swaps in a fresh aggregate, and a workspace
+// set on the old handle would be lost with it. The regenerated room
+// must carry the override.
+func TestEditSealedTargetBindsOverrideWorkspace(t *testing.T) {
+	gw, _ := aggregate.NewGateway("gw1", "stub", "http://unused", enum.StyleCompletion)
+	m, _ := entity.NewModel("m1", "gw1")
+	gw.SetModels([]entity.Model{m})
+	gateways := repogateway.NewGatewayRepository(t.TempDir(), nil)
+	if err := gateways.Save(t.Context(), &gw); err != nil {
+		t.Fatal(err)
+	}
+	convs := repoconversation.NewConversationRepository(t.TempDir())
+	app := New(convs, gateways,
+		map[enum.Environment]appjob.EnvironmentDriver{enum.EnvironmentLocal: appjob.EnvironmentBundle{
+			WorkspaceStore: virtualWorkspace{},
+			Services:       map[enum.Style]dservice.TextModelService{enum.StyleCompletion: environmentService{label: "local"}},
+			Tools:          map[string]dservice.Tool{"echo": environmentTool{label: "local"}},
+		}},
+		config.NewConfig(), nil, "", nil, nil)
+	t.Cleanup(func() { _ = app.Shutdown(context.Background()) })
+
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "old question", nil, appjob.SendOptions{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	conv, err := convs.Load(t.Context(), "room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := conv.Messages()[0].ID()
+
+	// Seal the first turn — the edit repromotes and reloads the aggregate.
+	sum, _ := entity.NewMessage(enum.RoleUser, "summary of old turn")
+	sum.SetUserType(enum.LLMUserTypeSystem)
+	if err := convs.Compact(t.Context(), "room", sum, 1, conv.Messages()[1:]); err != nil {
+		t.Fatal(err)
+	}
+
+	err = app.Edit(t.Context(), "room", "", "", target, "moved",
+		appjob.SendOptions{Workspace: "/remote/project"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := convs.Load(t.Context(), "room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Workspace() != "/remote/project" {
+		t.Fatalf("sealed-target edit dropped the workspace override: %q", after.Workspace())
+	}
+}
+
+// An override that fails keeps the old binding — the same
+// re-bind-only-on-success rule Send already follows.
+func TestEditFailedOverrideKeepsBinding(t *testing.T) {
+	app, gw := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.Model == "m2" {
+			w.WriteHeader(http.StatusPaymentRequired) // definitive failure, no retry
+			return
+		}
+		okHandler(w, r)
+	})
+	m1, _ := entity.NewModel("m1", "gw1")
+	m2, _ := entity.NewModel("m2", "gw1")
+	gw.SetModels([]entity.Model{m1, m2})
+	if err := app.deps.Gateways.Save(t.Context(), gw); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "hi", nil, appjob.SendOptions{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	conv, err := app.deps.Convs.Load(t.Context(), "room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := conv.Messages()[0].ID()
+	if err := app.Edit(t.Context(), "room", "gw1", "m2", target, "hi", appjob.SendOptions{}, nil); err == nil {
+		t.Fatal("edit on failing m2 must fail")
+	}
+	after, err := app.deps.Convs.Load(t.Context(), "room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.ModelID() != "m1" {
+		t.Fatalf("failed override re-bound the room: %q", after.ModelID())
 	}
 }
 
@@ -314,7 +464,7 @@ func TestEditResolvesEnvironmentBeforeRewrite(t *testing.T) {
 	app := New(convs, gateways, map[enum.Environment]appjob.EnvironmentDriver{}, config.NewConfig(), nil, "", nil, nil)
 	t.Cleanup(func() { _ = app.Shutdown(context.Background()) })
 
-	if err := app.Edit(t.Context(), "room", user.ID(), "edited", nil); apperror.As(err).StatusCode() != 400 {
+	if err := app.Edit(t.Context(), "room", "", "", user.ID(), "edited", appjob.SendOptions{}, nil); apperror.As(err).StatusCode() != 400 {
 		t.Fatalf("edit with unavailable environment => %v, want 400", err)
 	}
 

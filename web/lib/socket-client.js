@@ -87,12 +87,20 @@ export class TurnSocket extends EventTarget {
     });
   }
 
-  editTurn({ conversationId, messageId, content }) {
+  // turn.edit carries the same optional per-turn selections as sendTurn —
+  // a retry re-runs under the picker's current choice, and a successful
+  // turn re-binds them to the room. '' keeps the stored binding.
+  editTurn({ conversationId, messageId, content,
+    route = '', modelId = '', effort = '', provider = '', workspace = '' }) {
+    const payload = { messageId, content, route, modelId };
+    if (effort) payload.effort = effort;
+    if (provider) payload.provider = provider;
+    if (workspace) payload.workspace = workspace;
     return this._command({
       type: 'turn.edit',
       requestId: requestId(),
       conversationId,
-      payload: { messageId, content },
+      payload,
     });
   }
 

@@ -46,7 +46,8 @@ func (stubSender) Send(_ context.Context, convID, _, _, _ string,
 	return appconversation.SendResult{ConversationID: convID, UserMessagePersisted: true}, nil
 }
 
-func (stubSender) Edit(context.Context, string, string, string, event.TurnEventHandler) error {
+func (stubSender) Edit(context.Context, string, string, string, string, string,
+	appjob.SendOptions, event.TurnEventHandler) error {
 	return nil
 }
 

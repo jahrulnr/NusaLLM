@@ -1174,8 +1174,12 @@ class AppShell extends Widget {
       this.messages = prior.slice(0, idx).concat([{ ...prior[idx], content }]);
       this.thread.messages = this.messages;
     }
+    // The picker's current selection rides the edit — a retry can switch
+    // off the model that just failed, and a plain edit regenerates under
+    // what the next turn would use anyway.
     const requestId = this.socket.editTurn({
       conversationId: this.activeId, messageId, content,
+      ...this._captureOpts(),
     });
     this.commands.set(this._viewRoomKey(), {
       kind: 'edit', requestId, turnId: null,

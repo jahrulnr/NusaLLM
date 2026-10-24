@@ -20,11 +20,17 @@ import (
 // A live turn on the conversation is interrupted first: the edit preempts
 // it, then runs ahead of any queued sends, which land on the rewritten
 // history. The caller's ctx aborts the wait and the regenerate alike.
+// route/modelID/opts are the same per-turn overrides Send takes — "" keeps
+// the stored binding, and a successful regenerated turn re-binds them to
+// the room, so a retry can switch off the model that just failed.
 func (app *ConversationApp) Edit(
 	ctx context.Context,
 	convID string,
+	route string,
+	modelID string,
 	msgID string,
 	content string,
+	opts appjob.SendOptions,
 	onEvent event.TurnEventHandler,
 ) error {
 	if strings.TrimSpace(content) == "" {
@@ -35,6 +41,9 @@ func (app *ConversationApp) Edit(
 		Ctx:     ctx,
 		MsgID:   msgID,
 		Content: content,
+		Route:   route,
+		ModelID: modelID,
+		Opts:    opts,
 		OnEvent: onEvent,
 	}
 	j.Result = res

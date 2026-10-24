@@ -14,6 +14,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	appconversation "github.com/jahrulnr/nusallm/application/conversation"
+	appjob "github.com/jahrulnr/nusallm/application/job"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
@@ -26,7 +27,7 @@ func TestTurnEditLifecycle(t *testing.T) {
 		fn: func(context.Context, string, string, string, string, event.TurnEventHandler) (appconversation.SendResult, error) {
 			return appconversation.SendResult{UserMessagePersisted: true}, nil
 		},
-		efn: func(_ context.Context, convID, msgID, content string, onEvent event.TurnEventHandler) error {
+		efn: func(_ context.Context, _, _, _, msgID, content string, _ appjob.SendOptions, onEvent event.TurnEventHandler) error {
 			gotMsg, gotContent = msgID, content
 			onEvent(event.NewDeltaEvent("regenerated"))
 			return nil
@@ -72,7 +73,7 @@ func TestTurnEditFailed(t *testing.T) {
 		fn: func(context.Context, string, string, string, string, event.TurnEventHandler) (appconversation.SendResult, error) {
 			return appconversation.SendResult{UserMessagePersisted: true}, nil
 		},
-		efn: func(context.Context, string, string, string, event.TurnEventHandler) error {
+		efn: func(context.Context, string, string, string, string, string, appjob.SendOptions, event.TurnEventHandler) error {
 			return apperror.NewNotFoundError("message m_gone", nil)
 		},
 	})

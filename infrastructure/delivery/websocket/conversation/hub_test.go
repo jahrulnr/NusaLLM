@@ -29,8 +29,8 @@ type stubSender struct {
 	fn func(ctx context.Context, convID, route, modelID, message string,
 		onEvent event.TurnEventHandler) (appconversation.SendResult, error)
 	optsFn func(appjob.SendOptions)
-	efn    func(ctx context.Context, convID, msgID, content string,
-		onEvent event.TurnEventHandler) error
+	efn    func(ctx context.Context, convID, route, modelID, msgID, content string,
+		opts appjob.SendOptions, onEvent event.TurnEventHandler) error
 }
 
 func (s stubSender) Send(ctx context.Context, convID, route, modelID, message string,
@@ -62,12 +62,50 @@ func TestTurnSendPassesEnvironmentSelection(t *testing.T) {
 	}
 }
 
-func (s stubSender) Edit(ctx context.Context, convID, msgID, content string,
-	onEvent event.TurnEventHandler) error {
+func (s stubSender) Edit(ctx context.Context, convID, route, modelID, msgID, content string,
+	opts appjob.SendOptions, onEvent event.TurnEventHandler) error {
 	if s.efn == nil {
 		return apperror.New(400, "no edit scripted", nil)
 	}
-	return s.efn(ctx, convID, msgID, content, onEvent)
+	return s.efn(ctx, convID, route, modelID, msgID, content, opts, onEvent)
+}
+
+// The edit path forwards the picker's per-turn selection — a retry must
+// reach the model the user switched to, not the binding that failed.
+func TestTurnEditPassesSelection(t *testing.T) {
+	var gotRoute, gotModel string
+	var gotOpts appjob.SendOptions
+	h := newHub(t, stubSender{
+		fn: func(context.Context, string, string, string, string, event.TurnEventHandler) (appconversation.SendResult, error) {
+			return appconversation.SendResult{UserMessagePersisted: true}, nil
+		},
+		efn: func(_ context.Context, _, route, modelID, _, _ string,
+			opts appjob.SendOptions, _ event.TurnEventHandler) error {
+			gotRoute, gotModel, gotOpts = route, modelID, opts
+			return nil
+		},
+	})
+	ws := dial(t, h)
+	sendCommand(t, ws, `{"type":"turn.edit","requestId":"e","conversationId":"c_1","payload":{"messageId":"m_1","content":"x","route":"gw2","modelId":"claude-y","effort":"high","provider":"or-fast","workspace":"/remote/project"}}`)
+	for f := readFrame(t, ws); f.Type != "turn.completed"; f = readFrame(t, ws) {
+		if f.Type == "error" || f.Type == "turn.failed" {
+			t.Fatalf("turn rejected: %+v", f)
+		}
+	}
+	if gotRoute != "gw2" || gotModel != "claude-y" ||
+		gotOpts.Effort != enum.EffortHigh || gotOpts.Upstream != "or-fast" || gotOpts.Workspace != "/remote/project" {
+		t.Fatalf("forwarded selection = %q %q %+v", gotRoute, gotModel, gotOpts)
+	}
+}
+
+// An unknown effort word is a syntactic rejection on edit, same as send.
+func TestTurnEditRejectsBadEffort(t *testing.T) {
+	h := newHub(t, stubSender{})
+	ws := dial(t, h)
+	sendCommand(t, ws, `{"type":"turn.edit","requestId":"e","conversationId":"c_1","payload":{"messageId":"m_1","content":"x","effort":"ludicrous"}}`)
+	if f := readFrame(t, ws); f.Type != "error" || f.Code != "invalid_argument" {
+		t.Fatalf("bad effort %+v", f)
+	}
 }
 
 // frame is the test-side view of a server envelope.
@@ -291,6 +329,7 @@ func TestTurnSendValidation(t *testing.T) {
 		{"dotdot conversationId", `{"type":"turn.send","requestId":"r","conversationId":"..","payload":{"content":"x"}}`, "invalid_argument", "r"},
 		{"unknown command", `{"type":"convo.list","requestId":"r"}`, "invalid_argument", "r"},
 		{"edit missing convId", `{"type":"turn.edit","requestId":"r","payload":{"messageId":"m_1","content":"x"}}`, "invalid_argument", "r"},
+		{"edit with environment", `{"type":"turn.edit","requestId":"r","conversationId":"c_1","payload":{"messageId":"m_1","content":"x","environment":"local"}}`, "invalid_argument", "r"},
 		{"edit bad msgId", `{"type":"turn.edit","requestId":"r","conversationId":"c_1","payload":{"messageId":"a/b","content":"x"}}`, "invalid_argument", "r"},
 		{"cancel missing convId", `{"type":"turn.cancel","requestId":"r","turnId":"t_1"}`, "invalid_argument", "r"},
 		{"cancel bad turnId", `{"type":"turn.cancel","requestId":"r","conversationId":"c_1","turnId":"a/b"}`, "invalid_argument", "r"},
@@ -385,7 +424,7 @@ func TestEmptyContentRunsAsFailedTurn(t *testing.T) {
 			_ event.TurnEventHandler) (appconversation.SendResult, error) {
 			return appconversation.SendResult{ConversationID: convID}, bad
 		},
-		efn: func(_ context.Context, _, _, _ string, _ event.TurnEventHandler) error {
+		efn: func(_ context.Context, _, _, _, _, _ string, _ appjob.SendOptions, _ event.TurnEventHandler) error {
 			return bad
 		},
 	})
@@ -819,7 +858,7 @@ func TestActiveTurnEditKind(t *testing.T) {
 		fn: func(context.Context, string, string, string, string, event.TurnEventHandler) (appconversation.SendResult, error) {
 			return appconversation.SendResult{UserMessagePersisted: true}, nil
 		},
-		efn: func(ctx context.Context, _, _, _ string, _ event.TurnEventHandler) error {
+		efn: func(ctx context.Context, _, _, _, _, _ string, _ appjob.SendOptions, _ event.TurnEventHandler) error {
 			select {
 			case <-release:
 				return nil

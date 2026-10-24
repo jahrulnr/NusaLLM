@@ -53,7 +53,8 @@ type Sender interface {
 		message string, attachments []valueobject.Attachment,
 		opts appjob.SendOptions,
 		onEvent event.TurnEventHandler) (appconversation.SendResult, error)
-	Edit(ctx context.Context, convID, msgID, content string,
+	Edit(ctx context.Context, convID, route, modelID, msgID, content string,
+		opts appjob.SendOptions,
 		onEvent event.TurnEventHandler) error
 }
 
@@ -269,16 +270,10 @@ func (h *Hub) turnSend(c *conn, cmd command) {
 			return
 		}
 	}
-	var opts appjob.SendOptions
-	if payload.Effort != "" {
-		effort, ok := enum.ParseEffort(payload.Effort)
-		if !ok {
-			c.push(errorFrame(cmd.RequestID, "invalid_argument", "turn.send payload.effort is not a known effort"))
-			return
-		}
-		opts.Effort = effort
+	opts, ok := turnSelection(c, cmd, payload.Effort, payload.Provider, payload.Workspace)
+	if !ok {
+		return
 	}
-	opts.Upstream = strings.TrimSpace(payload.Provider)
 	if payload.Environment != "" {
 		environment, ok := enum.ParseEnvironment(strings.TrimSpace(payload.Environment))
 		if !ok {
@@ -286,11 +281,6 @@ func (h *Hub) turnSend(c *conn, cmd command) {
 			return
 		}
 		opts.Environment = environment
-	}
-	if ws := strings.TrimSpace(payload.Workspace); ws != "" {
-		// The selected environment validates the path in the use case; a
-		// host filesystem check here would reject remote workspaces.
-		opts.Workspace = ws
 	}
 	// Every admitted send owns an exact-turn mailbox: turn.steer
 	// submissions land on this turn whether the job is running or still
@@ -322,9 +312,37 @@ func (h *Hub) turnEdit(c *conn, cmd command) {
 		c.push(errorFrame(cmd.RequestID, "invalid_argument", "turn.edit requires a valid payload.messageId"))
 		return
 	}
+	opts, ok := turnSelection(c, cmd, payload.Effort, payload.Provider, payload.Workspace)
+	if !ok {
+		return
+	}
 	h.admitAndRun(c, cmd.RequestID, convID, turn{
-		kind: turnEdit, msgID: payload.MessageID, content: payload.Content,
+		kind: turnEdit, route: payload.Route, modelID: payload.ModelID,
+		msgID: payload.MessageID, content: payload.Content, opts: opts,
 	})
+}
+
+// turnSelection parses the optional per-turn overrides turn.send and
+// turn.edit share — an effort enum word, an aggregator upstream pin, and
+// a workspace path — pushing an invalid_argument reply and reporting
+// ok=false on a bad effort word. "" keeps the room's stored binding; the
+// selected environment validates the workspace in the use case, never
+// here — a host filesystem check would reject remote workspaces.
+func turnSelection(c *conn, cmd command, effort, provider, workspace string) (appjob.SendOptions, bool) {
+	var opts appjob.SendOptions
+	if effort != "" {
+		e, ok := enum.ParseEffort(effort)
+		if !ok {
+			c.push(errorFrame(cmd.RequestID, "invalid_argument", cmd.Type+" payload.effort is not a known effort"))
+			return opts, false
+		}
+		opts.Effort = e
+	}
+	opts.Upstream = strings.TrimSpace(provider)
+	if ws := strings.TrimSpace(workspace); ws != "" {
+		opts.Workspace = ws
+	}
+	return opts, true
 }
 
 // admitAndRun claims a turn slot under the hub lock — admission
@@ -403,7 +421,7 @@ func (h *Hub) runTurn(t *turn) {
 		receipt, err = h.sender.Send(t.turnCtx, t.conversationID, t.route, t.modelID, t.content, nil, t.opts, onEvent)
 		persisted = receipt.UserMessagePersisted
 	case turnEdit:
-		err = h.sender.Edit(t.turnCtx, t.conversationID, t.msgID, t.content, onEvent)
+		err = h.sender.Edit(t.turnCtx, t.conversationID, t.route, t.modelID, t.msgID, t.content, t.opts, onEvent)
 	}
 
 	h.mu.Lock()

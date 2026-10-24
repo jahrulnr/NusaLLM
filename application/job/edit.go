@@ -21,6 +21,14 @@ type Edit struct {
 	Ctx     context.Context
 	MsgID   string
 	Content string
+	// Route/ModelID/Opts are the caller's per-turn selections — the same
+	// override contract as Send: "" keeps the room's stored binding, a
+	// successful regenerated turn re-binds the overrides to the room.
+	// Opts.Environment and Opts.Steering are send-only: the room's bound
+	// environment always applies, and steering rides the job's mailbox.
+	Route   string
+	ModelID string
+	Opts    SendOptions
 	OnEvent event.TurnEventHandler
 
 	steers SteeringInput
@@ -72,9 +80,31 @@ func (j *Edit) Execute(execCtx context.Context) (err error) {
 		if err != nil {
 			return err
 		}
-		gw, model, svc, err := d.resolveRoute(ctx, convID, conv, driver, "", "")
+		gw, model, svc, err := d.resolveRoute(ctx, convID, conv, driver, j.Route, j.ModelID)
 		if err != nil {
 			return err
+		}
+		route, modelID := gw.ID(), model.ID()
+		// Per-turn selections override the catalog entry in memory —
+		// the same contract Send applies, so a retry can switch the
+		// model that just failed. An override workspace is validated
+		// here but bound after the rewrite: the sealed reload swaps in
+		// a fresh aggregate, and the room's workspace rebinds the same
+		// way route/modelID do below.
+		if !j.Opts.Effort.IsUnset() {
+			model.SetEffort(j.Opts.Effort)
+		}
+		model.SetUpstream(j.Opts.Upstream)
+		workspace := ""
+		if j.Opts.Workspace != "" {
+			if driver.Workspace() == nil {
+				return apperror.New(500, "environment workspace unavailable", nil)
+			}
+			root, err := driver.Workspace().CheckRoot(j.Opts.Workspace)
+			if err != nil {
+				return apperror.New(400, "invalid conversation workspace", err)
+			}
+			workspace = root
 		}
 		if err := d.Convs.RewriteFrom(ctx, convID, j.MsgID, j.Content); err != nil {
 			return err
@@ -88,7 +118,15 @@ func (j *Edit) Execute(execCtx context.Context) (err error) {
 				conv.SetSystemPrompt(prompt.SystemPrompt("conversation"))
 			}
 		}
-		return d.runTurn(ctx, convID, conv, driver, gw, model, svc, j.OnEvent, &j.steers)
+		if workspace != "" {
+			conv.SetWorkspace(workspace)
+		}
+		if err := d.runTurn(ctx, convID, conv, driver, gw, model, svc, j.OnEvent, &j.steers); err != nil {
+			return err
+		}
+		conv.SetRoute(route)     // existing rooms re-bind only on success —
+		conv.SetModelID(modelID) // a failed override keeps the old binding
+		return d.Convs.Save(ctx, conv)
 	}()
 	return err
 }

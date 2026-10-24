@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	appcommand "github.com/jahrulnr/nusallm/application/command"
+	appjob "github.com/jahrulnr/nusallm/application/job"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
@@ -54,7 +55,8 @@ func (c *exportConversationAPI) Rename(context.Context, string, string) error {
 	return nil
 }
 func (c *exportConversationAPI) Compact(context.Context, string) error { return nil }
-func (c *exportConversationAPI) Edit(context.Context, string, string, string, event.TurnEventHandler) error {
+func (c *exportConversationAPI) Edit(context.Context, string, string, string, string, string,
+	appjob.SendOptions, event.TurnEventHandler) error {
 	return nil
 }
 func (c *exportConversationAPI) ToolSchemas(context.Context, string) ([]valueobject.ToolSchema, error) {
