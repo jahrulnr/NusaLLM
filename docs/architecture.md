@@ -298,6 +298,26 @@ is reused. Each iteration:
   `(unset)` when neither source supplies one. It persists like any
   message; adapters replay it as untrusted evidence alongside tool
   results; the system prompt never carries it.
+- **Hydrate skills.** The selected environment registers `skills` with
+  `ToolPermissionGeneral`: the discovery phase executes it with the turn's
+  workspace context before calling the provider, and the agent may call it to
+  refresh the catalog. Its exact catalog result (or error) is persisted as a
+  completed injection call on a system-role message. An unchanged
+  catalog/workspace pair is not repeated in the live tail; changes, removals,
+  workspace switches, and compaction that seals the last record cause a fresh
+  record. Discovery runs before every provider step, including retries after
+  compaction. `read_skill` loads selected bodies on demand. The system prompt
+  teaches selection; skill metadata remains in hydration rather than being
+  appended to the system prompt.
+- **Hydrate custom executable paths.** The same executed hydration phase runs
+  the driver's system-only `custom_tools` capability and records the PATH
+  directories supplied to its terminal tools. A `CommandEnvironment` port
+  resolves them per workspace for one-shot commands and new terminal sessions.
+  User executables remain terminal commands, with companion skills as usage
+  guidance. Private Python provisioning is lazy through the CLI interpreter
+  entrypoint; its process/network work belongs to `service/runtime`, while
+  launchers, extraction, staging, and cache publication belong to
+  `repository/runtime` through the `PythonRuntime` repository port.
 - **Call the provider.** `svc.Send(ctx, conv, gw, wireModel, onEvent)` —
   one attempt. Before the loop, `conv.SetTools(driver.ToolSchemas())` reapplies
   the live tool catalog every turn because a stored conversation can

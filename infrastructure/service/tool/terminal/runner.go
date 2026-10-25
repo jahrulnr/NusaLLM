@@ -9,14 +9,19 @@ import (
 	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 )
 
-type LocalRunner struct{}
+type LocalRunner struct{ environment dservice.CommandEnvironment }
 
-func NewLocalRunner() dservice.CommandRunner { return LocalRunner{} }
+func NewLocalRunner(environment dservice.CommandEnvironment) dservice.CommandRunner {
+	return LocalRunner{environment: environment}
+}
 
-func (LocalRunner) Run(ctx context.Context, command, workspace string, stdin io.Reader, output io.Writer) (dservice.ProcessExit, error) {
+func (r LocalRunner) Run(ctx context.Context, command, workspace string, stdin io.Reader, output io.Writer) (dservice.ProcessExit, error) {
 	cmd := shellCommand(ctx, command)
 	cmd.WaitDelay = waitDelay
 	cmd.Dir = workspace
+	if r.environment != nil {
+		cmd.Env = r.environment.Environ(workspace)
+	}
 	if stdin != nil {
 		cmd.Stdin = stdin
 	}

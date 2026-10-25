@@ -1,0 +1,15 @@
+---
+name: @@TOOL_NAME@@
+description: @@DESCRIPTION@@
+---
+
+# @@TITLE@@
+
+Invoke `@@TOOL_NAME@@` by name through NusaLLM `exec` or `exec_session`.
+The executable accepts one JSON value as an optional argument or on stdin
+(stdin is used when the argument is omitted). It writes one JSON result to
+stdout, diagnostics to stderr, and exits with 0 on success, 2 for invalid
+JSON input, or 1 for an unhandled runtime failure.
+
+See the [usage reference](references/usage.md) for the implementation path,
+resource directory, and example invocations.

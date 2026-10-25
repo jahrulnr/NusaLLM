@@ -78,9 +78,12 @@ type terminalSession struct {
 // sessionEnv builds the child environment: the daemon env minus the
 // scrubbed keys, then the scrub values — explicit overwrites beat relying
 // on last-entry-wins semantics.
-func sessionEnv() []string {
-	env := make([]string, 0, len(os.Environ())+len(scrubEnv))
-	for _, kv := range os.Environ() {
+func sessionEnv(parent []string) []string {
+	if parent == nil {
+		parent = os.Environ()
+	}
+	env := make([]string, 0, len(parent)+len(scrubEnv))
+	for _, kv := range parent {
 		key, _, _ := strings.Cut(kv, "=")
 		if _, scrubbed := scrubEnv[key]; !scrubbed {
 			env = append(env, kv)
@@ -95,7 +98,7 @@ func sessionEnv() []string {
 // spawnSession starts the child detached from any caller ctx — a session
 // must outlive the tool call that opened it, so exec.CommandContext is
 // deliberately not used. Terminate is the only reaper.
-func spawnSession(convID string, id int, req dservice.TerminalOpenRequest) (*terminalSession, error) {
+func spawnSession(convID string, id int, req dservice.TerminalOpenRequest, env []string) (*terminalSession, error) {
 	sess := &terminalSession{
 		id:          id,
 		tty:         req.TTY,
@@ -105,7 +108,7 @@ func spawnSession(convID string, id int, req dservice.TerminalOpenRequest) (*ter
 		interaction: make(chan struct{}, 1),
 		dir:         req.Dir,
 	}
-	sess.env = sessionEnv()
+	sess.env = sessionEnv(env)
 	sess.touch()
 	var err error
 	if req.TTY {

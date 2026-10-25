@@ -1,0 +1,40 @@
+"""Implementation template for @@TOOL_NAME@@."""
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+TOOL_NAME = "@@TOOL_NAME@@"
+TOOL_DIR = Path(__file__).resolve().parent
+RESOURCE_DIR = TOOL_DIR / "resources"
+
+
+def transform(payload):
+    """Replace this pass-through with the tool's requested transformation."""
+    return payload
+
+
+def main():
+    parser = argparse.ArgumentParser(description=f"Run {TOOL_NAME}.")
+    parser.add_argument(
+        "json_input",
+        nargs="?",
+        help="One JSON value; read stdin when omitted.",
+    )
+    args = parser.parse_args()
+    raw = args.json_input if args.json_input is not None else sys.stdin.read()
+    try:
+        payload = json.loads(raw)
+        result = transform(payload)
+    except json.JSONDecodeError as exc:
+        print(f"{TOOL_NAME}: invalid JSON input: {exc}", file=sys.stderr)
+        return 2
+
+    json.dump(result, sys.stdout, ensure_ascii=False)
+    sys.stdout.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

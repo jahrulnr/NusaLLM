@@ -28,7 +28,7 @@ func newTool(t *testing.T) service.Tool {
 	if err := os.Mkdir(filepath.Join(root, "c1"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	tool, err := NewExecTool(mustOutputRepo(t, root), NewLocalRunner())
+	tool, err := NewExecTool(mustOutputRepo(t, root), NewLocalRunner(nil))
 	if err != nil {
 		t.Fatalf("NewExecTool: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestExecSpillBelongsToConversationAndSurvivesAge(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(root, "c1"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	tool, err := NewExecTool(mustOutputRepo(t, root), NewLocalRunner())
+	tool, err := NewExecTool(mustOutputRepo(t, root), NewLocalRunner(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +273,7 @@ func TestExecSpillBelongsToConversationAndSurvivesAge(t *testing.T) {
 
 func TestExecDoesNotCreateMissingConversation(t *testing.T) {
 	root := t.TempDir()
-	tool, err := NewExecTool(mustOutputRepo(t, root), NewLocalRunner())
+	tool, err := NewExecTool(mustOutputRepo(t, root), NewLocalRunner(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +288,7 @@ func TestExecDoesNotCreateMissingConversation(t *testing.T) {
 
 func TestExecRejectsInvalidConversationIDBeforeRunning(t *testing.T) {
 	root := t.TempDir()
-	tool, err := NewExecTool(mustOutputRepo(t, root), NewLocalRunner())
+	tool, err := NewExecTool(mustOutputRepo(t, root), NewLocalRunner(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +309,7 @@ func TestExecRejectsConversationFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "c1"), []byte("not a room"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	tool, err := NewExecTool(mustOutputRepo(t, root), NewLocalRunner())
+	tool, err := NewExecTool(mustOutputRepo(t, root), NewLocalRunner(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +324,7 @@ func TestExecExitSuffixOverflowSpillsWholeOutput(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(root, "c1"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	tool, err := NewExecTool(mustOutputRepo(t, root), NewLocalRunner())
+	tool, err := NewExecTool(mustOutputRepo(t, root), NewLocalRunner(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -452,7 +452,7 @@ func TestExecSpillWriteFailureHonestMarker(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(root, "c1"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	tool, err := NewExecTool(mustOutputRepo(t, root), NewLocalRunner())
+	tool, err := NewExecTool(mustOutputRepo(t, root), NewLocalRunner(nil))
 	if err != nil {
 		t.Fatal(err)
 	}

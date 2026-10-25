@@ -43,6 +43,8 @@ func main() {
 	}
 	if len(args) > 0 {
 		switch args[0] {
+		case "python":
+			os.Exit(runPython(args[1:]))
 		case "-h", "--help", "help":
 			fmt.Print(usage)
 			return
@@ -87,6 +89,7 @@ Usage:
   ` + admin.CLIName + ` onboard          guided provider setup wizard
   ` + admin.CLIName + ` gateway <...>    manage provider routes — list/show/add/set/delete
   ` + admin.CLIName + ` config <...>     inspect and patch the config file — show/path/set/unset/validate
+  ` + admin.CLIName + ` python [args...] run Python; reuse a suitable host interpreter or download a private standalone runtime
   ` + admin.CLIName + ` conversation repair <id> --discard-duplicate|--commit|--finish-rewrite (offline recovery)
   ` + admin.CLIName + ` serve [--port N] local WebUI — loopback only (default port 10998 from server.port)
   ` + admin.CLIName + ` serve install|start|stop|status|uninstall

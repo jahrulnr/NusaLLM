@@ -236,6 +236,21 @@ tool.
    to pin the working directory, and registration in `Tools` makes the
    name resolve while keeping it off the provider's tool list.
 
+   `tool/skill` demonstrates a dual-use executed hydration tool: the
+   environment registers `skills` as `ToolPermissionGeneral`, so
+   `application/job/hydration.go` invokes it before provider calls and the
+   agent can also call it to refresh the catalog. The hydration result is
+   recorded exactly. Its repository owns discovery across builtin, global,
+   and workspace roots. A separate `read_skill` agent tool loads the selected
+   source. See
+   [Skill discovery](adapters.md) for layout, precedence, and diagnostics.
+
+   The same executed hydration phase records `custom_tools` paths. This is a
+   reused phase for two concrete system tools, rather than a second copy of
+   execute/deduplicate/persist logic. Terminal-invoked user executables need
+   only a PATH directory and, when useful, a companion skill; they do not follow
+   the Go tool registration checklist. See [Custom executables and Python](adapters.md#custom-executables-and-python).
+
 3. **Treat `call.Input()` as untrusted JSON.** Unmarshal it into a local
    struct, validate the fields (`exec.go` rejects an empty command even
    though the schema marks it required — the model wrote it, not you), and
@@ -290,9 +305,56 @@ tool.
    dialogue instead skips the map: `infrastructure/service/tool/summary`
    is constructed at the composition root and injected through
    `Deps.SummaryTool` (the same seam as `Deps.Terminals`), so only the
-   compaction job's scratch conversation ever offers it. The tool package
-   still lives under `tool/` — the difference is the delivery channel,
-   not the boundary.
+	compaction job's scratch conversation ever offers it. The tool package
+	still lives under `tool/` — the difference is the delivery channel,
+	not the boundary.
+
+## Authoring skills and custom executables
+
+`skill-creator` and `tool-creator` are builtin skills with source under
+`assets/skills/`. Read them with `read_skill` and use the returned skill
+directory for script paths. Do not edit the application-owned builtin copy;
+it is refreshed from the binary. NusaLLM discovers `name` and `description`
+from `SKILL.md`; it does not interpret `agents/openai.yaml` UI or policy
+fields.
+
+Create and validate a workspace skill with:
+
+```sh
+python3 <skill-creator-directory>/scripts/init_skill.py my-skill
+python3 <skill-creator-directory>/scripts/quick_validate.py .agents/skills/my-skill
+```
+
+`init_skill.py` defaults to `<cwd>/.agents/skills/`; use `--scope global` for
+`~/.agents/skills/`, or `--path` for another root. It also creates the
+optional `agents/openai.yaml`. Regenerate it only when a compatible host
+consumes that metadata:
+
+```sh
+python3 <skill-creator-directory>/scripts/generate_openai_yaml.py .agents/skills/my-skill
+```
+
+The validator and metadata generator use the bundled pure-Python PyYAML 6.0.1
+package and its license, so neither system PyYAML nor pip is required.
+
+Create and validate a direct-PATH custom executable with:
+
+```sh
+python3 <tool-creator-directory>/scripts/init_tool.py json-echo
+python3 <tool-creator-directory>/scripts/validate_tool.py json-echo
+printf '{"message":"ready"}\n' | json-echo
+```
+
+The tool initializer defaults to `<cwd>/.agents/tools/bin/` and
+`<cwd>/.agents/skills/`; use `--scope global`, `--tools-dir`, or `--skills-dir`
+to select other roots. It creates a Python launcher, implementation and
+resource directory, plus a companion skill, and refuses to overwrite any
+existing target. The generated contract is one JSON value on stdin or as an
+argument, one JSON result on stdout, diagnostics on stderr, and exit codes 0
+(success), 2 (invalid input), or 1 (runtime failure). The helper scripts use
+Python's standard library; the generated example uses the NusaLLM `python3`
+launcher. Native binaries and wrappers for other installed runtimes are also
+valid custom tools.
 
 ## Recipe: a new execution environment
 

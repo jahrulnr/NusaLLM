@@ -414,7 +414,101 @@ backpressure the tool, and chunks are never persisted.
 | `web_search` | `tool/web` (`web.go`) | Searchwire metasearch across Brave/Startpage/Wikipedia/GitHub (+ keyed sources); ranked results with partial-failure reporting |
 | `web_fetch` | `tool/web` (`web.go`) | Searchwire fetch — one URL → readable text; truncated output spilled to a `tempFile` for follow-up `read_file` |
 | `workspace` | `tool/workspace` | Harness-side hydration record — `ToolPermissionSystem`, pins the turn's working directory into history as a completed call |
+| `skills` | `tool/skill` | `ToolPermissionGeneral`: discovery is automatically recorded as hydration and can also be called by the agent to refresh the catalog |
+| `read_skill` | `tool/skill` | Agent-callable full SKILL.md read by catalog name, using the turn's selected workspace |
+| `custom_tools` | `tool/custom` | System-only hydration of executable directories used by both terminal execution paths |
 | `summary` | `tool/summary` | Compaction checkpoint contract — injected into `Deps`, never in a room's agent-facing catalog |
+
+Skill discovery uses the injected `repository.Skills` port. The local repository
+reads immediate child directories (including symlinked directories) containing
+`SKILL.md` under `<workspace>/.agents/skills/`, `~/.agents/skills/`, and
+`<storage.dir>/builtin-skills/`. YAML frontmatter requires nonempty `name` and
+`description`; optional metadata and multiline YAML descriptions are supported.
+The effective catalog is sorted by declared name, with workspace > global >
+builtin precedence. Duplicate names within one root select the first directory
+in lexical order and report a diagnostic. Missing roots are empty; malformed
+skills and unreadable roots are reported as diagnostics without dropping valid
+entries. `read_skill` returns the original source and its absolute directory;
+supporting resources are read or executed from that directory as needed.
+
+Composition embeds and atomically installs `skill-creator` and `tool-creator`
+into the application-owned builtin root. Shipped files are refreshed from the
+binary on startup; user customizations belong in global or workspace roots.
+The source trees are `assets/skills/skill-creator/` and
+`assets/skills/tool-creator/`; nested scripts, references, templates, icons,
+and licenses are embedded and materialized with each skill.
+The terminal environment provides custom executable paths and a lazy Python
+runtime as described below.
+
+### Custom executables and Python
+
+Custom tools are ordinary commands executed through `exec` or `exec_session`.
+There is no per-command manifest, Go registration, or provider `tools[]` entry.
+Their companion skills describe selection, arguments, outputs, and dependencies.
+The `custom_tools` hydration record advertises directories in PATH order:
+
+1. `<workspace>/.agents/tools/bin/`
+2. `~/.agents/tools/bin/`
+3. `tools.paths`, in configured order (relative paths resolve against the workspace;
+   `~/` expands against the user's home)
+4. `<storage.dir>/tools/bin/`
+5. `<storage.dir>/runtimes/bin/` contains managed `python` and `python3` launchers
+6. The inherited host PATH
+
+`LocalEnvironment` builds an environment for each command's workspace. Both
+`LocalRunner` and `SessionStore` receive it through the `CommandEnvironment`
+port, so one-shot exec, session pipes, and PTY share path resolution. It does
+not mutate the daemon environment. Sessions retain the environment selected
+when they were opened. New executables in existing directories are immediately
+available; configuration changes take effect when the engine is restarted.
+
+For example, configure additional paths with:
+
+```sh
+nusallm config set tools.paths '["./commands/bin","~/shared-tools/bin"]'
+```
+
+Place native binaries or executable wrappers in a PATH directory, and keep
+supporting resources in the tool's own directory. On Unix, an executable Python
+script can use `#!/usr/bin/env python3`; on Windows, use a native executable or
+a `.cmd` wrapper. Invocation keeps the active workspace as cwd. The shipped
+`tool-creator` skill explains the layout and companion skill contract.
+
+Create and validate a workspace tool with the bundled helper scripts:
+
+```sh
+python3 <tool-creator-directory>/scripts/init_tool.py json-echo
+python3 <tool-creator-directory>/scripts/validate_tool.py json-echo
+```
+
+Use `--scope global` for the user-wide roots, or pass `--tools-dir` and
+`--skills-dir` for explicit locations. The initializer creates a Python
+launcher, an implementation/resource directory, and a companion skill; it
+does not overwrite existing targets. The validator checks local references
+and runs `--help` plus a JSON probe.
+
+The managed launchers invoke `nusallm python [args...]`. This command probes
+host interpreters first: Python >=3.11 and <4 with functioning SSL, SQLite,
+venv, archive, JSON, HTTP, filesystem, subprocess, and asyncio stdlib modules.
+The probe excludes the managed launchers themselves to avoid recursion. If no
+host interpreter qualifies, it validates a cached private installation. Only
+when neither qualifies does it download pinned CPython 3.13.17 from Astral's
+[python-build-standalone 20261021 release](https://github.com/astral-sh/python-build-standalone/releases/tag/20261021).
+The published asset digest is checked and the staged interpreter is probed
+before the repository atomically publishes its cache pointer. Published
+installation paths are immutable so parallel launchers do not move a runtime
+another process is using. Provisioning diagnostics go to stderr; program
+arguments, stdin, stdout, stderr, and exit codes are forwarded.
+
+Automatic downloads cover amd64/arm64 Linux (glibc or musl), macOS, and Windows.
+Other platforms can reuse a qualifying host interpreter. Runtime downloads are
+lazy: shell, Node, and native binaries remain usable without Python or network
+access. A valid cached Python works offline. The feature does not install Node,
+Go, third-party Python packages, or ML weights. `NUSALLM_RUNTIME_DIR`, set in
+the child environment, points launchers at the engine's runtime store.
+The `tool-creator` helpers use only Python's standard library. The
+`skill-creator` frontmatter scripts use the bundled pure-Python PyYAML 6.0.1
+modules and license; they do not require system PyYAML or a pip install.
 
 The `web_*` tools are thin adapters over `github.com/jahrulnr/searchwire`
 `Searcher.Tools()` — searchwire owns the tool contract (name, description,

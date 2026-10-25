@@ -817,7 +817,7 @@ func TestToolCallLoopRunsEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	execTool, err := toolexec.NewExecTool(toolOutputs, toolexec.NewLocalRunner())
+	execTool, err := toolexec.NewExecTool(toolOutputs, toolexec.NewLocalRunner(nil))
 	if err != nil {
 		t.Fatal(err)
 	}

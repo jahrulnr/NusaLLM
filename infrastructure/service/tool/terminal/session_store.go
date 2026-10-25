@@ -24,12 +24,13 @@ const (
 // to its live sessions. Session goroutines are detached from any caller
 // ctx — the store, not a job, owns their lifetime.
 type SessionStore struct {
-	mu    sync.Mutex
-	rooms map[string]map[int]*terminalSession
+	mu          sync.Mutex
+	rooms       map[string]map[int]*terminalSession
+	environment dservice.CommandEnvironment
 }
 
-func NewSessionStore() *SessionStore {
-	return &SessionStore{rooms: map[string]map[int]*terminalSession{}}
+func NewSessionStore(environment dservice.CommandEnvironment) *SessionStore {
+	return &SessionStore{rooms: map[string]map[int]*terminalSession{}, environment: environment}
 }
 
 // Open spawns and registers the session before returning — the entry must
@@ -39,7 +40,11 @@ func (s *SessionStore) Open(ctx context.Context, convID string, req dservice.Ter
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	sess, err := spawnSession(convID, 0, req)
+	var env []string
+	if s.environment != nil {
+		env = s.environment.Environ(req.Dir)
+	}
+	sess, err := spawnSession(convID, 0, req, env)
 	if err != nil {
 		return nil, err
 	}

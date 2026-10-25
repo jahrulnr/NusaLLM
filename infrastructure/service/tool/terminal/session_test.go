@@ -46,7 +46,7 @@ func collectUntil(t *testing.T, sess dservice.TerminalSession, want string, maxW
 }
 
 func TestSessionExitWithinYield(t *testing.T) {
-	store := NewSessionStore()
+	store := NewSessionStore(nil)
 	defer store.TerminateAll()
 	sess := open(t, store, dservice.TerminalOpenRequest{Command: "echo hello && exit 3"})
 	poll := collectUntil(t, sess, "hello", 5*time.Second)
@@ -62,7 +62,7 @@ func TestSessionExitWithinYield(t *testing.T) {
 }
 
 func TestSessionSurvivesCallContext(t *testing.T) {
-	store := NewSessionStore()
+	store := NewSessionStore(nil)
 	defer store.TerminateAll()
 	sess := open(t, store, dservice.TerminalOpenRequest{Command: "sleep 0.3; echo done"})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -86,7 +86,7 @@ func TestSessionWriteRoundtrip(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("pty allocation is linux-only for now")
 	}
-	store := NewSessionStore()
+	store := NewSessionStore(nil)
 	defer store.TerminateAll()
 	sess := open(t, store, dservice.TerminalOpenRequest{Command: "read line; echo got:$line", TTY: true})
 	if err := sess.Write([]byte("ping\n")); err != nil {
@@ -103,7 +103,7 @@ func TestSessionWriteRoundtrip(t *testing.T) {
 // and Write reports ErrTerminalStdinClosed — only the interrupt path
 // remains.
 func TestSessionPipesStdinClosed(t *testing.T) {
-	store := NewSessionStore()
+	store := NewSessionStore(nil)
 	defer store.TerminateAll()
 	fed := open(t, store, dservice.TerminalOpenRequest{Command: "read line; echo eof"})
 	poll := collectUntil(t, fed, "eof", 5*time.Second)
@@ -119,7 +119,7 @@ func TestSessionPipesStdinClosed(t *testing.T) {
 // TestWriteStdinPipesRejectsChars covers the tool-level error the model
 // sees: actionable guidance, not just a closed-fd failure.
 func TestWriteStdinPipesRejectsChars(t *testing.T) {
-	store := NewSessionStore()
+	store := NewSessionStore(nil)
 	defer store.TerminateAll()
 	sess := open(t, store, dservice.TerminalOpenRequest{Command: "sleep 60"})
 	tool, err := NewWriteStdinTool(store)
@@ -139,7 +139,7 @@ func TestWriteStdinPipesRejectsChars(t *testing.T) {
 // running fn. Same outcome if the queued call's first lookup lands after
 // the reap: either way fn never runs on a stale session.
 func TestInteractQueuedCallSeesReap(t *testing.T) {
-	store := NewSessionStore()
+	store := NewSessionStore(nil)
 	defer store.TerminateAll()
 	sess := open(t, store, dservice.TerminalOpenRequest{Command: "sleep 60"})
 	concrete := store.rooms[testConv][sess.ID()]
@@ -170,7 +170,7 @@ func TestInteractQueuedCallSeesReap(t *testing.T) {
 // TestInteractQueueHonorsCtx cancels a call parked on the interaction
 // semaphore — an interrupted turn must not wait out a long poll.
 func TestInteractQueueHonorsCtx(t *testing.T) {
-	store := NewSessionStore()
+	store := NewSessionStore(nil)
 	defer store.TerminateAll()
 	sess := open(t, store, dservice.TerminalOpenRequest{Command: "sleep 60"})
 	concrete := store.rooms[testConv][sess.ID()]
@@ -188,7 +188,7 @@ func TestInteractQueueHonorsCtx(t *testing.T) {
 // TestInteractSerializes proves the semaphore is real mutual exclusion —
 // two concurrent interactions on one session never overlap inside fn.
 func TestInteractSerializes(t *testing.T) {
-	store := NewSessionStore()
+	store := NewSessionStore(nil)
 	defer store.TerminateAll()
 	sess := open(t, store, dservice.TerminalOpenRequest{Command: "sleep 60"})
 
@@ -218,7 +218,7 @@ func TestInteractSerializes(t *testing.T) {
 // a call queued on the old session's semaphore must observe the registry
 // swap and refuse to run — not just a missing entry, a *different* one.
 func TestInteractIdentityReplaced(t *testing.T) {
-	store := NewSessionStore()
+	store := NewSessionStore(nil)
 	defer store.TerminateAll()
 	sess := open(t, store, dservice.TerminalOpenRequest{Command: "sleep 60"})
 	concrete := store.rooms[testConv][sess.ID()]
@@ -257,7 +257,7 @@ func TestInteractIdentityReplaced(t *testing.T) {
 // whose interaction semaphore is held — a write/poll in flight is never
 // SIGKILLed by the room cap.
 func TestPruneSkipsHeldInteraction(t *testing.T) {
-	store := NewSessionStore()
+	store := NewSessionStore(nil)
 	room := map[int]*terminalSession{}
 	held := &terminalSession{id: 900, notify: make(chan struct{}, 1), interaction: make(chan struct{}, 1)}
 	held.lastUsed.Store(0) // oldest — first eviction candidate
@@ -287,7 +287,7 @@ func TestPruneSkipsHeldInteraction(t *testing.T) {
 // interrupt landing on a just-dead session is not an error — the call
 // still returns the final screenful.
 func TestWriteStdinCtrlCOnExitedCollects(t *testing.T) {
-	store := NewSessionStore()
+	store := NewSessionStore(nil)
 	defer store.TerminateAll()
 	sess := open(t, store, dservice.TerminalOpenRequest{Command: "echo bye"})
 	deadline := time.Now().Add(5 * time.Second)
@@ -322,7 +322,7 @@ func TestSessionEnvScrubs(t *testing.T) {
 	t.Setenv("PAGER", "less")
 	t.Setenv("TERM", "xterm-256color")
 	got := map[string]string{}
-	for _, kv := range sessionEnv() {
+	for _, kv := range sessionEnv(nil) {
 		k, v, _ := strings.Cut(kv, "=")
 		got[k] = v
 	}
@@ -337,7 +337,7 @@ func TestSessionEnvScrubs(t *testing.T) {
 }
 
 func TestSessionInterruptBySignal(t *testing.T) {
-	store := NewSessionStore()
+	store := NewSessionStore(nil)
 	defer store.TerminateAll()
 	sess := open(t, store, dservice.TerminalOpenRequest{Command: "sleep 60"})
 	if err := sess.Interrupt(); err != nil {
@@ -354,7 +354,7 @@ func TestSessionInterruptBySignal(t *testing.T) {
 }
 
 func TestTerminateConversationReaps(t *testing.T) {
-	store := NewSessionStore()
+	store := NewSessionStore(nil)
 	defer store.TerminateAll()
 	sess := open(t, store, dservice.TerminalOpenRequest{Command: "sleep 60"})
 	store.TerminateConversation(testConv)
@@ -393,7 +393,7 @@ func TestSessionBufferOmission(t *testing.T) {
 }
 
 func TestPrunePrefersExited(t *testing.T) {
-	store := NewSessionStore()
+	store := NewSessionStore(nil)
 	room := map[int]*terminalSession{}
 	// 63 dead old sessions + one live new one must not evict the live.
 	for i := 0; i < maxSessionsPerRoom; i++ {
@@ -417,7 +417,7 @@ func TestPrunePrefersExited(t *testing.T) {
 // TestExecSessionDeliversRunningID exercises the tool contract: a
 // long-lived command yields the session-id header the model keys on.
 func TestExecSessionDeliversRunningID(t *testing.T) {
-	store := NewSessionStore()
+	store := NewSessionStore(nil)
 	defer store.TerminateAll()
 	tool, err := NewExecSessionTool(store)
 	if err != nil {
@@ -437,7 +437,7 @@ func TestExecSessionDeliversRunningID(t *testing.T) {
 // TestExecSessionReportsOriginalBytes pins the pre-truncation count —
 // the model must see the scale of what was collected before windowing.
 func TestExecSessionReportsOriginalBytes(t *testing.T) {
-	store := NewSessionStore()
+	store := NewSessionStore(nil)
 	defer store.TerminateAll()
 	tool, err := NewExecSessionTool(store)
 	if err != nil {
@@ -458,7 +458,7 @@ func TestExecSessionReportsOriginalBytes(t *testing.T) {
 // ctx before the response lands must not leave a live session behind —
 // the id never reached the model, so nothing could reap it later.
 func TestExecSessionUndeliveredIDKills(t *testing.T) {
-	store := NewSessionStore()
+	store := NewSessionStore(nil)
 	defer store.TerminateAll()
 	tool, err := NewExecSessionTool(store)
 	if err != nil {
@@ -485,7 +485,7 @@ func TestExecSessionUndeliveredIDKills(t *testing.T) {
 
 // TestWriteStdinCtrlC exercises the \x03 → interrupt mapping on pipes.
 func TestWriteStdinCtrlC(t *testing.T) {
-	store := NewSessionStore()
+	store := NewSessionStore(nil)
 	defer store.TerminateAll()
 	sess := open(t, store, dservice.TerminalOpenRequest{Command: "sleep 60"})
 	tool, err := NewWriteStdinTool(store)
@@ -509,7 +509,7 @@ func TestWriteStdinCtrlC(t *testing.T) {
 
 // TestWriteStdinUnknownSession reports a clean lookup failure.
 func TestWriteStdinUnknownSession(t *testing.T) {
-	store := NewSessionStore()
+	store := NewSessionStore(nil)
 	defer store.TerminateAll()
 	tool, err := NewWriteStdinTool(store)
 	if err != nil {
@@ -528,7 +528,7 @@ func TestSessionPTYIsATty(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("pty allocation is linux-only for now")
 	}
-	store := NewSessionStore()
+	store := NewSessionStore(nil)
 	defer store.TerminateAll()
 	sess := open(t, store, dservice.TerminalOpenRequest{
 		Command: "test -t 0 && echo istty || echo notty",
@@ -549,7 +549,7 @@ func TestSessionPTYCtrlC(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("pty allocation is linux-only for now")
 	}
-	store := NewSessionStore()
+	store := NewSessionStore(nil)
 	defer store.TerminateAll()
 	sess := open(t, store, dservice.TerminalOpenRequest{Command: "sleep 60", TTY: true})
 	if err := sess.Write([]byte{3}); err != nil {

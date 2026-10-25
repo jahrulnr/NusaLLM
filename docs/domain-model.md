@@ -218,6 +218,14 @@ with the room's tool catalog (`tool/workspace`), so the call the model
 observed is a known-but-not-agent-callable tool. Injection calls on any
 other carrier (legacy user-role records) still fold to inline text.
 
+The `skills` catalog follows a dual-use `ToolPermissionGeneral` contract: the
+application refreshes and persists its result as an injection before provider
+calls, while the agent may call it to refresh the catalog on demand.
+`read_skill` remains agent-only and loads selected bodies by catalog name;
+neither tool requires a new message role or provenance type.
+`repository.Skills` exposes the effective catalog and full source reads;
+filesystem layout and YAML parsing belong to its repository implementation.
+
 `SetOutput` retains raw output even when it exceeds `outputBudget` (default
 32000, tunable via `SetOutputBudget`) and fixes the call latency at completion.
 `HasOutput` distinguishes a completed empty result from a pending call.

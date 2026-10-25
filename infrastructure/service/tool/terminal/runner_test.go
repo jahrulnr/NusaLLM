@@ -12,7 +12,7 @@ import (
 // evidence, a signal death is reported as a signal (not an exit code), and
 // a command that cannot start is a Go error.
 func TestLocalRunnerExitSignalAndStartFailure(t *testing.T) {
-	runner := NewLocalRunner()
+	runner := NewLocalRunner(nil)
 	var out bytes.Buffer
 
 	res, err := runner.Run(t.Context(), "exit 5", "", nil, &out)
@@ -37,7 +37,7 @@ func TestLocalRunnerExitSignalAndStartFailure(t *testing.T) {
 // order rather than concatenating the streams.
 func TestLocalRunnerMergesStreams(t *testing.T) {
 	var out bytes.Buffer
-	if _, err := NewLocalRunner().Run(t.Context(), "echo o1; echo e1 >&2; echo o2", "", nil, &out); err != nil {
+	if _, err := NewLocalRunner(nil).Run(t.Context(), "echo o1; echo e1 >&2; echo o2", "", nil, &out); err != nil {
 		t.Fatal(err)
 	}
 	got := out.String()

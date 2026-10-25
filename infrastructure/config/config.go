@@ -19,6 +19,7 @@ type Config struct {
 	Service      ServiceConfig      `json:"service"`
 	Storage      StorageConfig      `json:"storage"`
 	Log          LogConfig          `json:"log"`
+	Tools        ToolsConfig        `json:"tools"`
 }
 
 // Normalize runs each section's normalization — invalid values clamp to
@@ -30,6 +31,7 @@ func (c *Config) Normalize() {
 	c.Service.Normalize()
 	c.Storage.Normalize()
 	c.Log.Normalize()
+	c.Tools.Normalize()
 }
 
 // NewConfig returns the defaults — scalar tunables read their `default`

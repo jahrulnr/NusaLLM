@@ -28,6 +28,21 @@ func newApp(t *testing.T) (*SettingApp, string) {
 	return New(repoconfig.NewLocal(), path), path
 }
 
+func TestSetCustomToolPaths(t *testing.T) {
+	app, _ := newApp(t)
+	raw, err := app.Set("tools.paths", `["./commands","/opt/custom/bin"]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Validate(raw)
+	if err != nil || !reflect.DeepEqual(cfg.Tools.Paths, []string{"./commands", "/opt/custom/bin"}) {
+		t.Fatalf("paths=%v %v", cfg.Tools.Paths, err)
+	}
+	if _, err := app.Set("tools.paths", `[42]`); err == nil {
+		t.Fatal("non-string tool path accepted")
+	}
+}
+
 func TestUnsetExplainsNonSectionValue(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(`{"storage":123}`), 0o644); err != nil {

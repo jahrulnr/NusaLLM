@@ -1,0 +1,14 @@
+# @@TITLE@@ usage
+
+Run `@@TOOL_NAME@@` by command name through NusaLLM `exec` or `exec_session`.
+The generated wrapper is placed in the selected tools directory.
+
+Provide one JSON value either as the optional positional argument or on stdin.
+When the argument is omitted, the executable reads stdin. Successful output is
+one JSON value on stdout. Diagnostics go to stderr. Exit codes are 0 for success,
+2 for invalid JSON input or invalid arguments, and 1 for an unhandled runtime
+failure.
+
+The implementation is `@@TOOL_NAME@@.tool/main.py`. Add tool-owned files under
+`@@TOOL_NAME@@.tool/resources/`; `RESOURCE_DIR` in `main.py` resolves that path
+from the implementation file, independent of the caller's working directory.

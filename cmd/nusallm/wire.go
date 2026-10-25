@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -14,16 +15,21 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/redact"
 	repoconfig "github.com/jahrulnr/nusallm/infrastructure/repository/config"
 	repoconversation "github.com/jahrulnr/nusallm/infrastructure/repository/conversation"
+	repofiletree "github.com/jahrulnr/nusallm/infrastructure/repository/filetree"
 	repogateway "github.com/jahrulnr/nusallm/infrastructure/repository/gateway"
 	repolog "github.com/jahrulnr/nusallm/infrastructure/repository/log"
+	reporuntime "github.com/jahrulnr/nusallm/infrastructure/repository/runtime"
 	reposecret "github.com/jahrulnr/nusallm/infrastructure/repository/secret"
+	reposkill "github.com/jahrulnr/nusallm/infrastructure/repository/skill"
 	repoworkspace "github.com/jahrulnr/nusallm/infrastructure/repository/workspace"
 	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
 	textcompletion "github.com/jahrulnr/nusallm/infrastructure/service/core/text/completion"
 	textgeneratecontent "github.com/jahrulnr/nusallm/infrastructure/service/core/text/generatecontent"
 	textmessages "github.com/jahrulnr/nusallm/infrastructure/service/core/text/messages"
 	textresponses "github.com/jahrulnr/nusallm/infrastructure/service/core/text/responses"
+	toolcustom "github.com/jahrulnr/nusallm/infrastructure/service/tool/custom"
 	toolfile "github.com/jahrulnr/nusallm/infrastructure/service/tool/file"
+	toolskill "github.com/jahrulnr/nusallm/infrastructure/service/tool/skill"
 	toolsummary "github.com/jahrulnr/nusallm/infrastructure/service/tool/summary"
 	toolexec "github.com/jahrulnr/nusallm/infrastructure/service/tool/terminal"
 	toolweb "github.com/jahrulnr/nusallm/infrastructure/service/tool/web"
@@ -54,11 +60,43 @@ func compose(cfg config.Config, secrets *reposecret.Store, configPath, workspace
 	if workspaceRoot == "" {
 		return nil, errors.New("compose: workspace root is required")
 	}
-	dir := cfg.Storage.Dir
+	dir, err := filepath.Abs(cfg.Storage.Dir)
+	if err != nil {
+		return nil, err
+	}
 	gateways := repogateway.NewGatewayRepository(filepath.Join(dir, "gateways"), secrets)
 	convs := repoconversation.NewConversationRepository(filepath.Join(dir, "conversations"))
 	tools := map[string]dservice.Tool{}
 	workspaceStore := repoworkspace.NewLocal()
+	home, err := repofiletree.NewLocal().HomeDir()
+	if err != nil {
+		return nil, err
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	if err := reporuntime.PrepareLaunchers(filepath.Join(dir, "runtimes"), executable); err != nil {
+		return nil, err
+	}
+	commandEnv := toolexec.LocalEnvironment{Home: home, Storage: dir, Paths: cfg.Tools.Paths}
+	customTools, err := toolcustom.NewTool(commandEnv)
+	if err != nil {
+		return nil, err
+	}
+	builtinDir := filepath.Join(dir, "builtin-skills")
+	if err := reposkill.InstallBuiltins(builtinDir, toolskill.Builtins()); err != nil {
+		return nil, err
+	}
+	skillStore := reposkill.NewLocal(home, builtinDir)
+	skills, err := toolskill.NewSkillsTool(skillStore)
+	if err != nil {
+		return nil, err
+	}
+	readSkill, err := toolskill.NewReadSkillTool(skillStore)
+	if err != nil {
+		return nil, err
+	}
 	readFile, err := toolfile.NewFileReadTool(workspaceStore, workspaceRoot)
 	if err != nil {
 		return nil, err
@@ -79,14 +117,14 @@ func compose(cfg config.Config, secrets *reposecret.Store, configPath, workspace
 	if err != nil {
 		return nil, err
 	}
-	execTool, err := toolexec.NewExecTool(toolOutputs, toolexec.NewLocalRunner())
+	execTool, err := toolexec.NewExecTool(toolOutputs, toolexec.NewLocalRunner(commandEnv))
 	if err != nil {
 		return nil, err
 	}
 	// One terminal-session registry shared by every conversation — tools
 	// resolve the room from ctx; the app reaps through it on delete and
 	// shutdown.
-	terminals := toolexec.NewSessionStore()
+	terminals := toolexec.NewSessionStore(commandEnv)
 	execSession, err := toolexec.NewExecSessionTool(terminals)
 	if err != nil {
 		return nil, err
@@ -108,7 +146,7 @@ func compose(cfg config.Config, secrets *reposecret.Store, configPath, workspace
 	if err != nil {
 		return nil, err
 	}
-	for _, tool := range []dservice.Tool{readFile, writeFile, patchFile, readMedia, execTool, execSession, writeStdin, workspaceRecord} {
+	for _, tool := range []dservice.Tool{readFile, writeFile, patchFile, readMedia, execTool, execSession, writeStdin, workspaceRecord, skills, readSkill, customTools} {
 		tools[tool.Schema().Name()] = tool
 	}
 	// Web search/fetch run locally through searchwire so the bound model

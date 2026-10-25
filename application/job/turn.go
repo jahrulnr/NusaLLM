@@ -131,6 +131,11 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 			}
 			pinnedID = conv.Last().ID()
 		}
+		for _, name := range []string{"skills", "custom_tools"} {
+			if err := d.appendToolContext(ctx, convID, conv, driver, name); err != nil {
+				return err
+			}
+		}
 		before := len(conv.Messages())
 		var parts []entity.MessagePart
 		captureEvent := func(ev event.TurnEvent) {
