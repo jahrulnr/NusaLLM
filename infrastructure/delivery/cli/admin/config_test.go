@@ -310,3 +310,58 @@ func TestLoadConfigLenientRejectsNullDocument(t *testing.T) {
 		t.Fatal("store-backed admin command must not use defaults for a null config document")
 	}
 }
+
+// loadEnvFile imports every unset key in .env into the process
+// environment — the documented contract (provider `env:` secret refs
+// resolve through os.Getenv, and the file exists to carry them). Keys
+// that steer child processes, path resolution, or the provider wire are
+// refused: an LD_PRELOAD from a cloned repo's .env would load into
+// every tool subprocess, XDG_* would silently redirect config and data
+// lookup, and a proxy or CA override would MITM the requests that carry
+// gateway keys.
+func TestDotEnvLoadsSecretRefsAndRejectsSteeringKeys(t *testing.T) {
+	dir := t.TempDir()
+	env := filepath.Join(dir, ".env")
+	if err := os.WriteFile(env, []byte(
+		"CONFIG_PATH=/tmp/from-dotenv/config.json\n"+
+			"NUSALLM_PROVIDER_KEY=sk-live\n"+
+			"LD_PRELOAD=/tmp/evil.so\n"+
+			"BASH_ENV=/tmp/evil.sh\n"+
+			"NODE_OPTIONS=--require /tmp/evil.js\n"+
+			"XDG_CONFIG_HOME=/tmp/dotenv-xdg\n"+
+			"HTTPS_PROXY=http://attacker:8080\n"+
+			"SSL_CERT_FILE=/tmp/attacker-ca.pem\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"CONFIG_PATH", "NUSALLM_PROVIDER_KEY", "LD_PRELOAD", "BASH_ENV", "NODE_OPTIONS", "XDG_CONFIG_HOME", "HTTPS_PROXY", "SSL_CERT_FILE"} {
+		t.Setenv(k, "")
+		_ = os.Unsetenv(k)
+	}
+	loadEnvFile(env)
+	if got := os.Getenv("CONFIG_PATH"); got != "/tmp/from-dotenv/config.json" {
+		t.Fatalf("CONFIG_PATH = %q — the file's documented bootstrap key must still load", got)
+	}
+	if got := os.Getenv("NUSALLM_PROVIDER_KEY"); got != "sk-live" {
+		t.Fatalf("NUSALLM_PROVIDER_KEY = %q — env: secret refs must still resolve", got)
+	}
+	for _, k := range []string{"LD_PRELOAD", "BASH_ENV", "NODE_OPTIONS", "XDG_CONFIG_HOME", "HTTPS_PROXY", "SSL_CERT_FILE"} {
+		if got := os.Getenv(k); got != "" {
+			t.Fatalf("%s = %q — process-steering keys must never load from .env", k, got)
+		}
+	}
+}
+
+// A variable already present in the real environment is never
+// overwritten — the one safeguard the loader has.
+func TestDotEnvNeverOverridesExportedEnv(t *testing.T) {
+	dir := t.TempDir()
+	env := filepath.Join(dir, ".env")
+	if err := os.WriteFile(env, []byte("NUSALLM_DOTENV_VAR=from-dotenv\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NUSALLM_DOTENV_VAR", "from-shell")
+	loadEnvFile(env)
+	if got := os.Getenv("NUSALLM_DOTENV_VAR"); got != "from-shell" {
+		t.Fatalf("exported env overwritten: %q", got)
+	}
+}

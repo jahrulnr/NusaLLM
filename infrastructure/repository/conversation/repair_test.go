@@ -829,17 +829,12 @@ func TestRepairOrphanCommittedActiveRewrite(t *testing.T) {
 	}
 	appendMsgs(t, r, "c1", "one", "two", "three")
 	dir := r.convDir("c1")
-	block := filepath.Join(dir, "meta.json.tmp")
-	if err := os.Mkdir(block, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	unblock := blockAtomicWrites(t, metaFile)
 	summary, _ := entity.NewMessage(enum.RoleUser, "summary")
 	if err := compactAt(t, r, "c1", summary, 2); err == nil {
 		t.Fatal("expected metadata failure")
 	}
-	if err := os.Remove(block); err != nil {
-		t.Fatal(err)
-	}
+	unblock()
 	segment := filepath.Join(dir, "0.jsonl")
 	before, err := os.ReadFile(segment)
 	if err != nil {
@@ -864,5 +859,43 @@ func TestRepairOrphanCommittedActiveRewrite(t *testing.T) {
 	}
 	if got := len(msgIDs(t, r, "c1")); got != 4 {
 		t.Fatalf("messages = %d", got)
+	}
+}
+
+// RepairOrphan requires canonical segment names: readers accept a
+// numeric-but-renamed segment ("01.jsonl" reads as segment 1), but the
+// repair tool never guesses at a rename — it reports the canonical name
+// as missing and asks for manual reconciliation.
+func TestRepairOrphanRequiresCanonicalSegmentNames(t *testing.T) {
+	repo := NewConversationRepository(t.TempDir())
+	dir := repo.convDir("c1")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Committed archive: 0.jsonl + 01.jsonl (numeric segment 1, odd name)
+	// plus an uncommitted 2.jsonl orphan.
+	for _, name := range []string{"0.jsonl", "01.jsonl", "2.jsonl"} {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	meta := metaRecord{ID: "c1", Environment: "local", SealedSegments: 2}
+	if err := repo.writeMeta("c1", meta); err != nil {
+		t.Fatal(err)
+	}
+	// The archive IS broken (an uncommitted third segment exists) — that
+	// is the orphan state the repair tool exists for.
+	if _, err := repo.Info(t.Context(), "c1"); err == nil {
+		t.Fatal("archive should not validate with an uncommitted segment")
+	}
+	err := repo.RepairOrphan(t.Context(), "c1", drepo.RepairDiscardDuplicate)
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	// The diagnostic names canonical segment 1 missing although 01.jsonl
+	// is present and reads numerically — repair enforces name equality
+	// where readers enforce numeric ordering.
+	if want := "sealed segment 1 missing"; !strings.Contains(err.Error(), want) {
+		t.Fatalf("expected %q diagnostic for a numeric-but-renamed segment, got %v", want, err)
 	}
 }

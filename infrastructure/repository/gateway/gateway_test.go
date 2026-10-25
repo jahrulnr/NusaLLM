@@ -303,3 +303,31 @@ func TestConcurrentSave(t *testing.T) {
 		t.Fatalf("concurrent saves left unreadable file: %v", err)
 	}
 }
+
+// List skips record-level problems (corrupt JSON) but never swallows a
+// genuine I/O fault — a gateway whose file exists but can't be read
+// fails the listing rather than silently vanishing. Load-vs-Delete is
+// already safe by construction: rename and unlink are atomic at the name
+// level, so no torn read is possible.
+func TestListPropagatesUnreadableRecord(t *testing.T) {
+	dir := t.TempDir()
+	repo := NewGatewayRepository(dir, nil)
+
+	rec := `{"id":"g1","style":"completion","endpoint":"https://x","stream":false}`
+	if err := os.WriteFile(filepath.Join(dir, "g1.json"), []byte(rec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "g2.json"), []byte(rec[:len(rec)-1]), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// g1 exists and decodes; make it unreadable.
+	if err := os.Chmod(filepath.Join(dir, "g1.json"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(dir, "g1.json"), 0o600) })
+
+	got, err := repo.List(t.Context())
+	if err == nil {
+		t.Fatalf("List returned %d gateways and no error — an unreadable record must fail the listing, not hide", len(got))
+	}
+}

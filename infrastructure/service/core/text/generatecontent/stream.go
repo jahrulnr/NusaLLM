@@ -1,7 +1,6 @@
 package textgeneratecontent
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -56,13 +55,19 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 			return apperror.New(502, "upstream stream idle", nil)
 		case err := <-errs:
 			s.logAppend(ctx, "provider.stream", logged)
-			if err != nil {
+			// EOF is this wire's terminal marker — commit whatever
+			// accumulated. Unlike completion/messages, a clean EOF
+			// without a finishReason is a complete turn here, not
+			// truncation: Gemini serves finishReason per-candidate and
+			// omits it on some deployments, so EOF is the only reliable
+			// terminal. A stream that died before its first chunk, or
+			// errored before a finishReason, is a truncated upstream —
+			// a reset in the tail gap after finishReason must not
+			// discard a complete turn.
+			if err != nil && finish == "" {
 				emit(onEvent, event.NewErrorEvent(err))
 				return err
 			}
-			// EOF is this wire's terminal marker — commit whatever
-			// accumulated. A stream that died before its first chunk is a
-			// truncated upstream, not an empty answer.
 			if !anyChunk {
 				err := apperror.New(502, "upstream stream truncated", nil)
 				emit(onEvent, event.NewErrorEvent(err))
@@ -214,10 +219,4 @@ func readSSE(body io.Reader, done <-chan struct{}, out chan<- []byte, errs chan<
 	if err := sc.Err(); err != nil {
 		errs <- apperror.New(502, "upstream stream broken", err)
 	}
-}
-
-func readAll(r io.Reader) ([]byte, error) {
-	var b bytes.Buffer
-	_, err := b.ReadFrom(io.LimitReader(r, 32<<20)) // 32MB guard
-	return b.Bytes(), err
 }

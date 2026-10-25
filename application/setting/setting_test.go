@@ -228,10 +228,12 @@ func TestUnsetRemovesUnknownKeyAndLeaf(t *testing.T) {
 		t.Fatal(err)
 	}
 	app := New(repoconfig.NewLocal(), path)
-	// Unknown keys are ignored, not fatal — and any schema write prunes
-	// them, since the file is rewritten from the validated document.
-	if err := app.Validate(); err != nil {
-		t.Fatalf("unknown key must be ignored: %v", err)
+	// Strict Validate reports the leftover — the typo contract — while
+	// the editor still operates on the file: Set/Unset are the repair
+	// path, and any schema write prunes unknowns because the file is
+	// rewritten from the validated document.
+	if err := app.Validate(); err == nil {
+		t.Fatal("unknown key must fail strict validation")
 	}
 	if _, err := app.Set("log.max_lines", "1"); err != nil {
 		t.Fatalf("set must work while unknown keys exist: %v", err)

@@ -106,7 +106,7 @@ func (s *Service) Send(ctx context.Context, conv *aggregate.Conversation, gw *ag
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		raw, _ := readAll(resp.Body)
+		raw, _ := wire.ReadBody(ctx, resp.Body, s.idle)
 		s.logAppend(ctx, "provider.error", map[string]any{
 			"status": resp.StatusCode, "request_id": resp.Header.Get("x-request-id"), "body": json.RawMessage(raw),
 		})
@@ -122,9 +122,9 @@ func (s *Service) Send(ctx context.Context, conv *aggregate.Conversation, gw *ag
 // unaryResponse decodes the full body, appends the message, and emits the
 // synthetic delta+finished pair the port promises non-stream callers.
 func (s *Service) unaryResponse(ctx context.Context, resp *http.Response, conv *aggregate.Conversation, onEvent event.TurnEventHandler) error {
-	raw, err := readAll(resp.Body)
+	raw, err := wire.ReadBody(ctx, resp.Body, s.idle)
 	if err != nil {
-		return apperror.New(502, "unreadable upstream body", err)
+		return err
 	}
 	s.logAppend(ctx, "provider.response", map[string]any{
 		"request_id": resp.Header.Get("x-request-id"),

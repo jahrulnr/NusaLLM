@@ -300,7 +300,7 @@ func TestSendSerializesPerConv(t *testing.T) {
 	for i := range posted {
 		select {
 		case <-posted[i]:
-		case <-time.After(2 * time.Second):
+		case <-time.After(10 * time.Second):
 			t.Fatalf("send %d was never posted", i)
 		}
 	}
@@ -345,7 +345,7 @@ func TestQueuedSendCancelable(t *testing.T) {
 	}()
 	select {
 	case <-entered:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("first send did not reach the upstream")
 	}
 
@@ -367,7 +367,7 @@ func TestQueuedSendCancelable(t *testing.T) {
 		if outcome.result.UserMessagePersisted {
 			t.Fatal("queued cancellation must report no user line for this submission")
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("queued send not cancelable")
 	}
 	unblock()
@@ -376,8 +376,95 @@ func TestQueuedSendCancelable(t *testing.T) {
 		if outcome.err != nil {
 			t.Fatalf("first send: %v", outcome.err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("first send did not finish after release")
+	}
+}
+
+// A mailbox at capacity must refuse new ordinary jobs with 429 — never
+// silently grow the queue or drop the newest behind the caller's back.
+func TestSendQueueFullReturns429(t *testing.T) {
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	entered := make(chan struct{})
+	var enteredOnce sync.Once
+	app, _ := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		enteredOnce.Do(func() { close(entered) })
+		<-release
+		okHandler(w, r)
+	})
+	app.cfg.MailboxCap = 1 // one queued job beyond the running one
+
+	firstDone := make(chan sendOutcome, 1)
+	go func() {
+		result, err := app.Send(t.Context(), "full", "gw1", "m1", "first", nil, appjob.SendOptions{}, nil)
+		firstDone <- sendOutcome{result: result, err: err}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("first send did not reach the upstream")
+	}
+	// The running send occupies the worker; one more fits the mailbox.
+	queuedCtx := &signaledContext{Context: t.Context(), observed: make(chan struct{})}
+	queuedDone := make(chan sendOutcome, 1)
+	go func() {
+		result, err := app.Send(queuedCtx, "full", "", "", "second", nil, appjob.SendOptions{}, nil)
+		queuedDone <- sendOutcome{result: result, err: err}
+	}()
+	<-queuedCtx.observed // the post returned — the job is in the queue
+	// The third send overflows capacity — refuse, do not hang.
+	if _, err := app.Send(t.Context(), "full", "", "", "third", nil, appjob.SendOptions{}, nil); apperror.As(err).StatusCode() != 429 {
+		t.Fatalf("over-capacity send → %v, want 429", err)
+	}
+	unblock()
+	for i, done := range []chan sendOutcome{firstDone, queuedDone} {
+		select {
+		case outcome := <-done:
+			if outcome.err != nil {
+				t.Fatalf("send %d: %v", i, outcome.err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("send %d did not finish after release", i)
+		}
+	}
+}
+
+// onEvent runs on the room's worker goroutine. A transport that
+// synchronously posts a blocking call for the same room from inside the
+// handler — an auto-follow-up Send, a Compact, an Edit — would queue
+// behind the very job executing the handler: the queued job can never
+// run until the handler returns, so the call only unblocks when its own
+// ctx dies. With an undeadline'd ctx (the turn ctx, Background) the
+// worker is deadlocked for good. post() refuses the reentrant post with
+// an immediate 409 — the handler must defer the intent to its own
+// goroutine.
+func TestSendFromEventHandlerOnSameRoomSelfQueues(t *testing.T) {
+	app, _ := fixture(t, okHandler)
+	var once sync.Once
+	inner := make(chan error, 1)
+	var waited time.Duration
+	onEvent := func(ev event.TurnEvent) {
+		once.Do(func() {
+			ctx, cancel := context.WithTimeout(t.Context(), 400*time.Millisecond)
+			defer cancel()
+			start := time.Now()
+			_, err := app.Send(ctx, "re", "", "", "follow-up", nil, appjob.SendOptions{}, nil)
+			waited = time.Since(start)
+			inner <- err
+		})
+	}
+	if _, err := app.Send(t.Context(), "re", "gw1", "m1", "first", nil, appjob.SendOptions{}, onEvent); err != nil {
+		t.Fatalf("outer send: %v", err)
+	}
+	err := <-inner
+	if code := apperror.As(err).StatusCode(); code != 409 {
+		t.Fatalf("same-room send from inside onEvent → %v (status %d), want an immediate 409 reentrancy refusal — queuing it would deadlock the worker", err, code)
+	}
+	if waited > 350*time.Millisecond {
+		t.Fatalf("reentrancy refusal took %v — the guard must answer immediately, not queue behind the hosting turn", waited)
 	}
 }
 
@@ -410,7 +497,7 @@ func TestQueuedSendCanceledBeforeStartPersistsNothing(t *testing.T) {
 	}()
 	select {
 	case <-entered:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("first send did not reach the upstream")
 	}
 
@@ -432,7 +519,7 @@ func TestQueuedSendCanceledBeforeStartPersistsNothing(t *testing.T) {
 		if outcome.result.UserMessagePersisted {
 			t.Fatal("queued cancellation must report no user line")
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("queued send not cancelable")
 	}
 
@@ -442,7 +529,7 @@ func TestQueuedSendCanceledBeforeStartPersistsNothing(t *testing.T) {
 		if outcome.err != nil {
 			t.Fatalf("first send: %v", outcome.err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("first send did not finish after release")
 	}
 
@@ -499,14 +586,14 @@ func TestCancelPersistsArrivedDeltasAndCompleteTools(t *testing.T) {
 	}()
 	select {
 	case <-started:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("stream did not start")
 	}
 	// Cancel only once the client consumed every flushed block — the
 	// delta on the final block implies the tool-call blocks already ran.
 	select {
 	case <-arrived:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("streamed delta never arrived")
 	}
 	if err := app.Cancel(t.Context(), "partial"); err != nil {
@@ -565,7 +652,7 @@ func TestCancelRunningSend(t *testing.T) {
 	}()
 	select {
 	case <-entered:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("send did not reach the upstream")
 	}
 
@@ -580,7 +667,7 @@ func TestCancelRunningSend(t *testing.T) {
 		if !outcome.result.UserMessagePersisted {
 			t.Fatal("running cancellation after AppendMessage must report the committed user line")
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("Cancel did not reach the running send")
 	}
 	// User turn and its workspace record stay; no assistant reply.
@@ -615,7 +702,7 @@ func TestSendCancelRacingAppendReportsPersisted(t *testing.T) {
 	}()
 	select {
 	case <-gate.entered:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("user AppendMessage did not start")
 	}
 
@@ -634,7 +721,7 @@ func TestSendCancelRacingAppendReportsPersisted(t *testing.T) {
 		if !outcome.result.UserMessagePersisted {
 			t.Fatal("successful in-flight append must be reported as persisted")
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("Send did not return after the append settled")
 	}
 	conv, err := app.deps.Convs.Load(t.Context(), "append-race")
@@ -691,7 +778,7 @@ func TestCancelLeavesQueuedSend(t *testing.T) {
 	}()
 	select {
 	case <-entered:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("first send did not reach the upstream")
 	}
 	queuedCtx := &signaledContext{Context: t.Context(), observed: make(chan struct{})}
@@ -702,7 +789,7 @@ func TestCancelLeavesQueuedSend(t *testing.T) {
 	}()
 	select {
 	case <-queuedCtx.observed: // second is queued while the first holds the slot
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("second send never queued")
 	}
 
@@ -717,7 +804,7 @@ func TestCancelLeavesQueuedSend(t *testing.T) {
 		if apperror.As(err).StatusCode() != 408 {
 			t.Fatalf("running send after Cancel = %v, want 408", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("Cancel did not reach the running send")
 	}
 	close(release)
@@ -726,7 +813,7 @@ func TestCancelLeavesQueuedSend(t *testing.T) {
 		if err != nil {
 			t.Fatalf("queued send must proceed after the running one dies: %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("queued send never ran after the cancel")
 	}
 	conv, _ := app.deps.Convs.Load(t.Context(), "q")

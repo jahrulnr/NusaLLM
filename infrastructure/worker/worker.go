@@ -14,6 +14,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -36,6 +39,11 @@ type Job interface {
 // deliver, so the job folds input at its own safe point. RecallSteer
 // withdraws the newest un-fired input so the caller can take it back
 // before it lands; ok=false means nothing was pending.
+//
+// Steer runs while the worker holds its state lock so the
+// refuse-or-buffer decision is atomic against Interrupt: it must be a
+// leaf-lock, non-blocking buffer append — never I/O, never a call back
+// into the worker, the application, or the job's own execution state.
 type Steerable interface {
 	Steer(text string)
 	RecallSteer() (text string, ok bool)
@@ -82,6 +90,8 @@ type Worker struct {
 	queue   []Job
 	running Job
 	runKill context.CancelFunc
+	runGID  uint64 // goroutine executing the running job — 0 when idle
+	unwind  bool   // the running job was asked to stop — refuse new steer
 	dead    bool
 }
 
@@ -129,6 +139,9 @@ func (w *Worker) Preempt(j Job) error {
 	}
 	w.queue = append([]Job{j}, w.queue...)
 	running := w.running
+	if running != nil {
+		w.unwind = true
+	}
 	w.mu.Unlock()
 	w.signal()
 	if running != nil {
@@ -138,14 +151,20 @@ func (w *Worker) Preempt(j Job) error {
 }
 
 // Steer delivers mid-run input to the running job. False means nothing
-// is running or the job takes no input — the caller decides what the
-// undelivered text becomes. Delivery only buffers; the job folds input
-// at its own safe point, so Steer never races the job's execution.
+// is running, the job takes no input, or the job is already unwinding —
+// the caller decides what the undelivered text becomes. Delivery only
+// buffers; the job folds input at its own safe point, so Steer never
+// races the job's execution. Input handed to an unwinding job would be
+// lost when it exits — the worker refuses instead.
 func (w *Worker) Steer(text string) bool {
 	w.mu.Lock()
-	running := w.running
-	w.mu.Unlock()
-	if s, ok := running.(Steerable); ok {
+	defer w.mu.Unlock()
+	if w.unwind || w.dead {
+		return false
+	}
+	// Buffer under the lock: an Interrupt landing between the check and
+	// the push would otherwise take input the job will never fold.
+	if s, ok := w.running.(Steerable); ok {
 		s.Steer(text)
 		return true
 	}
@@ -164,12 +183,27 @@ func (w *Worker) RecallSteer() (string, bool) {
 	return "", false
 }
 
+// OnWorkerGoroutine reports whether the CALLER is the goroutine currently
+// executing this worker's job. A job's own event handler runs on that
+// goroutine — a synchronous same-worker post from inside it would queue
+// behind the very job that hosts the handler and deadlock until the
+// caller's ctx dies. Callers refuse such posts instead.
+func (w *Worker) OnWorkerGoroutine() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.running != nil && w.runGID != 0 && w.runGID == goroutineID()
+}
+
 // Interrupt asks the running job to stop early — the job's own hook runs.
 // ErrNotRunning when idle, nil when the signal was delivered (the job may
-// still be unwinding).
+// still be unwinding). The unwinding marker refuses new steer input — a
+// job asked to stop will not fold it.
 func (w *Worker) Interrupt() error {
 	w.mu.Lock()
 	running := w.running
+	if running != nil {
+		w.unwind = true
+	}
 	w.mu.Unlock()
 	if running == nil {
 		return ErrNotRunning
@@ -266,6 +300,8 @@ func (w *Worker) loop() {
 			j := w.queue[0]
 			w.queue = w.queue[1:]
 			w.running = j
+			w.runGID = goroutineID()
+			w.unwind = false
 			ctx, kill := context.WithCancel(context.Background())
 			w.runKill = kill
 			w.mu.Unlock()
@@ -287,10 +323,27 @@ func (w *Worker) loop() {
 			w.mu.Lock()
 			w.running = nil
 			w.runKill = nil
+			w.runGID = 0
+			w.unwind = false
 			if errors.Is(err, ErrTerminate) {
 				w.dead = true
 			}
 			w.mu.Unlock()
 		}
 	}
+}
+
+// goroutineID reads the calling goroutine's id from its own stack header
+// ("goroutine N […]:"). The worker stamps the executor goroutine at
+// dequeue so OnWorkerGoroutine can refuse a reentrant post that would
+// queue behind the very job running the caller. 0 on a malformed header.
+func goroutineID() uint64 {
+	var buf [64]byte
+	n := runtime.Stack(buf[:], false)
+	fields := strings.Fields(string(buf[:n]))
+	if len(fields) < 2 || fields[0] != "goroutine" {
+		return 0
+	}
+	id, _ := strconv.ParseUint(fields[1], 10, 64)
+	return id
 }

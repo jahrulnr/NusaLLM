@@ -475,7 +475,7 @@ func (h *Hub) runTurn(t *turn) {
 		p = terminalPayload{
 			Status:         status,
 			Code:           code,
-			Message:        message,
+			Message:        clipTerminalMessage(message),
 			ResyncRequired: true,
 		}
 	}
@@ -486,6 +486,9 @@ func (h *Hub) runTurn(t *turn) {
 	// never consumed, so the client reconciles each submitted input by
 	// state rather than guessing.
 	p.Steering = t.steeringSnapshotLocked()
+	// The stored outcome must marshal too — a late resync_required
+	// replays it verbatim, so a terminal that exceeded the frame cap
+	// would answer the watch with silence as well.
 	t.outcome = &turnOutcome{typ: strings.TrimPrefix(typ, "turn."), payload: p}
 	h.emitLocked(t, typ, p, true)
 	// The terminal mirrors into the room-level notice before the turn
@@ -618,9 +621,13 @@ func (h *Hub) emitLocked(t *turn, typ string, payload any, withRequest bool) boo
 	}
 	t.seq++
 	// Bounded journal: drop the oldest frames past the frame/byte cap.
+	// maxFrameBytes < journalMaxBytes is the safety invariant — one
+	// admitted frame can never evict the journal empty (t.frames[0]
+	// would panic). The len guard keeps it true even if the caps ever
+	// drifted to break it.
 	t.frames = append(t.frames, journaledFrame{seq: seq, raw: raw})
 	t.bytes += len(raw)
-	for len(t.frames) > journalMaxFrames || t.bytes > journalMaxBytes {
+	for len(t.frames) > 1 && (len(t.frames) > journalMaxFrames || t.bytes > journalMaxBytes) {
 		t.bytes -= len(t.frames[0].raw)
 		t.frames[0].raw = nil
 		t.frames = t.frames[1:]
@@ -630,6 +637,22 @@ func (h *Hub) emitLocked(t *turn, typ string, payload any, withRequest bool) boo
 		c.enqueue(raw)
 	}
 	return true
+}
+
+// clipTerminalMessage bounds the terminal's public message so the frame
+// can never breach the outbound cap — the promise is exactly one
+// terminal; a provider error body must not silence it (or its replayed
+// resync_required).
+func clipTerminalMessage(s string) string {
+	// The invariant is « maxFrameBytes after marshaling, with headroom
+	// for the frame envelope and the steering snapshot — the delta-chunk
+	// size happens to satisfy it and keeps the bound in the same unit
+	// the transport already thinks in.
+	const maxMessageRunes = outboundChunkBytes
+	if r := []rune(s); len(r) > maxMessageRunes {
+		return string(r[:maxMessageRunes]) + "…"
+	}
+	return s
 }
 
 // broadcastLocked delivers one unsequenced, unjournaled room-level

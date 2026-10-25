@@ -16,6 +16,11 @@ func (r *ConversationRepository) Delete(ctx context.Context, convID string) erro
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	unlock, err := r.lockStore()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 
 	if _, err := os.Stat(r.convDir(convID)); errors.Is(err, os.ErrNotExist) {
 		return apperror.NewNotFoundError("conversation "+convID, err)

@@ -17,6 +17,11 @@ func (r *ConversationRepository) Load(ctx context.Context, convID string) (*aggr
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	unlock, err := r.lockStore()
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 
 	meta, err := r.readMeta(convID)
 	if err != nil {
@@ -69,6 +74,11 @@ func (r *ConversationRepository) LoadAt(ctx context.Context, convID string, star
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	unlock, err := r.lockStore()
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 
 	meta, err := r.readMeta(convID)
 	if err != nil {

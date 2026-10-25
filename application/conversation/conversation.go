@@ -166,6 +166,17 @@ func (app *ConversationApp) post(convID string, j queuedJob) {
 			app.workers[convID] = w
 		}
 
+		// An event handler runs on the worker's own goroutine — a
+		// synchronous same-room post from inside it would queue behind
+		// the very job hosting the handler and deadlock until the
+		// caller's ctx dies. Refuse instead; the handler must defer the
+		// intent to its own goroutine.
+		if w.OnWorkerGoroutine() {
+			app.mu.Unlock()
+			j.Reply(apperror.New(409, "cannot post to a conversation from inside its own turn", fmt.Errorf("reentrant same-room post on %s", convID)))
+			return
+		}
+
 		var err error
 		if j.IsPreempt() {
 			err = w.Preempt(j)

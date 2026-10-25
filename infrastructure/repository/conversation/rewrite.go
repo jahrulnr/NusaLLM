@@ -38,6 +38,11 @@ func (r *ConversationRepository) RewriteFrom(ctx context.Context, convID, msgID,
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	unlock, err := r.lockStore()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 
 	if _, err := r.readMeta(convID); err != nil {
 		return err
@@ -62,14 +67,14 @@ func (r *ConversationRepository) RewriteFrom(ctx context.Context, convID, msgID,
 	// Sealed segments — repromote the era holding the target. The archive
 	// just validated at readMeta, so rewrite leftovers here are debris —
 	// a payload whose edit never committed, or post-commit cleanup a crash
-	// cut short. Sweep them first, the payload's staged temp sibling
+	// cut short. Sweep them first, the payload's staged temp siblings
 	// included: a stale payload must never be published.
-	for _, leftover := range []string{rewritePayload, rewritePayload + ".tmp"} {
-		_ = os.Remove(filepath.Join(dir, leftover))
-	}
-	if stale, err := filepath.Glob(filepath.Join(dir, "*.jsonl"+rewriteParkSuffix)); err == nil {
-		for _, p := range stale {
-			_ = os.Remove(p)
+	_ = os.Remove(filepath.Join(dir, rewritePayload))
+	for _, pattern := range []string{rewritePayload + ".tmp*", "*.jsonl" + rewriteParkSuffix} {
+		if stale, err := filepath.Glob(filepath.Join(dir, pattern)); err == nil {
+			for _, p := range stale {
+				_ = os.Remove(p)
+			}
 		}
 	}
 	segs, err := sealedSegments(dir)

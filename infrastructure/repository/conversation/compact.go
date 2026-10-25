@@ -25,6 +25,11 @@ func (r *ConversationRepository) Compact(ctx context.Context, convID string, sum
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	unlock, err := r.lockStore()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 
 	meta, err := r.readMeta(convID)
 	if err != nil {

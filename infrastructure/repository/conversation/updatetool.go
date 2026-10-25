@@ -20,6 +20,11 @@ func (r *ConversationRepository) UpdateToolCallOutput(ctx context.Context, convI
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	unlock, err := r.lockStore()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 
 	if _, err := r.readMeta(convID); err != nil {
 		return err

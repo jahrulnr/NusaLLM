@@ -393,3 +393,161 @@ func TestHugeRecordReopens(t *testing.T) {
 	}
 	l2.Close()
 }
+
+// A failed rotate() leaves l.f pointing at the file it just closed, but
+// the logger is never permanently dead — the next Append retries reopen,
+// so a transient unwritable window heals without a restart.
+func TestAppendRecoversAfterFailedReopen(t *testing.T) {
+	dir := t.TempDir()
+	l, err := New(dir, Options{MaxLines: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Force the reopen path to fail: remove active.jsonl and make the dir
+	// read-only. The first Append still "writes" — into the unlinked
+	// inode the open O_APPEND handle still points at — then rotate fails
+	// to create the segment and fails to recreate active.
+	if err := os.Remove(filepath.Join(dir, activeFile)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	err = l.Append(t.Context(), "evt", 1)
+	if err == nil {
+		t.Fatal("expected rotate/reopen failure")
+	}
+
+	// Heal the environment — a dead logger keeps reporting a closed
+	// handle; a live one retries reopen and recovers.
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err = l.Append(t.Context(), "evt", 2)
+	if err != nil {
+		t.Fatalf("logger stayed dead after environment healed: %v", err)
+	}
+	l.Close()
+}
+
+// When rotate() fails, Append has already written and synced the record
+// — the call returns an error yet the record persisted, breaking the
+// usual "error means not persisted" contract. reopen() recounts the
+// file, so the rotation threshold does not drift while the records are
+// still there.
+func TestFailedRotateKeepsPersistedRecord(t *testing.T) {
+	dir := t.TempDir()
+	l, err := New(dir, Options{MaxLines: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+
+	// Block the next segment number after New() counted segments, so
+	// rotate fails at O_EXCL while reopen() succeeds.
+	blocker := filepath.Join(dir, "0.jsonl.gz")
+	if err := os.WriteFile(blocker, []byte("not ours"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := l.Append(t.Context(), "evt", "first"); err == nil {
+		t.Fatal("expected rotate error")
+	}
+	// The record landed anyway.
+	got := readLines(t, filepath.Join(dir, activeFile))
+	if len(got) != 1 || !strings.Contains(got[0], "first") {
+		t.Fatalf("record lost despite error path: %v", got)
+	}
+	if l.lines != 1 {
+		t.Fatalf("l.lines = %d after failed rotate, want 1 (recounted)", l.lines)
+	}
+	if err := l.Append(t.Context(), "evt", "second"); err == nil {
+		t.Fatal("expected rotate error again")
+	}
+	got = readLines(t, filepath.Join(dir, activeFile))
+	if len(got) != 2 {
+		t.Fatalf("active should hold 2 records during the failure window: %v", got)
+	}
+}
+
+// Append after Close returns an error rather than panicking.
+func TestAppendAfterClose(t *testing.T) {
+	l, err := New(t.TempDir(), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	err = l.Append(t.Context(), "evt", 1)
+	if err == nil {
+		t.Fatal("append after close should error")
+	}
+	t.Logf("append after close error: %v", err)
+}
+
+// A crash between "segment gzip written" and "active.jsonl removed"
+// (the window inside rotate()) restarts with both copies on disk: the
+// sealed archive AND the still-live active. The next rotation seals the
+// same records a second time. That duplication is the chosen failure
+// mode — copy-then-delete guarantees no record is lost at the boundary,
+// and forensic archives tolerate a repeated line; the alternative order
+// (delete-then-seal) would lose the records outright.
+func TestRotationCrashWindowDuplicates(t *testing.T) {
+	dir := t.TempDir()
+	l, err := New(dir, Options{MaxLines: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Append(t.Context(), "evt", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Append(t.Context(), "evt", 2); err != nil {
+		t.Fatal(err)
+	}
+	l.Close()
+
+	// Replay the crash window by hand: a complete sealed segment exists
+	// AND active.jsonl was never removed.
+	activePath := filepath.Join(dir, activeFile)
+	raw, err := os.ReadFile(activePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seg0, err := os.Create(filepath.Join(dir, "0.jsonl.gz"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := gzip.NewWriter(seg0)
+	if _, err := zw.Write(raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := seg0.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// active.jsonl deliberately left in place.
+
+	l, err = New(dir, Options{MaxLines: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	if err := l.Append(t.Context(), "evt", 3); err != nil {
+		t.Fatal(err)
+	}
+	l.Close()
+
+	seg0Lines := readLines(t, filepath.Join(dir, "0.jsonl.gz"))
+	seg1Lines := readLines(t, filepath.Join(dir, "1.jsonl.gz"))
+	// seg0 holds records 1,2 (the pre-crash seal); the resume re-seals
+	// them together with record 3 into seg1 — duplication across archives.
+	if len(seg0Lines) != 2 || len(seg1Lines) != 3 {
+		t.Fatalf("segments: seg0=%d seg1=%d — records re-sealed", len(seg0Lines), len(seg1Lines))
+	}
+}

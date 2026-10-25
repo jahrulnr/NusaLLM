@@ -3,11 +3,13 @@ package repoconversation
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -333,15 +335,31 @@ func TestMessagePatchesKeepFirstCallAndLastOutput(t *testing.T) {
 	}
 }
 
+// blockAtomicWrites swaps the atomic-write seam so every write targeting
+// the named file fails — the deterministic failure injection the store
+// tests use (the old fixed <path>.tmp staging name served the same role
+// before staging became unique per writer). The returned func restores
+// the original writer.
+func blockAtomicWrites(t *testing.T, name string) (unblock func()) {
+	t.Helper()
+	orig := writeFileAtomic
+	writeFileAtomic = func(path string, data []byte, perm os.FileMode) error {
+		if filepath.Base(path) == name {
+			return errors.New("injected atomic write failure")
+		}
+		return orig(path, data, perm)
+	}
+	t.Cleanup(func() { writeFileAtomic = orig })
+	return func() { writeFileAtomic = orig }
+}
+
 func TestAppendMessageReportsCommittedLineWhenMetaWriteFails(t *testing.T) {
 	dir := t.TempDir()
 	repo := NewConversationRepository(dir)
 	if err := repo.Save(t.Context(), newConv(t, "c1")); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(filepath.Join(dir, "c1", "meta.json.tmp"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	blockAtomicWrites(t, metaFile)
 	message, _ := entity.NewMessage(enum.RoleUser, "committed before metadata failure")
 
 	persisted, err := repo.AppendMessage(t.Context(), "c1", message)
@@ -1232,5 +1250,191 @@ func TestAppendMirrorsReaderFinalLineTolerance(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A missing active.jsonl whose metadata still claims tail content is a
+// diagnosed failure, never an empty room: Load, Info, and every
+// readMeta consumer share the same archive check, so history lost
+// behind the metadata's back surfaces instead of letting a turn
+// continue over zero context.
+func TestMissingActiveFailsInsteadOfEmptyingRoom(t *testing.T) {
+	repo := NewConversationRepository(t.TempDir())
+	if err := repo.Save(t.Context(), newConv(t, "c1")); err != nil {
+		t.Fatal(err)
+	}
+	appendMsgs(t, repo, "c1", "hello", "world")
+
+	if err := os.Remove(filepath.Join(repo.convDir("c1"), activeFile)); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := repo.Load(t.Context(), "c1"); err == nil {
+		t.Fatal("Load must fail when active.jsonl is missing but metadata records tail messages")
+	}
+	if _, err := repo.Info(t.Context(), "c1"); err == nil {
+		t.Fatal("Info must fail on the same archive inconsistency")
+	}
+}
+
+// The same missing-active state refuses an append — resurrecting a
+// divergent tail would make the counters claim messages the stream
+// never held.
+func TestAppendMessageRefusesMissingActive(t *testing.T) {
+	repo := NewConversationRepository(t.TempDir())
+	if err := repo.Save(t.Context(), newConv(t, "c1")); err != nil {
+		t.Fatal(err)
+	}
+	appendMsgs(t, repo, "c1", "hello", "world")
+	if err := os.Remove(filepath.Join(repo.convDir("c1"), activeFile)); err != nil {
+		t.Fatal(err)
+	}
+	m, err := entity.NewMessage(enum.RoleUser, "after-loss")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.AppendMessage(t.Context(), "c1", m); err == nil {
+		t.Fatal("append over a missing tail must fail, not resurrect a divergent stream")
+	}
+}
+
+// meta.json's embedded id is checked against the directory name — a
+// renamed or copy-pasted room fails rather than hydrating a foreign
+// identity under the id it was addressed by.
+func TestLoadMetaIDMismatchErrors(t *testing.T) {
+	repo := NewConversationRepository(t.TempDir())
+	if err := repo.Save(t.Context(), newConv(t, "real-id")); err != nil {
+		t.Fatal(err)
+	}
+	dir := repo.convDir("real-id")
+	if err := os.Rename(dir, repo.convDir("renamed-dir")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := repo.Load(t.Context(), "renamed-dir")
+	if err == nil {
+		t.Fatal("Load must fail when meta.id differs from the directory name")
+	}
+}
+
+// Two repository instances on the same directory serialize through the
+// store lock — concurrent appends can no longer interleave the
+// readMeta→appendLine→writeMeta sequence and lose counter updates.
+func TestTwoInstancesSerializedByStoreLock(t *testing.T) {
+	dir := t.TempDir()
+	r1 := NewConversationRepository(dir)
+	r2 := NewConversationRepository(dir)
+	if err := r1.Save(t.Context(), newConv(t, "c1")); err != nil {
+		t.Fatal(err)
+	}
+
+	const workers = 8
+	const appends = 25
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			repo := r1
+			if w%2 == 1 {
+				repo = r2
+			}
+			for i := 0; i < appends; i++ {
+				m, err := entity.NewMessage(enum.RoleUser, fmt.Sprintf("w%d-%d", w, i))
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				// A writeMeta failure still leaves the appended line in
+				// the stream (persisted=true) — keep going and compare
+				// the recorded count with the real line count at the end.
+				if _, err := repo.AppendMessage(t.Context(), "c1", m); err != nil {
+					t.Logf("append %d-%d: %v", w, i, err)
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	lines, err := readLines(filepath.Join(dir, "c1", activeFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := r1.Info(t.Context(), "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.MessageCount != len(lines) {
+		t.Fatalf("counter drift: meta records %d messages, stream holds %d", info.MessageCount, len(lines))
+	}
+}
+
+// writeFileAtomic stages each write under a unique temp name and every
+// operation holds the store lock, so two writers on different repository
+// instances can never share a staging inode or publish a torn meta.json.
+func TestConcurrentSavesNeverTearMeta(t *testing.T) {
+	dir := t.TempDir()
+	r1 := NewConversationRepository(dir)
+	r2 := NewConversationRepository(dir)
+	big := newConv(t, "c1")
+	big.SetTitle(strings.Repeat("B", 1<<16))
+	if err := r1.Save(t.Context(), big); err != nil {
+		t.Fatal(err)
+	}
+	small := newConv(t, "c1")
+	small.SetTitle("s")
+
+	// Two writers alternate big/small metas. For a tear, the small write
+	// must land inside the big write's open-rename window on a shared
+	// tmp inode — unique staging names make that impossible.
+	var wg sync.WaitGroup
+	barrier := make(chan struct{})
+	for w := 0; w < 2; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			repo, conv := r1, big
+			if w == 1 {
+				repo, conv = r2, small
+			}
+			<-barrier
+			for i := 0; i < 120; i++ {
+				if err := repo.Save(t.Context(), conv); err != nil {
+					t.Logf("writer %d iteration %d: %v", w, i, err)
+				}
+			}
+		}(w)
+	}
+	close(barrier)
+	wg.Wait()
+
+	if _, err := os.ReadFile(filepath.Join(dir, "c1", metaFile)); err != nil {
+		t.Fatal(err)
+	}
+	m, err := r1.readMetaUnvalidated("c1")
+	if err != nil {
+		t.Fatalf("meta.json left torn — room is dead: %v", err)
+	}
+	if m.Title != strings.Repeat("B", 1<<16) && m.Title != "s" {
+		t.Fatalf("meta.json holds a third value — torn write: %q", m.Title[:32])
+	}
+}
+
+// A directory whose name fails validID (legal on Linux — a backslash is
+// a valid filename byte) propagates through List rather than being
+// skipped — corruption fails loudly.
+func TestListPropagatesInvalidDirName(t *testing.T) {
+	repo := NewConversationRepository(t.TempDir())
+	if err := repo.Save(t.Context(), newConv(t, "healthy")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo.path, `a\b`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := repo.List(t.Context())
+	if err == nil {
+		t.Fatal("expected List to fail")
+	}
+	if !strings.Contains(err.Error(), "invalid id") {
+		t.Fatalf("expected the invalid-id error to propagate: %v", err)
 	}
 }

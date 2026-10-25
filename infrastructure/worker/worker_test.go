@@ -286,6 +286,90 @@ func TestSteerRefused(t *testing.T) {
 	}
 }
 
+// doomedSteerJob unwinds through a release gate after Interrupt — a
+// window where the worker still reports it running but it will never
+// reach another safe point.
+type doomedSteerJob struct {
+	started       chan struct{}
+	interrupted   chan struct{}
+	unwinding     chan struct{}
+	releaseExit   chan struct{}
+	interruptOnce sync.Once
+	mu            sync.Mutex
+	steers        []string
+}
+
+func (j *doomedSteerJob) Execute(context.Context) error {
+	close(j.started)
+	<-j.interrupted
+	close(j.unwinding)
+	<-j.releaseExit // still the worker's running job while it unwinds
+	return nil
+}
+func (j *doomedSteerJob) Interrupt() {
+	j.interruptOnce.Do(func() { close(j.interrupted) })
+}
+func (j *doomedSteerJob) Steer(text string) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.steers = append(j.steers, text)
+}
+func (j *doomedSteerJob) RecallSteer() (string, bool) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if len(j.steers) == 0 {
+		return "", false
+	}
+	last := j.steers[len(j.steers)-1]
+	j.steers = j.steers[:len(j.steers)-1]
+	return last, true
+}
+func (j *doomedSteerJob) buffered() int {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return len(j.steers)
+}
+
+// A steer landing on a job that is already unwinding must be refused —
+// the job exits without ever consuming it and, once the running slot
+// clears, the input is unreachable: RecallSteer can no longer return it
+// to the caller. Interrupt, Preempt, and Terminate all mark the running
+// job unwinding so Steer keeps the text in the caller's hands.
+func TestSteerToUnwindingJobIsLost(t *testing.T) {
+	w := New(Options{})
+	defer w.Terminate()
+	j := &doomedSteerJob{
+		started:     make(chan struct{}),
+		interrupted: make(chan struct{}),
+		unwinding:   make(chan struct{}),
+		releaseExit: make(chan struct{}),
+	}
+	if err := w.Submit(j); err != nil {
+		t.Fatal(err)
+	}
+	waitClosed(t, j.started, "job start")
+	if err := w.Interrupt(); err != nil {
+		t.Fatal(err)
+	}
+	waitClosed(t, j.unwinding, "job unwind")
+	// The job is interrupted and mid-unwind — w.running has not been
+	// cleared yet, but Steer must already refuse.
+	if w.Steer("too late") {
+		t.Fatal("steer to an unwinding job reported delivered — the input would exit with the job unconsumed and unrecoverable")
+	}
+	close(j.releaseExit)
+	deadline := time.Now().Add(2 * time.Second)
+	for !w.Idle() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if j.buffered() != 0 {
+		t.Fatalf("refused steer still buffered on the doomed job: %d", j.buffered())
+	}
+	if got, ok := w.RecallSteer(); ok {
+		t.Fatalf("RecallSteer returned %q after the job exited — nothing should be recoverable", got)
+	}
+}
+
 // Queue capacity bounds Submit — ErrFull, while Preempt stays unlimited.
 func TestQueueFull(t *testing.T) {
 	release := make(chan struct{})

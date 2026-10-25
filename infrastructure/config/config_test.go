@@ -53,18 +53,22 @@ func TestLoadZeroMeansDefault(t *testing.T) {
 	}
 }
 
-func TestLoadIgnoresUnknownKeys(t *testing.T) {
+func TestLoadRejectsUnknownKeys(t *testing.T) {
 	var c Config
-	// Leftover keys from removed fields and comment-as-field additions
-	// must not block boot — only the known keys are read.
-	if err := c.Load(testStore{}, writeConfig(t, `{"conversation":{"mailbox_cap":8},"bogus":true,"_note":"x"}`)); err != nil {
-		t.Fatalf("unknown keys must be ignored: %v", err)
+	// Unknown keys are rejected — a typo must fail loudly instead of
+	// silently tuning nothing; comment-as-field leftovers are file
+	// edits, not config.
+	if err := c.Load(testStore{}, writeConfig(t, `{"conversation":{"mailbox_cap":8},"bogus":true}`)); err == nil {
+		t.Fatal("top-level unknown key must fail")
+	}
+	if err := c.Load(testStore{}, writeConfig(t, `{"conversation":{"mailbox_cap":8,"typo":1}}`)); err == nil {
+		t.Fatal("nested unknown key must fail")
+	}
+	if err := c.Load(testStore{}, writeConfig(t, `{"conversation":{"mailbox_cap":8}}`)); err != nil {
+		t.Fatalf("known keys still load: %v", err)
 	}
 	if c.Conversation.MailboxCap != 8 {
 		t.Fatalf("known key must still apply, got %d", c.Conversation.MailboxCap)
-	}
-	if err := c.Load(testStore{}, writeConfig(t, `{"conversation":{"mailbox_cap":8,"typo":1}}`)); err != nil {
-		t.Fatalf("unknown nested key must be ignored: %v", err)
 	}
 }
 
@@ -158,5 +162,31 @@ func TestLoadEmptyPathYieldsDefaults(t *testing.T) {
 	}
 	if c.Conversation.MailboxCap != 128 {
 		t.Fatal("empty path must still fill zero fields from tags")
+	}
+}
+
+// Validate shares Load's strictness — a typo'd key fails instead of
+// silently loading with defaults that tune nothing.
+func TestValidateRejectsTypoKeys(t *testing.T) {
+	// "prt" is a typo for "port"; "max_liness" for "max_lines".
+	raw := []byte(`{"server":{"prt":1},"log":{"max_liness":5}}`)
+	if _, err := Validate(raw); err == nil {
+		t.Fatal("typo'd keys must fail validation — silently loading defaults means the setting tunes nothing")
+	}
+}
+
+// storage.dir "~" expands to the user's home — otherwise
+// "dir": "~/nusallm" lands in a literal "~" directory under the CWD.
+func TestValidateExpandsHomeDir(t *testing.T) {
+	c, err := Validate([]byte(`{"storage":{"dir":"~/nusallm"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home in test env")
+	}
+	if c.Storage.Dir != home+"/nusallm" {
+		t.Fatalf("dir = %q, want %q", c.Storage.Dir, home+"/nusallm")
 	}
 }

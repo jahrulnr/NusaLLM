@@ -17,6 +17,11 @@ func (r *ConversationRepository) AppendMessage(ctx context.Context, convID strin
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	unlock, err := r.lockStore()
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
 
 	meta, err := r.readMeta(convID)
 	if err != nil {

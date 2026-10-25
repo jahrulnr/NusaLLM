@@ -28,6 +28,11 @@ func (r *ConversationRepository) RepairOrphan(ctx context.Context, convID string
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	unlock, err := r.lockStore()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	meta, err := r.readMetaUnvalidated(convID)
 	if err != nil {
 		return err
@@ -176,6 +181,11 @@ func (r *ConversationRepository) RepairRewrite(ctx context.Context, convID strin
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	unlock, err := r.lockStore()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	meta, err := r.readMetaUnvalidated(convID)
 	if err != nil {
 		return err
@@ -236,14 +246,21 @@ func (r *ConversationRepository) RepairRewrite(ctx context.Context, convID strin
 		return fmt.Errorf("repair %s: publish payload: %w", convID, err)
 	}
 	// The merged stream is published — every leftover, numbered or
-	// parked, is a stale copy of eras it already holds.
+	// parked, is a stale copy of eras it already holds. Staged tmp files
+	// join the sweep: a crash mid-atomic-write orphans them, and under
+	// the store lock no live writer can own one.
 	parked, err := filepath.Glob(filepath.Join(dir, "*.jsonl"+rewriteParkSuffix))
 	if err != nil {
 		return err
 	}
-	leftovers := make([]string, 0, len(segs)+len(parked))
+	tmps, err := filepath.Glob(filepath.Join(dir, "*.tmp*"))
+	if err != nil {
+		return err
+	}
+	leftovers := make([]string, 0, len(segs)+len(parked)+len(tmps))
 	leftovers = append(leftovers, segs...)
 	leftovers = append(leftovers, parked...)
+	leftovers = append(leftovers, tmps...)
 	for _, stale := range leftovers {
 		if err := os.Remove(stale); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("repair %s: remove %s: %w", convID, filepath.Base(stale), err)

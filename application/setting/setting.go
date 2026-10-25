@@ -129,7 +129,9 @@ func (a *SettingApp) Set(key, rawValue string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	cfg, err := config.Validate(out)
+	// The edit tolerates foreign keys — the schema-ordered write prunes
+	// them; a strict re-check would deadlock the file's own repair path.
+	cfg, err := config.ValidateLenient(out)
 	if err != nil {
 		return nil, apperror.New(400, "config still invalid",
 			fmt.Errorf("after setting %q: %v", key, causeOf(err)))
@@ -174,7 +176,7 @@ func (a *SettingApp) Unset(key string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	cfg, err := config.Validate(out)
+	cfg, err := config.ValidateLenient(out)
 	if err != nil {
 		return nil, apperror.New(400, "config still invalid",
 			fmt.Errorf("after removing %q: %v", key, causeOf(err)))

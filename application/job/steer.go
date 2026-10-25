@@ -35,9 +35,14 @@ func newSteeringReceipt() *SteeringReceipt {
 
 // State reports the input's last recorded outcome. A receipt the turn
 // loop claimed but never committed stays claimed — the caller reads
-// that as "unconsumed" rather than guessing.
+// that as "unconsumed" rather than guessing. A zero-value receipt
+// holds no recorded transition; it reports pending — benign, and
+// Recall still rejects it (nothing buffered matches it).
 func (r *SteeringReceipt) State() SteeringState {
-	return r.state.Load().(SteeringState)
+	if s, ok := r.state.Load().(SteeringState); ok {
+		return s
+	}
+	return SteeringPending
 }
 
 // markPersisted flips a claimed receipt once its user line committed —

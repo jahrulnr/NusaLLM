@@ -107,8 +107,18 @@ The client locates one config file and one data directory.
 - **`.env`** — before reading `CONFIG_PATH`, the process loads
   `KEY=VALUE` pairs from a `.env` file in the launch directory (comments
   with `#` allowed, quotes stripped). Real environment variables win over
-  `.env` entries. The shipped `.env.example` contains exactly one line:
-  `CONFIG_PATH=./data/config.json`.
+  `.env` entries. Keys that steer child processes or path resolution are
+  refused — `LD_*`, `DYLD_*`, `BASH_ENV`, `ENV`, shell-option and
+  language-loader hooks (`NODE_OPTIONS`, `PYTHONSTARTUP`, `PERL5OPT`,
+  `RUBYOPT`, `*_JAVA_OPTIONS`, …), language library paths (`PYTHONPATH`,
+  `NODE_PATH`, `PERL5LIB`, `RUBYLIB`, `GEM_HOME`), `IFS`/`CDPATH`/
+  `GLOBIGNORE`, all `XDG_*`, process steering (`PATH`, `HOME`, `TMPDIR`,
+  `GIT_SSH_COMMAND`, `SSH_ASKPASS`, `LESSOPEN`, `EDITOR`, `VISUAL`,
+  `PAGER`), and the provider-wire controls (`*_PROXY`, `SSL_CERT_*`,
+  `*_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`) — a checkout's `.env` must never
+  inject into tool subprocesses, redirect where the binary looks for
+  config and data, or sit on the wire the gateway keys travel. The shipped
+  `.env.example` contains exactly one line: `CONFIG_PATH=./data/config.json`.
 - **Data directory** — `storage.dir` in the config file. The tag default
   is `./data`, relative to the working directory, which is what a checkout
   uses when its `.env` points `CONFIG_PATH` at `./data/config.json`. The
@@ -305,11 +315,13 @@ canonical: `2m` becomes `"2m0s"`). Both `set` and `unset` print
 `log` bind once at startup.
 
 Strictness is split deliberately: the REPL refuses to boot on a file that
-fails decode — malformed JSON, a mistyped known key, or trailing garbage
-are errors, not warnings. Unknown keys are ignored so a stale field or a
-comment-as-field never blocks boot. Gateway and onboarding commands use
-lenient boot loading; `config` commands open the file directly so
-`config unset` can clean keys a lenient load tolerates.
+fails decode — malformed JSON, a mistyped known key, trailing garbage,
+**or an unknown key** are errors, not warnings; a typo fails loudly
+instead of silently tuning nothing. `config validate` applies the same
+strict check and names the offending key. The editor commands are the
+repair path: `config set`/`unset` decode the known subset leniently, so a
+file carrying stale or comment-as-field keys can still be patched — the
+schema-ordered rewrite prunes the unknowns on write.
 
 ## Inside the REPL
 

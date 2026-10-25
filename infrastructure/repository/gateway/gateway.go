@@ -51,13 +51,18 @@ func validID(id string) error {
 	return nil
 }
 
+// errUnreadable marks an existing record the filesystem refused to read —
+// a permission or I/O fault, not data damage. Listings propagate it so a
+// gateway can never silently vanish behind an operational fault.
+var errUnreadable = errors.New("gateway record unreadable")
+
 func (r *GatewayRepository) readGateway(id string) (gatewayRecord, error) {
 	raw, err := os.ReadFile(r.file(id))
 	if errors.Is(err, os.ErrNotExist) {
 		return gatewayRecord{}, apperror.NewNotFoundError("gateway "+id, err)
 	}
 	if err != nil {
-		return gatewayRecord{}, err
+		return gatewayRecord{}, fmt.Errorf("%w: %v", errUnreadable, err)
 	}
 	var rec gatewayRecord
 	if err := json.Unmarshal(raw, &rec); err != nil {

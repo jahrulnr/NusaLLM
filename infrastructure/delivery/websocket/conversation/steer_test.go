@@ -541,3 +541,98 @@ func TestSteerTargetsQueuedTurn(t *testing.T) {
 		t.Fatalf("B's terminal snapshot %+v", term.Steering)
 	}
 }
+
+// The journaled steer_ack is the watcher-visible record; the issuing
+// socket also gets an answer — an unsequenced reply — so acceptance is
+// never indistinguishable from loss on a socket that never watched.
+func TestSteerAckReachesUnattachedIssuer(t *testing.T) {
+	b := newBlockedTurn()
+	h := newHub(t, stubSender{fn: b.send})
+	ws := dial(t, h)
+	sendCommand(t, ws, `{"type":"turn.send","requestId":"s1","conversationId":"room","payload":{"content":"x"}}`)
+	f := readUntil(t, ws, "turn.opened")
+	convID, turnID := f.ConversationID, f.TurnID
+	<-b.started
+
+	stranger := dial(t, h) // never watches the turn
+	steer := fmt.Sprintf(`{"type":"turn.steer","requestId":"st-1","conversationId":%q,"turnId":%q,"payload":{"content":"late guidance"}}`,
+		convID, turnID)
+	sendCommand(t, stranger, steer)
+
+	// Accepted — the owner hears the journaled sequenced ack…
+	f = readFrame(t, ws)
+	if f.Type != "turn.steer_ack" || f.TurnID != turnID || f.Seq == nil {
+		t.Fatalf("owner %+v — want the journaled sequenced ack", f)
+	}
+	// …and the unattached issuer hears an unsequenced reply carrying
+	// its requestId — acceptance must never look like silence.
+	f = readFrame(t, stranger)
+	if f.Type != "turn.steer_ack" || f.RequestID != "st-1" {
+		t.Fatalf("issuer %+v — want an unsequenced steer_ack reply", f)
+	}
+	if f.Seq != nil {
+		t.Fatalf("issuer reply must be unsequenced — it is a command answer, not journal state: %+v", f)
+	}
+
+	// Rejections still answer the issuer via the error path.
+	stranger2 := dial(t, h)
+	sendCommand(t, stranger2, fmt.Sprintf(`{"type":"turn.steer","requestId":"st-1","conversationId":%q,"turnId":%q,"payload":{"content":"different content"}}`,
+		convID, turnID))
+	f = readFrame(t, stranger2)
+	if f.Type != "error" || f.Code != "invalid_argument" {
+		t.Fatalf("rejected resubmit on unattached socket %+v — want the error to answer", f)
+	}
+
+	close(b.release)
+	_ = readUntil(t, ws, "turn.completed")
+}
+
+// An idempotent re-ack answers the issuer only — the first acceptance
+// is journaled turn state, the retries are command replies.
+// Re-journaling each retry would let a client burn the bounded journal
+// and force resync_required on honest watchers.
+func TestSteerReAcksDoNotJournal(t *testing.T) {
+	b := newBlockedTurn()
+	h := newHub(t, stubSender{fn: b.send})
+	ws := dial(t, h)
+	sendCommand(t, ws, `{"type":"turn.send","requestId":"s1","conversationId":"room","payload":{"content":"x"}}`)
+	f := readUntil(t, ws, "turn.opened")
+	convID, turnID := f.ConversationID, f.TurnID
+	<-b.started
+
+	cmd := fmt.Sprintf(`{"type":"turn.steer","requestId":"st-dup","conversationId":%q,"turnId":%q,"payload":{"content":"same"}}`,
+		convID, turnID)
+	// First submission: the journaled sequenced ack.
+	sendCommand(t, ws, cmd)
+	f = readFrame(t, ws)
+	if f.Type != "turn.steer_ack" || f.Seq == nil {
+		t.Fatalf("first ack %+v — want the sequenced journal record", f)
+	}
+	firstSeq := *f.Seq
+	// Retries: unsequenced replies, no journal growth.
+	for i := 0; i < 3; i++ {
+		sendCommand(t, ws, cmd)
+		f = readFrame(t, ws)
+		if f.Type != "turn.steer_ack" || f.Seq != nil {
+			t.Fatalf("retry %d: %+v — want an unsequenced re-ack, not journal growth", i, f)
+		}
+	}
+
+	// A -1 replay reproduces exactly ONE ack for the one submission.
+	watcher := dial(t, h)
+	sendCommand(t, watcher, fmt.Sprintf(`{"type":"turn.watch","requestId":"w","conversationId":%q,"turnId":%q,"afterSeq":-1}`,
+		convID, turnID))
+	acks := 0
+	for i := 0; i < firstSeq+1; i++ { // opened + every journaled frame
+		f = readFrame(t, watcher)
+		if f.Type == "turn.steer_ack" {
+			acks++
+		}
+	}
+	if acks != 1 {
+		t.Fatalf("journal holds %d acks for one submission — retries must not journal", acks)
+	}
+
+	close(b.release)
+	_ = readUntil(t, ws, "turn.completed")
+}

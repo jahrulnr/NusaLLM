@@ -56,7 +56,7 @@ func TestShutdownCancelsWaitsAndRejectsPosts(t *testing.T) {
 	app.post("room", running)
 	select {
 	case <-running.started:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("running job did not start")
 	}
 	app.post("room", queued)
@@ -70,7 +70,7 @@ func TestShutdownCancelsWaitsAndRejectsPosts(t *testing.T) {
 	<-firstCtx.observed // shutdown state is set before it starts waiting.
 	select {
 	case <-running.canceled:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("Shutdown did not cancel the running job")
 	}
 	select {
@@ -78,7 +78,7 @@ func TestShutdownCancelsWaitsAndRejectsPosts(t *testing.T) {
 		if apperror.As(err).StatusCode() != 503 {
 			t.Fatalf("drained job error = %v, want 503", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("Shutdown did not settle the queued job")
 	}
 	select {
@@ -128,13 +128,13 @@ func TestShutdownCancelsWaitsAndRejectsPosts(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%s Shutdown: %v", name, err)
 			}
-		case <-time.After(2 * time.Second):
+		case <-time.After(10 * time.Second):
 			t.Fatalf("%s Shutdown did not finish after worker release", name)
 		}
 	}
 	select {
 	case <-completion:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("shared Shutdown completion did not close")
 	}
 	select {

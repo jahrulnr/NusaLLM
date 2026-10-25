@@ -26,10 +26,29 @@ func (e upstreamError) Error() string { return string(e) }
 // — is checked against the provider's own code and message text BEFORE
 // FailureMessage bounds what reaches the frontend; body stays in Cause.
 func StatusError(status int, publicMsg, code string, body []byte) error {
-	if status == 400 && strings.Contains(code+" "+publicMsg, "context_length") {
+	if status == 400 && ContextOverflow(code, publicMsg) {
 		return apperror.FromStatus(413, "context length exceeded", UpstreamError(body))
 	}
 	return apperror.FromStatus(status, FailureMessage(status, publicMsg, code), UpstreamError(body))
+}
+
+// ContextOverflow spots context-window rejections across provider
+// phrasings — a stable code, or the message fragments OpenAI-compatible
+// servers use when they send no code at all ("This model's maximum
+// context length is N tokens", llama.cpp/vLLM/LM Studio et al.). One
+// shared definition so every adapter gets the 413 compact-remap.
+func ContextOverflow(code, msg string) bool {
+	s := strings.ToLower(code + " " + msg)
+	for _, frag := range []string{
+		"context_length", "context length", "context window",
+		"maximum context", "maximum number of tokens",
+		"prompt is too long", "input is too long",
+	} {
+		if strings.Contains(s, frag) {
+			return true
+		}
+	}
+	return false
 }
 
 // failureMessageMax bounds the toast-facing string — a provider rant

@@ -3,12 +3,14 @@ package textmessages
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
@@ -960,5 +962,71 @@ func TestSystemHydrationEmitsToolPair(t *testing.T) {
 	}
 	if !strings.Contains(result["content"].(string), "workspace changed to /srv/ws") {
 		t.Fatalf("pin output = %v", result["content"])
+	}
+}
+
+// This stream waits for EOF after message_stop, so a connection reset
+// can arrive after the terminal marker — it must not discard a
+// completed turn: once stop is seen, a transport error on the tail is a
+// flaky network, not a truncated response.
+func TestStreamResetAfterMessageStopCommits(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		payload := "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n" +
+			"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+			"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n" +
+			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Write([]byte(payload))
+			return
+		}
+		conn, buf, err := hj.Hijack()
+		if err != nil {
+			return
+		}
+		buf.WriteString("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n" + payload)
+		buf.Flush()
+		time.Sleep(150 * time.Millisecond) // client consumes events, hits read
+		if tc, ok := conn.(*net.TCPConn); ok {
+			tc.SetLinger(0) // RST — the realistic flaky-network tail
+		}
+		conn.Close()
+	})
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(m)
+	model, _ := entity.NewModel("m", "test")
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
+		t.Fatalf("post-message_stop reset must not fail a completed turn: %v", err)
+	}
+	if last := conv.Last(); last == nil || last.Content() != "hi" {
+		t.Fatalf("completed turn lost: %+v", conv.Last())
+	}
+}
+
+// A 200 response carrying an error envelope — some Anthropic-compatible
+// gateways do this — must not commit as an empty assistant turn: the
+// unary path inspects the envelope and routes it through the status
+// classifier so an overloaded_error surfaces as 5xx for the retry loop.
+func TestUnaryErrorEnvelopeOn200Fails(t *testing.T) {
+	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`))
+	})
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(m)
+	model, _ := entity.NewModel("m", "test")
+	err := svc.Send(t.Context(), conv, gw, model, nil)
+	if err == nil {
+		t.Fatal("error envelope on 200 must not commit a turn")
+	}
+	if got := apperror.As(err).StatusCode(); got < 500 {
+		t.Fatalf("overloaded_error → %d, want 5xx so the retry classifier can work", got)
+	}
+	if last := conv.Last(); last != nil && last.Role() == enum.RoleAssistant {
+		t.Fatal("error envelope must not append an assistant message")
 	}
 }

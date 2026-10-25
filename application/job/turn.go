@@ -236,19 +236,24 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 		if len(parts) > 0 {
 			conv.Last().SetParts(parts)
 		}
+		persistCtx := ctx
 		if canceled || ctx.Err() != nil {
 			if err := stampInterrupted(conv.Last()); err != nil {
 				return err
 			}
+			// The partial reply and interrupted markers are history, not
+			// speculative work — they must commit even though the turn
+			// ctx just died; a ctx-honoring store would drop them.
+			persistCtx = context.WithoutCancel(ctx)
 		}
 		for _, m := range added {
-			if _, err := d.Convs.AppendMessage(ctx, convID, m); err != nil {
+			if _, err := d.Convs.AppendMessage(persistCtx, convID, m); err != nil {
 				return err
 			}
 		}
 		// Meta (usage counters) travels with each step — a crash mid-loop
 		// leaves messages and accounting consistent.
-		if err := d.Convs.Save(ctx, conv); err != nil {
+		if err := d.Convs.Save(persistCtx, conv); err != nil {
 			return err
 		}
 		if canceled || ctx.Err() != nil {
@@ -451,7 +456,11 @@ func stampInterrupted(msg *entity.Message) error {
 
 // persistInterrupted writes the interrupted marker for calls that are
 // already in history with an empty output — a stop during execution.
+// The turn ctx is dead by definition here (its cancel is the stop), so
+// the writes ride a detached ctx — cancellation must not take the
+// cleanup down with it.
 func (d Deps) persistInterrupted(ctx context.Context, convID string, msg *entity.Message) error {
+	ctx = context.WithoutCancel(ctx)
 	if msg == nil {
 		return nil
 	}

@@ -1309,9 +1309,15 @@ class AppShell extends Widget {
     // DID persist and its turn died. Keeping both surfaces armed would
     // invite a duplicate of the same text.
     if (lastUser) {
+      // Remove exactly one matching receipt — the send the persisted
+      // tail answers. Two identical sends parked as unknown must keep
+      // their other receipt: a single tail line proves at most one of
+      // them persisted, and the survivor's whole purpose is to surface
+      // "check history before retrying".
       for (const e of [...this.queue.items]) {
         if (e.state === UNKNOWN && e.room === viewKey && e.text === lastUser.content) {
           removeEntry(this.queue, e);
+          break;
         }
       }
     }
@@ -1846,6 +1852,13 @@ class AppShell extends Widget {
           // A fresh view needs no history — its queue drains directly.
           this._drainQueue(this.freshToken);
         }
+      } else if (hasQueuedForRoom(this.queue, this._viewRoomKey())) {
+        // A line captured while the socket was still connecting must
+        // not sit queued forever. The first open skips the refresh
+        // dance above (history already loaded), but the drain is not
+        // a refresh — it belongs to every open. _drainQueue
+        // re-checks dispatchability.
+        this._drainQueue(this._viewRoomKey());
       }
       this._hasOpened = true;
       this.queue.notice = '';

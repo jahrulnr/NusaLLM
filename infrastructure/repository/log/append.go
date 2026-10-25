@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"time"
 )
@@ -39,6 +40,9 @@ func (l *Logger) Append(ctx context.Context, kind string, entry any) error {
 	if err != nil {
 		return err
 	}
+	if err := l.ensureFile(); err != nil {
+		return err
+	}
 	if _, err := l.f.Write(append(raw, '\n')); err != nil {
 		return err
 	}
@@ -50,4 +54,18 @@ func (l *Logger) Append(ctx context.Context, kind string, entry any) error {
 		return l.rotate()
 	}
 	return nil
+}
+
+// ensureFile attaches the active file when a previous write or rotation
+// failure detached it — the logger never goes permanently dead: an Append
+// retries the open instead of reporting a stale closed handle until
+// restart. An explicit Close is honored and stays closed.
+func (l *Logger) ensureFile() error {
+	if l.closed {
+		return os.ErrClosed
+	}
+	if l.f != nil {
+		return nil
+	}
+	return l.reopen()
 }

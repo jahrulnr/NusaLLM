@@ -15,6 +15,7 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 	repohistory "github.com/jahrulnr/nusallm/infrastructure/repository/history"
 	repoworkspace "github.com/jahrulnr/nusallm/infrastructure/repository/workspace"
 	"github.com/jahrulnr/nusallm/infrastructure/service/workspace"
@@ -390,4 +391,45 @@ func newTestToolCall(t *testing.T, id, name, input string) entity.ToolCall {
 		t.Fatalf("create tool call: %v", err)
 	}
 	return call
+}
+
+// renderMarkdown sanitizes provider-controlled text before it reaches
+// glamour. A model response (or prompt-injected web/file content the
+// model echoes) carrying a raw ESC or OSC sequence must not reach the
+// user's terminal verbatim — OSC 52 writes the clipboard, OSC 8 masks
+// hyperlinks, CSI sequences spoof display state. Glamour's own styling
+// emits ESC, so the assertion targets the payload's literal injection
+// forms.
+func TestRenderMarkdownStripsControlSequences(t *testing.T) {
+	payloads := []string{
+		"before \x1b]52;c;aGVsbG8=\x07 after",         // OSC 52 clipboard write
+		"before \x1b]8;;http://evil\x07x\x1b]8;;\x07", // OSC 8 masked link
+		"before \x1b[?1049h after",                    // alt-screen switch
+		"before \x07 after",                           // BEL
+	}
+	for _, p := range payloads {
+		out := renderMarkdown(p, 80)
+		if strings.Contains(out, "\x1b]52") || strings.Contains(out, "\x1b]8") ||
+			strings.Contains(out, "\x1b[?1049h") || strings.Contains(out, "\x07") {
+			t.Fatalf("provider control bytes survived glamour render for %q: %q", p, out)
+		}
+	}
+}
+
+// publicError renders appErr.Cause to the transcript. For upstream
+// failures the cause is the raw provider response body — provider-
+// controlled bytes, control characters included — so it is sanitized
+// and bounded: a hostile provider must not inject terminal control
+// sequences into the operator's scrollback or flood it.
+func TestPublicErrorSanitizesUpstreamCause(t *testing.T) {
+	body := "{\"error\":{\"message\":\"bad key \x1b]52;c;aGVsbG8=\x07\"}}"
+	err := apperror.FromStatus(401, "unauthorized", errors.New(body))
+	got := publicError(err)
+	if strings.ContainsAny(got, "\x1b\x07") {
+		t.Fatalf("upstream cause rendered unsanitized: %q", got)
+	}
+	huge := apperror.FromStatus(500, "upstream", errors.New(strings.Repeat("x", 1<<20)))
+	if got := publicError(huge); len(got) > publicCauseRunes*4 {
+		t.Fatalf("unbounded cause render: %d bytes", len(got))
+	}
 }

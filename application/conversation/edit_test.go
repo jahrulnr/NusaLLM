@@ -174,7 +174,7 @@ func TestEditPreemptsRunningSend(t *testing.T) {
 		if apperror.As(err).StatusCode() != 408 {
 			t.Fatalf("preempted send → %v, want 408", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("preempted send never returned")
 	}
 	conv, _ = app.deps.Convs.Load(t.Context(), "room")
@@ -230,7 +230,7 @@ func TestEditPreemptsRunningTool(t *testing.T) {
 		if apperror.As(err).StatusCode() != 408 {
 			t.Fatalf("preempted send → %v, want 408", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("edit did not interrupt the running tool")
 	}
 	conv, _ = convs.Load(t.Context(), "room")

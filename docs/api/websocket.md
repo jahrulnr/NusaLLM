@@ -208,15 +208,19 @@ Common envelope fields:
 - The command's `requestId` **is the input's `inputId`** — every ack,
   recall, fold frame, and snapshot names it. `requestId` is bounded to
   128 bytes on steering controls (a hard `invalid_argument` past it).
-- A journaled `turn.steer_ack` replies on acceptance — **accepted is
-  never consumed**. The input is consumed only when the turn folds it
-  at an inference safe point and persists it as an ordinary user
-  message (surfacing as a `turn.steer` stream chunk).
+- A journaled `turn.steer_ack` records acceptance for watchers —
+  **accepted is never consumed**. The issuing socket also gets an
+  answer: the sequenced frame when it is subscribed, an unsequenced
+  command reply when it is not, so acceptance is never silent. The
+  input is consumed only when the turn folds it at an inference safe
+  point and persists it as an ordinary user message (surfacing as a
+  `turn.steer` stream chunk).
 - **Idempotent dedup:** the same `requestId` + same `content` against
-  the same turn re-acks without a second submission; the same
-  `requestId` with *different* content is `invalid_argument`. Same
-  `content` under a *new* `requestId` is a distinct input — identical
-  texts are never ambiguous because correlation is by `inputId`.
+  the same turn re-acks without a second submission — as an
+  unsequenced reply, not a new journaled frame; the same `requestId`
+  with *different* content is `invalid_argument`. Same `content` under
+  a *new* `requestId` is a distinct input — identical texts are never
+  ambiguous because correlation is by `inputId`.
 - **Bounded:** at most 32 steering submissions per turn lifetime — past
   the cap the command is rejected before acceptance with
   `error`/`queue_full`; nothing is silently truncated.
@@ -242,9 +246,9 @@ Common envelope fields:
 - A claimed or persisted input answers `error`/`not_found`
   (`"steering input already consumed"`) — consumed input is never
   restored by recall.
-- Re-recalling an already-recalled input re-emits
-  `turn.steer_recalled` — recall is idempotent, so a lost ack
-  reconciles safely on retry.
+- Re-recalling an already-recalled input answers with an unsequenced
+  `turn.steer_recalled` reply — recall is idempotent, so a lost ack
+  reconciles safely on retry without growing the journal.
 - `payload.inputId` must be the `requestId` of a `turn.steer`
   previously accepted on this turn; anything else is `not_found`.
 
@@ -320,8 +324,10 @@ reply to the cancel command, not part of the turn stream):
 turn's mailbox. It is a **journaled turn frame** (it carries `seq` and
 replays on `turn.watch`), so a lost live ack recovers on reattach —
 unlike `turn.cancel_ack` it is part of the turn's ordered record.
-Accepted is never consumed: the receipt resolves at the fold or the
-terminal snapshot.
+Issuing sockets that are not subscribed also receive an **unsequenced**
+reply echoing their `requestId`; idempotent retries re-ack the same
+way. Accepted is never consumed: the receipt resolves at the fold or
+the terminal snapshot.
 
 ```json
 {
@@ -334,9 +340,10 @@ terminal snapshot.
 ```
 
 `turn.steer_recalled` — a `turn.steer_recall` withdrew the input while
-it was still pending. Journaled and sequenced like the ack; emitted
-both on a first recall and on an idempotent re-recall, so the client
-can always converge on "this input is withdrawn".
+it was still pending. Journaled and sequenced like the ack on the
+first recall; idempotent re-recalls and unattached issuers answer with
+an unsequenced reply, so the client can always converge on "this input
+is withdrawn" without the journal growing per retry.
 
 ```json
 {

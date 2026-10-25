@@ -154,16 +154,11 @@ func TestSurgeryStopsAtUncommittedSealedSegment(t *testing.T) {
 	ids := msgIDs(t, repo, "c1")
 	sum, _ := entity.NewMessage(enum.RoleUser, "summary")
 	dir := r.convDir("c1")
-	blockedMeta := filepath.Join(dir, "meta.json.tmp")
-	if err := os.Mkdir(blockedMeta, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	unblock := blockAtomicWrites(t, metaFile)
 	if err := compactAt(t, repo, "c1", sum, 2); err == nil {
 		t.Fatal("expected metadata publish failure")
 	}
-	if err := os.Remove(blockedMeta); err != nil {
-		t.Fatal(err)
-	}
+	unblock()
 	segment := filepath.Join(dir, "0.jsonl")
 	before, err := os.ReadFile(segment)
 	if err != nil {
@@ -216,12 +211,9 @@ func TestRewriteFromSealedPayloadFailureKeepsArchive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The fault: the staged temp path holds a non-empty directory, so the
-	// sweep cannot clear it and the payload write cannot open it.
-	staged := filepath.Join(dir, rewritePayload+".tmp")
-	if err := os.MkdirAll(filepath.Join(staged, "keep"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	// The fault: the payload write must fail while the archive is still
+	// untouched.
+	blockAtomicWrites(t, rewritePayload)
 
 	if err := repo.RewriteFrom(t.Context(), "c1", ids[1], "u2*"); err == nil {
 		t.Fatal("expected RewriteFrom to fail on the payload write")
@@ -321,9 +313,7 @@ func TestRewriteFromSealedPublishFailureKeepsArchive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(filepath.Join(dir, activeFile+".tmp"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	unblock := blockAtomicWrites(t, activeFile)
 
 	if err := repo.RewriteFrom(t.Context(), "c1", ids[1], "u2*"); err == nil {
 		t.Fatal("expected RewriteFrom to fail on publish")
@@ -343,10 +333,8 @@ func TestRewriteFromSealedPublishFailureKeepsArchive(t *testing.T) {
 	if _, err := repo.LoadAt(t.Context(), "c1", 0, 0); err != nil {
 		t.Fatalf("history unreadable after failed publish: %v", err)
 	}
-	// The failure was clean: removing the block lets the edit land.
-	if err := os.Remove(filepath.Join(dir, activeFile+".tmp")); err != nil {
-		t.Fatal(err)
-	}
+	// The failure was clean: unblocking lets the edit land.
+	unblock()
 	if err := repo.RewriteFrom(t.Context(), "c1", ids[1], "u2*"); err != nil {
 		t.Fatal(err)
 	}
@@ -371,11 +359,7 @@ func TestRewriteFromSealedMetaFailureLeavesRecoverableWindow(t *testing.T) {
 	if err := compactAt(t, repo, "c1", sum, 2); err != nil { // seg0=[u1,u2], active=[S1,u3]
 		t.Fatal(err)
 	}
-	dir := r.convDir("c1")
-	block := filepath.Join(dir, metaFile+".tmp")
-	if err := os.Mkdir(block, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	unblock := blockAtomicWrites(t, metaFile)
 
 	if err := repo.RewriteFrom(t.Context(), "c1", ids[1], "u2*"); err == nil {
 		t.Fatal("expected RewriteFrom to fail on the metadata recount")
@@ -399,9 +383,7 @@ func TestRewriteFromSealedMetaFailureLeavesRecoverableWindow(t *testing.T) {
 		t.Fatal("compact proceeded on an interrupted archive")
 	}
 
-	if err := os.Remove(block); err != nil {
-		t.Fatal(err)
-	}
+	unblock()
 	if err := r.RepairRewrite(t.Context(), "c1"); err != nil {
 		t.Fatal(err)
 	}

@@ -18,6 +18,7 @@ import (
 	"github.com/jahrulnr/nusallm/application/setting"
 	"github.com/jahrulnr/nusallm/application/setup"
 	"github.com/jahrulnr/nusallm/infrastructure/config"
+	cliterm "github.com/jahrulnr/nusallm/infrastructure/delivery/cli/term"
 	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 	repoconfig "github.com/jahrulnr/nusallm/infrastructure/repository/config"
@@ -206,6 +207,39 @@ func conversationStore(cfg config.Config) drepo.ConversationRepairer {
 // bootstrap concern, not config.go's: the .env locates the config file,
 // and config cannot load a file it has not found. Real env vars win — a
 // key already exported is never overwritten.
+//
+// The file rides whatever directory the binary launches in — including a
+// cloned repo a user opens nusallm inside — so keys that steer child
+// processes, path resolution, or the provider calls that carry API keys
+// are refused: an unset LD_* would load into every tool subprocess, a
+// BASH_ENV into every non-interactive shell, XDG_* would redirect config
+// and data lookup, and a proxy or CA override would put an attacker on
+// the wire the gateway secrets travel.
+var dotenvDeny = map[string]bool{
+	"BASH_ENV": true, "ENV": true, "SHELLOPTS": true, "BASHOPTS": true,
+	"PROMPT_COMMAND": true, "PS4": true, "IFS": true, "CDPATH": true, "GLOBIGNORE": true,
+	"NODE_OPTIONS": true, "NODE_PATH": true, "PYTHONSTARTUP": true, "PYTHONINSPECT": true,
+	"PYTHONPATH": true, "PERL5OPT": true, "PERL5DB": true, "PERL5LIB": true,
+	"RUBYOPT": true, "RUBYLIB": true, "GEM_HOME": true,
+	"JAVA_TOOL_OPTIONS": true, "_JAVA_OPTIONS": true, "JDK_JAVA_OPTIONS": true,
+	"GIT_SSH_COMMAND": true, "SSH_ASKPASS": true, "LESSOPEN": true, "LESSCLOSE": true,
+	"XDG_CONFIG_HOME": true, "XDG_DATA_HOME": true, "XDG_CACHE_HOME": true,
+	"XDG_STATE_HOME": true, "XDG_RUNTIME_DIR": true,
+	"PATH": true, "HOME": true, "TMPDIR": true,
+	"EDITOR": true, "VISUAL": true, "PAGER": true,
+	"HTTP_PROXY": true, "HTTPS_PROXY": true, "ALL_PROXY": true, "NO_PROXY": true,
+	"http_proxy": true, "https_proxy": true, "all_proxy": true, "no_proxy": true,
+	"SSL_CERT_FILE": true, "SSL_CERT_DIR": true, "CURL_CA_BUNDLE": true,
+	"REQUESTS_CA_BUNDLE": true, "NODE_EXTRA_CA_CERTS": true,
+}
+
+// dotenvDenied reports keys refused from .env — the explicit list plus
+// the dynamic-loader prefixes, which grow per platform faster than an
+// enumeration stays honest.
+func dotenvDenied(k string) bool {
+	return dotenvDeny[k] || strings.HasPrefix(k, "LD_") || strings.HasPrefix(k, "DYLD_")
+}
+
 func loadEnvFile(path string) {
 	raw, err := repoconfig.NewLocal().Read(path)
 	if err != nil {
@@ -222,7 +256,7 @@ func loadEnvFile(path string) {
 		}
 		k = strings.TrimSpace(k)
 		v = strings.Trim(strings.TrimSpace(v), `"'`)
-		if k == "" || os.Getenv(k) != "" {
+		if k == "" || dotenvDenied(k) || os.Getenv(k) != "" {
 			continue
 		}
 		_ = os.Setenv(k, v)
@@ -230,13 +264,16 @@ func loadEnvFile(path string) {
 }
 
 // printErr renders a use-case error for an operator — the public message
-// plus the wrapped cause, so "invalid gateway" also says *why*.
+// plus the wrapped cause, so "invalid gateway" also says *why*. The cause
+// can carry provider-controlled bytes (an upstream response body), so it
+// goes through term.Sanitize — an error reply must not inject escape
+// sequences into the operator's terminal.
 func printErr(w io.Writer, err error) {
 	if appErr, ok := errors.AsType[apperror.IAppError](err); ok {
-		fmt.Fprintln(w, "nusallm:", appErr.Caused())
+		fmt.Fprintln(w, "nusallm:", cliterm.Sanitize(appErr.Caused()))
 		return
 	}
-	fmt.Fprintln(w, "nusallm:", err)
+	fmt.Fprintln(w, "nusallm:", cliterm.Sanitize(err.Error()))
 }
 
 func isTTY(r io.Reader) bool {

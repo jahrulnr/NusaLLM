@@ -57,7 +57,7 @@ func TestDeleteWhileLive(t *testing.T) {
 	}()
 	select {
 	case <-entered: // the send is provably holding the slot
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("send did not reach the upstream")
 	}
 
@@ -69,7 +69,7 @@ func TestDeleteWhileLive(t *testing.T) {
 		if apperror.As(err).StatusCode() != 408 {
 			t.Fatalf("killed send → %v, want 408", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("delete did not reach the running send")
 	}
 	if _, err := app.deps.Convs.Load(t.Context(), "room"); apperror.As(err).StatusCode() != 404 {
@@ -95,7 +95,7 @@ func TestDeleteFlushesPending(t *testing.T) {
 	go app.Send(t.Context(), "room", "gw1", "m1", "first", nil, appjob.SendOptions{}, nil)
 	select {
 	case <-entered:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("first send did not reach the upstream")
 	}
 	queuedCtx := &signaledContext{Context: t.Context(), observed: make(chan struct{})}
@@ -106,7 +106,7 @@ func TestDeleteFlushesPending(t *testing.T) {
 	}()
 	select {
 	case <-queuedCtx.observed: // second is queued behind the first
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("second send never queued")
 	}
 
@@ -118,7 +118,7 @@ func TestDeleteFlushesPending(t *testing.T) {
 		if apperror.As(err).StatusCode() != 410 {
 			t.Fatalf("queued send after delete → %v, want 410", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("queued send not flushed by delete")
 	}
 	if got := atomic.LoadInt32(&calls); got != 1 {

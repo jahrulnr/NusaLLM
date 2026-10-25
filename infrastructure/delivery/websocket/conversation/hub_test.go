@@ -962,3 +962,61 @@ func TestActivityBroadcast(t *testing.T) {
 	assertActivity(t, readAnyFrame(t, late), "completed", "send", "req-send", opened)
 	assertActivity(t, readAnyFrame(t, observer), "completed", "send", "req-send", opened)
 }
+
+// The terminal promise is exactly one frame — a provider error body
+// that exceeds maxFrameBytes still delivers it: the message clips, the
+// frame marshals, subscribers see the verdict. The stored outcome is
+// clipped the same way, so a gapped turn.watch replays it inside
+// resync_required instead of answering with silence.
+func TestOversizedTerminalStillReachesClient(t *testing.T) {
+	huge := strings.Repeat("x", maxFrameBytes) // 1 MiB public message → clipped
+	h := newHub(t, stubSender{fn: func(_ context.Context, convID, _, _, _ string,
+		_ event.TurnEventHandler) (appconversation.SendResult, error) {
+		return appconversation.SendResult{ConversationID: convID, UserMessagePersisted: true},
+			apperror.New(500, huge, nil)
+	}})
+	ws := dial(t, h)
+	sendCommand(t, ws, `{"type":"turn.send","requestId":"r","payload":{"content":"x"}}`)
+	opened := readFrame(t, ws)
+	if opened.Type != "turn.opened" || opened.Seq == nil || *opened.Seq != 0 {
+		t.Fatalf("opened %+v", opened)
+	}
+	// The terminal must arrive — exactly-once, even over the cap.
+	f := readUntil(t, ws, "turn.failed")
+	if f.Seq == nil {
+		t.Fatalf("terminal must be sequenced: %+v", f)
+	}
+	var p struct {
+		Status  int    `json:"status"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(f.Payload, &p); err != nil {
+		t.Fatalf("terminal payload: %v", err)
+	}
+	if p.Status != 500 {
+		t.Fatalf("terminal status = %d, want 500", p.Status)
+	}
+	if len(p.Message) >= maxFrameBytes {
+		t.Fatalf("terminal message = %d bytes — must clip under the frame cap", len(p.Message))
+	}
+
+	// A gapped watch answers resync_required carrying the stored —
+	// already bounded — outcome.
+	ws2 := dial(t, h)
+	sendCommand(t, ws2, fmt.Sprintf(`{"type":"turn.watch","requestId":"w1","conversationId":%q,"turnId":%q,"afterSeq":99}`,
+		opened.ConversationID, opened.TurnID))
+	f = readUntil(t, ws2, "turn.resync_required")
+	var rp struct {
+		Turn     string `json:"turn"`
+		Terminal struct {
+			Status  int    `json:"status"`
+			Message string `json:"message"`
+		} `json:"terminal"`
+	}
+	if err := json.Unmarshal(f.Payload, &rp); err != nil {
+		t.Fatalf("resync payload: %v", err)
+	}
+	if rp.Turn != "failed" || rp.Terminal.Status != 500 {
+		t.Fatalf("resync outcome = %+v, want the stored failed verdict", rp)
+	}
+}

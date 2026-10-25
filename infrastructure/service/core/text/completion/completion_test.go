@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -844,5 +845,222 @@ func TestSystemHydrationPinEmitsToolPair(t *testing.T) {
 	text, _ := resultMsg.Content.(string)
 	if !strings.Contains(text, "workspace changed to /srv/ws") {
 		t.Fatalf("pin output = %q", text)
+	}
+}
+
+// OpenAI proper answers context overflow with code
+// "context_length_exceeded" (remapped 400→413, the compact+retry
+// trigger). OpenAI-compatible providers (llama.cpp, vLLM, LM Studio…)
+// routinely send a message-only 400 — e.g. "This model's maximum
+// context length is 8192 tokens" — and that phrasing must still remap
+// to 413 the way the messages/responses adapters do.
+func TestContextLengthMessageMapsTo413(t *testing.T) {
+	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error":{"message":"This model's maximum context length is 8192 tokens. However, your messages resulted in 9000 tokens.","type":"invalid_request_error"}}`))
+	})
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(m)
+	model, _ := entity.NewModel("m", "test")
+	err := svc.Send(t.Context(), conv, gw, model, nil)
+	if err == nil {
+		t.Fatal("expected send to fail")
+	}
+	if got := apperror.As(err).StatusCode(); got != 413 {
+		t.Fatalf("context-overflow 400 → status %d, want 413 (compact+retry); "+
+			"the turn loop treats 400 as a definitive payload failure", got)
+	}
+}
+
+// A stalled unary body (headers sent, body never completes) parks the
+// read: the transport only sets ResponseHeaderTimeout and the stream
+// idle timer is a streamResponse concept. With an idle deadline
+// configured the read cuts at the deadline — a dead-but-open
+// connection cannot park the turn forever.
+func TestStalledUnaryBodyHonorsIdleDeadline(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"model":"m","choices":`)) // partial body, then silence
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-r.Context().Done()
+	}))
+	t.Cleanup(srv.Close)
+	gw, err := aggregate.NewGateway("test", "t", srv.URL, enum.StyleCompletion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw.SetApiKey("sk-test")
+	gw.DisableStream()
+	svc := New(coretext.Options{FileStore: repoworkspace.NewLocal(), IdleTimeout: 100 * time.Millisecond})
+
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(m)
+	model, _ := entity.NewModel("m", "test")
+	start := time.Now()
+	err = svc.Send(t.Context(), conv, &gw, model, nil)
+	if err == nil {
+		t.Fatal("stalled body must fail")
+	}
+	if got := apperror.As(err).StatusCode(); got != 502 {
+		t.Fatalf("idle body → %d, want 502", got)
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatal("idle deadline did not fire promptly")
+	}
+}
+
+// With no idle deadline configured, a stalled unary body blocks until
+// the caller's context ends — and the cancel classifies as 408
+// (request canceled), not 502 "unreadable upstream body".
+func TestStalledUnaryBodyCancelMaps408(t *testing.T) {
+	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"model":"m","choices":`)) // partial body, then silence
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-r.Context().Done()
+	})
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(m)
+	model, _ := entity.NewModel("m", "test")
+
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- svc.Send(ctx, conv, gw, model, nil) }()
+
+	select {
+	case err := <-done:
+		t.Fatalf("stalled unary body returned early without an idle deadline: %v", err)
+	case <-time.After(400 * time.Millisecond):
+		// still parked — caller cancel is the only exit
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if apperror.As(err).StatusCode() != 408 {
+			t.Fatalf("cancel mid-body → %d, want 408", apperror.As(err).StatusCode())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("cancel did not unblock Send")
+	}
+}
+
+// A transport reset after [DONE] must still commit: readSSE stops at
+// the sentinel and never reads again, so a post-terminal transport
+// error can never reach errs.
+func TestStreamResetAfterDoneCommits(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		payload := "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Write([]byte(payload))
+			return
+		}
+		conn, buf, err := hj.Hijack()
+		if err != nil {
+			return
+		}
+		buf.WriteString("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n" + payload)
+		buf.Flush()
+		time.Sleep(100 * time.Millisecond) // let the client consume the events
+		if tc, ok := conn.(*net.TCPConn); ok {
+			tc.SetLinger(0) // force RST — a flaky network's tail failure
+		}
+		conn.Close()
+	})
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(m)
+	model, _ := entity.NewModel("m", "test")
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
+		t.Fatalf("post-[DONE] reset must not fail a completed turn: %v", err)
+	}
+	if last := conv.Last(); last == nil || last.Content() != "hi" {
+		t.Fatalf("completed turn lost: %+v", conv.Last())
+	}
+}
+
+// A reset between finish_reason and [DONE] — providers that omit the
+// sentinel, or a connection dying in the tail gap — still commits: the
+// finish reason already proves the turn ended, so the pump treats a
+// post-finish transport error as a flaky tail, not a truncated
+// response.
+func TestStreamResetAfterFinishReasonCommits(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		payload := "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\n"
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Write([]byte(payload))
+			return
+		}
+		conn, buf, err := hj.Hijack()
+		if err != nil {
+			return
+		}
+		buf.WriteString("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n" + payload)
+		buf.Flush()
+		time.Sleep(100 * time.Millisecond)
+		if tc, ok := conn.(*net.TCPConn); ok {
+			tc.SetLinger(0) // RST — no [DONE] ever arrives
+		}
+		conn.Close()
+	})
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(m)
+	model, _ := entity.NewModel("m", "test")
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
+		t.Fatalf("reset after finish_reason must not fail a completed turn: %v", err)
+	}
+	if last := conv.Last(); last == nil || last.Content() != "hi" {
+		t.Fatalf("completed turn lost: %+v", conv.Last())
+	}
+}
+
+// The per-chunk idle timer fires mid-stream when chunks stop — the
+// streaming counterpart of the unary idle deadline.
+func TestStreamIdleTimeoutFires(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"x\"}}]}\n\n"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-r.Context().Done() // silent forever — idle must cut it
+	}))
+	t.Cleanup(srv.Close)
+	gw, err := aggregate.NewGateway("test", "t", srv.URL, enum.StyleCompletion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw.SetApiKey("sk-test")
+	gw.EnableStream()
+	svc := New(coretext.Options{FileStore: repoworkspace.NewLocal(), IdleTimeout: 100 * time.Millisecond})
+
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(m)
+	model, _ := entity.NewModel("m", "test")
+	start := time.Now()
+	err = svc.Send(t.Context(), conv, &gw, model, nil)
+	if err == nil {
+		t.Fatal("silent stream must fail")
+	}
+	if got := apperror.As(err).StatusCode(); got != 502 {
+		t.Fatalf("stream idle → %d, want 502", got)
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatal("idle timeout did not fire promptly")
 	}
 }

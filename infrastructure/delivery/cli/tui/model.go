@@ -930,15 +930,31 @@ func (p turnPump) Handle(e event.TurnEvent) {
 	}
 }
 
+// publicCauseRunes bounds the rendered error cause — an upstream cause
+// is provider-controlled bytes (the raw response body), so it is
+// sanitized against escape injection and clipped so a flood cannot bury
+// the transcript.
+const publicCauseRunes = 4000
+
 // publicError renders an app error for the transcript: the public
 // message, plus the internal cause when there is one — "invalid gateway"
 // is no help without the reason. Cause-less errors stay clean.
 func publicError(err error) string {
 	if appErr, ok := errors.AsType[*apperror.AppError](err); ok {
 		if appErr.Cause != nil {
-			return fmt.Sprintf("%s: %v", appErr.Message, appErr.Cause)
+			return fmt.Sprintf("%s: %s", term.Sanitize(appErr.Message), sanitizeCause(appErr.Cause))
 		}
-		return appErr.Error()
+		return term.Sanitize(appErr.Error())
 	}
-	return err.Error()
+	return sanitizeCause(err)
+}
+
+// sanitizeCause renders an internal cause for the transcript: control
+// bytes stripped, length bounded.
+func sanitizeCause(err error) string {
+	s := term.Sanitize(err.Error())
+	if r := []rune(s); len(r) > publicCauseRunes {
+		s = string(r[:publicCauseRunes]) + "…"
+	}
+	return s
 }

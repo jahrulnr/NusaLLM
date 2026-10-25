@@ -17,6 +17,11 @@ func (r *ConversationRepository) Save(ctx context.Context, conv *aggregate.Conve
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	unlock, err := r.lockStore()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 
 	dir := r.convDir(conv.ID())
 	if err := os.MkdirAll(dir, 0o755); err != nil {

@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
@@ -669,5 +671,42 @@ func TestEscapeHatch(t *testing.T) {
 	fcc, _ := tc["functionCallingConfig"].(map[string]any)
 	if fcc["mode"] != "ANY" {
 		t.Fatalf("escape hatch: %+v", captured["toolConfig"])
+	}
+}
+
+// A transport reset after a completed turn must not discard accumulated
+// data. This wire uses EOF as its terminal marker, but a finishReason
+// already proves the turn ended — an RST on the tail is a flaky
+// network, not a truncated response.
+func TestStreamResetAfterFinishReasonCommits(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		payload := "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hi\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":1,\"candidatesTokenCount\":1,\"totalTokenCount\":2}}\n\n"
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Write([]byte(payload))
+			return
+		}
+		conn, buf, err := hj.Hijack()
+		if err != nil {
+			return
+		}
+		buf.WriteString("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n" + payload)
+		buf.Flush()
+		time.Sleep(150 * time.Millisecond) // client consumes the chunk, blocks on read
+		if tc, ok := conn.(*net.TCPConn); ok {
+			tc.SetLinger(0) // RST — the realistic flaky-network tail
+		}
+		conn.Close()
+	})
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(m)
+	model, _ := entity.NewModel("m", "test")
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
+		t.Fatalf("reset after finishReason must not fail a completed turn: %v", err)
+	}
+	if last := conv.Last(); last == nil || last.Content() != "hi" {
+		t.Fatalf("completed turn lost: %+v", conv.Last())
 	}
 }

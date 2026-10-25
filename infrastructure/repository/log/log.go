@@ -42,10 +42,11 @@ type Logger struct {
 	maxFiles int
 	redact   func(string, any) any
 
-	mu    sync.Mutex
-	f     *os.File
-	lines int   // records in the open active file
-	segs  []int // sealed segment numbers, ascending
+	mu     sync.Mutex
+	f      *os.File
+	lines  int   // records in the open active file
+	segs   []int // sealed segment numbers, ascending
+	closed bool  // Close ran — no lazy reopen after an explicit close
 }
 
 // New opens the log dir, resuming the existing active file and segment
@@ -104,44 +105,31 @@ func (l *Logger) nextSeg() int {
 }
 
 // rotate seals active.jsonl as the next numbered segment, reopens a fresh
-// active file, and prunes segments past maxFiles. On any failure it tries
-// to reopen the active file so the logger never goes permanently dead.
+// active file, and prunes segments past maxFiles. The gzip is staged
+// under a unique temp name and renamed into place, so a crash mid-write
+// leaves an uncounted .tmp garbage file — never a valid-looking torn
+// archive. On any failure the active handle is detached (reopen either
+// reattaches or leaves l.f nil, which the next Append retries).
 func (l *Logger) rotate() error {
 	if err := l.f.Sync(); err != nil {
 		return err
 	}
 	if err := l.f.Close(); err != nil {
+		l.f = nil // closed-or-dying handle — never reuse it
+		_ = l.reopen()
 		return err
 	}
+	l.f = nil
 	seg := l.nextSeg()
 	activePath := filepath.Join(l.dir, activeFile)
 	segPath := filepath.Join(l.dir, strconv.Itoa(seg)+".jsonl.gz")
-	segment, err := os.OpenFile(segPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		l.reopen()
-		return err
-	}
-	active, err := os.Open(activePath)
-	if err != nil {
-		segment.Close()
-		os.Remove(segPath)
-		l.reopen()
-		return err
-	}
-	zw := gzip.NewWriter(segment)
-	_, copyErr := io.Copy(zw, active)
-	readErr := active.Close()
-	zipErr := zw.Close()
-	syncErr := segment.Sync()
-	closeErr := segment.Close()
-	if err := errors.Join(copyErr, readErr, zipErr, syncErr, closeErr); err != nil {
-		os.Remove(segPath)
-		l.reopen()
+	if err := sealSegment(segPath, activePath); err != nil {
+		_ = l.reopen()
 		return err
 	}
 	if err := os.Remove(activePath); err != nil {
-		os.Remove(segPath)
-		l.reopen()
+		_ = os.Remove(segPath)
+		_ = l.reopen()
 		return err
 	}
 	if d, err := os.Open(l.dir); err == nil {
@@ -153,7 +141,7 @@ func (l *Logger) rotate() error {
 		for len(l.segs) > l.maxFiles {
 			old := l.segs[0]
 			if err := os.Remove(filepath.Join(l.dir, strconv.Itoa(old)+".jsonl.gz")); err != nil {
-				l.reopen()
+				_ = l.reopen()
 				return apperror.NewInternalError("log rotate: prune segment", err)
 			}
 			l.segs = l.segs[1:]
@@ -162,15 +150,62 @@ func (l *Logger) rotate() error {
 	return l.reopen()
 }
 
-// reopen attaches a fresh active file — also the recovery path after a
-// failed rotate, where the renamed file may no longer exist.
-func (l *Logger) reopen() error {
-	f, err := os.OpenFile(filepath.Join(l.dir, activeFile), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+// sealSegment gzips activePath into a staged file and renames it to
+// segPath — the rename is the commit point. A crash before it leaves a
+// temp name loadSegments never counts; a crash after it leaves a
+// complete archive plus the untouched active file (the next rotation
+// re-seals those records — a tolerated duplicate window for diagnostics).
+// The target must not already exist: a fresh rotation never reuses a
+// name the segment list counts, and clobbering an uncounted one would
+// silently replace a foreign file.
+func sealSegment(segPath, activePath string) error {
+	if _, err := os.Stat(segPath); err == nil {
+		return os.ErrExist
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(segPath), filepath.Base(segPath)+".tmp-*")
 	if err != nil {
 		return err
 	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	active, err := os.Open(activePath)
+	if err != nil {
+		tmp.Close()
+		return err
+	}
+	zw := gzip.NewWriter(tmp)
+	_, copyErr := io.Copy(zw, active)
+	readErr := active.Close()
+	zipErr := zw.Close()
+	syncErr := tmp.Sync()
+	closeErr := tmp.Close()
+	if err := errors.Join(copyErr, readErr, zipErr, syncErr, closeErr); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, segPath)
+}
+
+// reopen attaches a fresh active file — also the recovery path after a
+// failed rotate, where the renamed file may no longer exist. The record
+// count is recomputed from the file, so a failed rotation that kept its
+// records does not drift the threshold. On failure l.f is left nil —
+// Append's lazy ensure retries the open once the environment heals.
+func (l *Logger) reopen() error {
+	path := filepath.Join(l.dir, activeFile)
+	lines, err := prepareActive(path)
+	if err != nil {
+		l.f = nil
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		l.f = nil
+		return err
+	}
 	l.f = f
-	l.lines = 0
+	l.lines = lines
 	return nil
 }
 

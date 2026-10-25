@@ -179,7 +179,15 @@ Two primitives cover everything (`conversation.go`):
   silent history loss rather than an error.
 
 A `sync.Mutex` per repository serializes writers; the store assumes a
-single process owns the directory.
+single process owns the directory. Every operation additionally holds an
+advisory `flock` on `<storage>/conversations/.lock` for its whole
+read-modify-write span, so a second instance or process pointed at the
+same root serializes instead of tearing staged files or losing meta
+updates. The lock is best-effort by platform: it is a real `flock` on
+unix, a `LockFileEx` on Windows, and a no-op elsewhere — on those
+platforms (or on filesystems like NFS where advisory locks don't bind)
+the in-process mutex is the only guard, so the single-owner assumption
+still holds.
 
 ### `AppendMessage` and `UpdateToolCallOutput`
 

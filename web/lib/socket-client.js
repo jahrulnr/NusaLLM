@@ -39,7 +39,13 @@ export class TurnSocket extends EventTarget {
     this._state('connecting');
     const ws = new WebSocket(this.url());
     this.ws = ws;
+    // Every handler captures the socket it was attached to: a stale
+    // event from a dead socket must never touch the live handle.
+    // close() followed by connect() leaves ws1's onclose arriving
+    // after ws2 took over — without the guard it would null the
+    // handle, drop the queue, and strand every send in a void.
     ws.onopen = () => {
+      if (ws !== this.ws) return;
       this.retries = 0;
       this._state('open');
       for (const raw of this.queue.splice(0)) ws.send(raw);
@@ -54,8 +60,12 @@ export class TurnSocket extends EventTarget {
         });
       }
     };
-    ws.onmessage = (ev) => this._onmessage(ev);
+    ws.onmessage = (ev) => {
+      if (ws !== this.ws) return;
+      this._onmessage(ev);
+    };
     ws.onclose = () => {
+      if (ws !== this.ws) return;
       this.ws = null;
       // Never auto-resend: commands queued but never acknowledged are
       // dropped — delivery was unknowable and the UI already warned.
@@ -63,7 +73,9 @@ export class TurnSocket extends EventTarget {
       this._state('closed');
       if (!this.intentionalClose) this._retry();
     };
-    ws.onerror = () => { /* onclose follows and drives retry */ };
+    ws.onerror = () => {
+      if (ws !== this.ws) return; /* onclose follows and drives retry */
+    };
   }
 
   close() {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
 // Load reads <id>.json and hydrates the aggregate. The apiKey record
@@ -48,6 +49,14 @@ func (r *GatewayRepository) resolveKey(ctx context.Context, id, stored string) (
 		}
 		resolved, err := r.secrets.Get(ctx, sk)
 		if err != nil {
+			// A missing key is record-level — the stored ref dangles and
+			// List skips it like any undecodable file. Anything else is
+			// a store outage, not data damage: mark it unreadable so
+			// List propagates rather than silently dropping a gateway
+			// whose key is temporarily unreachable.
+			if apperror.As(err).StatusCode() != 404 {
+				return "", fmt.Errorf("gateway %q: %w: %v", id, errUnreadable, err)
+			}
 			return "", fmt.Errorf("gateway %q: %w", id, err)
 		}
 		key = resolved

@@ -15,6 +15,11 @@ func (r *ConversationRepository) Info(ctx context.Context, convID string) (drepo
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	unlock, err := r.lockStore()
+	if err != nil {
+		return drepo.ConversationInfo{}, err
+	}
+	defer unlock()
 	meta, err := r.readMeta(convID)
 	if err != nil {
 		return drepo.ConversationInfo{}, err

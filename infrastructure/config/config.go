@@ -68,18 +68,34 @@ func (c *Config) Load(store Store, path string) error {
 	return nil
 }
 
-// Validate decodes one config document — unknown keys are ignored so a
-// leftover or comment-as-field never blocks boot; malformed JSON, wrong
-// types on known keys, and trailing garbage still fail — then normalizes.
-// Callers mutating the file validate the candidate before it replaces the
-// old one.
+// Validate decodes one config document — unknown keys are rejected so a
+// typo fails loudly instead of silently tuning nothing; malformed JSON,
+// wrong types on known keys, and trailing garbage also fail — then
+// normalizes. Callers mutating the file validate the candidate before it
+// replaces the old one.
 func Validate(raw []byte) (Config, error) {
+	return validate(raw, true)
+}
+
+// ValidateLenient decodes the known subset of a document that may carry
+// foreign keys — the editor's post-patch check: `config set`/`unset`
+// intentionally operate on files holding leftovers and comment-as-field
+// additions (the schema-ordered rewrite prunes them), so they validate
+// leniently while Load and `config validate` stay strict.
+func ValidateLenient(raw []byte) (Config, error) {
+	return validate(raw, false)
+}
+
+func validate(raw []byte, strict bool) (Config, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
 		return Config{}, apperror.NewInternalError("config load failed", fmt.Errorf("config document must be a JSON object"))
 	}
 	var fresh Config
 	dec := json.NewDecoder(bytes.NewReader(raw))
+	if strict {
+		dec.DisallowUnknownFields()
+	}
 	if err := dec.Decode(&fresh); err != nil {
 		return Config{}, apperror.NewInternalError("config load failed", err)
 	}

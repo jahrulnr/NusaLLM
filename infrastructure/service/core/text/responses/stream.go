@@ -310,9 +310,3 @@ func readSSE(body io.Reader, done <-chan struct{}, out chan<- sse, errs chan<- e
 		errs <- apperror.New(502, "upstream stream broken", err)
 	}
 }
-
-func readAll(r io.Reader) ([]byte, error) {
-	var b bytes.Buffer
-	_, err := b.ReadFrom(io.LimitReader(r, 32<<20)) // 32MB guard
-	return b.Bytes(), err
-}

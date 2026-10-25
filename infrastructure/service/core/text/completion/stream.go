@@ -73,14 +73,14 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 			return apperror.New(502, "upstream stream idle", nil)
 		case err := <-errs:
 			s.logAppend(ctx, "provider.stream", logged)
-			if err != nil {
-				emit(onEvent, event.NewErrorEvent(err))
-				return err
-			}
 			// stream closed — only commit when a real terminal marker was
-			// seen; EOF without one means a truncated upstream stream.
+			// seen; EOF or a transport error without one means a
+			// truncated upstream stream. A reset in the tail gap after
+			// finish_reason/[DONE] must not discard a complete turn.
 			if finish == "" && !doneSeen {
-				err := apperror.New(502, "upstream stream truncated", nil)
+				if err == nil {
+					err = apperror.New(502, "upstream stream truncated", nil)
+				}
 				emit(onEvent, event.NewErrorEvent(err))
 				return err
 			}
@@ -261,10 +261,4 @@ func readSSE(body io.Reader, done <-chan struct{}, out chan<- sse, errs chan<- e
 	if err := sc.Err(); err != nil {
 		errs <- apperror.New(502, "upstream stream broken", err)
 	}
-}
-
-func readAll(r io.Reader) ([]byte, error) {
-	var b bytes.Buffer
-	_, err := b.ReadFrom(io.LimitReader(r, 32<<20)) // 32MB guard
-	return b.Bytes(), err
 }

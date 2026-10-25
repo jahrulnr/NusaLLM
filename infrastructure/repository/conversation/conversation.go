@@ -37,15 +37,21 @@ const (
 	// segments under rewriteParkSuffix until the new tail is published.
 	rewritePayload    = activeFile + ".rewrite"
 	rewriteParkSuffix = ".rewrite-old"
+	lockFileName      = ".lock"
 	lineMessage       = "message"
 	lineToolOutput    = "tool_output"
 )
 
 // ConversationRepository is a JSONL-backed Conversation store. A single
-// process owns the directory; the mutex serializes writes.
+// process owns the directory; the mutex serializes writes. The store
+// additionally holds an advisory file lock for the span of every
+// operation, so a second instance or process pointing at the same root
+// serializes instead of losing meta updates or tearing staged files.
 type ConversationRepository struct {
 	path string
 	mu   sync.Mutex
+
+	lockFile *os.File // opened lazily under r.mu; nil until the first op
 }
 
 // NewConversationRepository returns the concrete store so a caller picks
@@ -54,6 +60,38 @@ type ConversationRepository struct {
 // Conversation port deliberately does not expose.
 func NewConversationRepository(path string) *ConversationRepository {
 	return &ConversationRepository{path: path}
+}
+
+// lockStore takes the store-level exclusive lock for the span of one
+// operation — the read-modify-write sequences (append + meta bump,
+// rewrite + recount) are only atomic across instances when the whole
+// sequence holds one lock, and a second writer must never interleave
+// into a staged file.
+func (r *ConversationRepository) lockStore() (func(), error) {
+	// The handle opens lazily under r.mu and retries every call until it
+	// succeeds — a transient open failure (EMFILE, a brief FS fault) must
+	// not brick the store for the process's lifetime the way a once-
+	// cached error would.
+	if r.lockFile == nil {
+		if err := os.MkdirAll(r.path, 0o755); err != nil {
+			return nil, err
+		}
+		f, err := os.OpenFile(filepath.Join(r.path, lockFileName), os.O_CREATE|os.O_RDWR, 0o600)
+		if err != nil {
+			return nil, err
+		}
+		r.lockFile = f
+	}
+	lockFile := r.lockFile
+	if err := fileLock(lockFile); err != nil {
+		// A failed lock can mean a stale fd (the file was replaced
+		// externally) — drop the handle so the next op reopens instead
+		// of retrying a handle that can never lock the live file.
+		_ = lockFile.Close()
+		r.lockFile = nil
+		return nil, err
+	}
+	return func() { _ = fileUnlock(lockFile) }, nil
 }
 
 func (r *ConversationRepository) convDir(id string) string {
@@ -69,30 +107,44 @@ func validID(id string) error {
 	return nil
 }
 
-// writeFileAtomic writes via tmp+rename — a crash mid-write leaves the
+// writeFileAtomic is a var so tests can inject write failures at a
+// named target deterministically (the old fixed <path>.tmp staging name
+// once served that role).
+var writeFileAtomic = writeFileAtomicImpl
+
+// writeFileAtomicImpl writes via tmp+rename — a crash mid-write leaves the
 // old file or nothing, never a torn target. fsync before and after the
 // rename matters as much as the rename: without it a crash can resurrect
 // the name with no contents (a sealed segment that reads empty is silent
 // history loss, not an error). The dir sync is best-effort — the bytes
-// are already durable once the file syncs.
-func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+// are already durable once the file syncs. The staging name is unique
+// per writer: a fixed <path>.tmp would let a second writer truncate the
+// first's staged bytes mid-write, after which the loser's rename fails
+// and the winner can publish a torn file — the same fix repogateway
+// applied to its store.
+func writeFileAtomicImpl(path string, data []byte, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return err
 	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(perm); err != nil {
+		tmp.Close()
 		return err
 	}
-	if err := f.Sync(); err != nil {
-		f.Close()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
 		return err
 	}
-	if err := f.Close(); err != nil {
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
 		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
 		return err
 	}
 	if d, err := os.Open(filepath.Dir(path)); err == nil {
@@ -109,8 +161,19 @@ func (r *ConversationRepository) readMeta(id string) (metaRecord, error) {
 	if err != nil {
 		return metaRecord{}, err
 	}
-	if err := validateSealedArchive(r.convDir(id), m.SealedSegments); err != nil {
+	dir := r.convDir(id)
+	if err := validateSealedArchive(dir, m.SealedSegments); err != nil {
 		return metaRecord{}, err
+	}
+	// The tail file is the only place live messages exist — metadata
+	// claiming tail content over a missing active.jsonl means history
+	// vanished behind the metadata's back. Surface it: hydrating an
+	// empty room would let a turn continue over lost context, and an
+	// append would resurrect a divergent tail.
+	if m.ActiveCount > 0 {
+		if _, err := os.Stat(filepath.Join(dir, activeFile)); errors.Is(err, os.ErrNotExist) {
+			return metaRecord{}, fmt.Errorf("conversation %s: active.jsonl missing while metadata records %d tail messages; stop the app and restore from backup", id, m.ActiveCount)
+		}
 	}
 	return m, nil
 }
@@ -129,6 +192,9 @@ func (r *ConversationRepository) readMetaUnvalidated(id string) (metaRecord, err
 	var m metaRecord
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return metaRecord{}, fmt.Errorf("meta corrupt: %w", err)
+	}
+	if m.ID != id {
+		return metaRecord{}, fmt.Errorf("meta corrupt: id %q does not match directory %q", m.ID, id)
 	}
 	if _, ok := enum.ParseEnvironment(m.Environment); !ok {
 		return metaRecord{}, fmt.Errorf("meta corrupt: invalid environment %q", m.Environment)

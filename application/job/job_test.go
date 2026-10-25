@@ -3,14 +3,17 @@ package job
 import (
 	"context"
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jahrulnr/nusallm/infrastructure/config"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
+	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
@@ -307,6 +310,161 @@ func TestFinishPanicBecomes500(t *testing.T) {
 	if got := <-b.Result; apperror.As(got).StatusCode() != 500 {
 		t.Fatalf("reply → %v, want 500", got)
 	}
+}
+
+// Caller cancellation reaches the job ctx through context.AfterFunc's
+// own goroutine — it is NOT synchronous. On a single P the job goroutine
+// can read ctx.Err() before that goroutine ever runs: the derived ctx
+// still reports alive while the caller is already gone. That window is
+// what turns a ctx-guarded commit into a stale write. (Cancellable's
+// direct callerCtx check only covers callers already dead at job start —
+// cancel that lands mid-Execute rides the AfterFunc hop.)
+func TestCancellableDerivedCtxLagsCallerCancel(t *testing.T) {
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+	var b Base
+	caller, cancel := context.WithCancel(context.Background())
+	ctx := b.Cancellable(context.Background(), caller)
+	cancel()
+	// One P, no yield: the AfterFunc goroutine cannot have scheduled yet,
+	// so the derived ctx must still look alive to a reader on this P.
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("derived ctx canceled synchronously — the runtime closed the lag window: %v", err)
+	}
+	// Sanity: the propagation does eventually land.
+	deadline := time.Now().Add(2 * time.Second)
+	for ctx.Err() == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("AfterFunc never propagated caller cancel")
+		}
+		runtime.Gosched()
+	}
+}
+
+// honoringConvs wraps the real store with the behavior most ctx-aware
+// ports have: a write on a dead context fails. The JSONL repository
+// ignores ctx entirely — which is what lets runTurn's cancel-path
+// cleanup (AppendMessage/Save/UpdateToolCallOutput calls reusing the
+// already-dead turn ctx) land today. This wrapper makes the latent
+// dependency visible.
+type honoringConvs struct{ drepo.Conversation }
+
+func (c honoringConvs) Save(ctx context.Context, conv *aggregate.Conversation) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return c.Conversation.Save(ctx, conv)
+}
+func (c honoringConvs) AppendMessage(ctx context.Context, convID string, msg entity.Message) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	return c.Conversation.AppendMessage(ctx, convID, msg)
+}
+func (c honoringConvs) UpdateToolCallOutput(ctx context.Context, convID string, call entity.ToolCall) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return c.Conversation.UpdateToolCallOutput(ctx, convID, call)
+}
+
+// cancelingTool cancels the turn ctx mid-execution, then reports failure —
+// the shape of an interrupt landing inside a running tool.
+type cancelingTool struct {
+	schema valueobject.ToolSchema
+	do     context.CancelFunc
+}
+
+func (t cancelingTool) Schema() valueobject.ToolSchema { return t.schema }
+func (t cancelingTool) Execute(ctx context.Context, _ entity.ToolCall, _ dservice.ToolEmitter) (dservice.ToolResult, error) {
+	t.do()
+	return dservice.ToolResult{}, ctx.Err()
+}
+
+// twoPendingSvc leaves two unanswered origin calls on the record — the
+// first executes (and cancels), the second never runs.
+type twoPendingSvc struct{ calls int }
+
+func (s *twoPendingSvc) Send(_ context.Context, conv *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, _ event.TurnEventHandler) error {
+	s.calls++
+	m, _ := entity.NewMessage(enum.RoleAssistant, "dispatching")
+	if s.calls == 1 {
+		for _, c := range [][2]string{{"t1", "push"}, {"t2", "push"}} {
+			tc, err := entity.NewToolCall(c[0], c[1], `{}`, enum.TooltypeOrigin)
+			if err != nil {
+				return err
+			}
+			m.AddToolCall(tc)
+		}
+		m.SetFinishReason(enum.FinishReasonToolCalls)
+	}
+	conv.Append(m)
+	return nil
+}
+
+// The turn's cancel path persists "interrupted by user" markers and the
+// partial reply on the same ctx that just died. It works today only
+// because the repository ignores ctx; against a ctx-honoring store the
+// markers never land — orphaned pending calls stay in history forever —
+// and the raw ctx error escapes as a 500 instead of the 408 the caller
+// expects for a canceled turn.
+func TestRunTurnCancelCleanupUsesDeadCtx(t *testing.T) {
+	repo := repoconversation.NewConversationRepository(t.TempDir())
+	d := Deps{
+		SummaryTool: mustSummaryTool(t),
+		Convs:       honoringConvs{repo},
+		Config:      config.ConversationConfig{MaxTurnStep: 4},
+	}
+	conv, _ := aggregate.NewConversation("room")
+	user, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(user)
+	if err := repo.Save(t.Context(), conv); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.AppendMessage(t.Context(), "room", user); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	schema, _ := valueobject.NewToolSchema("push", "test tool", nil, true, enum.ToolPermissionAgent)
+	driver := EnvironmentBundle{Tools: map[string]dservice.Tool{
+		"push": cancelingTool{schema: schema, do: cancel},
+	}}
+	svc := &twoPendingSvc{}
+	runErr := d.runTurn(ctx, "room", conv, driver, nil, entity.Model{}, svc, nil, nil)
+	stored, err := repo.Load(context.Background(), "room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs := stored.Messages()
+	last := msgs[len(msgs)-1]
+	for _, tc := range last.ToolCalls() {
+		if !tc.HasOutput() {
+			t.Errorf("call %s left pending on disk — interrupted markers never persisted: %+v", tc.ID(), last.ToolCalls())
+		}
+	}
+	if code := apperror.As(runErr).StatusCode(); code != 408 {
+		t.Errorf("cancel during tool exec → %v (status %d), want 408 — the interrupted-marker write failed on the dead ctx and its raw error escaped", runErr, code)
+	}
+}
+
+// SteeringReceipt is exported and zero-value-constructible — a caller can
+// hand &SteeringReceipt{} to SteeringInput.Recall, which reads State() on
+// it. State()'s unchecked atomic.Value assertion must not panic on the
+// caller's goroutine (outside the worker's panic guard).
+func TestSteeringReceiptZeroValueState(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("State() on a zero-value receipt panicked: %v", r)
+		}
+	}()
+	if got := (&SteeringReceipt{}).State(); got != SteeringPending {
+		t.Fatalf("zero-value receipt state = %q, want pending-or-benign", got)
+	}
+	in := NewSteeringInput()
+	if (&SteeringInput{}).Recall(&SteeringReceipt{}) {
+		t.Fatal("recall of a zero-value receipt must not succeed")
+	}
+	_ = in
 }
 
 // A registered-but-nil driver and an unregistered one must both fail with

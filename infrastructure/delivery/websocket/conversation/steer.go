@@ -26,6 +26,33 @@ type turnOutcome struct {
 	payload terminalPayload
 }
 
+// steerAckFrame is the unsequenced command reply for turn.steer — it
+// answers the issuing socket only. The journaled sequenced ack stays
+// the watcher-visible record; retries and unattached issuers get this
+// reply so an accepted submission is never indistinguishable from
+// silence, and re-acks can never burn the bounded journal.
+func steerAckFrame(requestID, convID, turnID, inputID string) serverFrame {
+	return serverFrame{
+		Type:           "turn.steer_ack",
+		RequestID:      requestID,
+		ConversationID: convID,
+		TurnID:         turnID,
+		Payload:        steerInputPayload{InputID: inputID},
+	}
+}
+
+// steerRecalledFrame is the unsequenced command reply for
+// turn.steer_recall — same contract as steerAckFrame.
+func steerRecalledFrame(requestID, convID, turnID, inputID string) serverFrame {
+	return serverFrame{
+		Type:           "turn.steer_recalled",
+		RequestID:      requestID,
+		ConversationID: convID,
+		TurnID:         turnID,
+		Payload:        steerInputPayload{InputID: inputID},
+	}
+}
+
 // steeringSnapshotLocked reads each record's atomic receipt state in
 // submission order — the bounded snapshot terminal and resync frames
 // carry. Callers hold h.mu; receipts transition under the mailbox lock
@@ -105,8 +132,11 @@ func (h *Hub) turnSteer(c *conn, cmd command) {
 			c.push(errorFrame(cmd.RequestID, "invalid_argument", "steering requestId reused with different content"))
 			return
 		}
-		// Idempotent re-ack — same input, same verdict.
-		h.emitLocked(t, "turn.steer_ack", steerInputPayload{InputID: prev.inputID}, false)
+		// Idempotent re-ack — the verdict is already journaled; the
+		// retry is a reply, not new turn state. Re-journaling each one
+		// would let a retrying client burn the bounded journal and force
+		// honest watchers into resync.
+		c.push(steerAckFrame(cmd.RequestID, convID, t.id, prev.inputID))
 		return
 	}
 	if len(t.steerRecords) >= maxSteerInputs {
@@ -118,6 +148,13 @@ func (h *Hub) turnSteer(c *conn, cmd command) {
 	t.steerRecords = append(t.steerRecords, rec)
 	t.steerByInput[cmd.RequestID] = rec
 	h.emitLocked(t, "turn.steer_ack", steerInputPayload{InputID: rec.inputID}, false)
+	// The journaled ack reaches subscribers only — an issuer that never
+	// watched the turn would hear silence for an accepted submission.
+	// Answer it directly; a subscribed issuer already has the sequenced
+	// copy.
+	if _, subscribed := t.subscribed[c]; !subscribed {
+		c.push(steerAckFrame(cmd.RequestID, convID, t.id, rec.inputID))
+	}
 }
 
 // turnSteerRecall withdraws one exact submitted input while it is still
@@ -165,9 +202,13 @@ func (h *Hub) turnSteerRecall(c *conn, cmd command) {
 	switch {
 	case t.steering.Recall(rec.receipt):
 		h.emitLocked(t, "turn.steer_recalled", steerInputPayload{InputID: rec.inputID}, false)
+		if _, subscribed := t.subscribed[c]; !subscribed {
+			c.push(steerRecalledFrame(cmd.RequestID, convID, t.id, rec.inputID))
+		}
 	case rec.receipt.State() == appjob.SteeringRecalled:
-		// Withdrawn already — dedupe the success idempotently.
-		h.emitLocked(t, "turn.steer_recalled", steerInputPayload{InputID: rec.inputID}, false)
+		// Withdrawn already — dedupe the success idempotently: the
+		// recall journals once; retries answer the issuer only.
+		c.push(steerRecalledFrame(cmd.RequestID, convID, t.id, rec.inputID))
 	default:
 		// Claimed or persisted — consumed input is never restored.
 		c.push(errorFrame(cmd.RequestID, "not_found", "steering input already consumed"))

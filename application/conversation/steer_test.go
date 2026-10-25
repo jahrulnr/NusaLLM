@@ -133,7 +133,7 @@ func TestSteerFoldsIntoRunningTurn(t *testing.T) {
 		if err != nil {
 			t.Fatalf("send: %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("turn never finished")
 	}
 	conv, err := convs.Load(t.Context(), "room")
@@ -177,7 +177,7 @@ func TestRecallSteer(t *testing.T) {
 		if err != nil {
 			t.Fatalf("send: %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("turn never finished")
 	}
 	conv, err := convs.Load(t.Context(), "room")

@@ -16,10 +16,14 @@ const (
 // renderMarkdown turns assistant Markdown into terminal-native output. The
 // live viewport re-renders the current assistant buffer as deltas arrive, so
 // incomplete emphasis or code fences are handled by the parser on each frame.
+// The input is provider-controlled — sanitize before glamour so a raw ESC
+// or OSC sequence in model text (or prompt-injected content it echoes)
+// never reaches the user's terminal verbatim.
 func renderMarkdown(text string, width int) string {
 	if strings.TrimSpace(text) == "" {
 		return ""
 	}
+	text = term.Sanitize(text)
 	if width <= 0 {
 		width = defaultMarkdownWidth
 	}
