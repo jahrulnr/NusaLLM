@@ -253,7 +253,8 @@ func (w *Worker) Idle() bool {
 	return !w.dead && w.running == nil && len(w.queue) == 0
 }
 
-// Done closes when the loop exits — post-Terminate waiters use it.
+// Done closes when the loop exits — after the OnTerminate hook ran —
+// so waiters observe a fully retired worker, not a dying one.
 func (w *Worker) Done() <-chan struct{} { return w.done }
 
 func (w *Worker) signal() {

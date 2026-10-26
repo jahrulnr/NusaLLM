@@ -47,15 +47,26 @@ type Base struct {
 
 	convID      string
 	interrupted atomic.Bool
-	cancel      atomic.Value // context.CancelFunc of the live Execute
+	cancel      atomic.Value                  // context.CancelFunc of the live Execute
+	bound       atomic.Pointer[worker.Worker] // executor the broker last bound
 }
 
-// Bind pins the job to a room — idempotent; the broker calls it at post
-// time and again on every repost across workers.
-func (j *Base) Bind(convID string) { j.convID = convID }
+// Bind pins the job to a room and the worker serving it — idempotent;
+// the broker calls it at post time and again on every repost across
+// workers, so Worker() names the executor the job was last handed to.
+func (j *Base) Bind(convID string, w *worker.Worker) {
+	j.convID = convID
+	j.bound.Store(w)
+}
 
 // ConvID is the room this job runs against.
 func (j *Base) ConvID() string { return j.convID }
+
+// Worker is the executor the job was last bound to — the worker that
+// runs it — or nil until the first Bind. Its Done channel closes only
+// after the loop's OnTerminate hook ran, so waiting on it observes a
+// fully retired worker.
+func (j *Base) Worker() *worker.Worker { return j.bound.Load() }
 
 // Reply delivers the terminal error to whoever submitted the job. A nil
 // Result — a hand-built job — is a no-op rather than a blocking send

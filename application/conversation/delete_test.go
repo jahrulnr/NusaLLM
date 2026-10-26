@@ -149,3 +149,34 @@ func TestSendAfterDeleteMintsFreshRoom(t *testing.T) {
 		t.Fatalf("resurrected room carries old history: %+v", msgs)
 	}
 }
+
+// Delete is the retirement barrier: when it returns, the room's worker
+// must be off the map — not merely marked dead — so the next post spawns
+// a fresh worker instead of Submit-ing into a corpse whose drain would
+// answer 410 for a room that is already gone.
+func TestDeleteRetiresWorkerBeforeReturning(t *testing.T) {
+	app, _ := fixture(t, okHandler)
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "old life", nil, appjob.SendOptions{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Delete(t.Context(), "room"); err != nil {
+		t.Fatal(err)
+	}
+	app.mu.Lock()
+	_, registered := app.workers["room"]
+	app.mu.Unlock()
+	if registered {
+		t.Fatal("dead worker still registered after Delete returned")
+	}
+	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "new life", nil, appjob.SendOptions{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	conv, err := app.deps.Convs.Load(t.Context(), "room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs := conv.Messages()
+	if len(msgs) != 3 || msgs[0].Content() != "new life" || msgs[0].Role() != enum.RoleUser {
+		t.Fatalf("resurrected room carries old history: %+v", msgs)
+	}
+}

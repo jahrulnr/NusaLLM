@@ -329,7 +329,7 @@ func TestEditDropsAndRegeneratesWorkspaceContext(t *testing.T) {
 	oldContextID := before.Messages()[1].ID()
 
 	j := &Edit{Deps: d, MsgID: before.Messages()[0].ID(), Content: "edited"}
-	j.Bind("room")
+	j.Bind("room", nil)
 	if err := j.Execute(t.Context()); err != nil {
 		t.Fatal(err)
 	}

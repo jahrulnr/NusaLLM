@@ -21,7 +21,9 @@ func (j *Delete) IsPreempt() bool { return true }
 
 // Execute deletes on a background ctx — an abandoned caller must not
 // half-delete a room. finish translates ErrTerminate into a nil reply:
-// the caller gets the op result, not the sentinel.
+// the caller gets the op result, not the sentinel. The reply precedes
+// the worker's exit, so a caller needing the retirement barrier waits
+// on the bound worker's Done.
 func (j *Delete) Execute(context.Context) (err error) {
 	defer j.finish(&err)
 	// Reap the room's terminal sessions first — they outlive jobs, so

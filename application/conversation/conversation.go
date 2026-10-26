@@ -10,8 +10,7 @@
 // against the rewritten history. Delete retires the worker: queued jobs
 // get 410, and submits racing the teardown get ErrClosed and are reposted
 // onto the fresh worker the next post spawns — a job that arrives after
-// the room died belongs to the next room, not the corpse. Workers are
-// reaped when their queue drains, so FE-minted ids can't grow the map.
+
 // Shutdown rejects further posts, terminates every worker, and waits for
 // their loops to exit without closing the repository.
 package appconversation
@@ -31,12 +30,12 @@ import (
 )
 
 // queuedJob is what a room's worker runs: a worker.Job plus the result
-// channel (Reply), room binding (Bind), and preemption intent
+// channel (Reply), room+worker binding (Bind), and preemption intent
 // (IsPreempt) the broker attaches.
 type queuedJob interface {
 	worker.Job
 	Reply(err error)
-	Bind(convID string)
+	Bind(convID string, w *worker.Worker)
 	IsPreempt() bool
 }
 
@@ -129,7 +128,6 @@ func (app *ConversationApp) post(convID string, j queuedJob) {
 		case *appjob.Rename:
 			x.Deps = deps
 		}
-		j.Bind(convID)
 		if app.shuttingDown {
 			app.mu.Unlock()
 			j.Reply(apperror.New(503, "conversation application is shutting down", nil))
@@ -177,6 +175,7 @@ func (app *ConversationApp) post(convID string, j queuedJob) {
 			return
 		}
 
+		j.Bind(convID, w)
 		var err error
 		if j.IsPreempt() {
 			err = w.Preempt(j)
