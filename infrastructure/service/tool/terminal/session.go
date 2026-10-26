@@ -56,6 +56,10 @@ type terminalSession struct {
 	// master serves the pty backend for both reads and writes; pipes
 	// sessions hold no stdin handle at all — their child reads EOF.
 	master *os.File
+	// pipeR is the pipes backend's read end — like master, the session
+	// keeps it so Terminate can unblock a reader parked behind a stray
+	// fd inheritor.
+	pipeR *os.File
 
 	done      chan struct{} // closed when Wait() returns
 	readerEOF chan struct{} // closed when the output stream hits EOF
@@ -123,25 +127,56 @@ func spawnSession(convID string, id int, req dservice.TerminalOpenRequest, env [
 	return sess, nil
 }
 
-// spawnPipes runs the command with merged stdout/stderr — assigning the
-// same writer to both makes os/exec share one pipe. os/exec's own copy
-// goroutine feeds append(), so no reader goroutine is needed here. Stdin
-// stays nil — codex's stdin_open=false for non-tty: the child gets
-// /dev/null, so a program reading stdin hits EOF instead of blocking on
-// a pipe Write would refuse to feed anyway.
+// spawnPipes runs the command with stdout/stderr merged on one os.Pipe —
+// assigning the same write file to both keeps a single stream. Giving
+// os/exec an *os.File means no copy goroutine: Wait is just the leader's
+// reap, so a descendant inheriting the write end can stall the output's
+// EOF but never exit publication. The session's own reader drains the
+// pipe, same ownership as the pty reader. Stdin stays nil — codex's
+// stdin_open=false for non-tty: the child gets /dev/null, so a program
+// reading stdin hits EOF instead of blocking on a pipe Write would
+// refuse to feed anyway.
 func (s *terminalSession) spawnPipes(command string) error {
 	cmd := sessionCommand(command)
 	cmd.Dir = s.dir
 	cmd.Env = s.env
-	cmd.WaitDelay = waitDelay
-	out := appendWriter{s}
-	cmd.Stdout = out
-	cmd.Stderr = out
-	if err := cmd.Start(); err != nil {
+	r, w, err := os.Pipe()
+	if err != nil {
 		return err
 	}
+	cmd.Stdout = w
+	cmd.Stderr = w
+	if err := cmd.Start(); err != nil {
+		r.Close()
+		w.Close()
+		return err
+	}
+	// The child holds its own copy of the write end — the parent copy
+	// must close or reads never see EOF after the child exits.
+	w.Close()
 	s.cmd = cmd
+	s.pipeR = r
+	go s.readPipe()
 	return nil
+}
+
+// readPipe drains the pipes stream into the pending buffer. EOF lands
+// when the last write end in the tree closes — a descendant that
+// inherited the fd can outlive the leader, so the reader ends
+// independently of wait().
+func (s *terminalSession) readPipe() {
+	defer s.pipeR.Close()
+	buf := make([]byte, 8192)
+	for {
+		n, err := s.pipeR.Read(buf)
+		if n > 0 {
+			s.append(buf[:n])
+		}
+		if err != nil {
+			close(s.readerEOF)
+			return
+		}
+	}
 }
 
 // spawnPTY allocates a real pseudo-terminal: the child gets the slave on
@@ -190,10 +225,11 @@ func (s *terminalSession) readPTY() {
 	}
 }
 
-// wait blocks in cmd.Wait — for the pipes backend that also waits out the
-// copy goroutine — then publishes the exit before closing done. Exit code
-// is set before done so Collect can never observe Running=false with a
-// stale zero.
+// wait blocks in cmd.Wait then publishes the exit before closing done.
+// Both backends hand os/exec real files, so Wait is the leader's reap —
+// never a join on an output stream a stray inheritor can stall. Exit
+// code is set before done so Collect can never observe Running=false
+// with a stale zero.
 func (s *terminalSession) wait() {
 	err := s.cmd.Wait()
 	if err == nil {
@@ -208,23 +244,6 @@ func (s *terminalSession) wait() {
 	}
 	s.exited.Store(true)
 	close(s.done)
-	// Pipes path: Wait waited out the copy goroutine, so the stream is
-	// already drained — readerEOF may close immediately. The pty path
-	// closes it in readPTY on EIO.
-	if !s.tty {
-		close(s.readerEOF)
-	}
-}
-
-// appendWriter adapts the session's buffer append to io.Writer — the
-// merged stdout/stderr target for the pipes backend. It exists because
-// the port's Write([]byte) error for stdin cannot coexist with
-// io.Writer's Write([]byte) (int, error) on one type.
-type appendWriter struct{ s *terminalSession }
-
-func (w appendWriter) Write(p []byte) (int, error) {
-	w.s.append(p)
-	return len(p), nil
 }
 
 // append drops bytes into pending under the cap — the oldest bytes go and
@@ -393,13 +412,18 @@ func (s *terminalSession) Terminate() {
 		return
 	}
 	s.terminateProcess()
-	// Close the write side first — a blocked Write unblocks on EPIPE;
-	// master close also ends the pty reader loop.
+	// Close the write/read side first — a blocked Write unblocks on
+	// EPIPE; closing the pty master or the pipes read end also ends the
+	// reader loop even when a stray inheritor still holds the far end.
 	if s.master != nil {
 		s.master.Close()
 	}
+	if s.pipeR != nil {
+		s.pipeR.Close()
+	}
 	<-s.done
-	// Reap the reader goroutine; pipes close it in wait() already.
+	// Reap the reader goroutine — bounded in case it is parked on a
+	// stream whose far end an escaped process still holds.
 	select {
 	case <-s.readerEOF:
 	case <-time.After(waitDelay):

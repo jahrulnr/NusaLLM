@@ -290,15 +290,12 @@ func TestWriteStdinCtrlCOnExitedCollects(t *testing.T) {
 	store := NewSessionStore(nil)
 	defer store.TerminateAll()
 	sess := open(t, store, dservice.TerminalOpenRequest{Command: "echo bye"})
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if exit, _ := sess.Exited(); exit {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("session did not exit")
-		}
-		time.Sleep(20 * time.Millisecond)
+	// Wait on the reap itself, not a drain — Collect would consume the
+	// "bye" output the interrupt below is meant to collect.
+	select {
+	case <-store.rooms[testConv][sess.ID()].done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("session did not exit")
 	}
 	tool, err := NewWriteStdinTool(store)
 	if err != nil {
@@ -339,18 +336,38 @@ func TestSessionEnvScrubs(t *testing.T) {
 func TestSessionInterruptBySignal(t *testing.T) {
 	store := NewSessionStore(nil)
 	defer store.TerminateAll()
-	sess := open(t, store, dservice.TerminalOpenRequest{Command: "sleep 60"})
+	// exec keeps the command a single process: a bare "sleep 60" leaves
+	// a shell that can fork its child in the same instant the group
+	// signal lands — a child born after the kill's member snapshot is
+	// never signaled and the shell defers its own exit waiting for it,
+	// an inherent property of process-group signals, not of Interrupt.
+	sess := open(t, store, dservice.TerminalOpenRequest{Command: "exec sleep 60"})
 	if err := sess.Interrupt(); err != nil {
 		t.Fatalf("interrupt: %v", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if exit, _ := sess.Exited(); exit {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
+	// Wait through the product primitive, not a hand-rolled poll: a poll
+	// loop exits on the deadline compare right after its last Exited
+	// probe and can miss an exit that already landed in the final sleep.
+	// Collect re-checks exit state when it returns, so the same 5s bound
+	// has no miss window.
+	poll := sess.Collect(context.Background(), 5*time.Second, nil)
+	if poll.Running {
+		t.Fatal("session still alive after SIGINT")
 	}
-	t.Fatal("session still alive after SIGINT")
+}
+
+// TestSessionExitIgnoresStrayPipeHolder proves exit publication tracks
+// the session's process, not the pipe join: the backgrounded sleep keeps
+// the inherited output pipe open after the shell is gone, and Exited
+// must still report the session dead instead of riding out waitDelay.
+func TestSessionExitIgnoresStrayPipeHolder(t *testing.T) {
+	store := NewSessionStore(nil)
+	defer store.TerminateAll()
+	sess := open(t, store, dservice.TerminalOpenRequest{Command: "sleep 60 &"})
+	poll := sess.Collect(context.Background(), 2*time.Second, nil)
+	if poll.Running {
+		t.Fatal("leader dead but session still reported running")
+	}
 }
 
 func TestTerminateConversationReaps(t *testing.T) {
@@ -364,14 +381,8 @@ func TestTerminateConversationReaps(t *testing.T) {
 	if registered {
 		t.Fatal("session still registered after room reap")
 	}
-	if exit, _ := sess.Exited(); !exit {
-		deadline := time.Now().Add(5 * time.Second)
-		for time.Now().Before(deadline) {
-			if exit, _ := sess.Exited(); exit {
-				return
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
+	poll := sess.Collect(context.Background(), 5*time.Second, nil)
+	if poll.Running {
 		t.Fatal("process still alive after TerminateConversation")
 	}
 }
@@ -487,7 +498,8 @@ func TestExecSessionUndeliveredIDKills(t *testing.T) {
 func TestWriteStdinCtrlC(t *testing.T) {
 	store := NewSessionStore(nil)
 	defer store.TerminateAll()
-	sess := open(t, store, dservice.TerminalOpenRequest{Command: "sleep 60"})
+	// exec: single process — see TestSessionInterruptBySignal.
+	sess := open(t, store, dservice.TerminalOpenRequest{Command: "exec sleep 60"})
 	tool, err := NewWriteStdinTool(store)
 	if err != nil {
 		t.Fatal(err)
@@ -497,14 +509,10 @@ func TestWriteStdinCtrlC(t *testing.T) {
 	if _, err := tool.Execute(ctx, call, nil); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if exit, _ := sess.Exited(); exit {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
+	poll := sess.Collect(context.Background(), 5*time.Second, nil)
+	if poll.Running {
+		t.Fatal("session survived Ctrl-C")
 	}
-	t.Fatal("session survived Ctrl-C")
 }
 
 // TestWriteStdinUnknownSession reports a clean lookup failure.
@@ -551,18 +559,15 @@ func TestSessionPTYCtrlC(t *testing.T) {
 	}
 	store := NewSessionStore(nil)
 	defer store.TerminateAll()
-	sess := open(t, store, dservice.TerminalOpenRequest{Command: "sleep 60", TTY: true})
+	// exec: single process — see TestSessionInterruptBySignal.
+	sess := open(t, store, dservice.TerminalOpenRequest{Command: "exec sleep 60", TTY: true})
 	if err := sess.Write([]byte{3}); err != nil {
 		t.Fatalf("write ctrl-c: %v", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if exit, _ := sess.Exited(); exit {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
+	poll := sess.Collect(context.Background(), 5*time.Second, nil)
+	if poll.Running {
+		t.Fatal("pty session survived Ctrl-C")
 	}
-	t.Fatal("pty session survived Ctrl-C")
 }
 
 func itoa(i int) string {
