@@ -10,7 +10,8 @@ permissions:
 # A release is cut when VERSION names a tag that does not exist yet and
 # CHANGELOG.md has a section with notes for that version. The commit gets a
 # tag named exactly as VERSION, whose message is that CHANGELOG.md section.
-# The binaries are built and the release is published with the same text.
+# The binaries are built and the release is published as "NusaLLM v<VERSION>",
+# with the same text minus its version heading.
 # Runs are serialized so two pushes never race to tag the same version.
 # To retry a build that failed after the tag was pushed, use "Re-run failed
 # jobs"; a full re-run finds the tag and skips.
@@ -126,7 +127,14 @@ jobs:
         working-directory: dist
         run: |
           sha256sum nusallm-linux-* > SHA256SUMS
-          if ! gh release view "$VERSION" >/dev/null 2>&1; then
-            gh release create "$VERSION" --verify-tag --notes-from-tag
+          # Titled by product and version. The notes are the tag message minus its
+          # "## [x.y.z] - date" heading, which the title already names.
+          git tag -l --format='%(contents)' "$VERSION" | sed '1{/^## \[/d}' | sed '/./,$!d' > notes.md
+          title="NusaLLM v$VERSION"
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            # Re-runs and partial earlier runs converge on the same title and notes.
+            gh release edit "$VERSION" --title "$title" --notes-file notes.md
+          else
+            gh release create "$VERSION" --verify-tag --title "$title" --notes-file notes.md
           fi
           gh release upload "$VERSION" nusallm-linux-* SHA256SUMS --clobber
