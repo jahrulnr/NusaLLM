@@ -226,10 +226,10 @@ tool.
    for model-callable tools, `ToolPermissionSystem` for application-internal
    ones, `ToolPermissionGeneral` for both. The check is fail-closed —
    `CallableByAgent`/`CallableBySystem` return false for disabled or
-   unrecognized permission. The application enforces it: `execTool` in
+   unrecognized permission. The application enforces it:
    `application/job/turn.go` permits a call only when a schema on the
    conversation is `CallableByAgent()`, and a denied or unregistered call
-   records `error: tool not permitted` / `error: unknown tool` as its
+   records `error: tool not permitted` / `error: unknown tool <name>` as its
    output. Your tool never re-checks permission; it executes. The
    canonical `ToolPermissionSystem` example is `tool/workspace` — a
    schema-only record tool: the turn writes its completed injection call

@@ -217,6 +217,16 @@ func (s systemd) Stop(name string) error {
 	return s.run("stop", s.unitName(name))
 }
 
+// Restart queues a restart of the unit and returns without waiting for it.
+// --no-block matters: a caller running inside the unit is stopped by its own
+// restart, so a blocking call could never report back.
+func (s systemd) Restart(name string) error {
+	if !validName(name) {
+		return errBadName(name)
+	}
+	return s.run("--no-block", "restart", s.unitName(name))
+}
+
 // Status renders the native report for display and reads the machine
 // ActiveState for the portable State — parsing the human "Active:" line
 // would break under a translated locale. A dead bus or a failed query

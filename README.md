@@ -88,6 +88,19 @@ Custom tools are plain executables on the `PATH` that the agent's `exec` uses.
 
 ## Quick start
 
+Prebuilt Linux binaries (amd64 and arm64) are attached to each
+[release](https://github.com/jahrulnr/NusaLLM/releases). The installer fetches the latest one,
+checks it against `SHA256SUMS`, and runs `nusallm serve install`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/jahrulnr/NusaLLM/master/scripts/install.sh | bash
+```
+
+To install the CLI only, pass `--no-service` through: `... | bash -s -- --no-service`.
+`nusallm uninstall` removes the binary and the WebUI service; config and data stay.
+
+To build from source instead:
+
 ```sh
 make build              # builds ./bin/nusallm (needs Go 1.26.10 or newer)
 ./bin/nusallm onboard   # guided setup: wire style, endpoint, models, hidden API key prompt

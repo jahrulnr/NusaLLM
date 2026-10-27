@@ -23,4 +23,6 @@ import './widgets/provider-manager/provider-manager.js';
 import './widgets/settings-editor/settings-editor.js';
 import './widgets/settings-page/settings-page.js';
 import './widgets/toast-stack/toast-stack.js';
+import './widgets/update-dialog/update-dialog.js';
+import './widgets/update-progress/update-progress.js';
 import './widgets/app-shell/app-shell.js'; // last — see invariant above

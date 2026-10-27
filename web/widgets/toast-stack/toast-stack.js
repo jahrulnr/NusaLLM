@@ -13,11 +13,17 @@ class ToastStack extends Widget {
     this.root.setAttribute('role', 'status');
   }
 
-  push({ tone = 'info', title = '', message = '' } = {}) {
+  // action: { label, onClick } adds one text button under the message. It
+  // dismisses the toast and then runs onClick.
+  push({ tone = 'info', title = '', message = '', action = null } = {}) {
     const toast = el('div', { class: `toast ${tone}`, role: 'alert' }, [
       el('div', { class: 'toast-body' }, [
         title ? el('div', { class: 'toast-title', text: title }) : null,
         el('div', { class: 'toast-message', text: message }),
+        action ? el('button', {
+          class: 'toast-action', type: 'button',
+          onclick: () => { toast.remove(); action.onClick(); },
+        }, [el('span', { text: action.label })]) : null,
       ]),
       el('button', {
         class: 'toast-close',

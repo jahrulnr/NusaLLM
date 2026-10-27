@@ -1,7 +1,9 @@
+/* Sits on the left of the conversation column, just above the composer
+   (the shell sets --toast-lift), so it never covers the send control. */
 :host {
-  position: fixed;
-  right: 16px;
-  bottom: 16px;
+  position: absolute;
+  left: 16px;
+  bottom: var(--toast-lift, 12px);
   z-index: 100;
   font-family: var(--font-ui);
 }
@@ -39,12 +41,29 @@
 }
 .toast-close:hover { color: var(--text); }
 
+.toast-action {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  margin-top: 4px;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.toast-action:hover { text-decoration: underline; }
+
 @media (max-width: 760px) {
-  :host { top: 8px; left: 8px; right: 8px; bottom: auto; }
+  :host { left: 8px; right: 8px; bottom: var(--toast-lift, 12px); }
   .stack { width: auto; }
   .toast { padding: 12px 14px; }
   .toast-title { font-size: 15px; }
   .toast-message { font-size: 14px; }
+  .toast-action { min-height: 44px; font-size: 15px; }
   /* The 44px target starts at the top padding edge so its icon sits level with the title. */
   .toast-close {
     flex: 0 0 44px;

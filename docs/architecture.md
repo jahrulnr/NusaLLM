@@ -336,7 +336,7 @@ is reused. Each iteration:
   mid-loop leaves messages and accounting consistent — the paid-for
   reply survives even if the caller already walked away.
 - **Execute pending calls.** `pendingCalls` selects `TooltypeOrigin`
-  calls with no output on the last message. For each, `execTool` checks
+  calls with no output on the last message. For each, the turn checks
   the schema's `CallableByAgent` — the permission decision lives on the
   `ToolSchema` value object and fails closed — then runs
   `tool.Execute(ctx, call, emit)`. Executor failures become the tool's
@@ -527,11 +527,14 @@ map (all four `enum.Style` values — `StyleCompletion` → `textcompletion`,
 `coretext.Options`; a style with no registered adapter would 500 as
 "no adapter for gateway style"), the tools
 (`read_file`, `write_file`, `apply_patch`, `read_media`, `exec`,
-`web_search`, `web_fetch`), then
+`exec_session`, `write_stdin`, `skills`, `read_skill`, `web_search`,
+`web_fetch`, plus the harness-side `workspace` and `custom_tools`
+records), then
 `appconversation.New` and `tui.NewREPL`. Workspace root for tools and
 attachments is the process cwd — `os.Root`-confined for file tools and
 `file://` resolution; `exec` is intentionally unsandboxed, gated instead
-by the `ToolPermissionAgent` check in `execTool`. The same cwd is wired
+by its `ToolPermissionAgent` schema, which the application turn checks
+before `Execute` runs. The same cwd is wired
 as the local driver's `FallbackRoot`, so a room with no bound workspace
 runs its tools there — and the injected `workspace` context record
 cites it. `serve` shares `compose` but passes the owner's home as that

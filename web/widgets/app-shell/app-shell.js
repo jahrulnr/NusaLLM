@@ -1,5 +1,10 @@
 import { Widget, el, emit, sheetsReady } from '../../lib/dom.js';
 import { APIClient } from '../../lib/api-client.js';
+import { UpdatePoller } from '../../lib/update-poller.js';
+import { UpdateInstaller } from '../../lib/update-installer.js';
+import {
+  visibleUpdate, isFreshNotice, markNotified, skipVersion, skippedVersion,
+} from '../../lib/update-state.js';
 import { TurnSocket } from '../../lib/socket-client.js';
 import { settingLabel } from '../settings-editor/settings-editor.js';
 import {
@@ -39,6 +44,18 @@ class AppShell extends Widget {
     super();
     this.api = new APIClient();
     this.socket = new TurnSocket();
+    // Background polls are answered from the server's cache; the cadence
+    // and the notice rules live in lib/update-poller.js and lib/update-state.js.
+    this.updates = new UpdatePoller({
+      fetchStatus: () => this.api.getUpdate(),
+      checkNow: () => this.api.checkUpdate(),
+      onStatus: (info) => this._applyUpdate(info),
+    });
+    // One in-app install at a time; the progress popup shows what it reports.
+    this.installer = new UpdateInstaller({
+      api: this.api,
+      onChange: (view) => this._onInstall(view),
+    });
 
     this.allConversations = [];
     this.conversationsPage = { offset: 0, limit: 100, total: 0, hasMore: false };
@@ -122,18 +139,25 @@ class AppShell extends Widget {
     this.toasts = el('nusa-toast-stack');
     this.scrim = el('div', { class: 'scrim', hidden: true });
     this.main = el('main', { class: 'main' }, [this.header, this.thread, this.composer]);
-    this.workspace = el('div', { class: 'workspace' }, [this.main, this.settingsPage]);
+    // Toasts live in the workspace, not in <main>: Settings hides <main>, and a
+    // settings save still owes its toast.
+    this.workspace = el('div', { class: 'workspace' }, [this.main, this.settingsPage, this.toasts]);
     this.settingsPage.hidden = true;
+    // The composer grows as its text does; each change re-lifts the toasts.
+    new ResizeObserver(() => this._liftToasts()).observe(this.composer);
     // Sync before the drawer joins the DOM, so a phone never paints it
     // open and then slides it shut on load.
     this._syncSidebar();
     // The scrim sits beside .grid, never inside it — the grid
     // children's entrance transform would become its fixed
     // containing block.
+    this.updateDialog = el('nusa-update-dialog');
+    this.updateProgress = el('nusa-update-progress');
     this.root.append(
       el('div', { class: 'grid' }, [this.sidebar, this.workspace]),
       this.scrim,
-      this.toasts,
+      this.updateDialog,
+      this.updateProgress,
     );
   }
 
@@ -201,6 +225,16 @@ class AppShell extends Widget {
     on(this.settingsPage, 'gateway-delete', ({ id }) => this._deleteGateway(id));
     on(this.settingsPage, 'gateway-import', ({ id }) => this._importGatewayModels(id));
     on(this.settingsPage, 'setting-change', ({ key, value }) => this._patchSetting(key, value));
+    on(this.header, 'update-open', () => this._openUpdate());
+    on(this.settingsPage, 'update-open', () => this._openUpdate());
+    on(this.settingsPage, 'update-check', () => this._checkUpdate());
+    on(this.settingsPage, 'update-unskip', () => this._unskipUpdate());
+    on(this.settingsPage, 'update-install', ({ version }) => this._startUpdate(version));
+    on(this.settingsPage, 'update-progress-open', () => this._openProgress());
+    on(this.updateDialog, 'update-skip', ({ version }) => this._skipUpdate(version));
+    on(this.updateDialog, 'update-install', ({ version }) => this._startUpdate(version));
+    on(this.updateProgress, 'update-retry', () => this._startUpdate(this.installer.target));
+    on(this.updateProgress, 'update-reload', () => globalThis.location.reload());
 
     this.socket.addEventListener('connection', (e) => this._onConnection(e.detail.state));
     this.socket.addEventListener('frame', (e) => this._onFrame(e.detail.frame));
@@ -215,6 +249,13 @@ class AppShell extends Widget {
   }
 
   async _boot() {
+    // First status now, then every poll interval for the life of the page.
+    this.updates.start();
+    // An install the server is still running (a reload landed mid-update)
+    // comes back into view on its own.
+    this.installer.resume().then((view) => {
+      if (view.state === 'running') this._openProgress();
+    });
     const [convs, gws, cfg] = await Promise.allSettled([
       this.api.listConversations({ limit: 100 }),
       this.api.listGateways({ limit: 100 }),
@@ -270,12 +311,20 @@ class AppShell extends Widget {
     this.settingsOpen = true;
     this.main.hidden = true;
     this.settingsPage.hidden = false;
+    this._liftToasts();
   }
 
   _showChat() {
     this.settingsOpen = false;
     this.main.hidden = false;
     this.settingsPage.hidden = true;
+    this._liftToasts();
+  }
+
+  // Toasts sit just above the composer, so they never cover the send control.
+  // Settings hides the composer, which drops the lift to its base.
+  _liftToasts() {
+    this.workspace.style.setProperty('--toast-lift', `${this.composer.offsetHeight + 12}px`);
   }
 
   // Settings opened from a manage entry point: pre-pointed at a gateway when
@@ -2160,6 +2209,73 @@ class AppShell extends Widget {
 
   _toast(tone, title, message) {
     this.toasts.push({ tone, title, message });
+  }
+
+  // --- updates -------------------------------------------------------------
+
+  // Every status the poller delivers lands here: the header pill, the About
+  // panel, the dialog's content, and — once per release — the toast.
+  _applyUpdate(info) {
+    this.updateInfo = info;
+    const storage = globalThis.localStorage;
+    this.header.update = visibleUpdate(info, storage);
+    this.settingsPage.update = {
+      ...info,
+      skipped: !!info.latest && skippedVersion(storage) === info.latest,
+    };
+    this.updateDialog.info = info;
+    if (isFreshNotice(info, storage)) {
+      markNotified(storage, info.latest);
+      this.toasts.push({
+        tone: 'info',
+        title: 'Update available',
+        message: `NusaLLM ${info.latest} is ready to install.`,
+        action: { label: "What's new", onClick: () => this._openUpdate() },
+      });
+    }
+  }
+
+  _openUpdate() {
+    this.updateDialog.open();
+  }
+
+  // Starts the in-app install of `version` (the latest release when omitted) and
+  // shows its progress popup. The update dialog closes first, so one modal is up.
+  _startUpdate(version) {
+    this.updateDialog.close();
+    void this.installer.begin(version || (this.updateInfo && this.updateInfo.latest));
+    this._openProgress();
+  }
+
+  _openProgress() {
+    this.updateProgress.open();
+  }
+
+  _onInstall(view) {
+    this.updateProgress.view = { ...view, from: this.updateInfo ? this.updateInfo.current : '' };
+    this.settingsPage.updateInstall = view;
+  }
+
+  // Skipping hides the pill and the toast for that release only. The About
+  // panel keeps reporting it, with a way to show it again.
+  _skipUpdate(version) {
+    skipVersion(globalThis.localStorage, version);
+    this._applyUpdate(this.updateInfo);
+    this._toast('info', 'Update skipped', `NusaLLM ${version} is hidden. The next release will show up here.`);
+  }
+
+  _unskipUpdate() {
+    skipVersion(globalThis.localStorage, '');
+    this._applyUpdate(this.updateInfo);
+  }
+
+  async _checkUpdate() {
+    this.settingsPage.updateBusy = true;
+    try {
+      await this.updates.check();
+    } finally {
+      this.settingsPage.updateBusy = false;
+    }
   }
 
   _errText(err) {

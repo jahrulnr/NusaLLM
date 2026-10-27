@@ -1,8 +1,12 @@
 .PHONY: build cli serve install test fmt-check test-web e2e-web gateway-add
 
+# The build version comes from the VERSION file. A checkout without one builds
+# as "dev", and "dev" turns the update check off.
+VERSION ?= $(or $(shell tr -d '[:space:]' < VERSION 2>/dev/null),dev)
+
 build:
 	mkdir -p ./bin
-	go build -o bin/nusallm ./cmd/nusallm
+	go build -ldflags "-X main.version=$(VERSION)" -o bin/nusallm ./cmd/nusallm
 
 cli: build
 	./bin/nusallm

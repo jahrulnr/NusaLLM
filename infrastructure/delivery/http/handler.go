@@ -24,6 +24,7 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/http/setting"
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/http/system"
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/http/tool"
+	"github.com/jahrulnr/nusallm/infrastructure/delivery/http/update"
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/http/webui"
 	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 )
@@ -39,7 +40,10 @@ type Deps struct {
 	Settings           setting.Reader
 	SettingsWriter     setting.Writer
 	Tools              tool.Catalog
-	FileTree           drepo.FileTree
+	// Updates answers GET /api/update and POST /api/update/check; nil
+	// leaves both routes unregistered.
+	Updates  update.Checker
+	FileTree drepo.FileTree
 	// Jobs is the server-lifecycle context for accepted background work
 	// (delete, compact) — decoupled from any single request so a client
 	// disconnect can't cancel accepted work; nil means Background.
@@ -82,6 +86,7 @@ func NewHandler(d Deps) *gin.Engine {
 	gateway.Register(api, gateway.Deps{Reads: d.Gateways, Writes: d.GatewayWrites})
 	setting.Register(api, setting.Deps{Reads: d.Settings, Writes: d.SettingsWriter})
 	tool.Register(api, tool.Deps{Tools: d.Tools})
+	update.Register(api, update.Deps{Checks: d.Updates})
 	if d.FileTree != nil {
 		fsboundary.Register(api, d.FileTree)
 	}

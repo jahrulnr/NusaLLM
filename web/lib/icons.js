@@ -22,6 +22,13 @@ const PATHS = {
   more: 'M5 12h.01M12 12h.01M19 12h.01',
   // Arrows folding inward: summarize the thread.
   compact: 'M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7',
+  // Two overlapping sheets: copy to clipboard.
+  copy: 'M9 9h10v10H9zM5 15V5h10',
+  check: 'M5 12.5l4.5 4.5L19 7.5',
+  // Box with an arrow leaving it: opens an external page.
+  external: 'M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 01-1 1H5a1 1 0 01-1-1V7a1 1 0 011-1h5',
+  // Circular arrow: check again.
+  refresh: 'M20 11a8 8 0 10-2.3 5.7M20 4v7h-7',
 };
 
 export function icon(name, size = 14) {

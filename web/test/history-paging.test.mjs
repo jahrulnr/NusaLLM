@@ -13,7 +13,7 @@ class FakeEl {
   constructor(tag) {
     this.tagName = String(tag).toUpperCase();
     this.children = [];
-    this.style = {};
+    this.style = { setProperty: () => {} };
     this.classList = { add() {}, remove() {}, toggle() {} };
     this.hidden = false;
     this.listeners = {};

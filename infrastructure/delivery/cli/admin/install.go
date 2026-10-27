@@ -20,7 +20,7 @@ import (
 
 const serveAdminUsage = `Usage: ` + CLIName + ` serve [--port N]
        ` + CLIName + ` serve install [--no-service] [--linger]
-       ` + CLIName + ` serve start|stop|status|uninstall
+       ` + CLIName + ` serve start|stop|status
 
 The serve family owns the WebUI: run it in the foreground, install it
 for the current user, and manage the host service.
@@ -29,19 +29,24 @@ install copies this executable to ~/.local/bin/` + CLIName + ` and
 registers the WebUI service with the host manager — the service runs
 this same binary with "serve" and starts at login. Re-running install
 updates the binary and restarts a running service onto it; install and
-update are one command. uninstall removes the registration and the
-copied binary; config and data stay.
+update are one command. ` + CLIName + ` uninstall reverses both.
 
 Flags (install):
   --no-service   copy the CLI only
   --linger       keep the service running after logout (where supported)
 `
 
+const uninstallUsage = `Usage: ` + CLIName + ` uninstall
+
+Removes the WebUI service registration and the copied binary at
+~/.local/bin/` + CLIName + `. Config and data stay where they are.
+`
+
 // IsServeAdmin reports argv that manages the WebUI service. Flags such
 // as --port stay with the foreground server.
 func IsServeAdmin(arg string) bool {
 	switch arg {
-	case "install", "start", "stop", "status", "uninstall":
+	case "install", "start", "stop", "status":
 		return true
 	default:
 		return false
@@ -99,15 +104,15 @@ func serveInstall(args []string, stdout, stderr io.Writer, svc system.Service) i
 	return installWebService(svc, *linger, stdout, stderr)
 }
 
-// serveUninstall removes the service registration and the copied
-// binary. Config and data stay where they are.
-func serveUninstall(args []string, stdout, stderr io.Writer, svc system.Service) int {
+// Uninstall removes the service registration and the copied binary.
+// Config and data stay where they are.
+func Uninstall(args []string, stdout, stderr io.Writer, svc system.Service) int {
 	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
-		fmt.Fprint(stdout, serveAdminUsage)
+		fmt.Fprint(stdout, uninstallUsage)
 		return 0
 	}
 	if len(args) != 0 {
-		fmt.Fprint(stderr, serveAdminUsage)
+		fmt.Fprint(stderr, uninstallUsage)
 		return 2
 	}
 	code := 0
@@ -144,7 +149,7 @@ func serveUninstall(args []string, stdout, stderr io.Writer, svc system.Service)
 	return code
 }
 
-// ServeAdmin handles `nusallm serve install|start|stop|status|uninstall`.
+// ServeAdmin handles `nusallm serve install|start|stop|status`.
 func ServeAdmin(args []string, stdout, stderr io.Writer, svc system.Service) int {
 	if len(args) == 0 {
 		fmt.Fprint(stderr, serveAdminUsage)
@@ -162,8 +167,6 @@ func ServeAdmin(args []string, stdout, stderr io.Writer, svc system.Service) int
 			return 2
 		}
 		return serveControl(args[0], stdout, stderr, svc)
-	case "uninstall":
-		return serveUninstall(args[1:], stdout, stderr, svc)
 	default:
 		fmt.Fprintf(stderr, "%s: unknown serve command %q\n", CLIName, args[0])
 		fmt.Fprint(stderr, serveAdminUsage)
@@ -404,6 +407,12 @@ func userBinPath() (string, error) {
 		return "", err
 	}
 	return filepath.Abs(filepath.Join(home, ".local", "bin", CLIName))
+}
+
+// InstalledBinPath is the executable `serve install` places for the current
+// user, the path the host service runs and an in-place update replaces.
+func InstalledBinPath() (string, error) {
+	return userBinPath()
 }
 
 func dirOnPath(dir string) bool {

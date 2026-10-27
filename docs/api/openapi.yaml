@@ -74,6 +74,8 @@ tags:
     description: Effective JSON config — projected, leaf-level writes.
   - name: tools
     description: Registered tool catalog.
+  - name: updates
+    description: Newest-release picture, forced check, and the in-app install job.
   - name: realtime
     description: The multiplexed WebSocket (frames in websocket.md).
 
@@ -773,6 +775,72 @@ paths:
         "403": { $ref: "#/components/responses/ForbiddenOrigin" }
         "500": { $ref: "#/components/responses/Internal" }
 
+  /api/update:
+    get:
+      operationId: getUpdate
+      tags: [updates]
+      summary: Cached newest-release picture
+      description: |
+        The release lookup re-runs only when the server's one-hour cache is
+        stale. A failed lookup is reported in `error`; the request still
+        succeeds. `enabled` is false for dev builds, which never check.
+      responses:
+        "200":
+          description: The update picture.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Update" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /api/update/check:
+    post:
+      operationId: checkUpdate
+      tags: [updates]
+      summary: Forced release lookup
+      description: Runs the release lookup now, ignoring the cache, and answers the resulting picture.
+      responses:
+        "200":
+          description: The update picture after a fresh lookup.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Update" }
+
+  /api/update/install:
+    post:
+      operationId: startUpdate
+      tags: [updates]
+      summary: Start the in-app install of the latest release
+      description: |
+        Starts one background job: download, verify against `SHA256SUMS`,
+        stage beside the binary, replace it, and restart. Only one install
+        runs at a time. A refusal names its reason in `code`.
+      responses:
+        "202":
+          description: The install started; the body is its first progress state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UpdateProgress" }
+        "409":
+          description: Refused — `update_busy`, `update_disabled`, `update_not_available`, or `update_unknown`.
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "500":
+          description: The install could not start (`update_failed`).
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+    get:
+      operationId: getUpdateProgress
+      tags: [updates]
+      summary: Progress of the current or most recent install
+      responses:
+        "200":
+          description: The install's progress; `idle` when none has run since the process started.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UpdateProgress" }
+
   /api/ws:
     get:
       operationId: openWebSocket
@@ -1421,6 +1489,36 @@ components:
           type: string
           enum: [system, agent, general]
           description: Who may invoke the tool — `system` tools are never offered to the model.
+      additionalProperties: false
+
+    Update:
+      type: object
+      required: [current, enabled, installable, latest, available, releaseUrl, notes, installCommand, error]
+      properties:
+        current: { type: string, example: "0.10.3" }
+        enabled: { type: boolean, description: "False for dev builds, which never check for releases." }
+        installable: { type: boolean, description: "True when this build can install the release in place." }
+        latest: { type: string, description: "Newest release version; empty before a successful lookup." }
+        available: { type: boolean, description: "True when `latest` is newer than `current`." }
+        publishedAt: { type: [string, "null"], format: date-time }
+        releaseUrl: { type: string }
+        notes: { type: string, description: "The published release notes." }
+        installCommand: { type: string, description: "The terminal command that installs the latest release." }
+        checkedAt: { type: [string, "null"], format: date-time, description: "When the last lookup ran; null until one has." }
+        error: { type: string, description: "The last lookup's failure; empty when it succeeded." }
+      additionalProperties: false
+
+    UpdateProgress:
+      type: object
+      required: [state, phase, version, bytesDone, bytesTotal, restart, error]
+      properties:
+        state: { type: string, enum: [idle, running, succeeded, failed] }
+        phase: { type: string, enum: [download, verify, install, restart, ""], description: "The step the install is on; empty before it starts." }
+        version: { type: string }
+        bytesDone: { type: integer, minimum: 0 }
+        bytesTotal: { type: integer, minimum: 0 }
+        restart: { type: string, enum: [service, process, ""], description: "`service`: the service manager restarts the WebUI. `process`: a foreground run replaces itself." }
+        error: { type: string, description: "Why the install failed; empty otherwise." }
       additionalProperties: false
 
   responses:

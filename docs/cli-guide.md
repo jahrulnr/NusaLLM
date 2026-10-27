@@ -45,6 +45,15 @@ Running from source without building also works:
 go run ./cmd/nusallm
 ```
 
+Prebuilt Linux binaries (amd64 and arm64) come from each GitHub release. The
+installer downloads the latest one, verifies it against `SHA256SUMS`, and runs
+`nusallm serve install` with any arguments it was given:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/jahrulnr/NusaLLM/master/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/jahrulnr/NusaLLM/master/scripts/install.sh | bash -s -- --no-service
+```
+
 Install that same binary for the current user. `nusallm serve install`
 copies it to `~/.local/bin/nusallm` and registers a WebUI service with
 the host's service manager — a systemd user unit where systemd is
@@ -61,19 +70,19 @@ stopped service is started rather than restarted.
 make install                            # build, install CLI, start WebUI at login
 ./nusallm serve install                 # same, from a binary you already built
 ./nusallm serve install --no-service    # CLI only
-./nusallm serve uninstall               # remove the binary and the service
+./nusallm uninstall                     # remove the binary and the service
 ```
 
 `~/.local/bin` is already on `PATH` for a login shell once the directory
 exists. If the current shell does not see it, install prints the single
 `export` line to add. It does not edit shell startup files.
 
-`nusallm serve start`, `stop`, `status`, and `uninstall` manage that
-service through the same manager port. `--linger` on `serve install`
-asks the manager to keep the WebUI running after logout — on systemd
-that is `loginctl enable-linger`. Without it, the service starts at
-login and stops when the session ends. Config and data directories are
-left in place by uninstall.
+`nusallm serve start`, `stop`, and `status` manage that service through the
+same manager port, and `nusallm uninstall` removes it along with the binary.
+`--linger` on `serve install` asks the manager to keep the WebUI running
+after logout — on systemd that is `loginctl enable-linger`. Without it, the
+service starts at login and stops when the session ends. Config and data
+directories are left in place by uninstall.
 
 There is no system-wide unit and no desktop entry. The listener stays on
 loopback; open the URL install prints.
@@ -84,6 +93,37 @@ Two soft dependencies are worth knowing about:
   checkout.
 - `/copy` uses the OS clipboard through `atotto/clipboard` — on Linux that
   means `xclip`, `xsel`, or `wl-clipboard` must be installed.
+
+## Updates
+
+`nusallm version` prints the build it is running, such as `nusallm 0.10.3`.
+A build made without a release version prints `dev`.
+
+The WebUI looks for a newer GitHub release and shows it in three places: a
+pill in the conversation header, one toast per release, and the About section
+in Settings. The server asks GitHub at most once an hour, and the page reads
+that cache every 15 minutes. **Check for updates** in Settings always asks.
+Dev builds never check.
+
+**Update now**, in the update dialog or in About, runs the install in the
+background. It downloads the release for this platform, checks it against
+`SHA256SUMS`, and replaces the binary only once the checksum matches. A
+progress popup follows the steps. If the page reloads while an install is
+still running, the popup comes back on its own. When the new version answers,
+the popup offers **Reload NusaLLM**.
+
+The restart depends on how the WebUI runs:
+
+- Under a service manager (`nusallm serve install`), the manager restarts the
+  unit.
+- In a foreground `nusallm serve`, the process replaces itself with the new
+  binary, which cuts off any turn still streaming.
+
+There is no rollback. If the new binary does not start, install the previous
+release's binary from its GitHub release page with `nusallm serve install`.
+In-app install is for Linux release builds; other builds show the install
+command to run in a terminal. **Skip this version** hides the notice for that
+release only, and About can show it again.
 
 ## Where things live
 
@@ -421,7 +461,7 @@ table in-session.
 | `/status` | session state: conversation, counts, route, model, workspace |
 | `/steer <text>` | inject into the running turn after the next tool result |
 | `/title <text>` | rename the conversation |
-| `/tools` | list the tools the model may call |
+| `/tools` | list the room's registered tools and their permission |
 | `/usage` | cumulative token accounting for the conversation |
 
 Notes on the less obvious ones:
@@ -522,19 +562,31 @@ what the crash can and cannot leave behind.
 
 ### Tools the model can call
 
-`/tools` lists what the model may invoke; the current wiring
-(`cmd/nusallm/wire.go`) registers five, all at `agent` permission —
-meaning they run without asking you first:
+`/tools` lists the room's registered tools with their permission. The model
+is offered the `agent` and `general` ones and runs them without a per-call
+approval step; `system` entries are harness-side and never offered to the
+model. The current wiring (`cmd/nusallm/wire.go`) registers:
 
-| Tool | Scope |
-|---|---|
-| `read_file` | read a UTF-8 text file under the workspace |
-| `write_file` | create or overwrite a text file under the workspace (dirs `0700`, files `0600`) |
-| `apply_patch` | literal search-and-replace inside a workspace file |
-| `read_media` | load a non-text media file so the model can inspect it — workspace-relative or absolute host path |
-| `exec` | run a shell command, merged stdout/stderr — **unsandboxed** |
-| `exec_session` | open a persistent terminal session — returns output or a session id |
-| `write_stdin` | write to / poll a session opened by `exec_session` |
+| Tool | Permission | Scope |
+|---|---|---|
+| `read_file` | `agent` | read a UTF-8 text file under the workspace |
+| `write_file` | `agent` | create or overwrite a text file under the workspace (dirs `0700`, files `0600`) |
+| `apply_patch` | `agent` | literal search-and-replace inside a workspace file |
+| `read_media` | `agent` | load a non-text media file so the model can inspect it — workspace-relative or absolute host path |
+| `exec` | `agent` | run a shell command, merged stdout/stderr — **unsandboxed** |
+| `exec_session` | `agent` | open a persistent terminal session — returns output or a session id |
+| `write_stdin` | `agent` | write to / poll a session opened by `exec_session` |
+| `skills` | `general` | report the skills available to the bound workspace; hydrated before provider calls, callable to refresh the catalog |
+| `read_skill` | `agent` | read the full `SKILL.md` of a listed skill by name |
+| `web_search` | `agent` | search the web through searchwire |
+| `web_fetch` | `agent` | fetch one URL and return its readable text |
+| `workspace` | `system` | harness-side record that pins the turn's working directory into history |
+| `custom_tools` | `system` | harness-side report of custom executable directories on `PATH` |
+
+`summary` (`agent`) is offered only to the compaction request, so ordinary
+turns never see it. Custom executables on `PATH` are not tools of their own:
+the agent runs them through `exec` or `exec_session`, guided by their
+companion skills.
 
 The file tools are confined to the workspace, except `read_media` which
 also accepts absolute host paths (the returned reference is still
@@ -552,7 +604,7 @@ For actual back-and-forth, `exec_session` opens a persistent terminal
 session: the tool waits `yield_time_ms`, then reports either the exit
 code or `Process running with session ID N`. `write_stdin` continues
 that session — `chars` feeds stdin (an empty `chars` polls output; a
-single `` is Ctrl-C on either backend), so the model can answer prompts,
+single `\u0003` is Ctrl-C on either backend), so the model can answer prompts,
 drive installers, or keep a dev server running across tool calls.
 Interactive stdin requires `tty:true` — the default pipes backend gives
 the child a closed stdin, and a write attempt fails with guidance to

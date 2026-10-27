@@ -73,6 +73,10 @@ func (f *fakeService) Stop(name string) error {
 	f.stopCalls++
 	return f.stopErr
 }
+func (f *fakeService) Restart(name string) error {
+	f.calls = append(f.calls, "restart "+name)
+	return nil
+}
 func (f *fakeService) Status(name string) (string, system.State, error) {
 	f.calls = append(f.calls, "status "+name)
 	return f.statusOut, f.state, f.statusErr
@@ -121,12 +125,12 @@ func freePort(t *testing.T) int {
 }
 
 func TestServeLifecycle(t *testing.T) {
-	for _, arg := range []string{"install", "start", "stop", "status", "uninstall"} {
+	for _, arg := range []string{"install", "start", "stop", "status"} {
 		if !IsServeAdmin(arg) {
 			t.Fatalf("IsServeAdmin(%q) = false", arg)
 		}
 	}
-	for _, arg := range []string{"--port", "-h", "help", "--help", "repair"} {
+	for _, arg := range []string{"--port", "-h", "help", "--help", "repair", "uninstall"} {
 		if IsServeAdmin(arg) {
 			t.Fatalf("IsServeAdmin(%q) = true", arg)
 		}
@@ -296,7 +300,7 @@ func TestServeStatusMapsStateToExitCode(t *testing.T) {
 	}
 }
 
-func TestServeUninstallDeregisters(t *testing.T) {
+func TestUninstallDeregisters(t *testing.T) {
 	home := isolateInstallHome(t)
 	bin := filepath.Join(home, ".local", "bin", "nusallm")
 	if err := os.MkdirAll(filepath.Dir(bin), 0o755); err != nil {
@@ -307,7 +311,7 @@ func TestServeUninstallDeregisters(t *testing.T) {
 	}
 	svc := &fakeService{deregNote: "bus down; removed the file anyway"}
 	var out, errs bytes.Buffer
-	if code := ServeAdmin([]string{"uninstall"}, &out, &errs, svc); code != 0 {
+	if code := Uninstall(nil, &out, &errs, svc); code != 0 {
 		t.Fatalf("uninstall exit %d", code)
 	}
 	if svc.deregName != "nusallm" {
@@ -574,7 +578,7 @@ func TestUninstallKeepsConfigAndData(t *testing.T) {
 	}
 	svc := &fakeService{}
 	var out, errs bytes.Buffer
-	if code := ServeAdmin([]string{"uninstall"}, &out, &errs, svc); code != 0 {
+	if code := Uninstall(nil, &out, &errs, svc); code != 0 {
 		t.Fatalf("uninstall exit %d\n%s\n%s", code, out.String(), errs.String())
 	}
 	if svc.deregName != "nusallm" {
@@ -598,10 +602,34 @@ func TestUninstallSurfacesDeregisterError(t *testing.T) {
 	isolateInstallHome(t)
 	svc := &fakeService{deregErr: errors.New("systemctl --user disable --now: boom")}
 	var out, errs bytes.Buffer
-	if code := ServeAdmin([]string{"uninstall"}, &out, &errs, svc); code == 0 {
+	if code := Uninstall(nil, &out, &errs, svc); code == 0 {
 		t.Fatal("uninstall succeeded against a failing deregister")
 	}
 	if !strings.Contains(errs.String(), "boom") {
 		t.Fatalf("stderr = %q", errs.String())
+	}
+}
+
+func TestUninstallWithoutManagerSucceeds(t *testing.T) {
+	home := isolateInstallHome(t)
+	// A host with no service manager has no registration to remove; the
+	// copied binary still goes and uninstall reports success.
+	t.Setenv(system.BackendEnv, "bogus")
+	bin := filepath.Join(home, ".local", "bin", "nusallm")
+	if err := os.MkdirAll(filepath.Dir(bin), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bin, []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var out, errs bytes.Buffer
+	if code := Uninstall(nil, &out, &errs, system.New()); code != 0 {
+		t.Fatalf("uninstall exit %d\n%s\n%s", code, out.String(), errs.String())
+	}
+	if _, err := os.Stat(bin); !os.IsNotExist(err) {
+		t.Fatalf("binary err = %v, want not exist", err)
+	}
+	if !strings.Contains(errs.String(), "no service registration removed") {
+		t.Fatalf("stderr = %q, want the no-manager note", errs.String())
 	}
 }

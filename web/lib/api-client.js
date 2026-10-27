@@ -116,4 +116,27 @@ export class APIClient {
   health() {
     return request('GET', '/api/health');
   }
+
+  // Cached update status; the server re-runs the release lookup only when
+  // its cache is stale.
+  getUpdate() {
+    return request('GET', '/api/update');
+  }
+
+  // Forces a fresh release lookup and returns the resulting status.
+  checkUpdate() {
+    return request('POST', '/api/update/check');
+  }
+
+  // Starts an update to the latest release. The server answers 202 with the
+  // first progress state. A refusal (busy, disabled, nothing newer) rejects
+  // with an APIError whose code names the reason.
+  startUpdate() {
+    return request('POST', '/api/update/install');
+  }
+
+  // The current install's progress; idle when none has run since start.
+  getUpdateProgress() {
+    return request('GET', '/api/update/install');
+  }
 }

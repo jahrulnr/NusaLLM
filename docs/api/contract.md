@@ -208,6 +208,10 @@ Full schemas, typed errors, and examples live in
 | `GET /api/tools?conversationId=<id>` | Registered tool catalog for that room: `name`, `description`, `parameters`, `enabled`, `permission`. Without `conversationId`, uses the local starting catalog. Returns `404` when no tool catalog is wired. |
 | `GET /api/fs/browse?path=` | Directory-only listing for the workspace picker — `{ "path", "parent", "roots": [{"name","path"}], "entries": [{"name","path","hidden"}], "truncated"?: true }`. Empty `path` defaults to the owner's home; `parent` ascends toward the filesystem root and `roots` jumps to `/` (or present drive letters on Windows). `path` must be absolute (`400`); missing directories are `404`, unreadable `403`. Listings cap at 1000 directories (`truncated: true` when more remain); file contents are never served. |
 | `GET /api/context?conversationId&route&modelId` | Composer-footer stats — `{ "estimate", "total" }`: estimated live input tokens and the bound model's input allowance. `conversationId` is optional — a fresh room still resolves `total` when `route`+`modelId` name a known model. |
+| `GET /api/update` | Cached newest-release picture: `{ current, enabled, installable, latest, available, publishedAt, releaseUrl, notes, installCommand, checkedAt, error }`. The release lookup re-runs only when the server's one-hour cache is stale; a failed lookup is reported in `error`, not as an HTTP failure. `enabled` is `false` for dev builds, which never check. |
+| `POST /api/update/check` | Forces a fresh release lookup and answers the same picture. |
+| `POST /api/update/install` | Starts the in-app install of the latest release as one background job: download, verify against `SHA256SUMS`, stage beside the binary, replace it, restart. Answers `202` with the first progress state. Only one install runs at a time; refusals are `409` (see the error model). |
+| `GET /api/update/install` | Progress of the current or most recent install: `{ state, phase, version, bytesDone, bytesTotal, restart, error }`. `state` is `idle`, `running`, `succeeded`, or `failed`; `succeeded` means the restart is queued, and the new version answers once it is up. |
 | `GET /api/ws` | WebSocket upgrade — `101`; frames defined in [`websocket.md`](./websocket.md). |
 
 There is intentionally **no `POST /api/conversations`** and **no
@@ -283,10 +287,15 @@ successful non-2xx and has no body.)
 | 403 | `forbidden_origin` | `Host`/`Origin` check failed. |
 | 404 | `not_found` | Conversation, gateway, model-in-catalog, message id, or running turn does not exist. |
 | 408 | `interrupted` | The request or turn was canceled (client cancel, shutdown race). |
+| 409 | `update_busy` | An update install is already running. |
+| 409 | `update_disabled` | This build cannot install a release: a dev build, or a platform without a release binary. |
+| 409 | `update_not_available` | The latest known release is not newer than this build. |
+| 409 | `update_unknown` | No release has been looked up yet; call `POST /api/update/check` first. |
 | 410 | `gone` | The job was queued on a room that was deleted underneath it. |
 | 413 | `input_too_large` | Request payload beyond the server's input bound. |
 | 429 | `queue_full` | The room's mailbox is full — retry later. |
 | 500 | `internal` | Engine or deployment fault (adapter missing, tool loop limit, persistence failure). |
+| 500 | `update_failed` | An update install could not start for an unexpected reason. |
 | 502 | `upstream_error` | The provider call failed at the wire. |
 | 503 | `unavailable` | The application is shutting down. |
 | 504 | `upstream_timeout` | The provider did not answer inside its deadline. |
@@ -301,7 +310,7 @@ a UI can route on a closed set, never on provider error text.
 
 Success codes: `200` for reads and updates (`PATCH` rename, `PATCH`
 settings, `PUT` gateway — upsert is idempotent so there is no `201`),
-`204` for deletes, `101` for the WS upgrade. Conversation detail includes
+`202` for an update install that started, `204` for deletes, `101` for the WS upgrade. Conversation detail includes
 `canCompact`; it is true when the live tail is longer than the configured
 keep-tail, including after a checkpoint when that tail still exceeds it.
 The same response — and each item of the list projection — includes

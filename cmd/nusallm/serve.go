@@ -29,12 +29,12 @@ import (
 )
 
 const serveUsage = `Usage: ` + admin.CLIName + ` serve [--port N]
-       ` + admin.CLIName + ` serve install|start|stop|status|uninstall
+       ` + admin.CLIName + ` serve install|start|stop|status
 
 Local WebUI — embedded browser UI, HTTP API, and WebSocket turn channel.
 Binds 127.0.0.1 only; port defaults to server.port in config.
-install/start/stop/status/uninstall manage the host service
-that runs this same binary.
+install/start/stop/status manage the host service that runs this same
+binary; ` + admin.CLIName + ` uninstall removes it.
 
 Flags:
   --port N   loopback port for this process (1..65535)
@@ -117,6 +117,10 @@ func serve(args []string, svc system.Service) (serveErr error) {
 	hub := wsconversation.NewHub(context.WithoutCancel(ctx), eng.conversations)
 	defer hub.Shutdown()
 	settings := setting.New(repoconfig.NewLocal(), b.ConfigPath())
+	updates, err := newUpdates(svc, ctx)
+	if err != nil {
+		return err
+	}
 	handler := httpdelivery.NewHandler(httpdelivery.Deps{
 		Conversations:      eng.conversations,
 		ConversationWrites: eng.conversations,
@@ -125,6 +129,7 @@ func serve(args []string, svc system.Service) (serveErr error) {
 		Settings:           settings,
 		SettingsWriter:     settings,
 		Tools:              eng.conversations,
+		Updates:            updates,
 		FileTree:           fileTree,
 		// Accepted delete/compaction jobs ride the server lifecycle —
 		// a client that abandons a request can't cancel them, but

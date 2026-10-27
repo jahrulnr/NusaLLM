@@ -93,6 +93,11 @@ type Service interface {
 	Deregister(name string) (note string, err error)
 	Start(name string) error
 	Stop(name string) error
+	// Restart brings a registered service onto the installed binary. It
+	// returns once the manager has queued the restart. When the caller runs
+	// inside the service, the restart stops the caller, so the call must not
+	// wait for the new process.
+	Restart(name string) error
 	Status(name string) (report string, state State, err error)
 	Active(name string) bool
 	ActiveElsewhere(name string) bool
@@ -115,11 +120,16 @@ type unavailable struct {
 func (u unavailable) Name() string        { return u.name }
 func (u unavailable) Available() error    { return fmt.Errorf("%s: %s", u.name, u.reason) }
 func (u unavailable) Register(Spec) error { return u.Available() }
+
+// Deregister has nothing it can remove without a manager. The degraded
+// state is reported as a note, not a failure, so uninstall still
+// completes on a host with no service manager.
 func (u unavailable) Deregister(string) (string, error) {
-	return "", u.Available()
+	return u.Available().Error() + "; no service registration removed", nil
 }
-func (u unavailable) Start(string) error { return u.Available() }
-func (u unavailable) Stop(string) error  { return u.Available() }
+func (u unavailable) Start(string) error   { return u.Available() }
+func (u unavailable) Stop(string) error    { return u.Available() }
+func (u unavailable) Restart(string) error { return u.Available() }
 func (u unavailable) Status(string) (string, State, error) {
 	return "", StateUnknown, u.Available()
 }

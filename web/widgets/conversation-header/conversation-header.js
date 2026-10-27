@@ -57,6 +57,9 @@ class ConversationHeader extends Widget {
   set connection(state) { this._connection = state; this._render(); }
   set compactState(state) { this._compactState = state; this._render(); }
   set compactAvailable(v) { this._compactAvailable = !!v; this._render(); }
+  // Visible update (see lib/update-state.js visibleUpdate) or null. The pill
+  // only exists while there is something to read.
+  set update(info) { this._update = info || null; this._render(); }
 
   _render() {
     clear(this.root);
@@ -126,6 +129,11 @@ class ConversationHeader extends Widget {
     // One row for both pickers: a flex row on phones, transparent on desktop.
     this.root.append(el('div', { class: 'picks' }, [this.picker, this.wsPicker]));
 
+    // Phones give the pill its own grid column; the class keeps the layout
+    // unchanged while no update is showing.
+    this.root.classList.toggle('has-update', !!this._update);
+    if (this._update) this.root.append(this._updatePill());
+
     if (conv && this._confirmingDelete) {
       this.root.append(el('div', { class: 'confirm', role: 'alertdialog', 'aria-label': 'Confirm delete' }, [
         el('span', { class: 'confirm-text', text: 'Delete this thread?' }),
@@ -164,6 +172,18 @@ class ConversationHeader extends Widget {
       onclick: () => this._openSheet(),
     }, [icon('more', 18)]));
     if (this.sheet.open) this._renderSheet();
+  }
+
+  _updatePill() {
+    const latest = this._update.latest;
+    return el('button', {
+      class: 'update-pill', type: 'button',
+      'aria-label': `Update to NusaLLM ${latest} available. Review update.`,
+      onclick: () => emit(this, 'update-open'),
+    }, [
+      el('span', { class: 'update-dot', 'aria-hidden': 'true' }),
+      el('span', { text: `Update ${latest}` }),
+    ]);
   }
 
   _compactLabel(idle) {

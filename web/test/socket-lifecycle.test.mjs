@@ -10,7 +10,7 @@ class FakeEl {
   constructor(tag) {
     this.tagName = String(tag).toUpperCase();
     this.children = [];
-    this.style = {};
+    this.style = { setProperty: () => {} };
     this.classList = { add() {}, remove() {}, toggle() {} };
     this.hidden = false;
     this.listeners = {};
@@ -65,6 +65,8 @@ globalThis.fetch = async () => new Response(JSON.stringify({ data: [], total: 0 
 
 const { TurnSocket } = await import('../lib/socket-client.js');
 const { enqueue } = await import('../lib/pending-queue.js');
+// The shell keeps the toast lift in step with the composer's height.
+globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
 await import('../widgets/app-shell/app-shell.js');
 const AppShell = defined['nusa-app'];
 

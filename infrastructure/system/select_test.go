@@ -77,6 +77,17 @@ func TestNewNothingPresentIsUnavailable(t *testing.T) {
 	}
 }
 
+func TestUnavailableDeregisterIsNotAnError(t *testing.T) {
+	svc := unavailable{name: "test", reason: "gone"}
+	note, err := svc.Deregister("nusallm")
+	if err != nil {
+		t.Fatalf("Deregister = %v, want success: nothing registered is removed", err)
+	}
+	if !strings.Contains(note, "gone") {
+		t.Fatalf("note = %q, want the degraded reason surfaced", note)
+	}
+}
+
 func TestUnavailableDegradesVerbs(t *testing.T) {
 	svc := unavailable{name: "test", reason: "gone"}
 	if svc.Active("x") || svc.ActiveElsewhere("x") {
@@ -99,6 +110,7 @@ func (f fakeManager) Register(Spec) error               { return nil }
 func (f fakeManager) Deregister(string) (string, error) { return "", nil }
 func (f fakeManager) Start(string) error                { return nil }
 func (f fakeManager) Stop(string) error                 { return nil }
+func (f fakeManager) Restart(string) error              { return nil }
 func (f fakeManager) Status(string) (string, State, error) {
 	return "", StateUnknown, nil
 }

@@ -20,6 +20,11 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/system"
 )
 
+// version is the release version, set when the binary is linked
+// (-ldflags "-X main.version=..."). A source build without it keeps "dev",
+// and "dev" switches the update check off.
+var version = "dev"
+
 func main() {
 	fileTree := repofiletree.NewLocal()
 	args := os.Args[1:]
@@ -69,6 +74,10 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "version":
+			os.Exit(admin.Version(args[1:], os.Stdout, os.Stderr, version))
+		case "uninstall":
+			os.Exit(admin.Uninstall(args[1:], os.Stdout, os.Stderr, system.New()))
 		default:
 			fmt.Fprintf(os.Stderr, "%s: unknown argument %q — try --help\n", admin.CLIName, args[0])
 			os.Exit(2)
@@ -92,8 +101,10 @@ Usage:
   ` + admin.CLIName + ` python [args...] run Python; reuse a suitable host interpreter or download a private standalone runtime
   ` + admin.CLIName + ` conversation repair <id> --discard-duplicate|--commit|--finish-rewrite (offline recovery)
   ` + admin.CLIName + ` serve [--port N] local WebUI — loopback only (default port 10998 from server.port)
-  ` + admin.CLIName + ` serve install|start|stop|status|uninstall
+  ` + admin.CLIName + ` serve install|start|stop|status
                                install the WebUI for the current user; manage the host service
+  ` + admin.CLIName + ` uninstall        remove the binary and the WebUI service; config and data stay
+  ` + admin.CLIName + ` version          print the build version
   ` + admin.CLIName + ` --help           this text
 
 Environment:

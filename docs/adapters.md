@@ -396,7 +396,7 @@ runs one model-originated call returning `ToolResult{Text, Attachments}`.
 `Attachments` are stored media references that resolve at send time by the
 same rules as message attachments, never consuming the text budget. Execution
 failures are recorded *as the tool output* so the model can react; only
-context cancellation aborts the turn (`application/job/turn.go`, `execTool`).
+context cancellation aborts the turn (`application/job/turn.go`).
 Whether a call is permitted is checked against the schema's permission by the
 application turn before `Execute` ever runs — tools themselves hold no
 permission logic. `emit` is a synchronous live-preview channel; slow consumers
