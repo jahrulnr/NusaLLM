@@ -7,6 +7,16 @@ on:
 permissions:
   contents: read
 
+# The checks run on every push and pull request. Only a push to master goes on
+# to release, and only once the checks pass. A release is cut when VERSION
+# names a tag that does not exist yet and CHANGELOG.md has a section with notes
+# for that version. The commit gets a tag named exactly as VERSION, whose
+# message is that CHANGELOG.md section. The binaries are built and the release
+# is published as "NusaLLM v<VERSION>", with the same text minus its version
+# heading. Releases are serialized so two pushes never race to tag the same
+# version. To retry a build that failed after the tag was pushed, use "Re-run
+# failed jobs"; a full re-run finds the tag and skips.
+
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -32,3 +42,134 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go test -race ./application/conversation ./infrastructure/worker ./infrastructure/repository/conversation
+
+  tag:
+    name: Tag VERSION
+    needs: [verify, race]
+    # An explicit `if` replaces the implicit success() check, so keep it.
+    if: success() && github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Tag VERSION
+        id: version
+        run: |
+          set -euo pipefail
+          if [ ! -f VERSION ]; then
+            echo "VERSION is missing; commit it at the repository root." >&2
+            exit 1
+          fi
+          version=$(tr -d '[:space:]' < VERSION)
+          if [[ ! $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "VERSION must be MAJOR.MINOR.PATCH, got '$version'." >&2
+            exit 1
+          fi
+
+          if git rev-parse -q --verify "refs/tags/$version" >/dev/null; then
+            echo "Tag $version already exists; nothing to release."
+            version=""
+          else
+            # The message is this version's CHANGELOG.md section. No section,
+            # or one without notes, means they are still under [Unreleased].
+            notes=""
+            if [ -f CHANGELOG.md ]; then
+              notes=$(awk -v v="$version" '
+                /^## / { if (found) exit; if (index($0, "## [" v "]") == 1) found = 1 }
+                found { print }
+              ' CHANGELOG.md)
+            fi
+            if [ -z "$(sed 1d <<< "$notes" | tr -d '[:space:]')" ]; then
+              echo "CHANGELOG.md has no notes for $version yet; nothing to release."
+              version=""
+            else
+              git config user.name "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              printf '%s\n' "$notes" | git tag -a --cleanup=verbatim -F - "$version" HEAD
+              git push origin "refs/tags/$version"
+              echo "Tagged $version."
+            fi
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build linux/${{ matrix.arch }}
+    needs: tag
+    # An explicit `if` replaces the implicit success() check, so keep it.
+    if: success() && needs.tag.outputs.version != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build linux/${{ matrix.arch }}
+        env:
+          GOARCH: ${{ matrix.arch }}
+          VERSION: ${{ needs.tag.outputs.version }}
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-X main.version=${VERSION}" -o "dist/nusallm-linux-${GOARCH}" ./cmd/nusallm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nusallm-linux-${{ matrix.arch }}
+          path: dist/nusallm-linux-${{ matrix.arch }}
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: [tag, build]
+    # Publish only when every architecture built; a partial set is never released.
+    if: success() && needs.tag.outputs.version != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.tag.outputs.version }}
+    steps:
+      # The checkout brings the annotated tag, whose message becomes the notes.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: nusallm-linux-*
+          path: dist
+          merge-multiple: true
+      - name: Publish release
+        working-directory: dist
+        run: |
+          sha256sum nusallm-linux-* > SHA256SUMS
+          # Titled by product and version. The notes are the tag message minus its
+          # "## [x.y.z] - date" heading, which the title already names.
+          git tag -l --format='%(contents)' "$VERSION" | sed '1{/^## \[/d}' | sed '/./,$!d' > notes.md
+          title="NusaLLM v$VERSION"
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            # Re-runs and partial earlier runs converge on the same title and notes.
+            gh release edit "$VERSION" --title "$title" --notes-file notes.md
+          else
+            gh release create "$VERSION" --verify-tag --title "$title" --notes-file notes.md
+          fi
+          gh release upload "$VERSION" nusallm-linux-* SHA256SUMS --clobber
