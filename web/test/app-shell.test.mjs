@@ -633,3 +633,28 @@ test('resync-unknown refreshes the room — own, watched, and foreign', () => {
   app._onFrame({ type: 'turn.resync_required', turnId: 't-x', conversationId: 'c3', payload: { turn: 'unknown' } });
   assert.deepEqual(rooms, ['c1', 'c1', 'c3']);
 });
+
+test('a failure shown on its card raises no toast', () => {
+  const { app, ws } = makeApp();
+  app.composer.value = '';
+  failTurn(app, ws, { status: 502, message: 'upstream exploded', userMessagePersisted: true });
+  assert.ok(app.failedTurns.get('c1'), 'card parked in the viewed room');
+  assert.deepEqual(app.toasts.pushed || [], []);
+});
+
+test('a failure in a room off screen keeps its toast', () => {
+  const { app, ws } = makeApp();
+  app.composer.value = '';
+  app.activeId = 'c1';
+  app._send('hi');
+  const cmd = app._viewCommand();
+  app.activeId = 'c2';
+  app._onFrame({ type: 'turn.opened', requestId: cmd.requestId, turnId: 't1', conversationId: 'c1', seq: 1 });
+  app._onFrame({
+    type: 'turn.failed', turnId: 't1', conversationId: 'c1', seq: 2,
+    payload: { status: 502, message: 'upstream exploded', userMessagePersisted: true },
+  });
+  assert.ok(app.failedTurns.get('c1'), 'card parked for its own room');
+  assert.equal(app.toasts.pushed.length, 1);
+  assert.equal(app.toasts.pushed[0].title, 'Turn failed');
+});

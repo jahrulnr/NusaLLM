@@ -1,6 +1,6 @@
 <div align="center">
 
-![NusaLLM](./web/img/3:1-2172x724.png)
+![NusaLLM](./web/img/banner.png)
 
 Many islands, one sea.
 
@@ -42,8 +42,10 @@ not rewritten. In the REPL, `/route <id>` and `/model <id>` pick one. If only on
 route or model exists, it is selected automatically.
 
 A route stores only a credential reference, either `env:VAR_NAME` (read at send time) or a
-key vaulted in a local SQLite file (mode 0600). Keys are never written to conversation
-records or gateway files.
+key stored in plaintext in a local SQLite file (mode 0600). nusallm itself never writes a
+key into conversation records or gateway files. `exec` inherits the process environment,
+though, so a key referenced with `env:` can show up in command output, and that output is
+stored in the conversation. See [SECURITY.md](SECURITY.md).
 
 ## The sea: your conversations
 
@@ -87,7 +89,7 @@ Custom tools are plain executables on the `PATH` that the agent's `exec` uses.
 ## Quick start
 
 ```sh
-make build              # builds ./bin/nusallm (needs Go 1.26.5 or newer)
+make build              # builds ./bin/nusallm (needs Go 1.26.10 or newer)
 ./bin/nusallm onboard   # guided setup: wire style, endpoint, models, hidden API key prompt
 ./bin/nusallm           # opens the REPL
 ```
@@ -106,6 +108,10 @@ model. `onboard` needs an interactive terminal.
 - [Adapters](docs/adapters.md)
 - [Extending](docs/extending.md)
 - [WebUI API contract](docs/api/contract.md)
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for the threat model and how to report a vulnerability.
 
 ## License
 

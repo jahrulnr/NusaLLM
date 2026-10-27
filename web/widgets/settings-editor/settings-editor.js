@@ -28,6 +28,12 @@ function deepActiveElement() {
 
 // Settings editor: groups projected values by section and emits the
 // existing dotted key when a field changes.
+// The label a setting shows in the form and in confirmations: its leaf key
+// with underscores spelled as spaces ("log.max_lines" -> "max lines").
+export function settingLabel(key) {
+  return key.split('.').pop().replaceAll('_', ' ');
+}
+
 class SettingsEditor extends Widget {
   static stylesheet = new URL('./settings-editor.css', import.meta.url);
 
@@ -90,13 +96,17 @@ class SettingsEditor extends Widget {
     this._renderedSig = this._signature();
     this.root.classList.add('settings');
     const sections = sectionEntries(this._settings);
+    // Groups open by default; a group the user closed stays closed on re-render.
+    const known = (this._knownSections ||= new Set());
     if (!sections.length) {
       this.root.append(el('div', { class: 'hint', text: 'No settings exposed.' }));
       return;
     }
     this.root.append(el('p', { class: 'save-hint', text: 'Auto-save: text and number fields save when you leave them; checkboxes save immediately.' }));
     for (const [section, values] of sections) {
-      const group = el('details', { class: 'group', 'data-section': section, open: expanded.has(section) }, [
+      const open = expanded.has(section) || !known.has(section);
+      known.add(section);
+      const group = el('details', { class: 'group', 'data-section': section, open }, [
         el('summary', { text: section[0].toUpperCase() + section.slice(1) }),
       ]);
       const body = el('div', { class: 'group-body' });
@@ -109,7 +119,7 @@ class SettingsEditor extends Widget {
         const input = this._input(key, value);
         this._inputs.set(key, input);
         fields.append(el('div', { class: 'setting' }, [
-          el('label', { class: 'setting-key', text: leaf.replaceAll('_', ' '), 'for': `s-${key}`, title: key }),
+          el('label', { class: 'setting-key', text: settingLabel(key), 'for': `s-${key}`, title: key }),
           input,
         ]));
       }

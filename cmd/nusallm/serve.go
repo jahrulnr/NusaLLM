@@ -140,11 +140,12 @@ func serve(args []string, svc system.Service) (serveErr error) {
 	ln, err := net.Listen("tcp", listenAuthority)
 	if err != nil {
 		if errors.Is(err, syscall.EADDRINUSE) {
-			// Name the likeliest holder: the installed service — but
-			// only when this process isn't the service itself, or a
-			// unit losing its own bind race would blame itself.
+			// The holder is not identified here: the installed service may be
+			// active on another port, so it is named only as a hint. It is
+			// skipped when this process is the service itself, or a unit
+			// losing its own bind race would blame itself.
 			if svc.ActiveElsewhere(admin.CLIName) {
-				return fmt.Errorf("listen on %s: the %s is already serving this port — `%s serve stop` it or pass --port", listenAuthority, svc.Name(), admin.CLIName)
+				return fmt.Errorf("listen on %s: address already in use — if the %s holds this port, `%s serve stop` it or pass --port", listenAuthority, svc.Name(), admin.CLIName)
 			}
 			return fmt.Errorf("listen on %s: address already in use by another process", listenAuthority)
 		}

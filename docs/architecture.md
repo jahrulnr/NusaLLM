@@ -1,7 +1,7 @@
 # Architecture
 
 NusaLLM is a provider-agnostic LLM conversation engine with a terminal
-client on top of it (module `github.com/jahrulnr/nusallm`, Go 1.26.5).
+client on top of it (module `github.com/jahrulnr/nusallm`, Go 1.26.10).
 The bet the codebase makes — stated in the [README](../README.md) — is
 that the engine owns conversations, tools, and history while interfaces
 come and go. The terminal REPL is the first transport, not the product,

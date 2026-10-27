@@ -1,6 +1,6 @@
 module github.com/jahrulnr/nusallm
 
-go 1.26.5
+go 1.26.10
 
 require (
 	github.com/atotto/clipboard v0.1.4
@@ -30,9 +30,8 @@ require (
 require (
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/quic-go/quic-go v0.59.1 // indirect
-	golang.org/x/crypto v0.55.0 // indirect
-	golang.org/x/net v0.58.0 // indirect
-	golang.org/x/tools v0.49.0 // indirect
+	golang.org/x/crypto v0.57.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 )
 
@@ -83,7 +82,7 @@ require (
 	github.com/yuin/goldmark v1.8.2 // indirect
 	github.com/yuin/goldmark-emoji v1.0.6 // indirect
 	golang.org/x/arch v0.20.0 // indirect
-	golang.org/x/text v0.41.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 	modernc.org/libc v1.75.7 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect

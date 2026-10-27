@@ -1637,11 +1637,8 @@ await scenarioRun('select-watches-live-turn', async (s) => {
 await scenarioRun('settings-autosave-focus', async (s) => {
   await s.page.goto(BASE + '#settings');
   const editor = s.page.locator('nusa-settings-editor');
-  const convSummary = editor.locator('details[data-section="conversation"] > summary');
-  await s.page.locator('nusa-settings-page details.section', { hasText: 'Application' })
-    .locator('> summary').click();
-  await convSummary.waitFor({ timeout: 8000 });
-  await convSummary.click();
+  // Application and its groups open by default, so the fields are already
+  // on screen; a click on either summary would collapse them.
   const steps = editor.locator('[id="s-conversation.max_turn_steps"]');
   const tail = editor.locator('[id="s-conversation.compact_keep_tail"]');
   await steps.waitFor();

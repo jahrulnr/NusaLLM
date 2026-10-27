@@ -1,6 +1,7 @@
 import { Widget, el, emit, sheetsReady } from '../../lib/dom.js';
 import { APIClient } from '../../lib/api-client.js';
 import { TurnSocket } from '../../lib/socket-client.js';
+import { settingLabel } from '../settings-editor/settings-editor.js';
 import {
   createTurnProjection, applyTurnFrame, settleTurnProjection,
 } from '../../lib/turn-projection.js';
@@ -151,12 +152,10 @@ class AppShell extends Widget {
 
     on(this.header, 'sidebar-toggle', () => { this.sidebarOpen = !this.sidebarOpen; this._syncSidebar(); });
     on(this.header, 'settings-open', () => this.openSettings());
-    // The picker's manage-models exit opens the same settings page,
-    // pre-pointed at the gateway it was browsing.
-    on(this.header, 'manage-models', ({ gatewayId }) => {
-      if (gatewayId) this.settingsPage.manageModelsFor = gatewayId;
-      this.openSettings();
-    });
+    // The picker's manage-models exit and the thread's empty state open the
+    // same settings page.
+    on(this.header, 'manage-models', ({ gatewayId }) => this._manageGateways(gatewayId));
+    on(this.thread, 'manage-gateways', () => this._manageGateways(null));
     on(this.header, 'model-change', (d) => this._setSelection(d));
     on(this.header, 'workspace-change', (d) => this._setWorkspace(d.workspace));
     on(this.header, 'conversation-rename', ({ title }) => this._rename(title));
@@ -277,6 +276,14 @@ class AppShell extends Widget {
     this.settingsOpen = false;
     this.main.hidden = false;
     this.settingsPage.hidden = true;
+  }
+
+  // Settings opened from a manage entry point: pre-pointed at a gateway when
+  // one is in context, else with the providers section expanded for adding.
+  _manageGateways(gatewayId) {
+    if (gatewayId) this.settingsPage.manageModelsFor = gatewayId;
+    else this.settingsPage.expandProviders();
+    this.openSettings();
   }
 
   openSettings() {
@@ -1631,15 +1638,15 @@ class AppShell extends Widget {
         pauseQueue(this.queue, roomKey);
         if (!interruptedTurn(f)) {
           const msg = (f.payload && f.payload.message) || f.code || 'error';
-          this._toast('error', 'Turn failed', msg);
           // A definitive failure keeps an explicit retry affordance:
           // the card on the thread re-issues turn.edit against the
           // failed turn's user line while no newer input follows it —
           // regenerating, never rewinding later turns. A send that
           // never committed its user line has nothing to retry — its
           // text returns through the draft/queue paths instead.
-          if (!cmd.watched &&
-              !(cmd.kind === 'send' && f.payload?.userMessagePersisted === false)) {
+          const card = !cmd.watched &&
+              !(cmd.kind === 'send' && f.payload?.userMessagePersisted === false);
+          if (card) {
             this.failedTurns.set(roomKey, {
               text: cmd.content, note: msg,
               retryMessageId: cmd.kind === 'edit' ? cmd.editMessageId : null,
@@ -1648,6 +1655,12 @@ class AppShell extends Widget {
               // predates this dispatch, including an identical text.
               historyIds: cmd.historyIds || null,
             });
+          }
+          // The card is the failure's home in the thread, so a toast would
+          // repeat it. A toast stays for a failure the viewer cannot see on a
+          // card: a room that is not on screen, or no card at all.
+          if (!card || roomKey !== this._viewRoomKey()) {
+            this._toast('error', 'Turn failed', msg);
           }
         }
       }
@@ -2133,7 +2146,8 @@ class AppShell extends Widget {
       this.settings = await this.api.patchSetting(key, value);
       this.settingsPage.settings = this.settings;
       this._syncCompact();
-      this._toast('info', 'Settings', `${key} updated.`);
+      const label = settingLabel(key);
+      this._toast('info', 'Settings', `${label[0].toUpperCase()}${label.slice(1)} updated.`);
     } catch (err) {
       // Re-project the last good document so a failed input doesn't
       // masquerade as a saved value.

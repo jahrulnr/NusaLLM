@@ -47,7 +47,7 @@
 .footer { justify-content: space-between; gap: 10px; }
 .footer-left { min-width: 0; gap: 10px; }
 .footer-right { flex-shrink: 0; gap: 12px; }
-.shortcut, .status { font-size: 10.5px; color: var(--text-faint); }
+.shortcut, .status { font-size: 12px; color: var(--text-faint); }
 .status { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 [hidden] { display: none !important; }
 

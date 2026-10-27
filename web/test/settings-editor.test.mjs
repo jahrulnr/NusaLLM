@@ -174,3 +174,10 @@ test('a leaf kind change falls back to a full render', () => {
   const after = collect(editor);
   assert.notEqual(after['s-log.max_lines'], before);
 });
+
+test('a setting key reads as its leaf label', async () => {
+  const { settingLabel } = await import('../widgets/settings-editor/settings-editor.js');
+  assert.equal(settingLabel('log.max_lines'), 'max lines');
+  assert.equal(settingLabel('server.port'), 'port');
+});
+

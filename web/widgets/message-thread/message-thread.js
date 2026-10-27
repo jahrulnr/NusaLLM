@@ -267,6 +267,10 @@ class MessageThread extends Widget {
         el('div', { class: 'empty-mark', text: 'N' }),
         el('p', { class: 'empty-title', text: 'Pick a model, write a message.' }),
         el('p', { class: 'empty-hint', text: 'Choose a model and send a message. Add a gateway in Settings if the picker is empty.' }),
+        el('button', {
+          class: 'empty-action', type: 'button',
+          onclick: () => emit(this, 'manage-gateways'),
+        }, [el('span', { text: 'Manage gateways' })]),
       ]));
       this._mountStream();
       return;
@@ -347,8 +351,7 @@ class MessageThread extends Widget {
     const calls = m.toolCalls || [];
     if (m.content === '' && calls.length > 0 &&
         calls.every((tc) => tc.type === 'injection')) {
-      return el('div', { class: 'context-lines' },
-        calls.map((tc) => el('div', { class: 'context-line', text: tc.output || '' })));
+      return el('div', { class: 'context-lines' }, calls.map((tc) => contextEntry(tc)));
     }
     if (m.role === 'user') return this._userMessage(m);
     return this._assistantMessage(m);
@@ -367,8 +370,7 @@ class MessageThread extends Widget {
   _userMessage(m) {
     const calls = m.toolCalls || [];
     const injected = calls.filter((tc) => tc.type === 'injection');
-    const contextLines = () => el('div', { class: 'context-lines' },
-      injected.map((tc) => el('div', { class: 'context-line', text: tc.output || '' })));
+    const contextLines = () => el('div', { class: 'context-lines' }, injected.map((tc) => contextEntry(tc)));
     if (this._editingId === m.id) return this._editBlock(m);
     const kids = [el('div', { class: 'user-content', text: m.content })];
     if ((m.attachments || []).length) {
@@ -602,3 +604,36 @@ class MessageThread extends Widget {
 }
 
 customElements.define('nusa-message-thread', MessageThread);
+
+// Injected context is harness output, not conversation. A short line stays a
+// plain context line; a document (the skill catalog is JSON) folds behind a
+// one-line summary, collapsed by default. The full output stays one click
+// away and is never truncated.
+export function contextEntry(tc) {
+  const output = tc.output || '';
+  if (!output.includes('\n') && output.length <= 160) {
+    return el('div', { class: 'context-line', text: output });
+  }
+  const name = tc.name || 'context';
+  return el('details', { class: 'context-fold' }, [
+    el('summary', { class: 'context-summary', text: `${name} · ${contextCount(output)}` }),
+    el('pre', { class: 'context-body', text: output }),
+  ]);
+}
+
+// contextCount labels a folded entry with the first array of a JSON document
+// ("14 skills"), falling back to the line count.
+export function contextCount(output) {
+  try {
+    const doc = JSON.parse(output);
+    const entry = doc && typeof doc === 'object'
+      ? Object.entries(doc).find(([, value]) => Array.isArray(value))
+      : undefined;
+    if (entry) return `${entry[1].length} ${entry[0]}`;
+  } catch {
+    // Not JSON: count lines below.
+  }
+  const lines = output.split('\n').length;
+  return `${lines} ${lines === 1 ? 'line' : 'lines'}`;
+}
+

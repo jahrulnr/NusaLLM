@@ -16,6 +16,15 @@ const SHEET = '(max-width: 760px)';
 // document-level dismiss listener is tracked by exact identity — every
 // render/open/close detaches it before any new install, so no capture
 // listeners accumulate.
+// A loaded conversation keeps its own binding on display. The binding is
+// stale once its gateway or model is gone from the configured list. Before
+// the list loads (not an array yet) nothing is stale.
+export function isStaleSelection(sel, gateways) {
+  if (!sel || !Array.isArray(gateways)) return false;
+  return !gateways.some((g) => g.id === sel.route && !g.broken &&
+    (g.models || []).some((m) => m.id === sel.modelId));
+}
+
 class ModelPicker extends Widget {
   static stylesheet = new URL('./model-picker.css', import.meta.url);
 
@@ -141,14 +150,19 @@ class ModelPicker extends Widget {
     this._renderResults(list);
     // Manage-models navigates to the gateway's settings view — the
     // draft's route while a pick is in progress, else the current
-    // selection's; with no gateway in context there is nothing to
-    // manage and the row stays out.
+    // selection's. With no usable gateway, the row is the first-run entry
+    // point and opens the providers section to add one.
     const gatewayId = this._draft?.route || this._selection?.route;
     if (gatewayId) {
       menu.append(el('button', {
         class: 'menu-manage', type: 'button',
         onclick: () => { emit(this, 'manage-models', { gatewayId }); this._closeMenu(); },
       }, [icon('gear', 11), el('span', { text: 'Manage models' })]));
+    } else if (!(this._gateways || []).some((g) => !g.broken && (g.models || []).length)) {
+      menu.append(el('button', {
+        class: 'menu-manage', type: 'button',
+        onclick: () => { emit(this, 'manage-models', { gatewayId: null }); this._closeMenu(); },
+      }, [icon('gear', 11), el('span', { text: 'Manage gateways' })]));
     }
   }
 
@@ -253,6 +267,10 @@ class ModelPicker extends Widget {
       el('span', { class: 'trigger-label', text: this._label() }),
       icon('chevron', 11),
     ]);
+    if (isStaleSelection(this._selection, this._gateways)) {
+      this.trigger.classList.add('stale');
+      this.trigger.title = `${this._label()} — gateway or model no longer configured; pick a model to send`;
+    }
     this.trigger.addEventListener('keydown', (e) => {
       if ((e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') && !this._open) {
         e.preventDefault();

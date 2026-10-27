@@ -312,25 +312,23 @@ func TestFinishPanicBecomes500(t *testing.T) {
 	}
 }
 
-// Caller cancellation reaches the job ctx through context.AfterFunc's
-// own goroutine — it is NOT synchronous. On a single P the job goroutine
-// can read ctx.Err() before that goroutine ever runs: the derived ctx
-// still reports alive while the caller is already gone. That window is
-// what turns a ctx-guarded commit into a stale write. (Cancellable's
-// direct callerCtx check only covers callers already dead at job start —
-// cancel that lands mid-Execute rides the AfterFunc hop.)
-func TestCancellableDerivedCtxLagsCallerCancel(t *testing.T) {
-	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+// Cancellable hands the job a ctx that dies with the caller's ctx. A caller
+// already gone at start yields a canceled ctx immediately (the direct check).
+// A cancel that lands mid-Execute rides context.AfterFunc's own goroutine, so
+// the instant it reaches the derived ctx is scheduler-dependent. The test
+// asserts only that the cancel eventually lands.
+func TestCancellableCallerCancel(t *testing.T) {
+	var gone Base
+	dead, cancelDead := context.WithCancel(context.Background())
+	cancelDead()
+	if err := gone.Cancellable(context.Background(), dead).Err(); err == nil {
+		t.Fatal("caller gone before start must leave the job ctx canceled")
+	}
+
 	var b Base
 	caller, cancel := context.WithCancel(context.Background())
 	ctx := b.Cancellable(context.Background(), caller)
 	cancel()
-	// One P, no yield: the AfterFunc goroutine cannot have scheduled yet,
-	// so the derived ctx must still look alive to a reader on this P.
-	if err := ctx.Err(); err != nil {
-		t.Fatalf("derived ctx canceled synchronously — the runtime closed the lag window: %v", err)
-	}
-	// Sanity: the propagation does eventually land.
 	deadline := time.Now().Add(2 * time.Second)
 	for ctx.Err() == nil {
 		if time.Now().After(deadline) {
