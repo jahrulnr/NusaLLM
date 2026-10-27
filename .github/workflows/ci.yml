@@ -17,16 +17,20 @@ permissions:
 # version. To retry a build that failed after the tag was pushed, use "Re-run
 # failed jobs"; a full re-run finds the tag and skips.
 
+# Jobs run on ubuntu-24.04, not ubuntu-latest, which moves to Ubuntu 26.04
+# (actions/runner-images#14748). Bump the label on purpose, not by surprise.
+# checkout stays on v5: from v6 on it keeps git credentials in a separate
+# file, and the tag push below is the step that depends on them.
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
       - run: make fmt-check
@@ -34,11 +38,11 @@ jobs:
       - run: make test-web
 
   race:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - run: go test -race ./application/conversation ./infrastructure/worker ./infrastructure/repository/conversation
@@ -48,7 +52,7 @@ jobs:
     needs: [verify, race]
     # An explicit `if` replaces the implicit success() check, so keep it.
     if: success() && github.event_name == 'push' && github.ref == 'refs/heads/master'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: write
@@ -58,7 +62,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -108,14 +112,14 @@ jobs:
     needs: tag
     # An explicit `if` replaces the implicit success() check, so keep it.
     if: success() && needs.tag.outputs.version != ''
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
       matrix:
         arch: [amd64, arm64]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Build linux/${{ matrix.arch }}
@@ -125,7 +129,7 @@ jobs:
         run: |
           mkdir -p dist
           CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-X main.version=${VERSION}" -o "dist/nusallm-linux-${GOARCH}" ./cmd/nusallm
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nusallm-linux-${{ matrix.arch }}
           path: dist/nusallm-linux-${{ matrix.arch }}
@@ -136,7 +140,7 @@ jobs:
     needs: [tag, build]
     # Publish only when every architecture built; a partial set is never released.
     if: success() && needs.tag.outputs.version != ''
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: write
@@ -149,11 +153,11 @@ jobs:
       VERSION: ${{ needs.tag.outputs.version }}
     steps:
       # The checkout brings the annotated tag, whose message becomes the notes.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
           fetch-tags: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: nusallm-linux-*
           path: dist
