@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Hydration dedup no longer compares tool outputs verbatim: `EnvironmentDriver.ToolContexts` renders every enabled system-callable tool per pass and `appendToolContexts` anchors each record on the newest live (name, input) injection call, so a tool whose output carries volatile fields (a rendered timestamp) no longer re-records every step. A tool implements `job.ToolDeduper` (`DedupKey`) to attach its own output normalizer; changed records still land as injection calls on one system message.
+
 ## [0.0.0] - 2026-10-27
 
 ### Added

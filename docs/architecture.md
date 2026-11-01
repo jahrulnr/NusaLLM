@@ -310,8 +310,14 @@ is reused. Each iteration:
   teaches selection; skill metadata remains in hydration rather than being
   appended to the system prompt.
 - **Hydrate custom executable paths.** The same executed hydration phase runs
-  the driver's system-only `custom_tools` capability and records the PATH
-  directories supplied to its terminal tools. A `CommandEnvironment` port
+  every enabled system-callable tool on the driver — the bundle's
+  `ToolContexts` renders them sorted by name — including the driver's
+  system-only `custom_tools` capability, which records the PATH directories
+  supplied to its terminal tools. Each record dedups against the newest live
+  injection call under the same name and input; a tool may implement
+  `job.ToolDeduper` (`DedupKey`) to normalize volatile output fields so a
+  ticking timestamp never forces a re-record, and every changed record lands
+  on the pass's single system message. A `CommandEnvironment` port
   resolves them per workspace for one-shot commands and new terminal sessions.
   User executables remain terminal commands, with companion skills as usage
   guidance. Private Python provisioning is lazy through the CLI interpreter

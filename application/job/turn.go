@@ -131,10 +131,11 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 			}
 			pinnedID = conv.Last().ID()
 		}
-		for _, name := range []string{"skills", "custom_tools"} {
-			if err := d.appendToolContext(ctx, convID, conv, driver, name); err != nil {
-				return err
-			}
+		// The environment renders its system tool snapshots each step;
+		// unchanged ones dedup away so only semantic change costs a
+		// record — volatile output (a ticking timestamp) never churns.
+		if err := d.appendToolContexts(ctx, convID, conv, driver); err != nil {
+			return err
 		}
 		before := len(conv.Messages())
 		var parts []entity.MessagePart

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -788,4 +789,290 @@ func TestWorkspacePinSkipsWhenUnchanged(t *testing.T) {
 		t.Fatalf("pins = %d, want 2 — a dir change must re-record", got)
 	}
 	requireWorkspaceContext(t, conv.Messages()[len(conv.Messages())-2], "/other/dir")
+}
+
+// contextScript is an EnvironmentDriver whose ToolContexts returns a
+// scripted record set — it exercises the job's append contract without a
+// real hydrator.
+type contextScript struct {
+	EnvironmentBundle
+	contexts []ToolContext
+	err      error
+}
+
+func (s *contextScript) ToolContexts(context.Context) ([]ToolContext, error) {
+	return s.contexts, s.err
+}
+
+// Each environment tool context lands as its own injection call under the
+// real tool name, gathered on a single hidden system message per pass.
+func TestAppendToolContextsRecordsEachCallOnOneMessage(t *testing.T) {
+	d := Deps{Convs: repoconversation.NewConversationRepository(t.TempDir())}
+	conv := seedRoom(t, d.Convs, "room", "go")
+	driver := &contextScript{contexts: []ToolContext{
+		{Name: "runtime_context", Input: `{"path":"/ws"}`, Output: `{"currentDate":"2026-01-01T00:00:00Z"}`},
+		{Name: "skills", Input: `{"path":"/ws"}`, Output: "catalog"},
+		{Name: "custom_tools", Input: `{"path":"/ws"}`, Output: "paths"},
+	}}
+	if err := d.appendToolContexts(t.Context(), conv.ID(), conv, driver); err != nil {
+		t.Fatal(err)
+	}
+	msgs := conv.Messages()
+	if len(msgs) != 2 {
+		t.Fatalf("history = %d messages, want 2", len(msgs))
+	}
+	record := msgs[1]
+	if record.Role() != enum.RoleSystem {
+		t.Fatalf("role = %s, want %s", record.Role(), enum.RoleSystem)
+	}
+	calls := record.ToolCalls()
+	if len(calls) != 3 {
+		t.Fatalf("calls = %d, want 3", len(calls))
+	}
+	for i, want := range []struct{ name, input, output string }{
+		{"runtime_context", `{"path":"/ws"}`, `{"currentDate":"2026-01-01T00:00:00Z"}`},
+		{"skills", `{"path":"/ws"}`, "catalog"},
+		{"custom_tools", `{"path":"/ws"}`, "paths"},
+	} {
+		call := calls[i]
+		if call.Name() != want.name {
+			t.Fatalf("call[%d].Name = %q, want %q", i, call.Name(), want.name)
+		}
+		if call.Input() != want.input {
+			t.Fatalf("call[%d].Input = %q, want %q", i, call.Input(), want.input)
+		}
+		if call.Type() != enum.TooltypeInjection {
+			t.Fatalf("call[%d].Type = %s, want %s", i, call.Type(), enum.TooltypeInjection)
+		}
+		if !strings.HasPrefix(call.ID(), "call_") {
+			t.Fatalf("call[%d].ID = %q, want the minted call_ shape", i, call.ID())
+		}
+		if !call.HasOutput() || call.Output() != want.output {
+			t.Fatalf("call[%d].Output = %q, want %q", i, call.Output(), want.output)
+		}
+		if call.OutputLatency() != "" {
+			t.Fatalf("call[%d].Latency = %q, want empty — a stored record, not an execution", i, call.OutputLatency())
+		}
+	}
+	stored, err := d.Convs.Load(t.Context(), conv.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Messages()) != 2 || len(stored.Messages()[1].ToolCalls()) != 3 {
+		t.Fatal("the gathered record did not persist")
+	}
+}
+
+// Volatile-only churn must not re-record: a tool that renders a fresh
+// timestamp every pass supplies a Dedup normalizer and the job compares
+// semantic content only. A semantic change still re-records — and
+// persists the full-fidelity output, never the key.
+func TestAppendToolContextsDedupsOnNormalizedOutput(t *testing.T) {
+	d := Deps{Convs: repoconversation.NewConversationRepository(t.TempDir())}
+	conv := seedRoom(t, d.Convs, "room", "go")
+
+	dedup := func(out string) string {
+		var snapshot map[string]any
+		if err := json.Unmarshal([]byte(out), &snapshot); err != nil {
+			return out
+		}
+		delete(snapshot, "currentDate")
+		raw, err := json.Marshal(snapshot)
+		if err != nil {
+			return out
+		}
+		return string(raw)
+	}
+	contexts := func(date, env string) []ToolContext {
+		return []ToolContext{{
+			Name:   "runtime_context",
+			Input:  `{"path":"/ws"}`,
+			Output: fmt.Sprintf(`{"currentDate":%q,"environment":%q}`, date, env),
+			Dedup:  dedup,
+		}}
+	}
+	if err := d.appendToolContexts(t.Context(), conv.ID(), conv, &contextScript{contexts: contexts("2026-01-01T00:00:00Z", "nusallm")}); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(conv.Messages()); got != 2 {
+		t.Fatalf("history = %d messages, want 2", got)
+	}
+
+	// Same semantic payload behind a fresh timestamp: still one record.
+	if err := d.appendToolContexts(t.Context(), conv.ID(), conv, &contextScript{contexts: contexts("2026-01-01T00:00:13Z", "nusallm")}); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(conv.Messages()); got != 2 {
+		t.Fatalf("volatile-only change re-recorded — history = %d, want 2", got)
+	}
+
+	// A semantic change re-records with the full output, timestamp and all.
+	if err := d.appendToolContexts(t.Context(), conv.ID(), conv, &contextScript{contexts: contexts("2026-01-01T00:00:26Z", "nusallm 1.2")}); err != nil {
+		t.Fatal(err)
+	}
+	msgs := conv.Messages()
+	if len(msgs) != 3 {
+		t.Fatalf("semantic change skipped — history = %d, want 3", len(msgs))
+	}
+	call := msgs[2].ToolCalls()[0]
+	if want := `{"currentDate":"2026-01-01T00:00:26Z","environment":"nusallm 1.2"}`; call.Output() != want {
+		t.Fatalf("output = %q, want %q", call.Output(), want)
+	}
+}
+
+// Only the records whose (name, input, normalized output) changed are
+// carried on the next pass's message; same-name records dedup per input
+// so one untouched record never anchors another same-name rescan.
+func TestAppendToolContextsReRecordsOnlyChanged(t *testing.T) {
+	d := Deps{Convs: repoconversation.NewConversationRepository(t.TempDir())}
+	conv := seedRoom(t, d.Convs, "room", "go")
+	pass := func(skills, pathsA, pathsB string) error {
+		return d.appendToolContexts(t.Context(), conv.ID(), conv, &contextScript{contexts: []ToolContext{
+			{Name: "skills", Input: `{"path":"/ws"}`, Output: skills},
+			{Name: "custom_tools", Input: `{"path":"/ws/a"}`, Output: pathsA},
+			{Name: "custom_tools", Input: `{"path":"/ws/b"}`, Output: pathsB},
+		}})
+	}
+	if err := pass("catalog", "bin-a", "bin-b"); err != nil {
+		t.Fatal(err)
+	}
+	if err := pass("catalog", "bin-a", "bin-b v2"); err != nil {
+		t.Fatal(err)
+	}
+	msgs := conv.Messages()
+	if len(msgs) != 3 {
+		t.Fatalf("history = %d messages, want 3", len(msgs))
+	}
+	calls := msgs[2].ToolCalls()
+	if len(calls) != 1 {
+		t.Fatalf("re-recorded calls = %d, want 1", len(calls))
+	}
+	if calls[0].Name() != "custom_tools" || calls[0].Input() != `{"path":"/ws/b"}` {
+		t.Fatalf("re-recorded %s %s, want custom_tools /ws/b", calls[0].Name(), calls[0].Input())
+	}
+
+	// Nothing changed at all → no new message.
+	if err := pass("catalog", "bin-a", "bin-b v2"); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(conv.Messages()); got != 3 {
+		t.Fatalf("unchanged pass re-recorded — history = %d, want 3", got)
+	}
+}
+
+// An empty context set writes nothing, and a production error aborts the
+// pass before any partial record is persisted.
+func TestAppendToolContextsEmptyAndError(t *testing.T) {
+	d := Deps{Convs: repoconversation.NewConversationRepository(t.TempDir())}
+	conv := seedRoom(t, d.Convs, "room", "go")
+	if err := d.appendToolContexts(t.Context(), conv.ID(), conv, &contextScript{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(conv.Messages()); got != 1 {
+		t.Fatalf("empty contexts wrote a message — history = %d, want 1", got)
+	}
+	want := errors.New("production failed")
+	if err := d.appendToolContexts(t.Context(), conv.ID(), conv, &contextScript{err: want}); !errors.Is(err, want) {
+		t.Fatalf("err = %v, want %v", err, want)
+	}
+	if got := len(conv.Messages()); got != 1 {
+		t.Fatalf("failed pass wrote a message — history = %d, want 1", got)
+	}
+}
+
+// tickingTool renders a fresh timestamp every pass — the volatile-output
+// shape that defeated verbatim dedup — but its DedupKey strips it so the
+// record dedups on semantic content.
+type tickingTool struct {
+	schema valueobject.ToolSchema
+	tick   int
+}
+
+func (t *tickingTool) Schema() valueobject.ToolSchema { return t.schema }
+func (t *tickingTool) Execute(context.Context, entity.ToolCall, dservice.ToolEmitter) (dservice.ToolResult, error) {
+	t.tick++
+	return dservice.ToolResult{Text: fmt.Sprintf(`{"tick":%d,"payload":%q}`, t.tick, t.schema.Name())}, nil
+}
+func (t *tickingTool) DedupKey(output string) string {
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(output), &parsed); err != nil {
+		return output
+	}
+	delete(parsed, "tick")
+	raw, err := json.Marshal(parsed)
+	if err != nil {
+		return output
+	}
+	return string(raw)
+}
+
+// The bundle executes every enabled system-callable tool sorted by name
+// against the workspace pin input: an agent-only tool produces no
+// context, a failing tool still returns a record carrying the error
+// text, and a ToolDeduper tool attaches its normalizer. Two passes
+// differing only in the volatile field dedup to one record.
+func TestBundleToolContextsRunsSystemToolsSorted(t *testing.T) {
+	d := Deps{Convs: repoconversation.NewConversationRepository(t.TempDir())}
+	conv := seedRoom(t, d.Convs, "room", "go")
+	sysSchema := func(name string) valueobject.ToolSchema {
+		s, err := valueobject.NewToolSchema(name, "stub "+name, nil, true, enum.ToolPermissionSystem)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	agentSchema, err := valueobject.NewToolSchema("agent_only", "stub", nil, true, enum.ToolPermissionAgent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zeta := &tickingTool{schema: sysSchema("zeta_ctx")}
+	driver := EnvironmentBundle{Tools: map[string]dservice.Tool{
+		"zeta_ctx":   zeta,
+		"alpha_ctx":  &tickingTool{schema: sysSchema("alpha_ctx")},
+		"agent_only": &skillDiscovery{schema: agentSchema},
+	}}
+	ctx := dservice.WithWorkspaceDir(t.Context(), "/ws")
+	contexts, err := driver.ToolContexts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(contexts) != 2 {
+		t.Fatalf("contexts = %d, want 2 — the agent-only tool produces none", len(contexts))
+	}
+	if contexts[0].Name != "alpha_ctx" || contexts[1].Name != "zeta_ctx" {
+		t.Fatalf("context order = %s, %s — want sorted by name", contexts[0].Name, contexts[1].Name)
+	}
+	if contexts[0].Input != `{"path":"/ws"}` {
+		t.Fatalf("input = %q, want the workspace pin shape", contexts[0].Input)
+	}
+	for i, c := range contexts {
+		if c.Dedup == nil {
+			t.Fatalf("contexts[%d] lost its normalizer — a volatile-output tool must carry DedupKey", i)
+		}
+	}
+
+	// Two passes differing only in the ticking field record once.
+	if err := d.appendToolContexts(ctx, conv.ID(), conv, driver); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.appendToolContexts(ctx, conv.ID(), conv, driver); err != nil {
+		t.Fatal(err)
+	}
+	msgs := conv.Messages()
+	if len(msgs) != 2 || len(msgs[1].ToolCalls()) != 2 {
+		t.Fatalf("volatile churn re-recorded — history = %d messages", len(msgs))
+	}
+	if zeta.tick < 2 {
+		t.Fatalf("dedup skipped execution — tick = %d, want a render per pass", zeta.tick)
+	}
+
+	// A dead ctx aborts the pass before any record lands.
+	dead, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := d.appendToolContexts(dead, conv.ID(), conv, driver); err != context.Canceled {
+		t.Fatalf("cancel = %v", err)
+	}
+	if got := len(conv.Messages()); got != 2 {
+		t.Fatalf("canceled pass wrote a message — history = %d, want 2", got)
+	}
 }

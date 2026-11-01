@@ -251,26 +251,37 @@ func (s *skillsFoldService) Send(ctx context.Context, conv *aggregate.Conversati
 	return s.inner.Send(ctx, conv, gw, model, emit)
 }
 
+// A failing discovery still lands its error text as the record; a tool
+// the system may not call produces no context at all — the roster's
+// permission filter owns that gate, not the turn. A canceled request
+// aborts the pass before any record persists.
 func TestSkillsHydrationReportsErrorsAndChecksSystemPermission(t *testing.T) {
 	d := Deps{Convs: repoconversation.NewConversationRepository(t.TempDir())}
 	conv := seedRoom(t, d.Convs, "skills-errors", "go")
 	driver, discovery := skillsDriver(t)
 	discovery.err = errors.New("discovery failed")
-	if err := d.appendToolContext(t.Context(), conv.ID(), conv, driver, "skills"); err != nil {
+	if err := d.appendToolContexts(t.Context(), conv.ID(), conv, driver); err != nil {
 		t.Fatal(err)
 	}
 	if out := skillRecords(conv)[0].Output(); !strings.Contains(out, "discovery failed") {
 		t.Fatalf("error = %q", out)
 	}
+	discovery.err = nil
 	discovery.schema, _ = valueobject.NewToolSchema("skills", "catalog", nil, true, enum.ToolPermissionAgent)
-	if err := d.appendToolContext(t.Context(), conv.ID(), conv, driver, "skills"); err == nil {
-		t.Fatal("agent-only tool executed by hydration")
+	if err := d.appendToolContexts(t.Context(), conv.ID(), conv, driver); err != nil {
+		t.Fatal(err)
+	}
+	if len(skillRecords(conv)) != 1 {
+		t.Fatal("agent-only tool produced a hydration record")
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	// Restore system permission: a canceled request must never persist a record.
 	discovery.schema, _ = valueobject.NewToolSchema("skills", "catalog", nil, true, enum.ToolPermissionGeneral)
-	if err := d.appendToolContext(ctx, conv.ID(), conv, driver, "skills"); err != context.Canceled {
+	if err := d.appendToolContexts(ctx, conv.ID(), conv, driver); err != context.Canceled {
 		t.Fatalf("cancel = %v", err)
+	}
+	if len(skillRecords(conv)) != 1 {
+		t.Fatal("canceled pass persisted a record")
 	}
 }
