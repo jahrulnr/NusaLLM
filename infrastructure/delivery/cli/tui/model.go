@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -366,8 +367,8 @@ func (m replModel) submitSteer(text string) (tea.Model, tea.Cmd) {
 // can hold stale rows the worker no longer has.
 func (m *replModel) recallPending() bool {
 	if text, ok := m.repl.RecallSteer(); ok {
-		for i := len(m.pendingSteer) - 1; i >= 0; i-- {
-			if m.pendingSteer[i] == text {
+		for i, v := range slices.Backward(m.pendingSteer) {
+			if v == text {
 				m.pendingSteer = append(m.pendingSteer[:i:i], m.pendingSteer[i+1:]...)
 				break
 			}
@@ -864,10 +865,7 @@ func (m *replModel) editComposer(msg tea.Msg) tea.Cmd {
 }
 
 func (m *replModel) fitComposer() {
-	h := composerDisplayRows(m.textarea)
-	if h > composerMaxHeight {
-		h = composerMaxHeight
-	}
+	h := min(composerDisplayRows(m.textarea), composerMaxHeight)
 	if h < 1 {
 		h = 1
 	}

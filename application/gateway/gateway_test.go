@@ -25,7 +25,8 @@ func newApp(t *testing.T) (*GatewayApp, drepo.SecretStore, string) {
 	return New(repo, secrets, nil), secrets, dir
 }
 
-func strptr(s string) *string { return &s }
+//go:fix inline
+func strptr(s string) *string { return new(s) }
 
 func TestUpsertGetRoundtrip(t *testing.T) {
 	app, secrets, dir := newApp(t)
@@ -36,7 +37,7 @@ func TestUpsertGetRoundtrip(t *testing.T) {
 		Name:     "OpenRouter",
 		Style:    enum.StyleCompletion,
 		Endpoint: "https://openrouter.ai/api",
-		ApiKey:   strptr("sk-or-literal"),
+		ApiKey:   new("sk-or-literal"),
 		Stream:   &off,
 		Models: []ModelInput{{
 			ID:              "claude-opus-4",
@@ -98,7 +99,7 @@ func TestUpsertKeepKeyPreservesEnvRef(t *testing.T) {
 	t.Setenv("TEST_GW_KEY", "sk-from-env")
 	in := GatewayInput{
 		ID: "g", Name: "n", Style: enum.StyleMessages,
-		Endpoint: "https://x", ApiKey: strptr("env:TEST_GW_KEY"),
+		Endpoint: "https://x", ApiKey: new("env:TEST_GW_KEY"),
 	}
 	if _, err := app.Upsert(t.Context(), in); err != nil {
 		t.Fatal(err)
@@ -128,13 +129,13 @@ func TestUpsertRotateAndClearKey(t *testing.T) {
 	app, secrets, _ := newApp(t)
 	in := GatewayInput{
 		ID: "g", Name: "n", Style: enum.StyleMessages,
-		Endpoint: "https://x", ApiKey: strptr("sk-v1"),
+		Endpoint: "https://x", ApiKey: new("sk-v1"),
 	}
 	if _, err := app.Upsert(t.Context(), in); err != nil {
 		t.Fatal(err)
 	}
 
-	in.ApiKey = strptr("sk-v2")
+	in.ApiKey = new("sk-v2")
 	if _, err := app.Upsert(t.Context(), in); err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +147,7 @@ func TestUpsertRotateAndClearKey(t *testing.T) {
 		t.Fatalf("rotated key ref = %q", info.KeyRef)
 	}
 
-	in.ApiKey = strptr("")
+	in.ApiKey = new("")
 	if _, err := app.Upsert(t.Context(), in); err != nil {
 		t.Fatal(err)
 	}
@@ -240,12 +241,12 @@ func TestTransitionToEnvCleansVault(t *testing.T) {
 	t.Setenv("TEST_GW_ENV", "sk-env")
 	in := GatewayInput{
 		ID: "g", Name: "n", Style: enum.StyleMessages,
-		Endpoint: "https://x", ApiKey: strptr("sk-v1"),
+		Endpoint: "https://x", ApiKey: new("sk-v1"),
 	}
 	if _, err := app.Upsert(t.Context(), in); err != nil {
 		t.Fatal(err)
 	}
-	in.ApiKey = strptr("env:TEST_GW_ENV")
+	in.ApiKey = new("env:TEST_GW_ENV")
 	if _, err := app.Upsert(t.Context(), in); err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +267,7 @@ func TestSecretRefPassthroughAndBroken(t *testing.T) {
 	app, secrets, _ := newApp(t)
 	in := GatewayInput{
 		ID: "g", Name: "n", Style: enum.StyleMessages,
-		Endpoint: "https://x", ApiKey: strptr("secret:custom/key"),
+		Endpoint: "https://x", ApiKey: new("secret:custom/key"),
 	}
 	if _, err := app.Upsert(t.Context(), in); err != nil {
 		t.Fatal(err)
@@ -296,7 +297,7 @@ func TestBrokenGatewaysSurface(t *testing.T) {
 	app, _, dir := newApp(t)
 	in := GatewayInput{
 		ID: "sick", Name: "n", Style: enum.StyleMessages,
-		Endpoint: "https://x", ApiKey: strptr("env:DEFINITELY_UNSET_APP"),
+		Endpoint: "https://x", ApiKey: new("env:DEFINITELY_UNSET_APP"),
 	}
 	if _, err := app.Upsert(t.Context(), in); err != nil {
 		t.Fatal(err)

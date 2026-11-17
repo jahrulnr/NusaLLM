@@ -19,6 +19,7 @@ class ConversationHeader extends Widget {
     this._compactState = null;
     this._compactAvailable = false;
     this._renaming = false;
+    this._renameDraft = null;
     this._confirmingDelete = false;
     // Beside .header rather than inside it, so a header re-render never
     // detaches an open modal.
@@ -40,7 +41,19 @@ class ConversationHeader extends Widget {
     this._render();
   }
 
-  set conversation(c) { this._conversation = c; this._renaming = false; this._confirmingDelete = false; this._render(); }
+  // A same-room metadata refresh must not steal in-progress UI — the
+  // rename draft and the delete confirm survive; only a different room
+  // resets them.
+  set conversation(c) {
+    const sameRoom = !!c && !!this._conversation && c.id === this._conversation.id;
+    this._conversation = c;
+    if (!sameRoom) {
+      this._renaming = false;
+      this._renameDraft = null;
+      this._confirmingDelete = false;
+    }
+    this._render();
+  }
   // gateways/selection land mid-pick — forwarding to the live picker
   // keeps its open menu alive; a full re-render would destroy it.
   set gateways(list) {
@@ -62,6 +75,12 @@ class ConversationHeader extends Widget {
   set update(info) { this._update = info || null; this._render(); }
 
   _render() {
+    // A rebuild mid-rename would commit whatever the input holds —
+    // carry the live draft forward so a same-room refresh loses nothing.
+    if (this._renaming) {
+      const cur = this.root.querySelector('.rename-input');
+      if (cur) this._renameDraft = cur.value;
+    }
     clear(this.root);
     this.root.classList.add('header');
     const conv = this._conversation;
@@ -74,7 +93,7 @@ class ConversationHeader extends Widget {
     // Title — click to rename inline; no prompt().
     if (this._renaming && conv) {
       const input = el('input', {
-        class: 'rename-input', type: 'text', value: conv.title || '',
+        class: 'rename-input', type: 'text', value: this._renameDraft ?? (conv.title || ''),
         'aria-label': 'Rename conversation',
       });
       // One-shot: Enter's re-render can still fire blur; Escape must
@@ -85,6 +104,7 @@ class ConversationHeader extends Widget {
         settled = true;
         const title = input.value.trim();
         this._renaming = false;
+        this._renameDraft = null;
         if (title && title !== conv.title) emit(this, 'conversation-rename', { title });
         this._render();
       };
@@ -92,6 +112,7 @@ class ConversationHeader extends Widget {
         if (settled) return;
         settled = true;
         this._renaming = false;
+        this._renameDraft = null;
         this._render();
       };
       input.addEventListener('keydown', (e) => {
@@ -105,7 +126,7 @@ class ConversationHeader extends Widget {
       this.root.append(el('button', {
         class: 'title', type: 'button',
         'aria-label': conv ? `Rename ${conv.title || 'conversation'}` : 'No conversation',
-        onclick: () => { if (conv) { this._renaming = true; this._render(); } },
+        onclick: () => { if (conv) { this._renaming = true; this._renameDraft = null; this._render(); } },
       }, [
         el('span', { text: conv ? (conv.title || 'Untitled') : 'NusaLLM' }),
         conv ? icon('pencil', 11) : null,
@@ -260,6 +281,7 @@ class ConversationHeader extends Widget {
         // Rename runs after the sheet closes, so the input gets focus.
         this._closeSheet();
         this._renaming = true;
+        this._renameDraft = null;
         this._render();
       }));
       items.push(action(this._compactLabel('Compact thread'), 'compact', () => {

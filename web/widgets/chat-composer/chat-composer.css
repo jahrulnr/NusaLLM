@@ -244,6 +244,19 @@
   .pending-notice { font-size: 13px; }
   .pending-action, .pending-resume { min-height: 44px; padding: 0 14px; font-size: 13px; }
   .pending-foot { padding: 8px 12px; }
+  /* A phone with its keyboard open leaves ~400px of page — the fixed
+     chrome already spends most of it, so the panel floats above the
+     composer's edge over the thread instead of growing the composer.
+     The rows keep their own scroll bound inside the overlay. */
+  .pending {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 10px;
+    right: 10px;
+    margin: 0;
+    box-shadow: 0 -8px 24px rgba(0, 0, 0, .28);
+  }
+  .pending-rows { max-height: min(9.6em, 30vh); }
   .context-trigger { min-height: 44px; padding: 0 14px; font-size: 12px; }
   .context-head { font-size: 13px; }
   .context-close { width: 44px; height: 44px; padding: 0; }

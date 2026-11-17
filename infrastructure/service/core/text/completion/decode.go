@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
@@ -25,7 +26,13 @@ const (
 // (reasoning, reasoning_content, and reasoning_details ride optionalContent
 // for the next request).
 func decodeMessage(w MessageBody, finishReason string) (entity.Message, error) {
-	msg, err := entity.NewMessage(enum.RoleAssistant, contentText(w.Content))
+	// A refusal rides beside a null content — it IS the answer text,
+	// not an error and not an empty message.
+	content := contentText(w.Content)
+	if content == "" {
+		content = w.Refusal
+	}
+	msg, err := entity.NewMessage(enum.RoleAssistant, content)
 	if err != nil {
 		return entity.Message{}, err
 	}
@@ -123,9 +130,13 @@ func decodeUsage(u *UsageBody) (valueobject.Usage, error) {
 // statusError builds the routing-facing error for a non-200 response via
 // the shared convention — context_length 400 → 413 remap and the
 // message-less fallback both live in wire.StatusError. The upstream
-// message is safe to surface; the raw body stays in Cause.
-func statusError(status int, body []byte) error {
-	return wire.StatusError(status, upstreamMessage(body), upstreamCode(body), body)
+// message is safe to surface; the raw body stays in Cause. retryAfter is
+// the provider-asked wait from the response headers (0 mid-stream).
+func statusError(status int, retryAfter time.Duration, body []byte) error {
+	return wire.WithRetryAfter(
+		wire.StatusError(status, upstreamMessage(body), upstreamCode(body), body),
+		retryAfter,
+	)
 }
 
 // upstreamMessage extracts the provider's message when it is plain text —

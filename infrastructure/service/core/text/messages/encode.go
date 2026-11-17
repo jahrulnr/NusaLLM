@@ -332,26 +332,27 @@ func encodeMessage(m entity.Message, model entity.Model, fileRoot wire.MediaRoot
 		return msgs, nil
 	}
 
-	text := m.Content()
+	var text strings.Builder
+	text.WriteString(m.Content())
 	for _, tc := range injected {
 		if tc.HasOutput() {
-			text += "\n" + tc.OutputWithUntrustedTag() // already an untrusted-evidence envelope
+			text.WriteString("\n" + tc.OutputWithUntrustedTag()) // already an untrusted-evidence envelope
 		}
 	}
 
 	var blocks []any
 	if role == "assistant" {
-		blocks = encodeAssistantBlocks(m, text, origin)
+		blocks = encodeAssistantBlocks(m, text.String(), origin)
 	} else {
-		if text != "" {
-			blocks = append(blocks, ContentBlock{Type: "text", Text: text})
+		if text.String() != "" {
+			blocks = append(blocks, ContentBlock{Type: "text", Text: text.String()})
 		}
 		for _, a := range m.Attachments() {
 			blocks = append(blocks, attachmentBlock(a, model, fileRoot))
 		}
 	}
 
-	var content any = text
+	var content any = text.String()
 	if len(blocks) > 0 {
 		content = blocks
 	}

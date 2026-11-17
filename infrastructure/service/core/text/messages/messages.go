@@ -118,7 +118,7 @@ func (s *Service) Send(ctx context.Context, conv *aggregate.Conversation, gw *ag
 		s.logAppend(ctx, "provider.error", map[string]any{
 			"status": resp.StatusCode, "request_id": resp.Header.Get("request-id"), "body": json.RawMessage(raw),
 		})
-		return statusError(resp.StatusCode, raw)
+		return wire.WithRetryAfter(statusError(resp.StatusCode, raw), wire.RetryAfter(resp.Header.Get("Retry-After")))
 	}
 
 	if stream {
@@ -148,10 +148,19 @@ func (s *Service) unaryResponse(ctx context.Context, resp *http.Response, conv *
 	// mid-stream error event decodes, or the turn commits an empty
 	// assistant message and reports success.
 	if rb.Error != nil {
-		return statusError(streamStatusHint(rb.Error), raw)
+		return wire.WithRetryAfter(statusError(streamStatusHint(rb.Error), raw), wire.RetryAfter(resp.Header.Get("Retry-After")))
 	}
-	msg, meta, err := decodeMessage(rb.Content, rb.StopReason)
+	// A complete JSON body is this wire's settled terminal — a response
+	// without stop_reason still committed, so the verdict is end_turn.
+	stopReason := rb.StopReason
+	if stopReason == "" {
+		stopReason = "end_turn"
+	}
+	msg, meta, err := decodeMessage(rb.Content, stopReason)
 	if err != nil {
+		return err
+	}
+	if err := coretext.EmptyAnswerError(msg, meta.artifacts, "", []json.RawMessage{raw}); err != nil {
 		return err
 	}
 	usage, err := decodeUsage(rb.Usage)

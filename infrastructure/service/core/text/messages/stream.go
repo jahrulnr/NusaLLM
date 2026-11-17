@@ -11,6 +11,7 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
+	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
 	"github.com/jahrulnr/nusallm/infrastructure/service/wire"
 )
 
@@ -69,14 +70,22 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 			s.logAppend(ctx, "provider.stream", logged)
 			kept := replayableBlocks(blocks)
 			if blocksHaveContent(kept) {
-				if err := s.commitStream(conv, onEvent, kept, "", usage); err != nil {
+				if err := s.commitStream(conv, onEvent, kept, "", usage, logged); err != nil {
 					return err
 				}
 			}
 			return apperror.New(408, "request canceled or timed out", ctx.Err())
 		case <-timer.C:
 			s.logAppend(ctx, "provider.stream", logged)
-			return apperror.New(502, "upstream stream idle", nil)
+			// message_stop already proved the turn ended — a stalled
+			// tail after it commits like stream EOF, not a 502.
+			if !stopSeen {
+				return apperror.New(502, "upstream stream idle", nil)
+			}
+			if finish == "" {
+				finish = "end_turn"
+			}
+			return s.commitStream(conv, onEvent, replayableBlocks(blocks), finish, usage, logged)
 		case err := <-errs:
 			s.logAppend(ctx, "provider.stream", logged)
 			// stream closed — only commit when the terminal marker was
@@ -90,7 +99,13 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 				emit(onEvent, event.NewErrorEvent(err))
 				return err
 			}
-			return s.commitStream(conv, onEvent, replayableBlocks(blocks), finish, usage)
+			if finish == "" {
+				// message_stop reached without stop_reason — a settled
+				// commit always carries a verdict; "" only survives on
+				// partial (canceled) commits.
+				finish = "end_turn"
+			}
+			return s.commitStream(conv, onEvent, replayableBlocks(blocks), finish, usage, logged)
 		case ev := <-events:
 			timer.Reset(s.idle)
 			if len(ev.data) == 0 {
@@ -130,7 +145,7 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 			case "error":
 				if se.Error != nil {
 					raw, _ := json.Marshal(map[string]any{"error": se.Error})
-					err := statusError(streamStatusHint(se.Error), raw)
+					err := wire.WithRetryAfter(statusError(streamStatusHint(se.Error), raw), wire.RetryAfter(resp.Header.Get("Retry-After")))
 					s.logAppend(ctx, "provider.stream", logged)
 					emit(onEvent, event.NewErrorEvent(err))
 					return err
@@ -224,7 +239,7 @@ func applyDelta(blocks []blockAcc, i int, d DeltaBody, onEvent event.TurnEventHa
 
 // commitStream turns the accumulated blocks into the assistant message
 // exactly once — called on clean close after message_stop.
-func (s *Service) commitStream(conv *aggregate.Conversation, onEvent event.TurnEventHandler, blocks []blockAcc, finish string, usage *UsageBody) error {
+func (s *Service) commitStream(conv *aggregate.Conversation, onEvent event.TurnEventHandler, blocks []blockAcc, finish string, usage *UsageBody, logged []json.RawMessage) error {
 	raw := make([]json.RawMessage, 0, len(blocks))
 	for _, b := range blocks {
 		switch b.kind {
@@ -246,8 +261,11 @@ func (s *Service) commitStream(conv *aggregate.Conversation, onEvent event.TurnE
 			}
 		}
 	}
-	msg, _, err := decodeMessage(raw, finish) // reasoning already streamed live as thinking_delta
+	msg, meta, err := decodeMessage(raw, finish) // reasoning already streamed live as thinking_delta
 	if err != nil {
+		return err
+	}
+	if err := coretext.EmptyAnswerError(msg, meta.artifacts, "", logged); err != nil {
 		return err
 	}
 	u, err := decodeUsage(usage)
@@ -281,6 +299,13 @@ func readSSE(body io.Reader, done <-chan struct{}, out chan<- sse, errs chan<- e
 	for sc.Scan() {
 		name, payload := wire.SSENamed(sc.Bytes())
 		if len(payload) == 0 {
+			// Comments/keepalives are traffic too — heartbeat the idle
+			// timer; the consumer drops the empty event.
+			select {
+			case out <- sse{}:
+			case <-done:
+				return
+			}
 			continue
 		}
 		select {

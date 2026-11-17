@@ -16,7 +16,8 @@ import (
 	reposecret "github.com/jahrulnr/nusallm/infrastructure/repository/secret"
 )
 
-func ptr[T any](v T) *T { return &v }
+//go:fix inline
+func ptr[T any](v T) *T { return new(v) }
 
 func newRepo(t *testing.T) drepo.Gateway {
 	t.Helper()
@@ -37,8 +38,8 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 	g.SetApiKey("sk-or-literal")
 
 	m, _ := entity.NewModel("claude-opus-4", "openrouter")
-	m.SetTemperature(ptr(0.7))
-	m.SetMaxOutputTokens(ptr(4096))
+	m.SetTemperature(new(0.7))
+	m.SetMaxOutputTokens(new(4096))
 	m.SetEffort(enum.EffortHigh)
 	m.SetModelType(enum.ModelTypeText)
 	m.SetStyle(enum.StyleMessages)
@@ -290,13 +291,11 @@ func TestInvalidIDRejected(t *testing.T) {
 func TestConcurrentSave(t *testing.T) {
 	repo := newRepo(t)
 	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 8 {
+		wg.Go(func() {
 			g, _ := aggregate.NewGateway("g", "n", "https://x", enum.StyleMessages)
 			_ = repo.Save(t.Context(), &g)
-		}()
+		})
 	}
 	wg.Wait()
 	if _, err := repo.Load(t.Context(), "g"); err != nil {

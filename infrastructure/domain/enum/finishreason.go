@@ -16,6 +16,11 @@ const (
 	FinishReasonLength FinishReason = "length"
 	// FinishReasonContentFilter marks a safety/filter block.
 	FinishReasonContentFilter FinishReason = "content_filter"
+	// FinishReasonInterrupted marks a reply cut short by the harness —
+	// a caller cancel or a dead process — never a provider verdict. A
+	// settled assistant tail must carry one of the reasons above; this
+	// marker exists so a partial reply cannot pass for a finished one.
+	FinishReasonInterrupted FinishReason = "interrupted"
 )
 
 func (r FinishReason) String() string {
@@ -24,7 +29,7 @@ func (r FinishReason) String() string {
 
 func ParseFinishReason(v string) (FinishReason, bool) {
 	switch r := FinishReason(v); r {
-	case FinishReasonStop, FinishReasonToolCalls, FinishReasonLength, FinishReasonContentFilter:
+	case FinishReasonStop, FinishReasonToolCalls, FinishReasonLength, FinishReasonContentFilter, FinishReasonInterrupted:
 		return r, true
 	}
 	return "", false

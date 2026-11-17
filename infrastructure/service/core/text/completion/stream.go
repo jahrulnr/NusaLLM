@@ -13,6 +13,7 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
+	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
 	"github.com/jahrulnr/nusallm/infrastructure/service/wire"
 )
 
@@ -63,14 +64,23 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 			if content.Len() > 0 || reasoning.Len() > 0 || reasoningContent.Len() > 0 || len(kept) > 0 {
 				// Details are deliberately dropped on cancel: a partially
 				// streamed signature/encrypted blob is not replayable.
-				if err := s.commitStream(conv, onEvent, content.String(), reasoning.String(), reasoningContent.String(), nil, kept, "", usage); err != nil {
+				if err := s.commitStream(conv, onEvent, content.String(), reasoning.String(), reasoningContent.String(), nil, kept, "", usage, logged); err != nil {
 					return err
 				}
 			}
 			return apperror.New(408, "request canceled or timed out", ctx.Err())
 		case <-timer.C:
 			s.logAppend(ctx, "provider.stream", logged)
-			return apperror.New(502, "upstream stream idle", nil)
+			// finish_reason/[DONE] already proved the turn ended — a
+			// stalled tail after the verdict is data loss only if we
+			// discard it, so the idle path commits like stream EOF.
+			if finish == "" && !doneSeen {
+				return apperror.New(502, "upstream stream idle", nil)
+			}
+			if finish == "" {
+				finish = "stop"
+			}
+			return s.commitStream(conv, onEvent, content.String(), reasoning.String(), reasoningContent.String(), details, completeToolCalls(calls), finish, usage, logged)
 		case err := <-errs:
 			s.logAppend(ctx, "provider.stream", logged)
 			// stream closed — only commit when a real terminal marker was
@@ -84,7 +94,13 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 				emit(onEvent, event.NewErrorEvent(err))
 				return err
 			}
-			return s.commitStream(conv, onEvent, content.String(), reasoning.String(), reasoningContent.String(), details, completeToolCalls(calls), finish, usage)
+			if finish == "" {
+				// [DONE] reached without a finish_reason — a settled
+				// commit always carries a verdict; "" only survives on
+				// partial (canceled) commits.
+				finish = "stop"
+			}
+			return s.commitStream(conv, onEvent, content.String(), reasoning.String(), reasoningContent.String(), details, completeToolCalls(calls), finish, usage, logged)
 		case ev := <-events:
 			timer.Reset(s.idle)
 			if ev.done {
@@ -99,7 +115,7 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 			if chunk.Error != nil {
 				// Re-wrap into the {"error":{…}} envelope statusError parses.
 				raw, _ := json.Marshal(map[string]any{"error": chunk.Error})
-				err := statusError(statusHint(chunk.Error), raw)
+				err := statusError(statusHint(chunk.Error), wire.RetryAfter(resp.Header.Get("Retry-After")), raw)
 				s.logAppend(ctx, "provider.stream", logged)
 				emit(onEvent, event.NewErrorEvent(err))
 				return err
@@ -114,6 +130,12 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 				if t, ok := ch.Delta.Content.(string); ok {
 					content.WriteString(t)
 					emit(onEvent, event.NewDeltaEvent(t))
+				}
+				// Refusal deltas are the answer when the provider
+				// declines — same display surface as content.
+				if ch.Delta.Refusal != "" {
+					content.WriteString(ch.Delta.Refusal)
+					emit(onEvent, event.NewDeltaEvent(ch.Delta.Refusal))
 				}
 				// Keep reasoning separate from answer deltas while preserving
 				// its original arrival order. OpenRouter spells the plaintext
@@ -150,7 +172,7 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 
 // commitStream turns the accumulated stream state into the assistant
 // message exactly once — called on clean close or EOF-after-terminal.
-func (s *Service) commitStream(conv *aggregate.Conversation, onEvent event.TurnEventHandler, content, reasoning, reasoningContent string, details []json.RawMessage, calls []ToolCallBody, finish string, usage *UsageBody) error {
+func (s *Service) commitStream(conv *aggregate.Conversation, onEvent event.TurnEventHandler, content, reasoning, reasoningContent string, details []json.RawMessage, calls []ToolCallBody, finish string, usage *UsageBody, logged []json.RawMessage) error {
 	var rawDetails json.RawMessage
 	if len(details) > 0 {
 		if raw, err := json.Marshal(details); err == nil {
@@ -162,6 +184,11 @@ func (s *Service) commitStream(conv *aggregate.Conversation, onEvent event.TurnE
 		Reasoning: reasoning, ReasoningContent: reasoningContent, ReasoningDetails: rawDetails,
 	}, finish)
 	if err != nil {
+		return err
+	}
+	// This wire's optionalContent is reasoning surfaces only — replay
+	// metadata, never the answer — so it never counts as an artifact.
+	if err := coretext.EmptyAnswerError(msg, false, "", logged); err != nil {
 		return err
 	}
 	u, err := decodeUsage(usage)
@@ -243,6 +270,13 @@ func readSSE(body io.Reader, done <-chan struct{}, out chan<- sse, errs chan<- e
 	for sc.Scan() {
 		payload := wire.SSEData(sc.Bytes())
 		if len(payload) == 0 {
+			// Comments/keepalives are traffic too — heartbeat the idle
+			// timer; the consumer drops the empty event.
+			select {
+			case out <- sse{}:
+			case <-done:
+				return
+			}
 			continue
 		}
 		if bytes.Equal(payload, []byte("[DONE]")) {

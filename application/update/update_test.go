@@ -333,11 +333,9 @@ func TestConcurrentStatusSharesOneLookup(t *testing.T) {
 	app := newApp(t, src, "0.0.0", &fakeBinary{}, &fakeRestarter{})
 	var wg sync.WaitGroup
 	for range 20 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			app.Status(context.Background())
-		}()
+		})
 	}
 	wg.Wait()
 	if n := src.count(); n != 1 {

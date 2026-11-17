@@ -61,7 +61,7 @@ func (d Deps) compact(ctx context.Context, convID string, conv *aggregate.Conver
 	// mandate still produced a checkpoint, which beats failing into a
 	// 413 loop.
 	checkpoint, err := func() (string, error) {
-		for attempt := 0; attempt < compactAttempts; attempt++ {
+		for range compactAttempts {
 			if err := ctx.Err(); err != nil {
 				return "", apperror.New(408, "compaction canceled", err)
 			}

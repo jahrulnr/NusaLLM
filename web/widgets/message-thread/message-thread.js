@@ -62,6 +62,11 @@ class MessageThread extends Widget {
     this._render();
   }
 
+  // The shell re-pins on an explicit send — a new turn belongs in view.
+  set pinned(v) {
+    this._pinned = !!v;
+    if (this._pinned) this._scrollToEnd();
+  }
   set messages(list) {
     const next = list || [];
     const previous = this._messages;
@@ -353,6 +358,16 @@ class MessageThread extends Widget {
         calls.every((tc) => tc.type === 'injection')) {
       return el('div', { class: 'context-lines' }, calls.map((tc) => contextEntry(tc)));
     }
+    // Automation records (compaction checkpoints, hydration notes)
+    // persist as role:'user' + userType:'system' — harness bookkeeping,
+    // never the owner's words. They render on the context surface the
+    // same way injected tool output does, not as a user bubble.
+    if (m.role === 'user' && m.userType === 'system') {
+      const entries = [];
+      if (m.content) entries.push(contextEntry({ name: 'system', output: m.content }));
+      for (const tc of calls) entries.push(contextEntry(tc));
+      return el('div', { class: 'context-lines' }, entries);
+    }
     if (m.role === 'user') return this._userMessage(m);
     return this._assistantMessage(m);
   }
@@ -429,7 +444,7 @@ class MessageThread extends Widget {
       const callsByID = new Map(calls.map((tc) => [tc.id, tc]));
       const renderedCalls = new Set();
       for (const part of m.parts) {
-        if (part.kind === 'text') {
+        if (part.kind === 'text' && part.text) {
           const md = this._liveWidgetFor('markdown', part) || document.createElement('nusa-markdown-view');
           md.classList.remove('streaming-md');
           md.finishStream();
@@ -453,13 +468,22 @@ class MessageThread extends Widget {
         if (!renderedCalls.has(tc.id)) kids.push(this._persistedTool(tc));
       }
     } else {
-      const md = document.createElement('nusa-markdown-view');
-      md.content = m.content;
-      kids.push(md);
+      // An empty reply leaves no markdown stripe — a zero-content
+      // widget renders as a blank bar.
+      if (m.content) {
+        const md = document.createElement('nusa-markdown-view');
+        md.content = m.content;
+        kids.push(md);
+      }
       for (const tc of calls) kids.push(this._persistedTool(tc));
     }
     if ((m.attachments || []).length) {
       kids.push(el('div', { class: 'attachments' }, m.attachments.map((a) => this._attachmentChip(a))));
+    }
+    // A filtered reply lands with no text at all — an empty row reads
+    // as a dropped message, so the row itself says what happened.
+    if (!kids.length && m.finishReason === 'content_filter') {
+      return el('div', { class: 'assistant-msg', text: 'Response blocked by the content filter' });
     }
     return el('div', { class: 'assistant-msg' }, kids);
   }

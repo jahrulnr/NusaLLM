@@ -26,6 +26,7 @@ func decodeResponse(rb *ResponseBody) (entity.Message, decodeMeta, error) {
 	if err != nil {
 		return entity.Message{}, decodeMeta{}, err
 	}
+	var artifacts bool
 	for _, raw := range rb.Output {
 		var it ItemShape
 		if err := json.Unmarshal(raw, &it); err != nil {
@@ -75,9 +76,12 @@ func decodeResponse(rb *ResponseBody) (entity.Message, decodeMeta, error) {
 			keepTemplate = true
 		default:
 			// web_search_call, file_search_call, mcp_*, … — keep raw so
-			// replay round-trips what we never model.
+			// replay round-trips what we never model. Unlike reasoning
+			// items these are a deliverable payload, so the turn is not
+			// an empty answer.
 			template = append(template, raw)
 			keepTemplate = true
+			artifacts = true
 		}
 	}
 	msg.SetContent(text.String())
@@ -90,13 +94,17 @@ func decodeResponse(rb *ResponseBody) (entity.Message, decodeMeta, error) {
 	if rb.ID != "" {
 		msg.SetOptionalContent("responses.id", rb.ID) // support/debug handle
 	}
-	return msg, decodeMeta{reasoning: reasoning.String()}, nil
+	return msg, decodeMeta{reasoning: reasoning.String(), artifacts: artifacts}, nil
 }
 
 // decodeMeta is the by-product of a decode — data the caller emits as
 // events but the domain stores elsewhere (reasoning rides the template).
+// artifacts reports whether the output carried a non-reasoning item we
+// never model (server calls, media, …) — reasoning blobs alone are
+// replay metadata, never the answer.
 type decodeMeta struct {
 	reasoning string
+	artifacts bool
 }
 
 // mapStatus normalizes the response lifecycle status onto the domain set —

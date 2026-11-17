@@ -337,10 +337,7 @@ func finalLine(f *os.File, end int64) ([]byte, int64, error) {
 	buf := make([]byte, chunk)
 	var tail []byte
 	for e := end; e > 0; e -= chunk {
-		start := e - chunk
-		if start < 0 {
-			start = 0
-		}
+		start := max(e-chunk, 0)
 		window := buf[:e-start]
 		if _, err := f.ReadAt(window, start); err != nil {
 			return nil, 0, err
@@ -545,7 +542,7 @@ func sealedArchiveMismatch(id string, segs []string, committed int) error {
 	if committed < 0 {
 		return fmt.Errorf("conversation %s: invalid metadata sealedSegments=%d; stop the app, inspect meta.json, and restore from backup", id, committed)
 	}
-	for i := 0; i < committed; i++ {
+	for i := range committed {
 		if i >= len(segs) {
 			return fmt.Errorf("conversation %s: sealed segment %d.jsonl missing; restore it from backup", id, i)
 		}
@@ -587,7 +584,7 @@ func (r *ConversationRepository) loadMessages(convID string, sealedCount int) ([
 				present[n] = struct{}{}
 			}
 		}
-		for i := 0; i < sealedCount; i++ {
+		for i := range sealedCount {
 			if _, ok := present[i]; !ok {
 				return nil, fmt.Errorf("conversation %s: sealed segment %d.jsonl missing (sealedSegments=%d)",
 					convID, i, sealedCount)

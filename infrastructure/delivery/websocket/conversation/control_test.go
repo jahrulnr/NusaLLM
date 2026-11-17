@@ -269,7 +269,7 @@ func TestWatchReplaysFinishedTurn(t *testing.T) {
 	var seqs []int
 	var gotDelta strings.Builder
 	var last frame
-	for i := 0; i < 4; i++ { // opened, delta, delta, completed
+	for range 4 { // opened, delta, delta, completed
 		last = readFrame(t, ws2)
 		if last.Seq == nil {
 			t.Fatalf("replayed frame lost seq: %s", last.Type)
@@ -403,7 +403,7 @@ func TestWatchGapResyncThenLive(t *testing.T) {
 		// may read that socket afterward. Then overflow the journal so
 		// early seqs are truncated.
 		<-flood
-		for i := 0; i < journalMaxFrames+50; i++ {
+		for range journalMaxFrames + 50 {
 			onEvent(event.NewDeltaEvent("x"))
 		}
 		close(emitDone)
@@ -471,7 +471,7 @@ func TestSocketAdmissionBound(t *testing.T) {
 			ws.Close()
 		}
 	}()
-	for i := 0; i < maxSockets; i++ {
+	for i := range maxSockets {
 		ws, _, err := websocket.DefaultDialer.Dial(url, nil)
 		if err != nil {
 			t.Fatalf("dial %d: %v", i, err)

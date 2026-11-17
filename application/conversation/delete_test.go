@@ -83,11 +83,11 @@ func TestDeleteWhileLive(t *testing.T) {
 func TestDeleteFlushesPending(t *testing.T) {
 	release := make(chan struct{})
 	defer close(release)
-	var calls int32
+	var calls atomic.Int32
 	entered := make(chan struct{})
 	var enteredOnce sync.Once
 	app, _ := fixture(t, func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&calls, 1)
+		calls.Add(1)
 		enteredOnce.Do(func() { close(entered) })
 		<-release
 		okHandler(w, r)
@@ -121,7 +121,7 @@ func TestDeleteFlushesPending(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("queued send not flushed by delete")
 	}
-	if got := atomic.LoadInt32(&calls); got != 1 {
+	if got := calls.Load(); got != 1 {
 		t.Fatalf("queued send reached upstream after delete: %d calls", got)
 	}
 	waitWorkers(t, app, 0)

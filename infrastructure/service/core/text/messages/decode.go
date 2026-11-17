@@ -26,6 +26,7 @@ func decodeMessage(rawBlocks []json.RawMessage, stopReason string) (entity.Messa
 	if err != nil {
 		return entity.Message{}, decodeMeta{}, err
 	}
+	var artifacts bool
 	for _, raw := range rawBlocks {
 		var b ContentBlock
 		if err := json.Unmarshal(raw, &b); err != nil {
@@ -52,9 +53,12 @@ func decodeMessage(rawBlocks []json.RawMessage, stopReason string) (entity.Messa
 			template = append(template, json.RawMessage(`{"type":"tool_use"}`))
 		default:
 			// redacted_thinking and server-side blocks — keep the raw
-			// block so replay round-trips what we never model.
+			// block so replay round-trips what we never model. Thinking
+			// family is replay metadata; anything else is a deliverable
+			// payload, so the turn is not an empty answer.
 			template = append(template, raw)
 			keepTemplate = true
+			artifacts = artifacts || b.Type != "redacted_thinking"
 		}
 	}
 	msg.SetContent(text.String())
@@ -68,13 +72,17 @@ func decodeMessage(rawBlocks []json.RawMessage, stopReason string) (entity.Messa
 	}
 	// Thinking text itself lives inside the stored template — callers that
 	// want it (live status) get it from the return value, not a second key.
-	return msg, decodeMeta{reasoning: reasoning.String()}, nil
+	return msg, decodeMeta{reasoning: reasoning.String(), artifacts: artifacts}, nil
 }
 
 // decodeMeta is the by-product of a decode — data the caller emits as
 // events but the domain stores elsewhere (reasoning rides the template).
+// artifacts reports whether the blocks carried a non-thinking payload
+// we never model (server tools, media, …) — thinking/redacted bytes
+// alone are replay metadata, never the answer.
 type decodeMeta struct {
 	reasoning string
+	artifacts bool
 }
 
 // mapStopReason normalizes Anthropic stop_reason onto the domain set —

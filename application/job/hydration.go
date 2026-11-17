@@ -2,6 +2,7 @@ package job
 
 import (
 	"context"
+	"slices"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
@@ -33,8 +34,8 @@ func (d Deps) appendToolContexts(ctx context.Context, convID string, conv *aggre
 	// input never anchors another record's rescan.
 	msgs := conv.Messages()
 	latest := map[string]string{}
-	for i := len(msgs) - 1; i >= 0; i-- {
-		for _, prior := range msgs[i].ToolCalls() {
+	for _, msg := range slices.Backward(msgs) {
+		for _, prior := range msg.ToolCalls() {
 			if prior.Type() != enum.TooltypeInjection || !prior.HasOutput() {
 				continue
 			}

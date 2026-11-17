@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -205,13 +206,7 @@ func (c *Catalog) ListModels(ctx context.Context, gateway *aggregate.Gateway) ([
 		if gateway.Style() == enum.StyleGenerateContent {
 			for _, entry := range body.Models {
 				if len(entry.SupportedGenerationMethods) > 0 {
-					chat := false
-					for _, method := range entry.SupportedGenerationMethods {
-						if method == "generateContent" {
-							chat = true
-							break
-						}
-					}
+					chat := slices.Contains(entry.SupportedGenerationMethods, "generateContent")
 					if !chat {
 						continue
 					}

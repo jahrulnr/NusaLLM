@@ -47,7 +47,7 @@ type toolSchemaRecord struct {
 // per file so appends stay O(1) and ordering is literal.
 type lineRecord struct {
 	Type          string             `json:"type"` // "message" | "tool_output"
-	Data          messageRecord      `json:"data,omitempty"`
+	Data          messageRecord      `json:"data"`
 	CallID        string             `json:"callId,omitempty"`
 	Output        string             `json:"output,omitempty"`
 	OutputLatency string             `json:"outputLatency,omitempty"`
@@ -83,7 +83,7 @@ type toolCallRecord struct {
 	OutputBudget      int                `json:"outputBudget,omitempty"`
 	OutputAttachments []attachmentRecord `json:"outputAttachments,omitempty"`
 	Type              string             `json:"type,omitempty"`
-	CallAt            time.Time          `json:"callAt,omitempty"`
+	CallAt            time.Time          `json:"callAt"`
 	OptionalContent   map[string]string  `json:"optionalContent,omitempty"`
 }
 

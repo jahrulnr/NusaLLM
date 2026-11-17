@@ -84,7 +84,7 @@ func (Local) Load(path string) []string {
 		return nil
 	}
 	var entries []string
-	for _, line := range strings.Split(strings.TrimRight(string(raw), "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimRight(string(raw), "\n"), "\n") {
 		if line != "" {
 			entries = append(entries, historyUnescape(line))
 		}

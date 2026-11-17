@@ -63,10 +63,7 @@ func (s *server) messages(c *gin.Context) {
 	if effective > total {
 		effective = total
 	}
-	end := effective + limit
-	if end > total {
-		end = total
-	}
+	end := min(effective+limit, total)
 	msgs, err := s.reads.History(ctx, id, effective, end)
 	if err != nil {
 		transport.RespondError(c, err)

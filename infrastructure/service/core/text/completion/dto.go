@@ -1,5 +1,7 @@
 package textcompletion
 
+import "maps"
+
 import "encoding/json"
 
 // Wire DTOs for the OpenAI-shaped /chat/completions surface — also spoken
@@ -16,7 +18,7 @@ type RequestPromptCacheOption struct {
 type RequestBody struct {
 	Model             string                     `json:"model"`
 	PromptCacheKey    string                     `json:"prompt_cache_key,omitempty"`
-	PromptCacheOption RequestPromptCacheOption   `json:"prompt_cache_options,omitempty"`
+	PromptCacheOption RequestPromptCacheOption   `json:"prompt_cache_options"`
 	Messages          []MessageBody              `json:"messages"`
 	Tools             []ToolBody                 `json:"tools,omitempty"`
 	Stream            bool                       `json:"stream,omitempty"`
@@ -48,9 +50,7 @@ func (b RequestBody) MarshalJSON() ([]byte, error) {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return nil, err
 	}
-	for k, v := range b.Extra {
-		m[k] = v
-	}
+	maps.Copy(m, b.Extra)
 	return json.Marshal(m)
 }
 
@@ -65,6 +65,7 @@ type StreamOptions struct {
 type MessageBody struct {
 	Role             string          `json:"role"`
 	Content          any             `json:"content,omitempty"`
+	Refusal          string          `json:"refusal,omitempty"` // the provider's answer when it declines — display text, not an error
 	ToolCalls        []ToolCallBody  `json:"tool_calls,omitempty"`
 	ToolCallID       string          `json:"tool_call_id,omitempty"`
 	Reasoning        string          `json:"reasoning,omitempty"`         // OpenRouter plaintext reasoning

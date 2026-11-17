@@ -34,7 +34,7 @@ func TestParseRoundtrips(t *testing.T) {
 			t.Fatalf("LLMUserType %q roundtrip failed", v)
 		}
 	}
-	for _, v := range []FinishReason{FinishReasonStop, FinishReasonToolCalls, FinishReasonLength, FinishReasonContentFilter} {
+	for _, v := range []FinishReason{FinishReasonStop, FinishReasonToolCalls, FinishReasonLength, FinishReasonContentFilter, FinishReasonInterrupted} {
 		if got, f := ParseFinishReason(v.String()); !f || got != v {
 			t.Fatalf("FinishReason %q roundtrip failed", v)
 		}

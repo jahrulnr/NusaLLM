@@ -110,7 +110,7 @@ func (s *Service) Send(ctx context.Context, conv *aggregate.Conversation, gw *ag
 		s.logAppend(ctx, "provider.error", map[string]any{
 			"status": resp.StatusCode, "request_id": resp.Header.Get("x-request-id"), "body": json.RawMessage(raw),
 		})
-		return statusError(resp.StatusCode, raw)
+		return wire.WithRetryAfter(statusError(resp.StatusCode, raw), wire.RetryAfter(resp.Header.Get("Retry-After")))
 	}
 
 	if stream {
@@ -137,10 +137,13 @@ func (s *Service) unaryResponse(ctx context.Context, resp *http.Response, conv *
 	if rb.Status == "failed" {
 		// Same payload shape as the streamed response.failed event —
 		// streamFailure owns the routing remaps for both.
-		return streamFailure(&rb, raw)
+		return wire.WithRetryAfter(streamFailure(&rb, raw), wire.RetryAfter(resp.Header.Get("Retry-After")))
 	}
 	msg, meta, err := decodeResponse(&rb)
 	if err != nil {
+		return err
+	}
+	if err := coretext.EmptyAnswerError(msg, meta.artifacts, "", []json.RawMessage{raw}); err != nil {
 		return err
 	}
 	usage, err := decodeUsage(rb.Usage)

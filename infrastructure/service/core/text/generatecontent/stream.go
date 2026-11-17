@@ -11,6 +11,7 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
+	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
 	"github.com/jahrulnr/nusallm/infrastructure/service/wire"
 )
 
@@ -45,14 +46,19 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 			s.logAppend(ctx, "provider.stream", logged)
 			kept := completeParts(parts)
 			if partsHaveContent(kept) {
-				if err := s.commitStream(conv, onEvent, kept, "", usage, blocked); err != nil {
+				if err := s.commitStream(conv, onEvent, kept, "", usage, blocked, logged); err != nil {
 					return err
 				}
 			}
 			return apperror.New(408, "request canceled or timed out", ctx.Err())
 		case <-timer.C:
 			s.logAppend(ctx, "provider.stream", logged)
-			return apperror.New(502, "upstream stream idle", nil)
+			// finishReason already proved the turn ended — a stalled tail
+			// after the verdict commits like EOF, not a 502.
+			if finish == "" {
+				return apperror.New(502, "upstream stream idle", nil)
+			}
+			return s.commitStream(conv, onEvent, parts, finish, usage, blocked, logged)
 		case err := <-errs:
 			s.logAppend(ctx, "provider.stream", logged)
 			// EOF is this wire's terminal marker — commit whatever
@@ -73,16 +79,24 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 				emit(onEvent, event.NewErrorEvent(err))
 				return err
 			}
-			return s.commitStream(conv, onEvent, parts, finish, usage, blocked)
+			if finish == "" {
+				// A settled commit always carries a finish verdict —
+				// "" only survives on partial (canceled) commits.
+				finish = "STOP"
+			}
+			return s.commitStream(conv, onEvent, parts, finish, usage, blocked, logged)
 		case data := <-events:
 			timer.Reset(s.idle)
+			if len(data) == 0 {
+				continue // keepalive heartbeat — traffic, not payload
+			}
 			logged = append(logged, data)
 			var rb ResponseBody
 			if err := json.Unmarshal(data, &rb); err != nil {
 				continue // partial/garbage lines are dropped, not fatal
 			}
 			if rb.Error != nil {
-				err := streamError(rb.Error, data)
+				err := wire.WithRetryAfter(streamError(rb.Error, data), wire.RetryAfter(resp.Header.Get("Retry-After")))
 				s.logAppend(ctx, "provider.stream", logged)
 				emit(onEvent, event.NewErrorEvent(err))
 				return err
@@ -176,11 +190,15 @@ func appendPart(parts []json.RawMessage, raw json.RawMessage, onEvent event.Turn
 }
 
 // commitStream turns the accumulated parts into the assistant message at
-// EOF — blocked prompts never produce candidates; everything else commits
-// through the shared decode.
-func (s *Service) commitStream(conv *aggregate.Conversation, onEvent event.TurnEventHandler, parts []json.RawMessage, finish string, usage *UsageBody, blocked string) error {
-	msg, _, err := decodeParts(parts, finish) // reasoning already streamed live
+// EOF — a stream whose decode carries nothing usable fails instead of
+// committing an empty turn; everything else commits through the shared
+// decode.
+func (s *Service) commitStream(conv *aggregate.Conversation, onEvent event.TurnEventHandler, parts []json.RawMessage, finish string, usage *UsageBody, blocked string, logged []json.RawMessage) error {
+	msg, meta, err := decodeParts(parts, finish) // reasoning already streamed live
 	if err != nil {
+		return err
+	}
+	if err := coretext.EmptyAnswerError(msg, meta.artifacts, blocked, logged); err != nil {
 		return err
 	}
 	if blocked != "" && msg.FinishReason() == "" {
@@ -208,6 +226,13 @@ func readSSE(body io.Reader, done <-chan struct{}, out chan<- []byte, errs chan<
 	for sc.Scan() {
 		payload := wire.SSEData(sc.Bytes())
 		if len(payload) == 0 {
+			// Comments/keepalives are traffic too — heartbeat the idle
+			// timer; the consumer drops the empty event.
+			select {
+			case out <- []byte{}:
+			case <-done:
+				return
+			}
 			continue
 		}
 		select {

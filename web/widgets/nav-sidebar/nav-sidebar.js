@@ -44,6 +44,13 @@ class NavSidebar extends Widget {
     this.setAttribute('aria-hidden', this._open ? 'false' : 'true');
   }
   set connection(state) { this._connection = state; this._renderFooter(); }
+  // Programmatic reset for the shell's new-browsing-context navigations —
+  // clears the box and the narrowed list without emitting a user search.
+  set query(v) {
+    this._query = v || '';
+    if (this.searchEl) this.searchEl.value = this._query;
+    this._renderList();
+  }
 
   _render() {
     clear(this.root);
@@ -71,7 +78,7 @@ class NavSidebar extends Widget {
         class: 'new-btn', type: 'button',
         onclick: () => emit(this, 'conversation-new'),
       }, [icon('plus', 13), el('span', { text: 'New thread' })]),
-      search,
+      this.searchEl = search,
       this.listEl = el('nav', { class: 'list', 'aria-label': 'Conversations' }),
       this.footerEl = el('div', { class: 'footer' }),
     );

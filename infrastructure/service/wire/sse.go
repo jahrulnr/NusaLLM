@@ -44,7 +44,7 @@ func SplitSSE(data []byte, atEOF bool) (advance int, token []byte, err error) {
 // carry no event: line and return "".
 func SSENamed(block []byte) (string, []byte) {
 	var name string
-	for _, line := range strings.Split(string(block), "\n") {
+	for line := range strings.SplitSeq(string(block), "\n") {
 		line = strings.TrimRight(line, "\r")
 		if n, ok := strings.CutPrefix(line, "event:"); ok && name == "" {
 			name = strings.TrimSpace(n)
@@ -58,7 +58,7 @@ func SSENamed(block []byte) (string, []byte) {
 // families that need them parse the block themselves.
 func SSEData(block []byte) []byte {
 	var payload bytes.Buffer
-	for _, line := range strings.Split(string(block), "\n") {
+	for line := range strings.SplitSeq(string(block), "\n") {
 		line = strings.TrimRight(line, "\r")
 		if line == "" || strings.HasPrefix(line, ":") {
 			continue

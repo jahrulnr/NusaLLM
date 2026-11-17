@@ -65,7 +65,7 @@ func TestRunTurnHydratesSkillsAndRefreshesChanges(t *testing.T) {
 	}
 	driver.Tools["custom_tools"] = &skillDiscovery{schema: customSchema, text: `{"paths":["/workspace/.agents/tools/bin"]}`}
 	svc := &skillsSeeingService{t: t}
-	for turn := 0; turn < 3; turn++ {
+	for turn := range 3 {
 		if turn > 0 {
 			user, _ := entity.NewMessage(enum.RoleUser, "again")
 			conv.Append(user)

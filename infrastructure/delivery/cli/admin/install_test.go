@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -555,10 +556,8 @@ func TestInstallLingerFailureStillSucceeds(t *testing.T) {
 	if !strings.Contains(out.String(), "http://127.0.0.1:10998") {
 		t.Fatalf("stdout = %q", out.String())
 	}
-	for _, c := range svc.calls {
-		if c == "linger" {
-			return
-		}
+	if slices.Contains(svc.calls, "linger") {
+		return
 	}
 	t.Fatalf("PersistAcrossLogout never called: %v", svc.calls)
 }

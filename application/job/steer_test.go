@@ -24,13 +24,13 @@ import (
 // it saw — proving where the folded steer sits relative to the tool
 // result and the workspace record that trails it.
 type steerFoldSvc struct {
-	calls    int32
+	calls    atomic.Int32
 	lastSeen string
 	prevSeen string
 }
 
 func (s *steerFoldSvc) Send(_ context.Context, conv *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, _ event.TurnEventHandler) error {
-	n := atomic.AddInt32(&s.calls, 1)
+	n := s.calls.Add(1)
 	var m entity.Message
 	if n == 1 {
 		m, _ = entity.NewMessage(enum.RoleAssistant, "need a tool")
@@ -426,7 +426,7 @@ func TestRunTurnConsumesOnlyItsOwnMailbox(t *testing.T) {
 // mailbox's atomic claim boundary admits exactly one winner per input,
 // never both.
 func TestSteeringInputRecallVsClaimRace(t *testing.T) {
-	for i := 0; i < 200; i++ {
+	for i := range 200 {
 		in := NewSteeringInput()
 		r := in.Submit("raced input")
 		start := make(chan struct{})

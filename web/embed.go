@@ -4,5 +4,5 @@ package web
 
 import "embed"
 
-//go:embed index.html app.js favicon.svg styles/*.css lib/*.js lib/*.css widgets/*/*.js widgets/*/*.css vendor/mermaid/*
+//go:embed index.html app.js favicon.svg styles/*.css lib/*.js lib/*.css widgets/*/*.js widgets/*/*.css vendor/pele/*
 var Assets embed.FS

@@ -164,7 +164,7 @@ class MarkdownView extends Widget {
         const isMermaid = /^(mermaid|mmd)$/i.test(b.lang || '');
         // A closed mermaid/mmd fence renders a diagram; an unterminated
         // fence is still streaming and degrades to a labeled code block —
-        // Mermaid never sees incomplete syntax.
+        // the renderer never sees incomplete syntax.
         const kind = isMermaid && b.closed ? 'mermaid' : 'code';
         used.add(path);
         const w = this._cachedBlock(path, kind, () =>

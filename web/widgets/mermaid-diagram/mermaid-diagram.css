@@ -6,6 +6,28 @@
   border-radius: var(--radius);
   background: #0e120f;
   overflow: hidden;
+
+  /* Pele theme — the mounted diagram reads these for every draw, so
+     theme changes repaint without a re-render. */
+  --pele-bg: #0e120f;
+  --pele-fg: var(--text);
+  --pele-muted: var(--text-faint);
+  --pele-line: var(--text-dim);
+  --pele-surface: var(--panel-2);
+  --pele-surface-alt: var(--panel);
+  --pele-border: #475044;
+  --pele-accent: var(--accent);
+  --pele-error: var(--danger);
+  --pele-font: var(--font-ui);
+  --pele-radius: var(--radius);
+  --pele-series-1: #c8f169;
+  --pele-series-2: #8aa84e;
+  --pele-series-3: #e0a34a;
+  --pele-series-4: #e06a5a;
+  --pele-series-5: #9ba394;
+  --pele-series-6: #6f8f6a;
+  --pele-series-7: #c9b876;
+  --pele-series-8: #7a9a8f;
 }
 
 .chrome {
@@ -46,7 +68,9 @@
 .ctl:hover { color: var(--text); border-color: var(--hairline-strong); }
 .ctl:focus-visible { outline: 1px solid var(--accent-dim); outline-offset: 1px; }
 
-/* Grid canvas — subtle workbench feel behind the diagram. */
+/* Grid canvas — subtle workbench feel behind the diagram. The height
+   bound lives here; Pele owns the canvas' contents and its own
+   zoom/pan inside it. */
 .viewport {
   overflow: auto;
   max-height: 480px;
@@ -58,8 +82,9 @@
 }
 .viewport:focus-visible { outline: 1px solid var(--accent-dim); outline-offset: -1px; }
 
-.canvas { width: max-content; min-width: 100%; }
-.canvas svg { max-width: none; display: block; }
+/* The mount measures this leaf — its width must come from the layout,
+   never from the drawn diagram. */
+.canvas { width: 100%; }
 
 .fallback {
   display: flex;
@@ -94,7 +119,6 @@
 
 @media (max-width: 760px) {
   .status, .lang { font-size: 12px; }
-  .controls { gap: 8px; }
   .ctl {
     display: inline-flex;
     align-items: center;

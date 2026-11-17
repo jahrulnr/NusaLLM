@@ -1330,7 +1330,7 @@ func TestTwoInstancesSerializedByStoreLock(t *testing.T) {
 	const workers = 8
 	const appends = 25
 	var wg sync.WaitGroup
-	for w := 0; w < workers; w++ {
+	for w := range workers {
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
@@ -1338,7 +1338,7 @@ func TestTwoInstancesSerializedByStoreLock(t *testing.T) {
 			if w%2 == 1 {
 				repo = r2
 			}
-			for i := 0; i < appends; i++ {
+			for i := range appends {
 				m, err := entity.NewMessage(enum.RoleUser, fmt.Sprintf("w%d-%d", w, i))
 				if err != nil {
 					t.Error(err)
@@ -1388,7 +1388,7 @@ func TestConcurrentSavesNeverTearMeta(t *testing.T) {
 	// tmp inode — unique staging names make that impossible.
 	var wg sync.WaitGroup
 	barrier := make(chan struct{})
-	for w := 0; w < 2; w++ {
+	for w := range 2 {
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
@@ -1397,7 +1397,7 @@ func TestConcurrentSavesNeverTearMeta(t *testing.T) {
 				repo, conv = r2, small
 			}
 			<-barrier
-			for i := 0; i < 120; i++ {
+			for i := range 120 {
 				if err := repo.Save(t.Context(), conv); err != nil {
 					t.Logf("writer %d iteration %d: %v", w, i, err)
 				}

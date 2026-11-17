@@ -281,3 +281,21 @@ test('sheet Delete closes, then emits conversation-delete', () => {
   assert.equal(header._confirmingDelete, false);
   assert.equal(find(header.root, 'confirm'), null);
 });
+
+// A same-room metadata refresh (a turn finishing) must not throw away an
+// in-progress rename. The header is re-fed the conversation on every
+// terminal refresh; clearing the editor commits whatever was typed so far
+// and steals the caret. Only a different room may reset the editor.
+test('a same-room refresh preserves an in-progress rename draft', () => {
+  const header = makeHeader();
+  header._renaming = true;
+  header._render();
+  const input = find(header.root, 'rename-input');
+  assert.ok(input, 'rename input rendered');
+  input.value = 'typed but not submitted';
+  header.conversation = { id: 'c1', title: 'Hello', updatedAt: '2026-11-18T00:00:00Z' };
+  assert.equal(header._renaming, true);
+  const kept = find(header.root, 'rename-input');
+  assert.ok(kept, 'rename editor must survive the same-room refresh');
+  assert.equal(kept.value, 'typed but not submitted');
+});

@@ -2,6 +2,7 @@ package entity
 
 import (
 	"errors"
+	"maps"
 	"time"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
@@ -87,9 +88,7 @@ func (m Message) clone() Message {
 	out := m
 	if m.optionalContent != nil {
 		out.optionalContent = make(map[string]string, len(m.optionalContent))
-		for k, v := range m.optionalContent {
-			out.optionalContent[k] = v
-		}
+		maps.Copy(out.optionalContent, m.optionalContent)
 	}
 	return out
 }

@@ -73,14 +73,14 @@ func (g *gatedTool) Execute(ctx context.Context, _ entity.ToolCall, _ dservice.T
 // and records the last two message contents each call saw — where a
 // folded steer must sit relative to the context record trailing it.
 type scriptSvc struct {
-	calls   int32
+	calls   atomic.Int32
 	toolFor map[int32]string
 	seen    map[int32]string
 	prev    map[int32]string
 }
 
 func (s *scriptSvc) Send(_ context.Context, conv *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, _ event.TurnEventHandler) error {
-	n := atomic.AddInt32(&s.calls, 1)
+	n := s.calls.Add(1)
 	if s.seen != nil {
 		msgs := conv.Messages()
 		s.seen[n] = msgs[len(msgs)-1].Content()
@@ -610,7 +610,7 @@ func TestSteerReAcksDoNotJournal(t *testing.T) {
 	}
 	firstSeq := *f.Seq
 	// Retries: unsequenced replies, no journal growth.
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		sendCommand(t, ws, cmd)
 		f = readFrame(t, ws)
 		if f.Type != "turn.steer_ack" || f.Seq != nil {

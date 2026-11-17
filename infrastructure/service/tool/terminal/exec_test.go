@@ -492,10 +492,7 @@ type failingSpillWriter struct {
 
 func (w *failingSpillWriter) Write(p []byte) (int, error) {
 	w.calls++
-	n := len(p)
-	if n > w.accept {
-		n = w.accept
-	}
+	n := min(len(p), w.accept)
 	w.wrote += n
 	if w.err != nil {
 		return n, w.err

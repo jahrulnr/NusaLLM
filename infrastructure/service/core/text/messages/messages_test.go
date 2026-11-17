@@ -147,7 +147,9 @@ func TestMaxTokensOverride(t *testing.T) {
 	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
 		captured = decodeReq(t, r)
 		json.NewEncoder(w).Encode(map[string]any{
-			"id": "msg_1", "role": "assistant", "content": []any{}, "stop_reason": "end_turn",
+			"id": "msg_1", "role": "assistant",
+			"content":     []any{map[string]any{"type": "text", "text": "ok"}},
+			"stop_reason": "end_turn",
 		})
 	})
 	conv := newConv(t)
@@ -1028,5 +1030,38 @@ func TestUnaryErrorEnvelopeOn200Fails(t *testing.T) {
 	}
 	if last := conv.Last(); last != nil && last.Role() == enum.RoleAssistant {
 		t.Fatal("error envelope must not append an assistant message")
+	}
+}
+
+// Thinking is replay metadata and a collapsed UI block, never the
+// assistant's answer. A stream that ends after the thinking block with no
+// text and no tool use is an empty answer, not a successful turn.
+func TestStreamThinkingOnlyIsAnEmptyAnswer(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("" +
+			"event: message_start\n" +
+			"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"content\":[],\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}}\n\n" +
+			"event: content_block_start\n" +
+			"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n" +
+			"event: content_block_delta\n" +
+			"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"thinking only\"}}\n\n" +
+			"event: content_block_delta\n" +
+			"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"SIG9\"}}\n\n" +
+			"event: content_block_stop\n" +
+			"data: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+			"event: message_delta\n" +
+			"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":5,\"output_tokens\":4}}\n\n" +
+			"event: message_stop\n" +
+			"data: {\"type\":\"message_stop\"}\n\n"))
+	})
+	conv := newConv(t)
+	model, _ := entity.NewModel("claude-x", "test")
+	err := svc.Send(t.Context(), conv, gw, model, nil)
+	if err == nil {
+		t.Fatal("thinking-only stream must fail as an empty answer")
+	}
+	if last := conv.Last(); last != nil && last.Role() == enum.RoleAssistant {
+		t.Fatalf("thinking-only turn committed: %+v", last.OptionalContent())
 	}
 }

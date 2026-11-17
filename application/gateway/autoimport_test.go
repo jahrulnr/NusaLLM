@@ -44,7 +44,7 @@ func TestRefreshModelsMergesDiscovered(t *testing.T) {
 		ID:       "or",
 		Style:    enum.StyleCompletion,
 		Endpoint: "https://openrouter.ai/api",
-		ApiKey:   strptr("sk-or-literal"),
+		ApiKey:   new("sk-or-literal"),
 		Models:   []ModelInput{{ID: "a", ContextWindow: 64_000}},
 	}
 	if _, err := app.Upsert(t.Context(), in); err != nil {
@@ -179,7 +179,7 @@ func TestUpsertImportsCatalog(t *testing.T) {
 		ID:       "or",
 		Style:    enum.StyleCompletion,
 		Endpoint: "https://openrouter.ai/api",
-		ApiKey:   strptr("sk-or-literal"),
+		ApiKey:   new("sk-or-literal"),
 		Models:   []ModelInput{{ID: "a", ContextWindow: 64_000}},
 	}
 	out, err := app.Upsert(t.Context(), in)
@@ -305,11 +305,11 @@ func TestImportModelsConcurrentMergeWindow(t *testing.T) {
 	const goroutines, iterations = 8, 5
 	errs := make(chan error, goroutines*iterations)
 	var wg sync.WaitGroup
-	for g := 0; g < goroutines; g++ {
+	for g := range goroutines {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			for i := 0; i < iterations; i++ {
+			for i := range iterations {
 				var err error
 				if (n+i)%2 == 0 {
 					_, err = app.Upsert(t.Context(), in)

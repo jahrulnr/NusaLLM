@@ -289,28 +289,25 @@ func TestUserTurnKeepsInjectedToolEvidence(t *testing.T) {
 	}
 }
 
-// A system-role hydration record — the workspace pin — encodes as the
-// completed-call pair it records: a model turn of functionCall parts
-// answered by a user turn of functionResponse parts.
-func TestSystemHydrationEmitsCallPair(t *testing.T) {
+// A system-role hydration record — the workspace pin — carries no
+// provider signature, so the call-pair shape other wires use is a
+// guaranteed 400 here. Evidence hydrates as tagged user text instead:
+// signature-free, still marked untrusted, still reaching the model.
+func TestSystemHydrationEmitsTaggedEvidence(t *testing.T) {
 	msg, _ := entity.NewMessage(enum.RoleSystem, "")
 	call, _ := entity.NewToolCall("call_ws", "workspace", `{"path":"/srv/ws"}`, enum.TooltypeInjection)
 	call.SetStoredOutput("workspace changed to /srv/ws", "")
 	msg.AddToolCall(call)
 	contents := encodeMessage(msg, entity.Model{}, wire.MediaRoot{})
-	if len(contents) != 2 || contents[0].Role != "model" || contents[1].Role != "user" {
-		t.Fatalf("pin must emit model+user pair: %+v", contents)
+	if len(contents) != 1 || contents[0].Role != "user" {
+		t.Fatalf("hydration must ride one user turn: %+v", contents)
 	}
-	fc, ok := contents[0].Parts[0].(PartBody)
-	if !ok || fc.FunctionCall == nil || fc.FunctionCall.Name != "workspace" {
-		t.Fatalf("pin functionCall missing: %+v", contents[0].Parts)
+	p, ok := contents[0].Parts[0].(PartBody)
+	if !ok || p.FunctionCall != nil || p.FunctionResponse != nil {
+		t.Fatalf("hydration must not emit call parts: %+v", contents[0].Parts)
 	}
-	fr, ok := contents[1].Parts[0].(PartBody)
-	if !ok || fr.FunctionResponse == nil || fr.FunctionResponse.Name != "workspace" {
-		t.Fatalf("pin functionResponse missing: %+v", contents[1].Parts)
-	}
-	if !strings.Contains(string(fr.FunctionResponse.Response), "workspace changed to /srv/ws") {
-		t.Fatalf("pin output dropped: %s", fr.FunctionResponse.Response)
+	if !strings.Contains(p.Text, "workspace changed to /srv/ws") || !strings.Contains(p.Text, "<untrusted_tool") {
+		t.Fatalf("hydration evidence missing or untrusted tag dropped: %q", p.Text)
 	}
 }
 
@@ -708,5 +705,146 @@ func TestStreamResetAfterFinishReasonCommits(t *testing.T) {
 	}
 	if last := conv.Last(); last == nil || last.Content() != "hi" {
 		t.Fatalf("completed turn lost: %+v", conv.Last())
+	}
+}
+
+// A 200 with an empty candidate list is not a successful empty answer.
+// Native Gemini can answer this way when a request is malformed or a
+// safety layer strips everything; the caller needs a failure it can show.
+func TestStreamEmptyCandidatesFails(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: {\"candidates\":[],\"usageMetadata\":{\"promptTokenCount\":4}}\n\n"))
+	})
+
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(m)
+	model, _ := entity.NewModel("gemini-3-flash", "test")
+
+	err := svc.Send(t.Context(), conv, gw, model, nil)
+	if err == nil {
+		t.Fatal("empty candidate list must fail the send")
+	}
+	if code := apperror.As(err).StatusCode(); code != 502 {
+		t.Fatalf("empty candidates → %v (status %d), want 502", err, code)
+	}
+	if got := len(conv.Messages()); got != 1 {
+		t.Fatalf("empty candidate committed a message: %d messages", got)
+	}
+}
+
+// finishReason=SAFETY with no text is a blocked answer, not a successful
+// empty turn. The UI must receive a failure it can explain.
+func TestStreamSafetyWithoutTextFails(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: {\"promptFeedback\":{\"blockReason\":\"SAFETY\"},\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[]},\"finishReason\":\"SAFETY\"}]}\n\n"))
+	})
+
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(m)
+	model, _ := entity.NewModel("gemini-3-flash", "test")
+
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err == nil {
+		t.Fatal("safety-blocked stream must fail the send")
+	}
+	if got := len(conv.Messages()); got != 1 {
+		t.Fatalf("safety block committed a message: %d messages", got)
+	}
+}
+
+// The unary surface must make the same distinction.
+func TestUnarySafetyWithoutTextFails(t *testing.T) {
+	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"promptFeedback": map[string]any{"blockReason": "SAFETY"},
+			"candidates": []any{map[string]any{
+				"content":      map[string]any{"role": "model", "parts": []any{}},
+				"finishReason": "SAFETY",
+			}},
+		})
+	})
+
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(m)
+	model, _ := entity.NewModel("gemini-3-flash", "test")
+
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err == nil {
+		t.Fatal("safety-blocked unary response must fail the send")
+	}
+	if got := len(conv.Messages()); got != 1 {
+		t.Fatalf("safety block committed a message: %d messages", got)
+	}
+}
+
+// Gemini 3 rejects any replayed functionCall part without a
+// thoughtSignature (400 INVALID_ARGUMENT). Hydration records are
+// application-originated calls with no provider signature; encoding
+// them as a synthetic model turn therefore poisons every request.
+// Evidence must ride a surface that needs no signature, while still
+// reaching the model.
+func TestHydrationNeverEmitsUnsignedFunctionCall(t *testing.T) {
+	var captured map[string]any
+	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+		captured = decodeReq(t, r)
+		json.NewEncoder(w).Encode(okBody([]any{map[string]any{"text": "ok"}}))
+	})
+
+	conv := newConv(t)
+	sys, _ := entity.NewMessage(enum.RoleSystem, "")
+	call, _ := entity.NewToolCall("call_ws", "workspace", `{"path":"/srv/ws"}`, enum.TooltypeInjection)
+	call.SetStoredOutput("workspace changed to /srv/ws", "")
+	sys.AddToolCall(call)
+	conv.Append(sys)
+	user, _ := entity.NewMessage(enum.RoleUser, "hello")
+	conv.Append(user)
+
+	model, _ := entity.NewModel("gemini-3-flash", "test")
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	contents, _ := captured["contents"].([]any)
+	for _, raw := range contents {
+		c, _ := raw.(map[string]any)
+		if c["role"] != "model" {
+			continue
+		}
+		parts, _ := c["parts"].([]any)
+		for _, praw := range parts {
+			p, _ := praw.(map[string]any)
+			if p["functionCall"] == nil {
+				continue
+			}
+			if sig, _ := p["thoughtSignature"].(string); sig == "" {
+				t.Fatalf("model functionCall without thoughtSignature: %v", p)
+			}
+		}
+	}
+	if !strings.Contains(mustJSON(captured), "workspace changed to /srv/ws") {
+		t.Fatal("hydration evidence was dropped instead of moved to a signature-free surface")
+	}
+}
+
+// A candidate whose only parts are thoughts carries no answer. The
+// thought template is replay metadata (and the thinking block UI), not
+// assistant content; committing it as a successful STOP turn leaves a
+// bubble with no answer and no failure card.
+func TestStreamThoughtOnlyIsAnEmptyAnswer(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"thinking only\",\"thought\":true,\"thoughtSignature\":\"sig-thought\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":4}}\n\n"))
+	})
+	conv := newConv(t)
+	model, _ := entity.NewModel("gemini-3-flash", "test")
+	err := svc.Send(t.Context(), conv, gw, model, nil)
+	if err == nil {
+		t.Fatal("thought-only stream must fail as an empty answer")
+	}
+	if last := conv.Last(); last != nil && last.Role() == enum.RoleAssistant {
+		t.Fatalf("thought-only turn committed: %+v", last.OptionalContent())
 	}
 }

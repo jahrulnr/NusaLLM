@@ -137,9 +137,9 @@ func TestEditCompactedMessage(t *testing.T) {
 func TestEditPreemptsRunningSend(t *testing.T) {
 	release := make(chan struct{})
 	defer close(release)
-	var calls int32
+	var calls atomic.Int32
 	app, _ := fixture(t, func(w http.ResponseWriter, r *http.Request) {
-		if atomic.AddInt32(&calls, 1) == 2 {
+		if calls.Add(1) == 2 {
 			<-release // hold the second response — the send stays live
 		}
 		okHandler(w, r)
@@ -159,7 +159,7 @@ func TestEditPreemptsRunningSend(t *testing.T) {
 	// The second request blocks upstream — calls==2 means the send is
 	// provably holding the slot before the edit preempts it.
 	deadline := time.Now().Add(2 * time.Second)
-	for atomic.LoadInt32(&calls) != 2 {
+	for calls.Load() != 2 {
 		if time.Now().After(deadline) {
 			t.Fatal("second send did not reach the upstream")
 		}
@@ -412,11 +412,11 @@ func (b *blockingTool) Execute(ctx context.Context, _ entity.ToolCall, _ dservic
 
 // blockingScriptSvc scripts a stuck tool: first call demands the
 // "blocking" tool, any later call (the post-edit resend) answers "done".
-type blockingScriptSvc struct{ calls int32 }
+type blockingScriptSvc struct{ calls atomic.Int32 }
 
 func (s *blockingScriptSvc) Send(_ context.Context, conv *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, _ event.TurnEventHandler) error {
 	var m entity.Message
-	if atomic.AddInt32(&s.calls, 1) == 1 {
+	if s.calls.Add(1) == 1 {
 		m, _ = entity.NewMessage(enum.RoleAssistant, "need a tool")
 		tc, err := entity.NewToolCall("call_1", "blocking", "{}", enum.TooltypeOrigin)
 		if err != nil {

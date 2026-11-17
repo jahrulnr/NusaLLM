@@ -120,7 +120,9 @@ class WorkspacePicker extends Widget {
 
   _choose(workspace) {
     emit(this, 'workspace-change', { workspace });
-    this._closeMenu();
+    // A deliberate pick hands focus back to the trigger — the menu's
+    // DOM is about to die, and focus on a dead node drops to body.
+    this._closeMenu(true);
   }
 
   _renderMenu(menu) {

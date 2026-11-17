@@ -114,20 +114,14 @@ func (p *slashPalette) view(rows []commands.Info) string {
 	var b strings.Builder
 	// The selection must stay inside the visible window — scroll the
 	// window with it instead of letting the highlight walk off-screen.
-	start := p.selected - paletteMaxRows + 1
-	if start < 0 {
-		start = 0
-	}
+	start := max(p.selected-paletteMaxRows+1, 0)
 	if start+paletteMaxRows > len(rows) {
 		start = len(rows) - paletteMaxRows
 	}
 	if start < 0 {
 		start = 0
 	}
-	shown := len(rows) - start
-	if shown > paletteMaxRows {
-		shown = paletteMaxRows
-	}
+	shown := min(len(rows)-start, paletteMaxRows)
 	if start > 0 {
 		fmt.Fprintf(&b, "  %s↑ %d more%s\n", term.Dim, start, term.Reset)
 	}

@@ -169,12 +169,12 @@ func verifyPin(a valueobject.Attachment, raw []byte) error {
 
 // decodeDataURI extracts the base64 payload of a data: URI.
 func decodeDataURI(uri string) ([]byte, error) {
-	i := strings.Index(uri, ";base64,")
-	if i < 0 {
+	_, after, ok := strings.Cut(uri, ";base64,")
+	if !ok {
 		return nil, apperror.New(400, "invalid data URI",
 			fmt.Errorf("missing ;base64, marker"))
 	}
-	raw, err := base64.StdEncoding.DecodeString(uri[i+len(";base64,"):])
+	raw, err := base64.StdEncoding.DecodeString(after)
 	if err != nil {
 		return nil, apperror.New(400, "invalid data URI", err)
 	}
@@ -203,12 +203,12 @@ func ResolveBase64(a valueobject.Attachment, fileRoot MediaRoot) (data, format s
 	}
 	data, ok := strings.CutPrefix(u, "data:"+mt+";base64,")
 	if !ok {
-		i := strings.Index(u, ";base64,")
-		if i < 0 {
+		_, after, ok := strings.Cut(u, ";base64,")
+		if !ok {
 			return "", "", apperror.New(400, "invalid data URI",
 				fmt.Errorf("missing ;base64, marker"))
 		}
-		data = u[i+len(";base64,"):] // tolerate a mismatched declared mime
+		data = after // tolerate a mismatched declared mime
 	}
 	return data, FormatName(mt), nil
 }

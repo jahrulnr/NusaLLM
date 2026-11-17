@@ -136,25 +136,26 @@ func encodeMessage(m entity.Message, model entity.Model, fileRoot wire.MediaRoot
 		return append(items, toolResultItems(calls, model, fileRoot)...), nil
 	}
 
-	text := m.Content()
+	var text strings.Builder
+	text.WriteString(m.Content())
 	for _, tc := range injected {
 		if tc.HasOutput() {
-			text += "\n" + tc.OutputWithUntrustedTag() // already an untrusted-evidence envelope
+			text.WriteString("\n" + tc.OutputWithUntrustedTag()) // already an untrusted-evidence envelope
 		}
 	}
 
 	if m.Role() == enum.RoleAssistant {
-		items := assistantItems(m, text, origin)
+		items := assistantItems(m, text.String(), origin)
 		return append(items, toolResultItems(origin, model, fileRoot)...), nil
 	}
 
 	role := m.Role().String() // user/developer/system pass through as items
 	if len(m.Attachments()) == 0 {
-		return marshalItem(ItemBody{Type: "message", Role: role, Content: text})
+		return marshalItem(ItemBody{Type: "message", Role: role, Content: text.String()})
 	}
 	parts := []any{}
-	if text != "" {
-		parts = append(parts, PartBody{Type: "input_text", Text: text})
+	if text.String() != "" {
+		parts = append(parts, PartBody{Type: "input_text", Text: text.String()})
 	}
 	for _, a := range m.Attachments() {
 		parts = append(parts, attachmentPart(a, model, fileRoot))

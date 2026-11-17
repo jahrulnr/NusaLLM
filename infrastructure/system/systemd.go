@@ -27,8 +27,7 @@ var execCommand = func(name string, args ...string) ([]byte, int, error) {
 	if err == nil {
 		return out, 0, nil
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 		return out, exitErr.ExitCode(), nil
 	}
 	return out, -1, err

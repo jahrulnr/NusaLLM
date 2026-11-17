@@ -32,8 +32,7 @@ func (r LocalRunner) Run(ctx context.Context, command, workspace string, stdin i
 		return dservice.ProcessExit{}, err
 	}
 	err := cmd.Wait()
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 		if code := exitErr.ExitCode(); code > 0 {
 			return dservice.ProcessExit{Code: code}, nil
 		}

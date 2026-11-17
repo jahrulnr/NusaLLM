@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"runtime"
+	"time"
 )
 
 // HTTP status codes used across the codebase.
@@ -52,11 +53,17 @@ type IAppError interface {
 // shared status — an upstream 429 is a provider rate limit, a local 429
 // is a full queue.
 type AppError struct {
-	Code     int
-	Message  string
-	Cause    error
-	Caller   string
+	Code    int
+	Message string
+	Cause   error
+	Caller  string
+	// Upstream marks provider-originated failures so consumers can split a
+	// shared status — an upstream 429 is a provider rate limit, a local 429
+	// is a full queue.
 	Upstream bool
+	// RetryDelay is a provider-asked quiet (Retry-After), surfaced for the
+	// retry gate; 0 when the provider named none.
+	RetryDelay time.Duration
 }
 
 // New builds an AppError — code must be a valid HTTP status (100-599).
@@ -91,6 +98,11 @@ func (e *AppError) CalledAt() string   { return e.Caller }
 // IsUpstream reports whether the failure originated at the provider.
 func (e *AppError) IsUpstream() bool { return e.Upstream }
 
+// RetryAfter exposes the provider-asked wait so callers can route on it —
+// an adapter is the only layer that sees the header, so it carries the
+// delay here. 0 means the provider named none.
+func (e *AppError) RetryAfter() time.Duration { return e.RetryDelay }
+
 // Caused renders code + public message + internal cause for logs.
 func (e *AppError) Caused() string {
 	cause := e.Cause
@@ -107,6 +119,7 @@ func (e *AppError) ErrCause() error { return errors.New(e.Caused()) }
 func (e *AppError) CausedBy(err error) IAppError {
 	n := newAt(e.Code, e.Message, err, 2).(*AppError)
 	n.Upstream = e.Upstream
+	n.RetryDelay = e.RetryDelay
 	return n
 }
 

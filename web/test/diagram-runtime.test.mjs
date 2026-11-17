@@ -1,15 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateMermaidSource, renderMermaid } from '../lib/mermaid-runtime.js';
+import { validateDiagramSource, mountDiagram } from '../lib/diagram-runtime.js';
 
 // Allowed: ordinary diagram families and arrow/label shapes.
 const OK = [
   'flowchart TD\n  A[Parse] --> B{Valid?}\n  B -- yes --> C[Render]',
-  'flowchart LR\n  A <--> B\n  C <|-- D',
+  'flowchart LR\n  A <--> B\n  C <' + '|-- D',
   'flowchart TD\n  A -.-> B\n  A ==> B\n  A o-- B',
   'sequenceDiagram\n  participant U as User\n  U->>S: request\n  S-->>U: response',
   'stateDiagram-v2\n  [*] --> Idle\n  Idle --> Done: finish',
-  'classDiagram\n  Animal <|-- Duck\n  class Shape {\n    <<interface>>\n    +draw()\n  }',
+  'classDiagram\n  Animal <' + '|-- Duck\n  class Shape {\n    <<interface>>\n    +draw()\n  }',
   'erDiagram\n  CUSTOMER ||--o{ ORDER : places',
   'gantt\n  title Plan\n  section S\n  Task :2024-01-01, 3d',
   'flowchart TD\n  A["an image of a cat"] --> B["width < height"]',
@@ -18,7 +18,7 @@ const OK = [
 
 for (const src of OK) {
   test(`accepts safe source: ${src.split('\n')[0]}`, () => {
-    assert.equal(validateMermaidSource(src), true);
+    assert.equal(validateDiagramSource(src), true);
   });
 }
 
@@ -52,28 +52,51 @@ const BAD = [
 
 for (const [name, src] of BAD) {
   test(`rejects ${name}`, () => {
-    assert.equal(validateMermaidSource(src), false);
+    assert.equal(validateDiagramSource(src), false);
   });
 }
 
-// A stubbed global proves invalid jobs never reach mermaid.render —
-// the scratch DOM (where side effects happen) is never touched.
-test('invalid source rejects before mermaid.render is called', async () => {
-  let renderCalls = 0;
-  let initCalls = 0;
-  globalThis.mermaid = {
-    initialize() { initCalls++; },
-    render() { renderCalls++; return Promise.resolve({ svg: '<svg/>' }); },
+// A stubbed global proves invalid sources never reach pele.mount —
+// the engine is never touched — and that the mount options stay
+// locked (no links, no images, sanitize wired through).
+test('mount gate and locked options', () => {
+  let mountCalls = 0;
+  let seenOptions = null;
+  globalThis.pele = {
+    mount(el, source, options) {
+      mountCalls++;
+      seenOptions = options;
+      return { update() {}, refresh() {}, destroy() {}, result: { svg: '<svg/>' } };
+    },
   };
-  await assert.rejects(
-    () => renderMermaid('t-invalid', 'flowchart TD\n A["<img src=x>"] --> B'),
+  const el = {};
+  assert.throws(
+    () => mountDiagram(el, 'flowchart TD\n A["<img src=x>"] --> B'),
     /Diagram could not be rendered/,
   );
-  assert.equal(renderCalls, 0);
+  assert.equal(mountCalls, 0);
 
-  // And a valid source still goes through (queue unpoisoned).
-  const { svg } = await renderMermaid('t-valid', 'flowchart TD\n A-->B');
-  assert.equal(svg, '<svg/>');
-  assert.equal(renderCalls, 1);
-  delete globalThis.mermaid;
+  const hooks = { sanitize: () => null, onError() {}, onRender() {} };
+  const handle = mountDiagram(el, 'flowchart TD\n A-->B', hooks);
+  assert.equal(mountCalls, 1);
+  assert.equal(handle.result.svg, '<svg/>');
+  assert.equal(seenOptions.links, false);
+  assert.equal(seenOptions.images, false);
+  assert.equal(seenOptions.limit, 100 * 1024);
+  assert.equal(seenOptions.zoom.always, true);
+  assert.equal(typeof seenOptions.sanitize, 'function');
+  // The widget's hooks pass through untouched — verdict reporting is
+  // pele's onError/onRender, not thrown errors.
+  assert.equal(typeof seenOptions.onError, 'function');
+  assert.equal(typeof seenOptions.onRender, 'function');
+  delete globalThis.pele;
+});
+
+// Without the vendored global the seam fails clearly.
+test('missing pele global throws unavailable', () => {
+  delete globalThis.pele;
+  assert.throws(
+    () => mountDiagram({}, 'flowchart TD\n A-->B'),
+    /Diagram runtime is unavailable/,
+  );
 });

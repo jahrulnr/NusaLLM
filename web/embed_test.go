@@ -23,10 +23,10 @@ func TestAssetsContainEverySurface(t *testing.T) {
 		"lib/status-orb.js",
 		"lib/status-orb.css",
 		"lib/tool-phase.js",
-		"lib/mermaid-runtime.js",
-		"vendor/mermaid/mermaid.min.js",
-		"vendor/mermaid/LICENSE",
-		"vendor/mermaid/README.md",
+		"lib/diagram-runtime.js",
+		"vendor/pele/pele.global.js",
+		"vendor/pele/LICENSE",
+		"vendor/pele/README.md",
 	}
 	widgets := []string{
 		"app-shell", "nav-sidebar", "conversation-header", "message-thread",
@@ -71,11 +71,11 @@ func TestIndexIsWrapperOnly(t *testing.T) {
 		t.Errorf("index.html carries application markup %q — widgets own that", m)
 	}
 	// The pinned vendor bundle is a classic script that must register
-	// globalThis.mermaid before the app module evaluates.
-	vendor := strings.Index(html, `src="/vendor/mermaid/mermaid.min.js"`)
+	// globalThis.pele before the app module evaluates.
+	vendor := strings.Index(html, `src="/vendor/pele/pele.global.js"`)
 	app := strings.Index(html, `src="/app.js"`)
 	if vendor < 0 || app < 0 || vendor > app {
-		t.Errorf("index.html must load the vendored mermaid bundle before /app.js")
+		t.Errorf("index.html must load the vendored diagram bundle before /app.js")
 	}
 }
 

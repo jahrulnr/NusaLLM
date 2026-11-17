@@ -15,7 +15,7 @@ import (
 func TestBrowseTruncated(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	root := t.TempDir()
-	for i := 0; i < maxEntries+3; i++ {
+	for i := range maxEntries + 3 {
 		if err := os.Mkdir(filepath.Join(root, fmt.Sprintf("dir%05d", i)), 0o755); err != nil {
 			t.Fatalf("mkdir: %v", err)
 		}

@@ -61,6 +61,10 @@ class ModelPicker extends Widget {
       document.removeEventListener('pointerdown', this._dismiss, true);
       this._dismiss = null;
     }
+    if (this._esc) {
+      document.removeEventListener('keydown', this._esc, true);
+      this._esc = null;
+    }
     if (this._reclamp) {
       window.removeEventListener('resize', this._reclamp);
       this._reclamp = null;
@@ -106,9 +110,15 @@ class ModelPicker extends Widget {
       e.preventDefault();
       this._closeMenu(true);
     } else if (e.key === 'Tab') {
-      // Tab must move focus normally — never trap it. Close after the
-      // focus has moved out.
-      setTimeout(() => this._closeMenu(false), 0);
+      // Tab must move focus normally — never trap it. The popover
+      // closes only once focus has actually left: tabbing from the
+      // search field onto the results is inside, not away. (Focus
+      // inside the shadow resolves to the host at document level.)
+      setTimeout(() => {
+        const a = document.activeElement;
+        if (a === this || (a && this.root.contains(a))) return;
+        this._closeMenu(false);
+      }, 0);
     }
   }
 
@@ -235,7 +245,9 @@ class ModelPicker extends Widget {
     const pick = (provider) => {
       draft.provider = provider;
       this._emitDraft();
-      this._closeMenu();
+      // The picked node dies with the menu — hand focus back to the
+      // trigger or a keyboard user lands on the page body.
+      this._closeMenu(true);
     };
     menu.append(this._item('Auto', 'gateway picks the upstream', () => pick(''),
       !!(this._selection && this._selection.route === draft.route
@@ -320,6 +332,18 @@ class ModelPicker extends Widget {
     };
     this._dismiss = dismiss;
     document.addEventListener('pointerdown', dismiss, true);
+    // The menu's own keydown only sees Escape while focus is inside it;
+    // a pick re-renders the menu and drops focus back to the body, so
+    // the close must also live at document level. Capture phase keeps
+    // inner handlers that close the menu idempotent.
+    const esc = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        this._closeMenu(true);
+      }
+    };
+    this._esc = esc;
+    document.addEventListener('keydown', esc, true);
     const reclamp = () => { if (this._menuEl) this._clampMenu(this._menuEl); };
     this._reclamp = reclamp;
     window.addEventListener('resize', reclamp);

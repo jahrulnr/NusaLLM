@@ -47,10 +47,8 @@ func TestReloadConfigConcurrentWithSend(t *testing.T) {
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < rounds; i++ {
+	wg.Go(func() {
+		for range rounds {
 			select {
 			case <-stop:
 				return
@@ -63,13 +61,11 @@ func TestReloadConfigConcurrentWithSend(t *testing.T) {
 			}
 			writeConversationConfig(t, cfgPath, next)
 		}
-	}()
+	})
 
 	for range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; i < rounds; i++ {
+		wg.Go(func() {
+			for range rounds {
 				select {
 				case <-stop:
 					return
@@ -79,7 +75,7 @@ func TestReloadConfigConcurrentWithSend(t *testing.T) {
 				_, _ = app.CanCompact(t.Context(), "race-room")
 				_, _ = app.ToolSchemas(context.Background(), "")
 			}
-		}()
+		})
 	}
 
 	wg.Wait()

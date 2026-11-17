@@ -1,9 +1,7 @@
 import { Widget, el, clear } from '../../lib/dom.js';
-import { renderMermaid } from '../../lib/mermaid-runtime.js';
+import { validateDiagramSource, mountDiagram } from '../../lib/diagram-runtime.js';
 
 const DEBOUNCE_MS = 180;
-const MIN_SCALE = 0.6;
-const MAX_SCALE = 2.0;
 const BANNED_TAGS = new Set([
   'script', 'foreignobject', 'iframe', 'object', 'embed',
   'image', 'audio', 'video', 'canvas',
@@ -16,62 +14,15 @@ const BANNED_TAGS = new Set([
 // sanitizeSvg scrubs a detached, already-parsed SVG document's root:
 // banned elements out, <a> unwrapped (children kept), on* handlers and
 // non-local href/url() references stripped. Returns the imported root
-// or null when the input isn't a usable <svg> document. Exported for
-// fixture verification — this is the defense-in-depth layer on top of
-// Mermaid's strict mode, which already rejects click directives.
+// or null when the input isn't a usable <svg> document. Pele feeds
+// every render through this hook before insertion — defense-in-depth
+// on top of its own escaping, which the locked options extend by
+// disabling links and images entirely.
 export function sanitizeSvg(svgText) {
   const doc = new DOMParser().parseFromString(svgText, 'image/svg+xml');
   const rootEl = doc.documentElement;
   if (!rootEl || rootEl.localName.toLowerCase() !== 'svg' || doc.querySelector('parsererror')) {
     return null;
-  }
-
-  // Mermaid still emits <foreignObject> labels even with htmlLabels off
-  // (each sits in a translated <g class="label">). Converting them to
-  // SVG-native <text> keeps node labels visible without allowing HTML.
-  for (const fo of [...rootEl.querySelectorAll('foreignObject')]) {
-    const lines = [];
-    let cur = '';
-    const flush = () => {
-      const t = cur.replace(/\s+/g, ' ').trim();
-      if (t) lines.push(t);
-      cur = '';
-    };
-    const walk = (el) => {
-      for (const child of el.childNodes) {
-        if (child.nodeType === 3) { cur += child.textContent; continue; }
-        const tag = (child.localName || '').toLowerCase();
-        if (tag === 'br') flush();
-        else { walk(child); if (tag !== 'span' && tag !== 'a' && tag !== 'b' && tag !== 'i' && tag !== 'em' && tag !== 'strong') flush(); }
-      }
-    };
-    walk(fo); flush();
-    if (!lines.length) { fo.remove(); continue; }
-
-    const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
-    const cx = num(fo.getAttribute('x')) + num(fo.getAttribute('width')) / 2;
-    const cy = num(fo.getAttribute('y')) + num(fo.getAttribute('height')) / 2;
-    const lineHeight = 16;
-    const text = doc.createElementNS('http://www.w3.org/2000/svg', 'text');
-    text.setAttribute('x', String(cx));
-    text.setAttribute('y', String(cy));
-    text.setAttribute('text-anchor', 'middle');
-    text.setAttribute('dominant-baseline', 'middle');
-    text.setAttribute('fill', '#ece9df');
-    text.setAttribute('font-family', 'Iosevka, JetBrains Mono, SFMono-Regular, Consolas, monospace');
-    text.setAttribute('font-size', '14');
-    if (lines.length === 1) {
-      text.textContent = lines[0];
-    } else {
-      lines.forEach((line, i) => {
-        const tspan = doc.createElementNS('http://www.w3.org/2000/svg', 'tspan');
-        tspan.setAttribute('x', String(cx));
-        tspan.setAttribute('dy', i === 0 ? String(-(lines.length - 1) * lineHeight / 2) : String(lineHeight));
-        tspan.textContent = line;
-        text.append(tspan);
-      });
-    }
-    fo.replaceWith(text);
   }
 
   // Drop banned elements; unwrap <a> so click directives can never
@@ -120,53 +71,47 @@ export function sanitizeSvg(svgText) {
   return document.importNode(rootEl, true);
 }
 
-// Mermaid diagram block: debounced render through the serialized
-// runtime, zoom controls, collapsible source, and a strict-scrubbed
-// SVG viewport that never widens the page.
+// Mermaid-syntax diagram block: source debounces into a Pele mount
+// that owns the canvas — adapting layout to the container width,
+// re-rendering on resize, supplying zoom/pan controls, and reporting
+// draw failures through onError. A rejected update never clears the
+// last good diagram; collapsible source is always available.
 class MermaidDiagram extends Widget {
   static stylesheet = new URL('./mermaid-diagram.css', import.meta.url);
 
   constructor() {
     super();
     this._source = '';
-    this._renderedSource = null;
-    this._gen = 0;
+    this._mount = null;
+    this._mounting = false;
     this._timer = 0;
-    this._scale = 1;
-    this._renderCounter = 0;
     this._build();
     this._setStatus('waiting', 'Waiting for diagram');
   }
 
   disconnectedCallback() {
     clearTimeout(this._timer);
-    this._gen++; // suppress any in-flight result for a detached widget
+    // destroy() stops Pele's observers but leaves the markup; the
+    // canvas is ours, so the stale drawing goes with the handle.
+    try { this._mount?.destroy(); }
+    finally { this._mount = null; clear(this.canvas); }
   }
 
   connectedCallback() {
-    // A render that resolved while detached left the canvas empty —
-    // recover it on reattach instead of leaving a stuck status.
-    if (this._source && !this._renderedSource && !this.canvas.firstChild) {
-      const gen = ++this._gen;
-      this._setStatus('rendering', 'Rendering');
-      clearTimeout(this._timer);
-      this._timer = setTimeout(() => this._renderDiagram(gen), 0);
+    // The mount was destroyed on detach — redraw from the kept source.
+    if (this._source && !this._mount && this.isConnected) {
+      this._schedule(0);
     }
   }
 
   // Assigning the same source is a no-op; a new source debounces into
-  // a serialized render and resets zoom.
+  // a mount update.
   set source(v) {
     const s = String(v ?? '');
     if (s === this._source) return;
     this._source = s;
-    this._scale = 1;
-    this._applyZoom();
     this._setSourceBlock();
-    clearTimeout(this._timer);
-    const gen = ++this._gen;
-    this._setStatus('rendering', this._renderedSource == null ? 'Rendering' : 'Updating…');
-    this._timer = setTimeout(() => this._renderDiagram(gen), DEBOUNCE_MS);
+    this._schedule(DEBOUNCE_MS);
   }
 
   _build() {
@@ -177,18 +122,6 @@ class MermaidDiagram extends Widget {
       class: 'status', role: 'status', 'aria-live': 'polite',
     });
     const badge = el('span', { class: 'lang', text: 'mermaid' });
-    this.zoomOut = el('button', {
-      class: 'ctl', type: 'button', 'aria-label': 'Zoom out', text: '−',
-      onclick: () => this._zoomBy(-0.2),
-    });
-    this.zoomFit = el('button', {
-      class: 'ctl wide', type: 'button', 'aria-label': 'Fit diagram', text: 'Fit',
-      onclick: () => this._zoomFit(),
-    });
-    this.zoomIn = el('button', {
-      class: 'ctl', type: 'button', 'aria-label': 'Zoom in', text: '+',
-      onclick: () => this._zoomBy(0.2),
-    });
     const copy = el('button', {
       class: 'ctl wide', type: 'button', 'aria-label': 'Copy diagram source',
       onclick: () => this._copy(copy),
@@ -197,13 +130,16 @@ class MermaidDiagram extends Widget {
     this.root.append(el('div', { class: 'chrome' }, [
       badge, this.statusEl,
       el('span', { class: 'chrome-gap' }),
-      el('div', { class: 'controls' }, [this.zoomOut, this.zoomFit, this.zoomIn, copy]),
+      el('div', { class: 'controls' }, [copy]),
     ]));
 
+    // role=group keeps the region named without making pele's
+    // interactive zoom controls presentational to assistive tech.
     this.viewport = el('div', {
-      class: 'viewport', role: 'img', 'aria-label': 'Rendered diagram',
+      class: 'viewport', role: 'group', 'aria-label': 'Rendered diagram',
       tabindex: '0',
     });
+    // Pele owns everything inside the canvas leaf.
     this.canvas = el('div', { class: 'canvas' });
     this.viewport.append(this.canvas);
 
@@ -226,69 +162,64 @@ class MermaidDiagram extends Widget {
     this.statusEl.dataset.kind = kind;
   }
 
-  _zoomBy(d) {
-    this._scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, this._scale + d));
-    this._applyZoom();
+  _schedule(delay) {
+    this._setStatus('rendering', this._mount?.result ? 'Updating…' : 'Rendering');
+    clearTimeout(this._timer);
+    this._timer = setTimeout(() => this._render(), delay);
   }
 
-  _zoomFit() {
-    this._scale = 1;
-    this._applyZoom();
-    this.viewport.scrollLeft = 0;
-    this.viewport.scrollTop = 0;
-  }
-
-  _applyZoom() {
-    if (!this.canvas) return;
-    this.canvas.style.transform = `scale(${this._scale})`;
-    this.canvas.style.transformOrigin = '0 0';
-    // Transforms don't grow the scroll box — size the canvas to the
-    // scaled diagram so the viewport can scroll the zoomed extent.
-    if (this._baseW && this._baseH) {
-      this.canvas.style.width = `${this._baseW * this._scale}px`;
-      this.canvas.style.height = `${this._baseH * this._scale}px`;
-    }
-  }
-
-  async _copy(btn) {
-    const label = btn.querySelector('.copy-label');
-    try {
-      await navigator.clipboard.writeText(this._source);
-      label.textContent = 'Copied';
-    } catch {
-      label.textContent = 'Copy failed';
-    }
-    setTimeout(() => { if (label.isConnected) label.textContent = 'Copy source'; }, 1400);
-  }
-
-  async _renderDiagram(gen) {
+  _render() {
+    if (!this.isConnected) return;
     const src = this._source;
+    // An invalid update never reaches the engine — the last good
+    // diagram stays put, or the fallback stands when nothing drew yet.
+    if (!validateDiagramSource(src)) { this._fail(); return; }
     try {
-      const { svg } = await renderMermaid(`nusa-mmd-${++this._renderCounter}-${gen}`, src);
-      if (gen !== this._gen || !this.isConnected) return; // stale/async result
-      const clean = sanitizeSvg(svg);
-      if (!clean) throw new Error('unusable svg');
+      if (this._mount) {
+        // update() no-ops silently on unchanged source, so a
+        // re-emitted identical block would leave the status stuck at
+        // 'Updating…' — restore the verdict from the handle instead.
+        if (this._mount.source !== src) { this._mount.update(src); return; }
+        if (this._mount.error) this._fail();
+        else this._setStatus('ready', 'Ready');
+        return;
+      }
       clear(this.canvas);
-      this.canvas.append(clean);
-      this._renderedSource = src;
-      // Measure intrinsic size for the zoomed scroll box.
-      let w = 0; let h = 0;
-      try { const b = clean.getBBox(); w = b.width; h = b.height; } catch { /* not rendered yet */ }
-      if ((!w || !h) && clean.viewBox && clean.viewBox.baseVal) {
-        w = clean.viewBox.baseVal.width; h = clean.viewBox.baseVal.height;
-      }
-      this._baseW = w; this._baseH = h;
-      this._applyZoom();
-      this._setStatus('ready', 'Ready');
+      // onError/onRender fire synchronously inside mount() — before
+      // the handle comes back — so _mounting marks the canvas as
+      // engine-owned while the call is in flight.
+      this._mounting = true;
+      this._mount = mountDiagram(this.canvas, src, {
+        sanitize: (svg) => {
+          const clean = sanitizeSvg(svg);
+          if (!clean) throw new Error('unusable svg');
+          return clean;
+        },
+        onRender: () => this._setStatus('ready', 'Ready'),
+        onError: () => this._fail(),
+      });
+      this._mounting = false;
     } catch {
-      if (gen !== this._gen || !this.isConnected) return;
-      if (this._renderedSource != null) {
-        // Keep the last valid diagram — the stream may still be typing.
-        this._setStatus('waiting', 'Waiting for complete diagram');
-      } else {
-        this._showFallback();
-      }
+      this._mounting = false;
+      this._fail();
     }
+  }
+
+  // Failure surface: whenever Pele owns the canvas its own display
+  // stands — a dimmed last-good diagram or the inline parse problem —
+  // and the status only needs the verdict. Our own fallback note is
+  // for the case where nothing was ever mounted (preflight rejects,
+  // missing engine).
+  _fail() {
+    if (this._mount || this._mounting) {
+      const keep = !!this._mount?.result;
+      this._setStatus(
+        keep ? 'waiting' : 'error',
+        keep ? 'Waiting for complete diagram' : 'Diagram could not be rendered',
+      );
+      return;
+    }
+    this._showFallback();
   }
 
   _showFallback() {
@@ -301,6 +232,17 @@ class MermaidDiagram extends Widget {
       }),
     ]));
     this._setStatus('error', 'Diagram could not be rendered');
+  }
+
+  async _copy(btn) {
+    const label = btn.querySelector('.copy-label');
+    try {
+      await navigator.clipboard.writeText(this._source);
+      label.textContent = 'Copied';
+    } catch {
+      label.textContent = 'Copy failed';
+    }
+    setTimeout(() => { if (label.isConnected) label.textContent = 'Copy source'; }, 1400);
   }
 }
 

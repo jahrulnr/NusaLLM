@@ -29,7 +29,7 @@ class FakeEl {
   fire(type) {
     for (const fn of this.listeners[type] || []) fn({ target: this, preventDefault() {} });
   }
-  focus() {}
+  focus() { globalThis.document.activeElement = this; }
   getBoundingClientRect() {
     return { left: BOUNDS_LEFT, top: 0, right: BOUNDS_LEFT + MENU_WIDTH, bottom: 40, width: MENU_WIDTH, height: 40 };
   }
@@ -171,6 +171,28 @@ test('closing the menu removes the resize listener', () => {
     sheetMatches = true;
     fireResize();
     assert.equal(find(picker.root, 'menu'), null);
+  } finally {
+    picker.disconnectedCallback();
+    sheetMatches = false;
+  }
+});
+
+
+// Choosing a folder closes the popup and replaces its DOM. Focus must
+// return to the picker trigger, not fall to the page body — otherwise a
+// keyboard user loses their place and must tab from the top again.
+test('choosing a folder returns focus to the trigger', () => {
+  sheetMatches = false;
+  const picker = openPicker();
+  try {
+    picker._browse = { path: '/tmp/proj', roots: [], entries: [] };
+    picker._render();
+    const use = find(picker.root, 'ws-choose');
+    assert.ok(use, 'Use current folder button rendered');
+    use.focus();
+    assert.equal(globalThis.document.activeElement, use);
+    picker._choose('/tmp/proj');
+    assert.equal(globalThis.document.activeElement, picker.trigger);
   } finally {
     picker.disconnectedCallback();
     sheetMatches = false;

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/atotto/clipboard"
@@ -37,12 +38,12 @@ func (c *CopyCommand) Execute(ctx context.Context, _ string, emitter dservice.Co
 	if err != nil {
 		return err
 	}
-	for i := len(messages) - 1; i >= 0; i-- {
-		if content := messages[i].Content(); messages[i].Role() == enum.RoleAssistant && content != "" {
+	for _, message := range slices.Backward(messages) {
+		if content := message.Content(); message.Role() == enum.RoleAssistant && content != "" {
 			if err := clipboard.WriteAll(content); err != nil {
 				return fmt.Errorf("clipboard unavailable: %w", err)
 			}
-			c.h.Write(emitter, "copied %d bytes from %s\n", len(content), messages[i].ID())
+			c.h.Write(emitter, "copied %d bytes from %s\n", len(content), message.ID())
 			return nil
 		}
 	}

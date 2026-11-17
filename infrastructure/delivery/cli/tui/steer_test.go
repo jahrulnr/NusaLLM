@@ -36,13 +36,13 @@ import (
 type gatedToolSvc struct {
 	entered  chan struct{}
 	release  chan struct{}
-	calls    int32
+	calls    atomic.Int32
 	lastSeen string
 	prevSeen string
 }
 
 func (s *gatedToolSvc) Send(ctx context.Context, conv *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, _ event.TurnEventHandler) error {
-	n := atomic.AddInt32(&s.calls, 1)
+	n := s.calls.Add(1)
 	var m entity.Message
 	if n == 1 {
 		close(s.entered)
@@ -76,13 +76,13 @@ func (s *gatedToolSvc) Send(ctx context.Context, conv *aggregate.Conversation, _
 type gatedTextSvc struct {
 	entered  chan struct{}
 	release  chan struct{}
-	calls    int32
+	calls    atomic.Int32
 	lastSeen string
 	prevSeen string
 }
 
 func (s *gatedTextSvc) Send(ctx context.Context, conv *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, _ event.TurnEventHandler) error {
-	n := atomic.AddInt32(&s.calls, 1)
+	n := s.calls.Add(1)
 	if n == 1 {
 		close(s.entered)
 		select {

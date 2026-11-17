@@ -101,7 +101,16 @@ class AppShell extends Widget {
     this._gates = new Map();
     this.compactPending = new Set(); // room ids with a compact request in flight
     this.generation = 0;        // stale-response token
-    this.sidebarOpen = matchMedia('(min-width: 761px)').matches;
+    // The open rail is part of the desktop layout; on a phone the same
+    // state is a dismissible overlay. Crossing the breakpoint snaps the
+    // state to the layout rather than leaving a scrimless drawer up —
+    // the sync only runs on explicit toggles, not on viewport changes.
+    this._wideMq = matchMedia('(min-width: 761px)');
+    this.sidebarOpen = this._wideMq.matches;
+    this._wideMq.addEventListener('change', () => {
+      this.sidebarOpen = this._wideMq.matches;
+      this._syncSidebar();
+    });
     this.settingsOpen = false;
 
     this._build();
@@ -523,8 +532,21 @@ class AppShell extends Widget {
     this.viewLoading = false;
     this.conversation = null;
     this.messages = [];
+    // A fresh view owns no load — a failed select() lands here from
+    // its catch, and the generation bump means the load's finally can
+    // no longer clear the flag itself.
+    this.thread.loading = false;
     this._setHash('');
     this.sidebar.activeId = null;
+    // Landing on a fresh view is a navigation: dismiss the phone overlay
+    // the same way select() does, or the drawer hides the empty room.
+    if (matchMedia('(max-width: 760px)').matches) {
+      this.sidebarOpen = false;
+      this._syncSidebar();
+    }
+    // A new browsing context — a leftover filter would keep hiding the
+    // room after its first send lands it in the rail.
+    this.sidebar.query = '';
     this.header.conversation = null;
     this._syncCompact();
     this.thread.hasConversation = false;
@@ -578,12 +600,15 @@ class AppShell extends Widget {
   }
 
   _syncComposer() {
-    // A fresh room needs an explicit model pick; an existing room can
-    // ride its own binding — but never while its load is in flight,
-    // or the previous room's binding would ride a send into the new one.
-    const canSend = !this.viewLoading && (this.activeId
-      ? true
-      : this._usable(this.selection));
+    // Every send dispatches with the current selection. A pick arms
+    // Send when it resolves in the gateway list, or when it IS the
+    // loaded room's own persisted binding — that binding is
+    // server-authoritative, the local gateway catalog can't veto it
+    // (the picker still flags it stale for the user to re-pick).
+    const sel = this.selection;
+    const bound = !!(sel && this.conversation &&
+      sel.route === this.conversation.route && sel.modelId === this.conversation.modelId);
+    const canSend = !this.viewLoading && !!(sel && (bound || this._usable(sel)));
     this.composer.canSend = canSend;
     this.composer.selection = this.selection;
     const cmd = this._viewCommand();
@@ -626,11 +651,13 @@ class AppShell extends Widget {
       !this.viewLoading && this.socket.state === 'open' && !g.pending;
     // Enter captures locally whenever dispatch can't happen now:
     // a command gating this view's room, a backlog, an offline socket,
-    // or a refresh barrier for this view. A bare pause is no reason —
-    // fresh lines are not held.
+    // or a refresh barrier for this view. A bare pause backed by a
+    // parked failure card is no reason — the card already owns the
+    // aftermath, so fresh lines are not held.
     this.composer.queueMode = this._commandGates(viewKey) ||
       this.socket.state !== 'open' ||
       hasQueuedForRoom(this.queue, viewKey) ||
+      this._heldOwnsLane(viewKey) ||
       g.required || g.pending > 0 || g.failed;
     this._syncFailed();
   }
@@ -914,6 +941,16 @@ class AppShell extends Widget {
 
   // --- commands ---------------------------------------------------------
 
+  // Whether a held lane still owns this room's ordering. The pause
+  // after a failed turn protects the aftermath it captured — while no
+  // failure card surfaces that aftermath on the thread, the hold IS
+  // the unresolved state and fresh input joins it in order. Once the
+  // failed turn parked its card, the card is the failure's home and
+  // the hold is just the user's own backlog — new intent dispatches.
+  _heldOwnsLane(roomKey) {
+    return hasHeldForRoom(this.queue, roomKey) && !this.failedTurns.has(roomKey);
+  }
+
   // Enter routes one submission through the single dispatch gate: a
   // dispatchable view sends it now; anything else — busy, paused,
   // backed-up, refresh barrier, offline — captures it locally for the
@@ -922,10 +959,25 @@ class AppShell extends Widget {
     const text = (content || '').trim();
     if (!text) return;
     const roomKey = this._viewRoomKey();
+    // A pre-open send deliberately keeps its draft on screen — a second
+    // Enter on that unchanged draft re-submits text the in-flight
+    // command already owns, never a new line. This is the same test
+    // turn.opened uses to drop the displayed copy: a send that left the
+    // draft at enqueue (fromQueue) and identical re-typed text are the
+    // user's own and flow through normally.
+    const cmd = this._viewCommand();
+    if (cmd?.kind === 'send' && !cmd.turnId && !cmd.fromQueue &&
+        cmd.content.trim() === text) return;
     // A paused queue doesn't hold fresh input — only undispatchable
-    // rooms or a waiting backlog capture the line locally.
-    if (!this._dispatchable(roomKey) || hasQueuedForRoom(this.queue, roomKey)) {
+    // rooms, a waiting backlog, or a hold that still owns the lane
+    // capture the line locally.
+    const heldLane = this._heldOwnsLane(roomKey);
+    if (!this._dispatchable(roomKey) || hasQueuedForRoom(this.queue, roomKey) || heldLane) {
       enqueue(this.queue, { text, room: roomKey, opts: this._captureOpts() });
+      // A capture into a held lane or behind a failed refresh waits for
+      // the same explicit Resume — it must never slip ahead of the
+      // head the pause already owns.
+      if (heldLane || this._gate(roomKey).failed) pauseQueue(this.queue, roomKey);
       this.composer.clear();
       this._syncQueue();
       this._drainQueue(roomKey);
@@ -970,6 +1022,10 @@ class AppShell extends Widget {
       stream: createTurnProjection(requestId),
     };
     this.commands.set(room, cmd);
+    // A send dispatched from the room on screen is an explicit request
+    // to see the new turn — re-pin the thread so the optimistic line
+    // and its reply never stream below the reader's viewport.
+    if (room === this._viewRoomKey()) this.thread.pinned = true;
     this._syncComposer();
     this._syncStream();
   }
@@ -1139,6 +1195,9 @@ class AppShell extends Widget {
   // did not already contain. A later identical line never qualifies,
   // and optimistic pending lines never qualify either.
   _retryMessageId(f) {
+    // A watched turn carries no submitted text — nothing to pin a
+    // retry to, whatever the history holds.
+    if (!f.text) return null;
     for (const m of this.messages) {
       if (m.role !== 'user' || m.userType === 'system' ||
           m.content !== f.text) continue;
@@ -1314,6 +1373,12 @@ class AppShell extends Widget {
   //   assistant finish 'tool_calls' dead — runTurn only ends a turn on
   //                                 a non-tool_calls step; a live turn
   //                                 would always continue past this
+  //   assistant finish 'interrupted' dead — the harness stamped the
+  //                                 partial it kept; nothing followed
+  //   assistant no finish reason    dead — a settled reply always
+  //                                 carries the provider's verdict; an
+  //                                 empty finish means the write was
+  //                                 cut short (restart, crash)
   //   assistant any other finish    settled — a normal tail
   //
   // "Real" skips optimistic pending-* lines and harness records:
@@ -1347,12 +1412,15 @@ class AppShell extends Widget {
       if (!lastReal && (realInput || m.role === 'assistant')) lastReal = m;
     }
     const dead = !!lastReal &&
-      (lastReal.role === 'user' || lastReal.finishReason === 'tool_calls');
+      (lastReal.role === 'user' ||
+        !lastReal.finishReason ||
+        lastReal.finishReason === 'tool_calls' ||
+        lastReal.finishReason === 'interrupted');
     if (!dead) {
       this._dismissedTails.delete(viewKey);
       return;
     }
-    if (this._dismissedTails.get(viewKey) === lastReal.id) return;
+    if (lastReal.id != null && this._dismissedTails.get(viewKey) === lastReal.id) return;
     this.failedTurns.set(viewKey, {
       title: 'Turn interrupted',
       note: 'This turn did not finish — its reply may be incomplete.',
@@ -1693,8 +1761,7 @@ class AppShell extends Widget {
           // regenerating, never rewinding later turns. A send that
           // never committed its user line has nothing to retry — its
           // text returns through the draft/queue paths instead.
-          const card = !cmd.watched &&
-              !(cmd.kind === 'send' && f.payload?.userMessagePersisted === false);
+          const card = !(cmd.kind === 'send' && f.payload?.userMessagePersisted === false);
           if (card) {
             this.failedTurns.set(roomKey, {
               text: cmd.content, note: msg,
@@ -1984,8 +2051,17 @@ class AppShell extends Widget {
         } else {
           outcome = 'stale'; // a newer refresh owns the room now
         }
-      } catch {
-        if (myEpoch === g.epoch) g.failed = true;
+      } catch (err) {
+        if (myEpoch === g.epoch) {
+          g.failed = true;
+          // A 404 on the room on screen means the room is gone (e.g.
+          // deleted in another tab) — keeping it bound would render a
+          // dead room behind a permanently failed refresh gate.
+          if (convId === this.activeId && err && err.status === 404) {
+            this._toast('error', 'Conversation', this._errText(err));
+            this.newConversation();
+          }
+        }
       } finally {
         // The room whose writers settled is the one whose lane frees —
         // even while it isn't on screen.

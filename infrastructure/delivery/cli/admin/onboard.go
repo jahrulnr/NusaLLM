@@ -86,7 +86,7 @@ func Onboard(stdin *os.File, stdout, stderr io.Writer) int {
 	if key != "" {
 		in2.ApiKey = &key
 	}
-	for _, m := range strings.Split(modelsRaw, ",") {
+	for m := range strings.SplitSeq(modelsRaw, ",") {
 		if m = strings.TrimSpace(m); m != "" {
 			in2.Models = append(in2.Models, appgateway.ModelInput{ID: m, Route: m})
 		}

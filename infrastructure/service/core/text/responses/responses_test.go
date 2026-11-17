@@ -830,3 +830,69 @@ func TestSystemHydrationEmitsCallPair(t *testing.T) {
 		t.Fatalf("pin output = %q", out)
 	}
 }
+
+// The Responses wire streams a refusal as its own delta event and repeats
+// it in the terminal item. The terminal decode already lands the text in
+// content, but the application projects live parts from delta events —
+// without a refusal delta the UI renders reasoning only and the answer
+// looks empty.
+func TestStreamRefusalEmitsDisplayDelta(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("event: response.refusal.delta\n"))
+		w.Write([]byte("data: {\"type\":\"response.refusal.delta\",\"output_index\":1,\"content_index\":0,\"delta\":\"I'm sorry, I can't help.\"}\n\n"))
+		w.Write([]byte("event: response.completed\n"))
+		w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"refusal\",\"refusal\":\"I'm sorry, I can't help.\"}]}]}}\n\n"))
+	})
+
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(m)
+	model, _ := entity.NewModel("gpt-x", "test")
+
+	var deltas strings.Builder
+	onEvent := func(e event.TurnEvent) {
+		if e.Kind() == enum.TurnEventDelta {
+			deltas.WriteString(e.Delta())
+		}
+	}
+	if err := svc.Send(t.Context(), conv, gw, model, onEvent); err != nil {
+		t.Fatal(err)
+	}
+	const want = "I'm sorry, I can't help."
+	if got := conv.Last().Content(); got != want {
+		t.Fatalf("terminal refusal content = %q, want %q", got, want)
+	}
+	if got := deltas.String(); got != want {
+		t.Fatalf("refusal delta not streamed: deltas = %q, want %q", got, want)
+	}
+}
+
+// A response whose output contains only a reasoning item has not answered.
+// The encrypted reasoning is replay metadata, not assistant text; a
+// completed status alone must not turn it into a successful empty bubble.
+func TestStreamReasoningOnlyIsAnEmptyAnswer(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("" +
+			"event: response.created\n" +
+			"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"status\":\"in_progress\"}}\n\n" +
+			"event: response.output_item.added\n" +
+			"data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\",\"summary\":[]}}\n\n" +
+			"event: response.reasoning_summary_text.delta\n" +
+			"data: {\"type\":\"response.reasoning_summary_text.delta\",\"output_index\":0,\"delta\":\"thinking only\"}\n\n" +
+			"event: response.output_item.done\n" +
+			"data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"thinking only\"}],\"encrypted_content\":\"ENC==\"}}\n\n" +
+			"event: response.completed\n" +
+			"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"output\":[{\"type\":\"reasoning\",\"id\":\"rs_1\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"thinking only\"}],\"encrypted_content\":\"ENC==\"}],\"usage\":{\"input_tokens\":5,\"output_tokens\":4}}}\n\n"))
+	})
+	conv := newConv(t)
+	model, _ := entity.NewModel("gpt-x", "test")
+	err := svc.Send(t.Context(), conv, gw, model, nil)
+	if err == nil {
+		t.Fatal("reasoning-only response must fail as an empty answer")
+	}
+	if last := conv.Last(); last != nil && last.Role() == enum.RoleAssistant {
+		t.Fatalf("reasoning-only turn committed: %+v", last.OptionalContent())
+	}
+}

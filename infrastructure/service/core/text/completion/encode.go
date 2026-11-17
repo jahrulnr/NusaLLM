@@ -142,18 +142,19 @@ func encodeMessage(m entity.Message, model entity.Model, fileRoot wire.MediaRoot
 	}
 
 	out := MessageBody{Role: m.Role().String()}
-	text := m.Content()
+	var text strings.Builder
+	text.WriteString(m.Content())
 	for _, tc := range injected {
 		if tc.HasOutput() {
-			text += "\n" + tc.OutputWithUntrustedTag() // already an untrusted-evidence envelope
+			text.WriteString("\n" + tc.OutputWithUntrustedTag()) // already an untrusted-evidence envelope
 		}
 	}
 
 	switch {
 	case len(m.Attachments()) > 0:
 		parts := []any{}
-		if text != "" {
-			parts = append(parts, map[string]any{"type": "text", "text": text})
+		if text.String() != "" {
+			parts = append(parts, map[string]any{"type": "text", "text": text.String()})
 		}
 		for _, a := range m.Attachments() {
 			if !model.AcceptsInput(a.Modality()) {
@@ -174,7 +175,7 @@ func encodeMessage(m entity.Message, model entity.Model, fileRoot wire.MediaRoot
 		}
 		out.Content = parts
 	default:
-		out.Content = text
+		out.Content = text.String()
 	}
 
 	for _, tc := range origin {

@@ -139,7 +139,7 @@ func ApplyDefaults(v any) {
 			continue
 		}
 		switch {
-		case f.Type() == reflect.TypeOf(Duration(0)):
+		case f.Type() == reflect.TypeFor[Duration]():
 			d, err := time.ParseDuration(tag)
 			if err != nil {
 				panic("config: bad default for " + sf.Name + ": " + tag)

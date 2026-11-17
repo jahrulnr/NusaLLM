@@ -17,12 +17,12 @@ via `embed.go` and served by the same Gin origin as the HTTP API and the
   `highlight.js` (pure syntax tokenizer), `turn-projection.js` (pure
   websocket-frame → ordered-segment projection), `pending-queue.js`
   (pure room-bound local queue + steering receipt tracker),
-  `mermaid-runtime.js` (init-once + serialized render queue for the
-  vendored bundle).
+  `diagram-runtime.js` (preflight gate + mount seam for the vendored
+  diagram bundle).
   All are DOM-free and unit tested under `web/test/`
   (`node --test web/test/*.test.mjs`).
-- `vendor/mermaid/` — pinned **Mermaid 11.17.2** standalone bundle
-  (MIT, see `vendor/mermaid/README.md`), loaded once as a classic
+- `vendor/pele/` — pinned **Pele 1.13.0** standalone global bundle
+  (MIT, see `vendor/pele/README.md`), loaded once as a classic
   script from the same origin. No CDN, no network.
 - `widgets/<name>/<name>.{js,css}` — autonomous custom elements with
   shadow DOM; every widget owns exactly its paired JS and CSS.
@@ -173,44 +173,51 @@ as plain escaped text and are never interpreted as Markdown.
 ### Diagrams
 
 A **closed** ```` ```mermaid ```` or ```` ```mmd ```` fence renders
-through `nusa-mermaid-diagram` using the vendored Mermaid 11.17.2
-bundle — offline, `securityLevel: 'strict'`, `suppressErrorRendering`,
-serialized renders. Supported families are whatever the pinned library
-ships (flowchart, sequence, state, class, ER, gantt, …); exotic or
-experimental types follow upstream support.
+through `nusa-mermaid-diagram` using the vendored **Pele 1.13.0**
+bundle — a synchronous, dependency-free renderer for Mermaid syntax
+(targeting the Mermaid 12.1 diagram families: flowchart, sequence,
+state, class, ER, gantt, …). Pele mounts into a dedicated canvas leaf:
+it adapts the layout to the container width (wide diagrams may switch
+to a vertical flow on narrow screens), re-renders on resize, supplies
+its own zoom/pan controls, and reads colors and fonts from `--pele-*`
+CSS variables so theme changes repaint without a re-render. Render
+options are locked in `lib/diagram-runtime.js` — links and images are
+disabled, source length is capped.
 
 Live text renders as Markdown on each animation frame. Completed blocks
 append to the DOM after a blank line; only the unfinished tail is reparsed
 as deltas arrive. An unterminated Mermaid fence renders as an ordinary
-code block badged `mermaid · streaming` — Mermaid never sees incomplete
-syntax. Render failures are nonfatal: the last valid diagram
+code block badged `mermaid · streaming` — the renderer never sees
+incomplete syntax. Render failures are nonfatal: the last valid diagram
 stays up with `Waiting for complete diagram`, or a `Diagram could not
-be rendered` fallback plus collapsible source. Zoom (0.6–2.0), Fit,
-Copy source, and a `Diagram source` details block are built in.
+be rendered` fallback plus collapsible source. Pele draws parse problems
+into the canvas as plain text and reports them through `onError`; the
+widget mirrors the verdict in its status line. Copy source and a
+`Diagram source` details block are built in.
 
-Safety starts *before* Mermaid runs: `validateMermaidSource` is a
-preflight gate applied before the source ever reaches Mermaid's scratch
-DOM (where a payload could fetch before any scrubber sees it). It fails
-closed on HTML-like tags (literal or entity-encoded), `click`
+Safety starts *before* Pele runs: `validateDiagramSource` is a
+preflight gate applied before the source ever reaches the engine. It
+fails closed on HTML-like tags (literal or entity-encoded), `click`
 directives, `img:`/`image:` resource shapes, external or dangerous
 resource syntax (`http(s)://`, protocol-relative `//`, `javascript:`,
 `data:`, `file:`, `blob:`, `url(`, `@import`), `%%{...}%%` config
 directives, leading YAML frontmatter, control bytes, and sources over
 100 KiB. Diagrams using those features intentionally fall back to the
 collapsible source block rather than rendering. Arrows (`-->`,
-`<-->`, `<|--`), class stereotypes (`<<interface>>`), and ordinary
-labels stay valid.
+`<-->`, inheritance markers), class stereotypes (`<<interface>>`),
+and ordinary labels stay valid.
 
-The returned SVG is parsed with `DOMParser`, never `innerHTML`, then
-scrubbed before insertion: `script`/`foreignObject`/`iframe`/`image`,
-SMIL retargeting (`set`/`animate*`/`mpath`, plus any element whose
-`attributeName` targets `href`/`src`), and metadata/loadable elements
+Every SVG Pele emits passes through `sanitizeSvg` before insertion —
+parsed with `DOMParser`, never `innerHTML`, then scrubbed:
+`script`/`foreignObject`/`iframe`/`image`, SMIL retargeting
+(`set`/`animate*`/`mpath`, plus any element whose `attributeName`
+targets `href`/`src`), and metadata/loadable elements
 (`feImage`/`cursor`/`link`/`meta`/`base`) are removed, `<a>` nodes are
 unwrapped, every `on*` attribute is stripped, `href` survives only as a
 local `#id`, and any external URL — `http(s)`, protocol-relative `//`,
 `data:`/`file:`/`blob:`, `@import`, non-local `url(...)` — is dropped
 from attributes and `<style>` blocks. A rendered diagram performs zero
-network requests, same-origin or otherwise (asserted in browser).
+network requests, same-origin or otherwise.
 
 ## Visible provider data
 

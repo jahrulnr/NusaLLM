@@ -229,7 +229,7 @@ func (r *ConversationRepository) RepairRewrite(ctx context.Context, convID strin
 		return fmt.Errorf("repair %s: rewrite payload is empty or incomplete", convID)
 	}
 	var lines [][]byte
-	for _, line := range bytes.Split(bytes.TrimSuffix(payload, []byte("\n")), []byte("\n")) {
+	for line := range bytes.SplitSeq(bytes.TrimSuffix(payload, []byte("\n")), []byte("\n")) {
 		var record lineRecord
 		if err := json.Unmarshal(line, &record); err != nil {
 			return fmt.Errorf("repair %s: rewrite payload has a corrupt line: %w", convID, err)

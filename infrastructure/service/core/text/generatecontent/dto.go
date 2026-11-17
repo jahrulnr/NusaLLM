@@ -1,5 +1,7 @@
 package textgeneratecontent
 
+import "maps"
+
 import "encoding/json"
 
 // Wire DTOs for the Gemini /v1beta/models/{model}:generateContent surface.
@@ -35,9 +37,7 @@ func (b RequestBody) MarshalJSON() ([]byte, error) {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return nil, err
 	}
-	for k, v := range b.Extra {
-		m[k] = v
-	}
+	maps.Copy(m, b.Extra)
 	return json.Marshal(m)
 }
 

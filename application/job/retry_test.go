@@ -177,3 +177,44 @@ func TestRunTurn413AfterEmittedDeltaPropagates(t *testing.T) {
 		t.Fatalf("compact-retry fired despite the emitted delta: calls=%d", svc.calls)
 	}
 }
+
+// A 429 carrying Retry-After is an instruction, not a hint we may ignore:
+// the next attempt must wait at least that long. The fixed sendRetryBackoff
+// (1ms in tests) must not fire first and hammer a provider that asked for
+// quiet.
+type retryAfterSvc struct {
+	calls int32
+}
+
+type retryAfterError struct {
+	err   error
+	delay time.Duration
+}
+
+func (e retryAfterError) Error() string             { return e.err.Error() }
+func (e retryAfterError) Unwrap() error             { return e.err }
+func (e retryAfterError) RetryAfter() time.Duration { return e.delay }
+
+func (s *retryAfterSvc) Send(_ context.Context, _ *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, _ event.TurnEventHandler) error {
+	atomic.AddInt32(&s.calls, 1)
+	return retryAfterError{err: apperror.New(429, "rate limited", errors.New("too many requests")), delay: 5 * time.Second}
+}
+
+func TestRunTurnHonorsRetryAfter(t *testing.T) {
+	d := Deps{
+		SummaryTool: mustSummaryTool(t),
+		Convs:       repoconversation.NewConversationRepository(t.TempDir()),
+		Config:      config.ConversationConfig{MaxTurnStep: 4},
+	}
+	conv := seedRoom(t, d.Convs, "room", "hi")
+	svc := &retryAfterSvc{}
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	err := d.runTurn(ctx, "room", conv, EnvironmentBundle{}, nil, entity.Model{}, svc, nil, nil)
+	if apperror.As(err).StatusCode() != 408 {
+		t.Fatalf("retry-after wait must end as a canceled turn, got %v", err)
+	}
+	if svc.calls != 1 {
+		t.Fatalf("calls = %d, want 1 — Retry-After forbids an early retry", svc.calls)
+	}
+}

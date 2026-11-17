@@ -114,8 +114,11 @@ export function takeQueued(q, room) {
   return e;
 }
 
+// Lines that would actually move on a drain — a held entry waits for
+// the room's explicit Resume, so it neither captures fresh input nor
+// counts as a backlog the queue could send.
 export function hasQueuedForRoom(q, room) {
-  return q.items.some((e) => e.state === QUEUED && e.room === room);
+  return q.items.some((e) => e.state === QUEUED && e.room === room && !e.held);
 }
 
 // Held entries are the ones Resume actually releases — a paused room

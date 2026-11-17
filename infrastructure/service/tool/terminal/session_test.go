@@ -194,10 +194,8 @@ func TestInteractSerializes(t *testing.T) {
 
 	var inFlight atomic.Int32
 	var wg sync.WaitGroup
-	for i := 0; i < 4; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 4 {
+		wg.Go(func() {
 			err := store.Interact(context.Background(), testConv, sess.ID(), func(dservice.TerminalSession) error {
 				if n := inFlight.Add(1); n != 1 {
 					t.Errorf("fn overlapped — %d interactions in flight", n)
@@ -209,7 +207,7 @@ func TestInteractSerializes(t *testing.T) {
 			if err != nil {
 				t.Errorf("interact: %v", err)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 }
@@ -264,7 +262,7 @@ func TestPruneSkipsHeldInteraction(t *testing.T) {
 	held.interaction <- struct{}{}
 	defer func() { <-held.interaction }()
 	room[held.id] = held
-	for i := 0; i < maxSessionsPerRoom; i++ {
+	for i := range maxSessionsPerRoom {
 		s := &terminalSession{id: 1000 + i, notify: make(chan struct{}, 1), interaction: make(chan struct{}, 1)}
 		s.lastUsed.Store(int64(i + 1))
 		room[s.id] = s
@@ -407,7 +405,7 @@ func TestPrunePrefersExited(t *testing.T) {
 	store := NewSessionStore(nil)
 	room := map[int]*terminalSession{}
 	// 63 dead old sessions + one live new one must not evict the live.
-	for i := 0; i < maxSessionsPerRoom; i++ {
+	for i := range maxSessionsPerRoom {
 		s := &terminalSession{id: 1000 + i, notify: make(chan struct{}, 1), interaction: make(chan struct{}, 1)}
 		s.exited.Store(true)
 		s.lastUsed.Store(int64(i))

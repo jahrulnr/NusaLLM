@@ -21,7 +21,7 @@ func TestResolveSelectionAutoSelects(t *testing.T) {
 	// A broken sibling must not count against "the only usable gateway".
 	if _, err := app.Upsert(t.Context(), GatewayInput{
 		ID: "sick", Name: "n", Style: enum.StyleMessages, Endpoint: "https://x",
-		ApiKey: strptr("env:DEFINITELY_UNSET_RESOLVE"),
+		ApiKey: new("env:DEFINITELY_UNSET_RESOLVE"),
 	}); err != nil {
 		t.Fatal(err)
 	}

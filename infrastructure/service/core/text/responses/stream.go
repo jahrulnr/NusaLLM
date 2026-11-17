@@ -12,6 +12,7 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
+	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
 	"github.com/jahrulnr/nusallm/infrastructure/service/wire"
 )
 
@@ -52,7 +53,7 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 		select {
 		case <-ctx.Done():
 			s.logAppend(ctx, "provider.stream", logged)
-			if err := s.commitCanceled(conv, onEvent, text.String(), reason.String(), fns, nil); err != nil {
+			if err := s.commitCanceled(conv, onEvent, text.String(), reason.String(), fns, nil, logged); err != nil {
 				return err
 			}
 			return apperror.New(408, "request canceled or timed out", ctx.Err())
@@ -72,7 +73,7 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 				emit(onEvent, event.NewErrorEvent(err))
 				return err
 			}
-			return s.commitStream(conv, onEvent, terminal, fallback)
+			return s.commitStream(conv, onEvent, terminal, fallback, logged)
 		case ev := <-events:
 			timer.Reset(s.idle)
 			if len(ev.data) == 0 {
@@ -85,6 +86,12 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 			logged = append(logged, ev.data)
 			switch se.Type {
 			case "response.output_text.delta":
+				text.WriteString(se.Delta)
+				emit(onEvent, event.NewDeltaEvent(se.Delta))
+			case "response.refusal.delta":
+				// A refusal is the answer when the provider declines —
+				// the terminal item lands it in content, and the live
+				// parts need the same display text as it streams.
 				text.WriteString(se.Delta)
 				emit(onEvent, event.NewDeltaEvent(se.Delta))
 			case "response.reasoning_summary_text.delta":
@@ -120,10 +127,10 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 				terminal = se.Response
 				// The terminal event is the commit point — close now per
 				// the wire rules instead of waiting for server EOF.
-				return s.commitStream(conv, onEvent, terminal, fallback)
+				return s.commitStream(conv, onEvent, terminal, fallback, logged)
 			case "response.failed":
 				stopSeen = true
-				err := streamFailure(se.Response, ev.data)
+				err := wire.WithRetryAfter(streamFailure(se.Response, ev.data), wire.RetryAfter(resp.Header.Get("Retry-After")))
 				s.logAppend(ctx, "provider.stream", logged)
 				emit(onEvent, event.NewErrorEvent(err))
 				return err
@@ -197,8 +204,11 @@ func fnComplete(c fnAcc) bool {
 
 // commitCanceled writes the text, reasoning, and finished tool calls that
 // arrived before the caller stopped the stream. An open tool-argument
-// delta is left out. A stream with nothing to keep is a no-op.
-func (s *Service) commitCanceled(conv *aggregate.Conversation, onEvent event.TurnEventHandler, text, reasoning string, calls []fnAcc, usage *UsageBody) error {
+// delta is left out. A stream with nothing to keep is a no-op. The
+// synthesized status stays empty: a caller cancel is not truncation, so
+// the partial must reach the turn with no verdict and be stamped
+// interrupted there — not read as a settled "length" reply.
+func (s *Service) commitCanceled(conv *aggregate.Conversation, onEvent event.TurnEventHandler, text, reasoning string, calls []fnAcc, usage *UsageBody, logged []json.RawMessage) error {
 	var output []json.RawMessage
 	if text != "" {
 		raw, err := json.Marshal(map[string]any{
@@ -237,14 +247,14 @@ func (s *Service) commitCanceled(conv *aggregate.Conversation, onEvent event.Tur
 	if len(output) == 0 {
 		return nil
 	}
-	return s.commitStream(conv, onEvent, &ResponseBody{Status: "incomplete", Output: output, Usage: usage}, nil)
+	return s.commitStream(conv, onEvent, &ResponseBody{Output: output, Usage: usage}, nil, logged)
 }
 
 // commitStream turns the terminal response into the assistant message
 // exactly once. response.completed carries the full output array; when it
 // is missing (partial implementations), the accumulated output_item.done
 // items stand in — better a faithful commit than none.
-func (s *Service) commitStream(conv *aggregate.Conversation, onEvent event.TurnEventHandler, terminal *ResponseBody, fallback []json.RawMessage) error {
+func (s *Service) commitStream(conv *aggregate.Conversation, onEvent event.TurnEventHandler, terminal *ResponseBody, fallback []json.RawMessage, logged []json.RawMessage) error {
 	rb := terminal
 	if rb == nil {
 		rb = &ResponseBody{Status: "completed", Output: fallback}
@@ -253,8 +263,11 @@ func (s *Service) commitStream(conv *aggregate.Conversation, onEvent event.TurnE
 		cp.Output = fallback
 		rb = &cp
 	}
-	msg, _, err := decodeResponse(rb) // reasoning already streamed live
+	msg, meta, err := decodeResponse(rb) // reasoning already streamed live
 	if err != nil {
+		return err
+	}
+	if err := coretext.EmptyAnswerError(msg, meta.artifacts, "", logged); err != nil {
 		return err
 	}
 	u, err := decodeUsage(rb.Usage)
@@ -297,7 +310,17 @@ func readSSE(body io.Reader, done <-chan struct{}, out chan<- sse, errs chan<- e
 	sc := wire.ScanSSE(body)
 	for sc.Scan() {
 		_, payload := wire.SSENamed(sc.Bytes())
-		if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+		if bytes.Equal(payload, []byte("[DONE]")) {
+			continue
+		}
+		if len(payload) == 0 {
+			// Comments/keepalives are traffic too — heartbeat the idle
+			// timer; the consumer drops the empty event.
+			select {
+			case out <- sse{}:
+			case <-done:
+				return
+			}
 			continue
 		}
 		select {

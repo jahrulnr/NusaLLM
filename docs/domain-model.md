@@ -332,7 +332,7 @@ adapter.
 | `Tooltype` | `injection`, `origin` | App-injected hydration call vs model-originated call |
 | `LLMUserType` | `origin`, `system` | Real user input vs system payload (compaction checkpoints are `system`) |
 | `ToolPermission` | `system`, `agent`, `general` | Who may invoke a `ToolSchema` |
-| `FinishReason` | `stop`, `tool_calls`, `length`, `content_filter` | Normalized turn end; `length` means tool arguments may be truncated and must not be executed |
+| `FinishReason` | `stop`, `tool_calls`, `length`, `content_filter`, `interrupted` | Normalized turn end; `length` means tool arguments may be truncated and must not be executed; `interrupted` is a caller cancel, never a provider verdict |
 | `Effort` | `default`, `none`, `low`, `medium`, `high`, `xhigh`, `max` | `IsUnset()` = `""` or `default` → omit from the wire; `max` requires validating model support first |
 | `Modality` | `text`, `image`, `audio`, `video`, `file` | Content kinds for `AcceptsInput`/`AcceptsOutput` and `Attachment.Modality()` |
 | `ModelType` | `text`, `embedding`, `video`, `image`, `speech`, `transcription`, `audio`, `rerank`, `decision` | Catalog categorization matching OpenRouter's model categories |

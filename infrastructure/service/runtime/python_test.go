@@ -90,7 +90,7 @@ func TestDownloadValidatePublishAndOfflineCacheReuse(t *testing.T) {
 		t.Fatalf("requests=%d diagnostics=%q", requests.Load(), diagnostics.String())
 	}
 	server.Close()
-	for n := 0; n < 2; n++ {
+	for range 2 {
 		cached, err := p.Ensure(t.Context(), io.Discard)
 		if err != nil || cached != got {
 			t.Fatalf("offline reuse=%q %v", cached, err)

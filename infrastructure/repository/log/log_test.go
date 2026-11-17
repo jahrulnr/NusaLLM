@@ -105,7 +105,7 @@ func TestRotatePerLines(t *testing.T) {
 	}
 	defer l.Close()
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		if err := l.Append(t.Context(), "evt", i); err != nil {
 			t.Fatal(err)
 		}
@@ -132,7 +132,7 @@ func TestRotatePrunesMaxFiles(t *testing.T) {
 	}
 	defer l.Close()
 
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		if err := l.Append(t.Context(), "evt", i); err != nil {
 			t.Fatal(err)
 		}
@@ -154,7 +154,7 @@ func TestRotateKeepsTenFilesIncludingActive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 12; i++ {
+	for i := range 12 {
 		if err := l.Append(t.Context(), "evt", i); err != nil {
 			t.Fatal(err)
 		}
@@ -169,7 +169,7 @@ func TestRotateKeepsTenFilesIncludingActive(t *testing.T) {
 	if len(entries) != 10 {
 		t.Fatalf("files = %d, want 9 archives and active", len(entries))
 	}
-	for i := 0; i < 12; i++ {
+	for i := range 12 {
 		path := filepath.Join(dir, strconv.Itoa(i)+".jsonl.gz")
 		if i < 3 {
 			if _, err := os.Stat(path); !os.IsNotExist(err) {

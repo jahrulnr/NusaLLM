@@ -71,12 +71,12 @@ func snapRoom(t *testing.T, d Deps, userImages, extra int) *aggregate.Conversati
 	t.Helper()
 	conv, _ := aggregate.NewConversation("room")
 	user, _ := entity.NewMessage(enum.RoleUser, "check the app")
-	for i := 0; i < userImages; i++ {
+	for i := range userImages {
 		a, _ := valueobject.NewAttachment(fmt.Sprintf("file://seed-%d.png", i), "image/png")
 		user.AddAttachment(a)
 	}
 	msgs := []entity.Message{user}
-	for i := 0; i < extra; i++ {
+	for i := range extra {
 		role := enum.RoleUser
 		if i%2 == 1 {
 			role = enum.RoleAssistant

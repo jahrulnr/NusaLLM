@@ -174,6 +174,22 @@ test('an opened landing off-view drops the send parked as a draft', () => {
   assert.notEqual(app.composer.value, 'hi');
 });
 
+// The composer keeps the submitted text visible until the turn opens so a
+// pre-open failure can leave it place for retry. That same window must not
+// turn a second Enter (or key auto-repeat) on the unchanged draft into a
+// duplicate queued line: the first Enter already owns that exact text.
+test('a second Enter before the first send opens does not queue the same draft', () => {
+  const { app } = makeApp();
+  app.activeId = 'c1';
+  app.composer.value = 'hi';
+  app._send('hi');
+  assert.equal(app.queue.items.length, 0);
+  assert.equal(app._dispatchable('c1'), false);
+  // The draft is deliberately still on screen until turn.opened.
+  app._send(app.composer.value);
+  assert.equal(app.queue.items.length, 0);
+});
+
 test('a watched turn in the viewed room vetoes edit; elsewhere it does not', () => {
   const { app } = makeApp();
   app.activeId = 'c1';
@@ -659,4 +675,116 @@ test('a failure in a room off screen keeps its toast', () => {
   assert.ok(app.failedTurns.get('c1'), 'card parked for its own room');
   assert.equal(app.toasts.pushed.length, 1);
   assert.equal(app.toasts.pushed[0].title, 'Turn failed');
+});
+
+// A loaded room keeps its binding on display, but a deleted gateway or
+// model must not leave Send armed: the picker's own contract says "pick
+// a model to send", and dispatching anyway only produces a failed turn.
+test('a stale conversation binding cannot send', () => {
+  const { app } = makeApp();
+  app.activeId = 'c1';
+  app.gateways = [{ id: 'live', models: [{ id: 'm1' }] }];
+  app.selection = { route: 'deleted', modelId: 'm1' };
+  app._syncComposer();
+  assert.equal(app.composer.canSend, false);
+});
+
+// A send is an explicit request to see the new turn. If the reader had
+// scrolled up into history, leaving the optimistic user bubble below the
+// viewport (and then streaming the reply there) hides the whole exchange.
+test('sending while scrolled up follows the new turn', () => {
+  const { app } = makeApp();
+  app.activeId = 'c1';
+  app.gateways = [{ id: 'live', models: [{ id: 'm1' }] }];
+  app.selection = { route: 'live', modelId: 'm1' };
+  app.thread.pinned = false;
+  app._send('look here');
+  assert.equal(app.thread.pinned, true);
+});
+
+// A failure pauses only the lines it already owns. Text typed afterwards
+// is fresh intent — it must dispatch instead of joining the held backlog,
+// or the composer looks responsive while nothing is sent.
+test('fresh input is not captured by a paused backlog', async () => {
+  const { app, ws } = makeApp();
+  app.composer.value = '';
+  app.gateways = [{ id: 'live', models: [{ id: 'm1' }] }];
+  app.selection = { route: 'live', modelId: 'm1' };
+  failTurn(app, ws, { status: 502, message: 'boom', userMessagePersisted: true });
+  const { enqueue } = await import('../lib/pending-queue.js');
+  const held = enqueue(app.queue, { text: 'held line', room: 'c1', opts: {} });
+  held.held = true;
+  app.queue.paused = true;
+  app._syncQueue();
+  await flush(); // the failure refresh barrier clears
+  const sendsBefore = ws.sent.filter((f) => f.type === 'turn.send').length;
+  app._send('fresh line');
+  assert.equal(ws.sent.filter((f) => f.type === 'turn.send').length, sendsBefore + 1);
+  assert.equal(app.queue.items.some((e) => e.text === 'fresh line'), false);
+});
+
+// A second tab watching the room receives the same turn.failed payload
+// as the owner. It must keep the provider's reason ("quota exhausted"),
+// not fall back to the generic history-derived "Turn interrupted" card
+// that loses the actionable text.
+test('a watched failure keeps the provider reason', () => {
+  const { app } = makeApp();
+  app.activeId = 'c1';
+  app._attachLiveTurn({ id: 'c1', activeTurnId: 't-watch', activeTurnKind: 'send' });
+  app._onFrame({
+    type: 'turn.failed', turnId: 't-watch', conversationId: 'c1', seq: 9,
+    payload: { status: 429, message: 'quota exhausted', userMessagePersisted: true },
+  });
+  const f = app.failedTurns.get('c1');
+  assert.ok(f, 'watched failure parks a card');
+  assert.match(f.note || '', /quota/i);
+});
+
+// Opening a deleted/absent conversation id must land on a fresh, usable
+// view. The load rejects, the shell calls newConversation(), and the
+// fresh view must not inherit the failed view's loading flag.
+test('a missing conversation does not leave the thread loading', async () => {
+  const { app } = makeApp();
+  app.api.getConversation = async () => { throw new Error('conversation not found'); };
+  app.api.getMessages = async () => { throw new Error('conversation not found'); };
+  app.api.contextStats = async () => ({ estimate: 0, total: 0 });
+  await app.select('c_missing');
+  assert.equal(app.thread.loading, false);
+  assert.equal(app.thread.hasConversation, false);
+  assert.equal(app.activeId, null);
+});
+
+// Another tab can delete the room while this tab watches it. The
+// terminal refresh then answers 404 — the view cannot keep rendering a
+// deleted room with a dead composer; it must land on a fresh view.
+test('a refresh that finds the room deleted returns to a fresh view', async () => {
+  const { app } = makeApp();
+  app.activeId = 'c1';
+  app.thread.hasConversation = true;
+  const missing = async () => {
+    const err = new Error('conversation not found');
+    err.status = 404;
+    throw err;
+  };
+  app.api.getConversation = missing;
+  app.api.getMessages = missing;
+  app.api.contextStats = async () => ({ estimate: 0, total: 0 });
+  await app._refresh('c1');
+  assert.equal(app.activeId, null);
+  assert.equal(app.thread.hasConversation, false);
+  assert.equal(app.thread.loading, false);
+});
+
+// A process restart (or a cancel) can leave a partial assistant record
+// with no finishReason. The thread must not present that tail as a
+// complete answer; the history-derived interrupted card belongs there.
+test('a partial assistant tail with no finish reason is interrupted', () => {
+  const { app } = makeApp();
+  app.activeId = 'c1';
+  app.messages = [
+    { id: 'u1', role: 'user', content: 'hi' },
+    { id: 'a1', role: 'assistant', content: 'partial answer', parts: [{ kind: 'text', text: 'partial answer' }] },
+  ];
+  app._markInterrupted({ id: 'c1' });
+  assert.ok(app.failedTurns.get('c1'), 'truncated assistant tail must park an interrupted card');
 });

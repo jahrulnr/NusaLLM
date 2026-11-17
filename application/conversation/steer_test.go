@@ -45,14 +45,14 @@ func (g *gatedTool) Execute(ctx context.Context, _ entity.ToolCall, _ dservice.T
 // two message contents call 2 sees — the folded steer and the context
 // record that trails it.
 type gatedScriptSvc struct {
-	calls    int32
+	calls    atomic.Int32
 	lastSeen string
 	prevSeen string
 }
 
 func (s *gatedScriptSvc) Send(_ context.Context, conv *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, _ event.TurnEventHandler) error {
 	var m entity.Message
-	if atomic.AddInt32(&s.calls, 1) == 1 {
+	if s.calls.Add(1) == 1 {
 		m, _ = entity.NewMessage(enum.RoleAssistant, "need a tool")
 		tc, err := entity.NewToolCall("call_1", "gated", "{}", enum.TooltypeOrigin)
 		if err != nil {

@@ -116,7 +116,7 @@ func (s *Service) Send(ctx context.Context, conv *aggregate.Conversation, gw *ag
 		s.logAppend(ctx, "provider.error", map[string]any{
 			"status": resp.StatusCode, "request_id": resp.Header.Get("x-request-id"), "body": json.RawMessage(raw),
 		})
-		return statusError(resp.StatusCode, raw)
+		return wire.WithRetryAfter(statusError(resp.StatusCode, raw), wire.RetryAfter(resp.Header.Get("Retry-After")))
 	}
 
 	if stream {
@@ -151,7 +151,7 @@ func (s *Service) unaryResponse(ctx context.Context, resp *http.Response, conv *
 		return apperror.New(502, "malformed upstream body", err)
 	}
 	if rb.Error != nil {
-		return streamError(rb.Error, raw)
+		return wire.WithRetryAfter(streamError(rb.Error, raw), wire.RetryAfter(resp.Header.Get("Retry-After")))
 	}
 	if len(rb.Candidates) == 0 {
 		if rb.PromptFeedback != nil && rb.PromptFeedback.BlockReason != "" {
@@ -159,8 +159,21 @@ func (s *Service) unaryResponse(ctx context.Context, resp *http.Response, conv *
 		}
 		return apperror.New(502, "upstream returned no candidates", wire.UpstreamError(raw))
 	}
-	msg, meta, err := decodeParts(rb.Candidates[0].Content.Parts, rb.Candidates[0].FinishReason)
+	// A complete JSON body is this wire's settled terminal — a candidate
+	// without finishReason still committed, so the verdict is stop.
+	finish := rb.Candidates[0].FinishReason
+	if finish == "" {
+		finish = "STOP"
+	}
+	msg, meta, err := decodeParts(rb.Candidates[0].Content.Parts, finish)
 	if err != nil {
+		return err
+	}
+	blocked := ""
+	if rb.PromptFeedback != nil {
+		blocked = rb.PromptFeedback.BlockReason
+	}
+	if err := coretext.EmptyAnswerError(msg, meta.artifacts, blocked, []json.RawMessage{raw}); err != nil {
 		return err
 	}
 	usage, err := decodeUsage(rb.Usage)

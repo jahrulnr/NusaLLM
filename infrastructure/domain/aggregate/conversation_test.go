@@ -192,7 +192,7 @@ func TestConversationAddUsageAccumulates(t *testing.T) {
 
 func BenchmarkConversationEstimatedTokens(b *testing.B) {
 	c, _ := NewConversation("conv")
-	for i := 0; i < 200; i++ {
+	for range 200 {
 		m, _ := entity.NewMessage(enum.RoleUser, strings.Repeat("x", 2000))
 		tc, _ := entity.NewToolCall("id", "name", strings.Repeat("i", 500), enum.TooltypeOrigin)
 		tc.SetOutput(strings.Repeat("o", 3000))

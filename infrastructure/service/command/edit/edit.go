@@ -3,6 +3,7 @@ package cmdedit
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -37,8 +38,8 @@ func (c *EditCommand) Complete(ctx context.Context, arg string) []dservice.Comma
 	}
 	arg = strings.ToLower(arg)
 	var rows []service.CommandCompletion
-	for i := len(messages) - 1; i >= 0; i-- {
-		message := messages[i]
+	for _, message := range slices.Backward(messages) {
+
 		if !message.Editable() {
 			continue
 		}

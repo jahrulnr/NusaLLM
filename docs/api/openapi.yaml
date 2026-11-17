@@ -1035,7 +1035,7 @@ components:
           description: 'Present on `role: "user"` messages only — `origin` is real user input, `system` is a synthetic user-role artifact (e.g. a compaction checkpoint).'
         finishReason:
           type: string
-          enum: [stop, tool_calls, length, content_filter]
+          enum: [stop, tool_calls, length, content_filter, interrupted]
           description: Present on assistant messages that ended a provider call.
         toolCalls:
           type: array

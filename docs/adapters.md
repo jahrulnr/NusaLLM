@@ -65,6 +65,13 @@ dead credential); and provider quirks — the `x-opencode-session` header on
 `opencode.ai` endpoints, `HTTP-Referer`/`X-Title` attribution — live inside
 each adapter's request leg where `enum.Provider` can grow more.
 
+The reply contract is shared too (`coretext.EmptyAnswerError`,
+`service/core/text/reply.go`): a settled commit must leave something
+deliverable — a suppressed answer is a definitive 400, a bare 200 with
+nothing is a transient 502; and a settled commit always carries a finish
+verdict — adapters normalize a missing reason to their wire's stop word,
+so `""` on a persisted turn reliably means "never finished".
+
 The sections below cover `completion` in depth; the other three follow the
 same structure, so only their wire-specific mechanics are described after.
 
@@ -150,7 +157,7 @@ materialization is delegated to `service/wire` (below).
 parts array — into a domain `Message`, converts `tool_calls` into
 `TooltypeOrigin` calls (empty `arguments` become `{}`, which upstreams
 legitimately emit), and parses `finish_reason` into `enum.FinishReason`
-(`stop`, `tool_calls`, `length`, `content_filter`; `enum/finishreason.go`).
+(`stop`, `tool_calls`, `length`, `content_filter`, `interrupted`; `enum/finishreason.go`).
 Unknown finish values are preserved verbatim rather than rejected. A
 provider-specific artifact like DeepSeek's `reasoning_content` is stored under
 the adapter-namespaced key `completion.reasoning_content` in
@@ -327,10 +334,11 @@ The wire is role-alternated `contents` of typed parts (`user`/`model` only —
   `generatecontent.parts` — stores signed and thought parts verbatim with
   `{"refill":"text"}`/`{"refill":"functionCall"}` placeholders; a verbatim
   signed call still consumes its domain call slot so refills stay aligned.
-- **Injected evidence.** A system-role hydration record emits its
-  injection calls as the completed call + result pair they record —
-  bounded untrusted output at tool-evidence trust. Injection calls on
-  other carriers still fold into turn text; output is never dropped.
+- **Injected evidence.** Injection calls are application-originated and
+  carry no provider signature — an unsigned replayed `functionCall` is a
+  guaranteed 400 on this wire, so hydration records fold into turn text
+  with the untrusted-evidence tag like every other injection carrier;
+  output is never dropped.
 - **Family-aware thinking.** `generationConfig.thinkingConfig` maps effort
   by model family: `gemini-3` ids take `thinkingLevel` (clamped to `high`),
   `gemini-2.5` takes `includeThoughts` alone (invented budgets get

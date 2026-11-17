@@ -29,7 +29,7 @@ func TestRepairOrphanDuplicate(t *testing.T) {
 		t.Fatal(err)
 	}
 	var messages [][]byte
-	for _, line := range bytes.Split(bytes.TrimSpace(active), []byte("\n")) {
+	for line := range bytes.SplitSeq(bytes.TrimSpace(active), []byte("\n")) {
 		if bytes.Contains(line, []byte(`"type":"message"`)) {
 			messages = append(messages, line)
 		}

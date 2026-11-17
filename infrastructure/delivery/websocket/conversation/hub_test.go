@@ -468,12 +468,12 @@ func TestQueueFullAdmission(t *testing.T) {
 	ws := dial(t, h)
 	started.Add(maxActiveTurns)
 
-	for i := 0; i < maxActiveTurns; i++ {
+	for i := range maxActiveTurns {
 		sendCommand(t, ws, fmt.Sprintf(`{"type":"turn.send","requestId":"a-%d","payload":{"content":"x"}}`, i))
 	}
 	// All admitted: each emits opened. Wait for the workers to be live
 	// before testing the 33rd, so the bound is exercised deterministically.
-	for i := 0; i < maxActiveTurns; i++ {
+	for i := range maxActiveTurns {
 		if f := readFrame(t, ws); f.Type != "turn.opened" {
 			t.Fatalf("admission %d: %+v", i, f)
 		}
@@ -486,7 +486,7 @@ func TestQueueFullAdmission(t *testing.T) {
 	}
 	close(release)
 	// Drain the terminal frames so the deferred Shutdown sees a quiet hub.
-	for i := 0; i < maxActiveTurns; i++ {
+	for i := range maxActiveTurns {
 		if f := readFrame(t, ws); f.Type != "turn.completed" {
 			t.Fatalf("terminal %d: %+v", i, f)
 		}
@@ -696,7 +696,7 @@ func TestSlowSubscriberNeverStallsTurn(t *testing.T) {
 	h := newHub(t, stubSender{fn: func(_ context.Context, _ string, _, _, _ string,
 		onEvent event.TurnEventHandler) (appconversation.SendResult, error) {
 		defer done.Done()
-		for i := 0; i < outboundQueueCap*3; i++ {
+		for range outboundQueueCap * 3 {
 			onEvent(event.NewDeltaEvent(strings.Repeat("x", 100)))
 		}
 		return appconversation.SendResult{UserMessagePersisted: true}, nil

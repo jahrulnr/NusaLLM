@@ -243,8 +243,8 @@ func TestPutGatewayApiKeyTriState(t *testing.T) {
 		json string
 		want *string
 	}{
-		{`""`, ptr("")},               // clear
-		{`"sk-live"`, ptr("sk-live")}, // set
+		{`""`, new("")},               // clear
+		{`"sk-live"`, new("sk-live")}, // set
 	} {
 		rec := doBody(t, h, "PUT", "/api/gateways/g", "application/json", fmt.Sprintf(base, tc.json))
 		if rec.Code != 200 {
@@ -262,7 +262,8 @@ func TestPutGatewayApiKeyTriState(t *testing.T) {
 	}
 }
 
-func ptr(s string) *string { return &s }
+//go:fix inline
+func ptr(s string) *string { return new(s) }
 
 func TestDeleteGateway204(t *testing.T) {
 	fgw := &fakeGwWrites{}

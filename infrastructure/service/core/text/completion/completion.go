@@ -112,7 +112,7 @@ func (s *Service) Send(ctx context.Context, conv *aggregate.Conversation, gw *ag
 		s.logAppend(ctx, "provider.error", map[string]any{
 			"status": resp.StatusCode, "request_id": resp.Header.Get("x-request-id"), "body": json.RawMessage(raw),
 		})
-		return statusError(resp.StatusCode, raw)
+		return statusError(resp.StatusCode, wire.RetryAfter(resp.Header.Get("Retry-After")), raw)
 	}
 
 	if stream {
@@ -141,14 +141,25 @@ func (s *Service) unaryResponse(ctx context.Context, resp *http.Response, conv *
 	// envelope — route them like a mid-stream error event, or the
 	// turn reports "no choices" and discards the provider's error.
 	if rb.Error != nil {
-		return statusError(statusHint(rb.Error), raw)
+		return statusError(statusHint(rb.Error), wire.RetryAfter(resp.Header.Get("Retry-After")), raw)
 	}
 	if len(rb.Choices) == 0 {
 		return apperror.New(502, "upstream returned no choices", nil)
 	}
 	ch := rb.Choices[0]
-	msg, err := decodeMessage(ch.Message, ch.FinishReason)
+	// A complete JSON body is this wire's settled terminal — a choice
+	// without finish_reason still committed, so the verdict is stop.
+	finish := ch.FinishReason
+	if finish == "" {
+		finish = "stop"
+	}
+	msg, err := decodeMessage(ch.Message, finish)
 	if err != nil {
+		return err
+	}
+	// This wire's optionalContent is reasoning surfaces only — replay
+	// metadata, never the answer — so it never counts as an artifact.
+	if err := coretext.EmptyAnswerError(msg, false, "", []json.RawMessage{raw}); err != nil {
 		return err
 	}
 	usage, err := decodeUsage(rb.Usage)

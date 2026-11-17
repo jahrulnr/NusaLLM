@@ -26,6 +26,7 @@ func decodeParts(rawParts []json.RawMessage, finishReason string) (entity.Messag
 	if err != nil {
 		return entity.Message{}, decodeMeta{}, err
 	}
+	var artifacts bool
 	for _, raw := range rawParts {
 		var p PartBody
 		if err := json.Unmarshal(raw, &p); err != nil {
@@ -71,9 +72,11 @@ func decodeParts(rawParts []json.RawMessage, finishReason string) (entity.Messag
 			}
 		default:
 			// executableCode, codeExecutionResult, … — keep raw so replay
-			// round-trips what we never model.
+			// round-trips what we never model. Unlike thought parts these
+			// are a deliverable payload, so the turn is not an empty answer.
 			template = append(template, raw)
 			keepTemplate = true
+			artifacts = true
 		}
 	}
 	msg.SetContent(text.String())
@@ -85,7 +88,7 @@ func decodeParts(rawParts []json.RawMessage, finishReason string) (entity.Messag
 			msg.SetOptionalContent(partsKey, string(raw))
 		}
 	}
-	return msg, decodeMeta{reasoning: reasoning.String()}, nil
+	return msg, decodeMeta{reasoning: reasoning.String(), artifacts: artifacts}, nil
 }
 
 // textPart reports whether a raw part is a text part that decoded empty —
@@ -98,9 +101,13 @@ func textPart(raw json.RawMessage) bool {
 }
 
 // decodeMeta is the by-product of a decode — reasoning rides the template
-// for replay and surfaces to callers via the return value only.
+// for replay and surfaces to callers via the return value only. artifacts
+// reports whether the parts carried a non-reasoning payload we never
+// model (executableCode, media, …) — thought/template bytes alone are
+// replay metadata, never the answer.
 type decodeMeta struct {
 	reasoning string
+	artifacts bool
 }
 
 // mapFinishReason normalizes the wire finishReason onto the domain set —

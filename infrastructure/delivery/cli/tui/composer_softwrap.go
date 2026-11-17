@@ -22,7 +22,7 @@ func composerDisplayRows(ta textarea.Model) int {
 		return max(1, ta.LineCount())
 	}
 	rows := 0
-	for _, line := range strings.Split(value, "\n") {
+	for line := range strings.SplitSeq(value, "\n") {
 		rows += len(softWrapRunes([]rune(line), w))
 	}
 	return max(1, rows)

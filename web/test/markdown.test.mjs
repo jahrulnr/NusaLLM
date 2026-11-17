@@ -192,3 +192,31 @@ test('no character loss on malformed markdown', () => {
   assert.ok(flat.includes('**_~~` [x]( unclosed <notalink ![img]( '), flat);
   assert.ok(flat.includes('no close'));
 });
+
+// CommonMark forbids intraword underscore emphasis: identifiers such as
+// variable_name_here must stay literal. Technical answers are full of
+// them, and emphasis here corrupts the rendered text.
+test('intraword underscores stay literal', () => {
+  const ast = parseInline('variable_name_here and foo_bar_baz');
+  assert.equal(flatText(ast), 'variable_name_here and foo_bar_baz');
+  assert.equal(ast.some((n) => n.type === 'em'), false);
+});
+
+// Single-`*` emphasis has no intraword restriction under CommonMark —
+// `a*b*c` legitimately parses `b` as emphasis. The intraword carve-out
+// belongs to `_` alone.
+test('asterisk emphasis parses, including intraword', () => {
+  const em = parseInline('a *phrase* here').find((n) => n.type === 'em');
+  assert.ok(em, 'expected an em node');
+  assert.equal(flatText([em]), 'phrase');
+  const intraword = parseInline('a*b*c');
+  const inner = intraword.find((n) => n.type === 'em');
+  assert.ok(inner, 'intraword * must parse');
+  assert.equal(flatText([inner]), 'b');
+  assert.equal(flatText(intraword), 'abc');
+  // An intraword `_` inside a `*` span still stays literal — the two
+  // delimiter rules are independent.
+  const mixed = parseInline('*a_b*');
+  assert.equal(flatText(mixed), 'a_b');
+  assert.ok(mixed.some((n) => n.type === 'em'), 'outer * must parse');
+});

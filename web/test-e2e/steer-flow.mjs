@@ -1864,9 +1864,12 @@ await scenarioRun('sidebar-load-more', async (s) => {
   await s.page.screenshot({ path: `${ART}/sidebar-more-focus-desktop.png` });
   await search.fill('');
   await poll(async () => (await items.count()) === 200);
-  // Mobile drawer inspection — the rail is an overlay at this width
-  // and is already open from the desktop state.
+  // Mobile drawer inspection — crossing into the phone layout closed
+  // the rail; the overlay opens again through its own toggle.
   await s.page.setViewportSize({ width: 390, height: 844 });
+  await s.page.getByRole('button', { name: 'Toggle sidebar' }).click();
+  await poll(async () => s.page.evaluate(
+    () => document.querySelector('nusa-app').sidebarOpen === true));
   await s.page.evaluate((expr) => {
     const list = eval(expr).shadowRoot.querySelector('.list');
     list.scrollTop = list.scrollHeight;
@@ -1907,6 +1910,113 @@ await scenarioRun('context-badge-live-usage', async (s) => {
   s.hub().complete('t1', {});
   await poll(async () => (await pct()) === '5%');
   check('terminal settles back to the estimate', true);
+});
+
+await scenarioRun('mobile-short-pending-panel', async (s) => {
+  await open(s, '#conversation=c1');
+  // A phone with the keyboard open: 390x400 is the visual viewport left
+  // above the keyboard. Ten pending lines must not consume the thread.
+  await s.page.setViewportSize({ width: 390, height: 400 });
+  await s.page.waitForTimeout(400);
+  const close = s.page.getByRole('button', { name: 'Close sidebar' });
+  if (await close.count()) { await close.click(); await s.page.waitForTimeout(300); }
+  await typeEnter(s, 'long task');
+  await poll(() => s.hub().find('turn.send'));
+  for (let i = 1; i <= 10; i += 1) await typeEnter(s, `queued ${i}`);
+  await poll(async () => (await rows(s).count()) === 10);
+  const dims = await s.page.evaluate(() => {
+    const rect = (el) => { const r = el.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, h: r.height }; };
+    const app = document.querySelector('nusa-app');
+    return {
+      thread: rect(app.thread),
+      composer: rect(app.composer),
+      vh: innerHeight,
+    };
+  });
+  check('thread keeps a usable viewport above the composer', dims.thread.h >= 120, JSON.stringify(dims));
+  check('composer stays inside the visual viewport', dims.composer.bottom <= dims.vh + 1, JSON.stringify(dims));
+});
+
+await scenarioRun('failed-refresh-fresh-input', async (s) => {
+  s.allowResourceErrors = true;
+  await open(s, '#conversation=c1');
+  await typeEnter(s, 'task');
+  await poll(() => s.hub().find('turn.send'));
+  // No queued line exists when the terminal refresh fails.
+  s.fixture.fails.set('/api/conversations/c1/messages', 1);
+  s.hub().complete('t1', {});
+  await poll(() => s.page.evaluate(
+    () => document.querySelector('nusa-app')._gate('c1').failed === true));
+  // Fresh text after the failure is not the failed turn's backtrack —
+  // it must either dispatch or expose the resume/retry path.
+  await typeEnter(s, 'fresh after failed refresh');
+  await poll(async () => (await rows(s).count()) === 1);
+  const title = await s.page.locator('nusa-chat-composer .pending-title').textContent();
+  const resumeVisible = await resumeBtn(s).isVisible().catch(() => false);
+  const dispatched = s.hub().all('turn.send').length === 2;
+  check('fresh input is not silently stranded behind a failed refresh',
+    dispatched || resumeVisible || /paused/i.test(title || ''),
+    `dispatched=${dispatched} resume=${resumeVisible} title=${JSON.stringify(title)}`);
+});
+
+// A desktop window narrowed into the phone layout must not keep the
+// desktop drawer state: the constructor starts a phone with the drawer
+// closed, but crossing the breakpoint later left sidebarOpen=true with
+// the scrim still hidden, so an unscrimmed full-height drawer covered the
+// header and its own toggle.
+await scenarioRun('resize-to-phone-releases-drawer', async (s) => {
+  await open(s, '#conversation=c1');
+  const state = () => s.page.evaluate(() => {
+    const app = document.querySelector('nusa-app');
+    const scrim = app.shadowRoot.querySelector('.scrim');
+    return { open: app.sidebarOpen, scrimHidden: scrim.hidden };
+  });
+  const desktop = await state();
+  check('desktop starts with the rail open', desktop.open === true, JSON.stringify(desktop));
+  await s.page.setViewportSize({ width: 390, height: 800 });
+  await poll(async () => (await state()).open === false, { timeout: 2000 });
+  const phone = await state();
+  check('resizing into the phone layout closes the drawer', phone.open === false, JSON.stringify(phone));
+  check('no unscrimmed drawer covers the phone layout',
+    phone.open === false || phone.scrimHidden === false, JSON.stringify(phone));
+  await s.page.setViewportSize({ width: 1280, height: 800 });
+  await poll(async () => (await state()).open === true, { timeout: 2000 });
+  const back = await state();
+  check('returning to desktop restores the rail', back.open === true, JSON.stringify(back));
+});
+
+// New thread is a navigation action. On a phone the drawer is a
+// full-height overlay, so leaving it open after the click hides the new
+// empty room behind it; the user has to dismiss the drawer manually.
+await scenarioRun('phone-new-thread-closes-drawer', async (s) => {
+  await s.page.setViewportSize({ width: 390, height: 800 });
+  await open(s, '#conversation=c1');
+  const state = () => s.page.evaluate(() => {
+    const app = document.querySelector('nusa-app');
+    const scrim = app.shadowRoot.querySelector('.scrim');
+    return { open: app.sidebarOpen, scrimHidden: scrim.hidden };
+  });
+  await s.page.getByRole('button', { name: 'Toggle sidebar' }).click();
+  await poll(async () => (await state()).open === true);
+  await s.page.locator('nusa-nav-sidebar').getByText('New thread').click();
+  await poll(async () => (await state()).open === false, { timeout: 2000 });
+  const phone = await state();
+  check('new thread closes the phone drawer', phone.open === false, JSON.stringify(phone));
+});
+
+// A search filter that matches nothing hides the freshly started room
+// from the rail; after the first send it is still filtered out, so the
+// new thread looks lost even though the header moved to it. New thread
+// starts a new browsing context and must clear the filter.
+await scenarioRun('new-thread-clears-sidebar-search', async (s) => {
+  await open(s, '#conversation=c1');
+  const search = s.page.locator('nusa-nav-sidebar input.search');
+  await search.fill('definitely-no-such-thread');
+  await poll(async () => /No matches/.test(await s.page.locator('nusa-nav-sidebar').innerText()));
+  await s.page.locator('nusa-nav-sidebar').getByText('New thread').click();
+  await poll(async () => (await search.inputValue()) === '', { timeout: 1500 });
+  const value = await search.inputValue();
+  check('new thread clears the sidebar search', value === '', `query=${JSON.stringify(value)}`);
 });
 
 // --- teardown --------------------------------------------------------------

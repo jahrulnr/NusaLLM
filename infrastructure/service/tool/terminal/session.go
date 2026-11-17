@@ -235,8 +235,7 @@ func (s *terminalSession) wait() {
 	if err == nil {
 		s.exitCode = 0
 	} else {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 			s.exitCode = exitErr.ExitCode()
 		} else {
 			s.exitCode = -1

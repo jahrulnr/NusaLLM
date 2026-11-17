@@ -2,7 +2,10 @@ package wire
 
 import (
 	"fmt"
+	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
@@ -30,6 +33,34 @@ func StatusError(status int, publicMsg, code string, body []byte) error {
 		return apperror.FromStatus(413, "context length exceeded", UpstreamError(body))
 	}
 	return apperror.FromStatus(status, FailureMessage(status, publicMsg, code), UpstreamError(body))
+}
+
+// RetryAfter parses a Retry-After header value — integer seconds or an
+// HTTP-date — into a delay. Absent or unreadable means the provider
+// named no wait.
+func RetryAfter(header string) time.Duration {
+	s := strings.TrimSpace(header)
+	if s == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(s); err == nil {
+		return max(time.Duration(secs)*time.Second, 0)
+	}
+	if t, err := http.ParseTime(s); err == nil {
+		return max(time.Until(t), 0)
+	}
+	return 0
+}
+
+// WithRetryAfter stamps a provider-asked wait onto a routing error so the
+// turn's retry gate can honor it. A non-AppError passes through untouched.
+func WithRetryAfter(err error, d time.Duration) error {
+	if d > 0 {
+		if ae, ok := err.(*apperror.AppError); ok {
+			ae.RetryDelay = d
+		}
+	}
+	return err
 }
 
 // ContextOverflow spots context-window rejections across provider

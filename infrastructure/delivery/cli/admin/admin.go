@@ -245,7 +245,7 @@ func loadEnvFile(path string) {
 	if err != nil {
 		return // a missing .env means "no overrides", not a failure
 	}
-	for _, line := range strings.Split(string(raw), "\n") {
+	for line := range strings.SplitSeq(string(raw), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue

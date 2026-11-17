@@ -55,6 +55,27 @@ function matchRun(src, i, marker) {
   return { inner: src.slice(i + marker.length, close), end: close + marker.length };
 }
 
+const WORDCHAR = /[\p{L}\p{N}]/u;
+
+// matchUnderscore is matchRun plus CommonMark's intraword rule: a `_` /
+// `__` delimiter cannot open inside a word (identifier names like
+// foo_bar stay literal) and cannot close when another word char follows.
+// The inner edges must not face whitespace either — `_ a_` is literal.
+function matchUnderscore(src, i, marker) {
+  if (i > 0 && WORDCHAR.test(src[i - 1])) return null;
+  const first = src[i + marker.length];
+  if (first === undefined || /\s/.test(first)) return null;
+  let close = src.indexOf(marker, i + marker.length + 1);
+  while (close >= 0) {
+    const next = src[close + marker.length];
+    if (!/\s/.test(src[close - 1]) && (next === undefined || !WORDCHAR.test(next))) {
+      return { inner: src.slice(i + marker.length, close), end: close + marker.length };
+    }
+    close = src.indexOf(marker, close + 1);
+  }
+  return null;
+}
+
 export function parseInline(source) {
   const src = String(source ?? '');
   const out = [];
@@ -140,7 +161,7 @@ export function parseInline(source) {
       : src.startsWith('__', i) ? '__'
       : src.startsWith('~~', i) ? '~~' : null;
     if (strongHit) {
-      const r = matchRun(src, i, strongHit);
+      const r = strongHit === '__' ? matchUnderscore(src, i, '__') : matchRun(src, i, strongHit);
       if (r) {
         flush();
         out.push({ type: strongHit === '~~' ? 'strike' : 'strong', children: parseInline(r.inner) });
@@ -151,14 +172,17 @@ export function parseInline(source) {
       continue;
     }
 
-    // Emphasis — single * or _; intraword underscores still parse, an
-    // acceptable simplification: content is never lost either way.
+    // Emphasis — single * or _. Intraword `*` parses (CommonMark
+    // allows it); intraword `_` stays literal so identifiers like
+    // variable_name_here are never mangled.
     if (c === '*' || c === '_') {
-      const close = src.indexOf(c, i + 1);
-      if (close > i + 1) {
+      const r = c === '_'
+        ? matchUnderscore(src, i, '_')
+        : matchRun(src, i, c);
+      if (r) {
         flush();
-        out.push({ type: 'em', children: parseInline(src.slice(i + 1, close)) });
-        i = close + 1;
+        out.push({ type: 'em', children: parseInline(r.inner) });
+        i = r.end;
       } else {
         buf += c; i++;
       }

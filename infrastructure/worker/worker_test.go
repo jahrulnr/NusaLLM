@@ -60,7 +60,7 @@ func TestSerialFIFO(t *testing.T) {
 	defer w.Terminate()
 	var order []int
 	done := make(chan struct{})
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if err := w.Submit(&seqJob{id: i, order: &order}); err != nil {
 			t.Fatal(err)
 		}

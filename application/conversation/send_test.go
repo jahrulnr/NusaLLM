@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -287,7 +288,7 @@ func TestSendSerializesPerConv(t *testing.T) {
 	})
 	var wg sync.WaitGroup
 	posted := [2]chan struct{}{make(chan struct{}), make(chan struct{})}
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -846,7 +847,7 @@ func TestDeadCtxNoMutation(t *testing.T) {
 // ids must not grow the map forever.
 func TestLockEvictedAfterSend(t *testing.T) {
 	app, _ := fixture(t, okHandler)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if _, err := app.Send(t.Context(), fmt.Sprintf("evict-%d", i), "gw1", "m1", "ping", nil, appjob.SendOptions{}, nil); err != nil {
 			t.Fatal(err)
 		}
@@ -859,9 +860,9 @@ func TestLockEvictedAfterSend(t *testing.T) {
 // outlast the turn's own bounded retry: a lone 429 is now absorbed
 // inside the turn, so the stub fails the whole three-call budget.
 func TestFailedFreshSendStaysRetryable(t *testing.T) {
-	var calls int32
+	var calls atomic.Int32
 	app, _ := fixture(t, func(w http.ResponseWriter, r *http.Request) {
-		if atomic.AddInt32(&calls, 1) <= 3 {
+		if calls.Add(1) <= 3 {
 			w.WriteHeader(429)
 			return
 		}
@@ -873,7 +874,7 @@ func TestFailedFreshSendStaysRetryable(t *testing.T) {
 	if _, err := app.Send(t.Context(), "retry", "", "", "ping", nil, appjob.SendOptions{}, nil); err != nil {
 		t.Fatalf("retry on stored binding: %v", err)
 	}
-	if got := atomic.LoadInt32(&calls); got != 4 {
+	if got := calls.Load(); got != 4 {
 		t.Fatalf("retry never reached upstream: %d calls", got)
 	}
 }
@@ -1143,9 +1144,9 @@ func TestSendSelectsEnvironmentPerConversationAndResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	var lastUser entity.Message
-	for i := len(beforeEdit.Messages()) - 1; i >= 0; i-- {
-		if beforeEdit.Messages()[i].Editable() {
-			lastUser = beforeEdit.Messages()[i]
+	for _, v := range slices.Backward(beforeEdit.Messages()) {
+		if v.Editable() {
+			lastUser = v
 			break
 		}
 	}

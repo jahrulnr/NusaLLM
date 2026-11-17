@@ -313,7 +313,7 @@ func leafOf(t *testing.T, raw []byte, key string) any {
 		t.Fatalf("decode document for %s: %v", key, err)
 	}
 	var node any = doc
-	for _, seg := range strings.Split(key, ".") {
+	for seg := range strings.SplitSeq(key, ".") {
 		section, ok := node.(map[string]any)
 		if !ok {
 			return nil

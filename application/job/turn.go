@@ -3,7 +3,9 @@ package job
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -20,6 +22,12 @@ import (
 // retries; the wait stays short — a provider that stays down is a
 // definitive failure, not a stall to sit out.
 var sendRetryBackoff = []time.Duration{750 * time.Millisecond, 1500 * time.Millisecond}
+
+// The longest Retry-After the turn itself will sit out. Provider-asked
+// quiet is honored inside this window — beyond it the ask describes a
+// dead route, not a pause (free-tier quotas can name weeks): the 429
+// surfaces to the user, whose own retry or route change decides.
+const maxRateLimitWait = 60 * time.Second
 
 // runTurn is the agent loop shared by send and edit: provider call →
 // persist → execute pending tool calls → provider call — until the model
@@ -187,10 +195,22 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 				len(added) > 0 || len(parts) > 0 {
 				break
 			}
+			// A provider-asked wait (Retry-After) wins over our own
+			// backoff — but only inside maxRateLimitWait. Past that the
+			// route is dead for a duration no turn should sit out; the
+			// error surfaces so the user's retry or route change decides.
+			wait := sendRetryBackoff[attempt]
+			var delayed interface{ RetryAfter() time.Duration }
+			if errors.As(err, &delayed) && delayed.RetryAfter() > wait {
+				if delayed.RetryAfter() > maxRateLimitWait {
+					break
+				}
+				wait = delayed.RetryAfter()
+			}
 			select {
 			case <-ctx.Done():
 				return apperror.New(408, "turn canceled", ctx.Err())
-			case <-time.After(sendRetryBackoff[attempt]):
+			case <-time.After(wait):
 			}
 		}
 		// A canceled stream may already have appended the text and
@@ -275,6 +295,14 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 		last := &msgs[len(msgs)-1]
 		pending := pendingCalls(*last)
 		if len(pending) == 0 {
+			// finish_reason=tool_calls with zero executable calls is not
+			// "the model is done" — the provider asked for tools but
+			// every call it streamed was malformed or truncated and the
+			// adapter dropped it. Fail the turn loudly instead of
+			// letting an empty assistant reply settle the room.
+			if last.FinishReason() == enum.FinishReasonToolCalls {
+				return apperror.New(502, "provider requested tool calls but sent none", fmt.Errorf("finish_reason=tool_calls with zero calls"))
+			}
 			// The turn ends with images withheld and the history still
 			// at the cap — fold now so the next user turn replays under
 			// the limit. This only fires when the step-top fold above
@@ -443,11 +471,16 @@ func (d Deps) resolveRoute(ctx context.Context, convID string, conv *aggregate.C
 }
 
 // stampInterrupted records "interrupted by user" on origin calls that
-// never received a result. Incomplete argument streams are not on the
-// message — adapters omit them before appending.
+// never received a result, and marks a reply the provider never closed
+// with the interrupted finish — an empty finish would read as a
+// complete answer to a later reload. Incomplete argument streams are
+// not on the message — adapters omit them before appending.
 func stampInterrupted(msg *entity.Message) error {
 	if msg == nil {
 		return nil
+	}
+	if msg.FinishReason() == "" {
+		msg.SetFinishReason(enum.FinishReasonInterrupted)
 	}
 	for _, tc := range msg.ToolCalls() {
 		if tc.Type() != enum.TooltypeOrigin || tc.HasOutput() {
@@ -506,8 +539,8 @@ func (d Deps) appendWorkspaceContext(ctx context.Context, convID string, conv *a
 	// Newest workspace pin wins: identical → the tail already cites this
 	// directory; different or absent → record this turn's.
 scan:
-	for i := len(conv.Messages()) - 1; i >= 0; i-- {
-		for _, tc := range conv.Messages()[i].ToolCalls() {
+	for _, v := range slices.Backward(conv.Messages()) {
+		for _, tc := range v.ToolCalls() {
 			if tc.Type() != enum.TooltypeInjection || tc.Name() != "workspace" {
 				continue
 			}

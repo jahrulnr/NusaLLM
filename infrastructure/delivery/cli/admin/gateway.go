@@ -222,7 +222,7 @@ func gatewayWrite(b *Boot, edit bool, args []string, stdout, stderr io.Writer, s
 	}
 	if modelsSet {
 		in.Models = nil
-		for _, mid := range strings.Split(*models, ",") {
+		for mid := range strings.SplitSeq(*models, ",") {
 			mid = strings.TrimSpace(mid)
 			if mid == "" {
 				continue
@@ -318,7 +318,7 @@ func gatewayWrite(b *Boot, edit bool, args []string, stdout, stderr io.Writer, s
 				fmt.Fprintln(stderr, "cancelled.")
 				return 1
 			}
-			for _, mid := range strings.Split(v, ",") {
+			for mid := range strings.SplitSeq(v, ",") {
 				if mid = strings.TrimSpace(mid); mid != "" {
 					in.Models = append(in.Models, appgateway.ModelInput{ID: mid, Route: mid})
 				}

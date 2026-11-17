@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -206,11 +207,11 @@ func InstallBuiltins(dir string, assets fs.FS) error {
 	if err != nil {
 		return err
 	}
-	for i := len(dirs) - 1; i >= 0; i-- {
+	for _, dir := range slices.Backward(dirs) {
 		// Deepest-first so emptied parents collapse after their children.
 		// Dirs still holding shipped files or anything unreadable stay.
-		if entries, err := os.ReadDir(dirs[i]); err == nil && len(entries) == 0 {
-			_ = os.Remove(dirs[i])
+		if entries, err := os.ReadDir(dir); err == nil && len(entries) == 0 {
+			_ = os.Remove(dir)
 		}
 	}
 	return nil

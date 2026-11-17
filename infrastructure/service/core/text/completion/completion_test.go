@@ -1064,3 +1064,214 @@ func TestStreamIdleTimeoutFires(t *testing.T) {
 		t.Fatal("idle timeout did not fire promptly")
 	}
 }
+
+// A refusal is the provider's answer, not an empty message. The OpenAI
+// chat-completions wire carries it beside content in `refusal` on both
+// the unary message and stream deltas.
+func TestUnaryRefusalIsSurfaced(t *testing.T) {
+	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"model": "m",
+			"choices": []any{map[string]any{
+				"index": 0,
+				"message": map[string]any{
+					"role": "assistant", "content": nil,
+					"refusal": "I'm sorry, but I can't help with that request.",
+				},
+				"finish_reason": "stop",
+			}},
+		})
+	})
+
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(m)
+	model, _ := entity.NewModel("m", "test")
+
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := conv.Last().Content(), "I'm sorry, but I can't help with that request."; got != want {
+		t.Fatalf("refusal dropped: content = %q, want %q", got, want)
+	}
+}
+
+// The streamed shape must surface refusal deltas as display text, and
+// emit them as delta events so the application's ordered parts are not
+// left holding reasoning alone.
+func TestStreamRefusalIsSurfaced(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"refusal\":\"I'm sorry, \"}}]}\n\n"))
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"refusal\":\"I can't help.\"}}]}\n\n"))
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+		w.Write([]byte("data: [DONE]\n\n"))
+	})
+
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(m)
+	model, _ := entity.NewModel("m", "test")
+
+	var deltas strings.Builder
+	onEvent := func(e event.TurnEvent) {
+		if e.Kind() == enum.TurnEventDelta {
+			deltas.WriteString(e.Delta())
+		}
+	}
+	if err := svc.Send(t.Context(), conv, gw, model, onEvent); err != nil {
+		t.Fatal(err)
+	}
+	const want = "I'm sorry, I can't help."
+	if got := conv.Last().Content(); got != want {
+		t.Fatalf("refusal dropped: content = %q, want %q", got, want)
+	}
+	if got := deltas.String(); got != want {
+		t.Fatalf("refusal delta not streamed: deltas = %q, want %q", got, want)
+	}
+}
+
+// A stream that only produced reasoning never produced an answer. The
+// thinking block is display metadata, not assistant content, and no tool
+// call asked for work — committing it as a successful turn leaves a
+// bubble with no answer and no failure card.
+func TestStreamReasoningOnlyIsAnEmptyAnswer(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"thinking only\"}}]}\n\n"))
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+		w.Write([]byte("data: [DONE]\n\n"))
+	})
+	conv := newConv(t)
+	model, _ := entity.NewModel("m", "test")
+	err := svc.Send(t.Context(), conv, gw, model, nil)
+	if err == nil {
+		t.Fatal("reasoning-only stream must fail as an empty answer")
+	}
+	if last := conv.Last(); last != nil && last.Role() == enum.RoleAssistant {
+		t.Fatalf("reasoning-only turn committed: %+v", last.OptionalContent())
+	}
+}
+
+// SSE comments are keepalives, not payload. OpenRouter sends
+// ": OPENROUTER PROCESSING" while a slow model is still thinking; those
+// bytes prove the connection is alive. Dropping them before the idle
+// timer sees them aborts a live stream at the idle deadline even though
+// the provider kept answering.
+func TestStreamKeepaliveCommentsResetIdle(t *testing.T) {
+	const idle = 250 * time.Millisecond
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("test server cannot flush")
+			return
+		}
+		write := func(s string) {
+			_, _ = w.Write([]byte(s))
+			flusher.Flush()
+		}
+		write(": OPENROUTER PROCESSING\n\n")
+		// Longer than the idle deadline in total, but never idle for one
+		// full deadline: each comment is real traffic.
+		for range 9 {
+			time.Sleep(40 * time.Millisecond)
+			write(": OPENROUTER PROCESSING\n\n")
+		}
+		write("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"alive\"},\"finish_reason\":\"stop\"}]}\n\n")
+		write("data: [DONE]\n\n")
+	}))
+	t.Cleanup(srv.Close)
+	gw, err := aggregate.NewGateway("test", "t", srv.URL, enum.StyleCompletion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw.EnableStream()
+	svc := New(coretext.Options{IdleTimeout: idle, FileStore: repoworkspace.NewLocal()})
+	conv := newConv(t)
+	model, _ := entity.NewModel("m", "test")
+	if err := svc.Send(t.Context(), conv, &gw, model, nil); err != nil {
+		t.Fatalf("keepalive comments must keep the stream alive: %v", err)
+	}
+	if last := conv.Last(); last == nil || last.Content() != "alive" {
+		t.Fatalf("live stream did not commit: %+v", last)
+	}
+}
+
+// Whitespace is not an answer either. A provider that returns only a
+// newline or spaces with finish=stop must fail as an empty reply instead
+// of committing a visually blank assistant stripe.
+func TestStreamWhitespaceOnlyIsAnEmptyAnswer(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\" \\n\\t \"},\"finish_reason\":\"stop\"}]}\n\n"))
+		w.Write([]byte("data: [DONE]\n\n"))
+	})
+	conv := newConv(t)
+	model, _ := entity.NewModel("m", "test")
+	err := svc.Send(t.Context(), conv, gw, model, nil)
+	if err == nil {
+		t.Fatal("whitespace-only stream must fail as an empty answer")
+	}
+	if last := conv.Last(); last != nil && last.Role() == enum.RoleAssistant {
+		t.Fatalf("whitespace-only turn committed: %q", last.Content())
+	}
+}
+
+// A 429 response may name the wait in Retry-After. The adapter is the
+// only layer that sees the header, so it must carry the delay on the
+// error it returns; the turn loop cannot invent it later.
+func TestRateLimitExposesRetryAfter(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "7")
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"error":{"message":"rate limited","type":"rate_limit_error"}}`))
+	})
+	conv := newConv(t)
+	model, _ := entity.NewModel("m", "test")
+	err := svc.Send(t.Context(), conv, gw, model, nil)
+	if err == nil || apperror.As(err).StatusCode() != 429 {
+		t.Fatalf("429 → %v", err)
+	}
+	withDelay, ok := apperror.As(err).(interface{ RetryAfter() time.Duration })
+	if !ok {
+		t.Fatal("429 error must expose the provider's Retry-After")
+	}
+	if got := withDelay.RetryAfter(); got != 7*time.Second {
+		t.Fatalf("Retry-After = %v, want 7s", got)
+	}
+}
+
+// finish_reason already proves the turn ended; a provider/proxy that
+// leaves the connection open afterwards must not turn the idle timer
+// into data loss. The transport-error path commits after finish, so the
+// idle path must too — otherwise a complete answer becomes a 502.
+func TestStreamIdleAfterFinishCommits(t *testing.T) {
+	const idle = 80 * time.Millisecond
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("test server cannot flush")
+			return
+		}
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\n"))
+		flusher.Flush()
+		time.Sleep(300 * time.Millisecond) // no [DONE], no close
+	}))
+	t.Cleanup(srv.Close)
+	gw, err := aggregate.NewGateway("test", "t", srv.URL, enum.StyleCompletion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw.EnableStream()
+	svc := New(coretext.Options{IdleTimeout: idle, FileStore: repoworkspace.NewLocal()})
+	conv := newConv(t)
+	model, _ := entity.NewModel("m", "test")
+	if err := svc.Send(t.Context(), conv, &gw, model, nil); err != nil {
+		t.Fatalf("finish_reason must survive a stalled tail: %v", err)
+	}
+	if last := conv.Last(); last == nil || last.Content() != "hi" {
+		t.Fatalf("completed turn lost: %+v", last)
+	}
+}
