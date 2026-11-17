@@ -865,10 +865,7 @@ func (m *replModel) editComposer(msg tea.Msg) tea.Cmd {
 }
 
 func (m *replModel) fitComposer() {
-	h := min(composerDisplayRows(m.textarea), composerMaxHeight)
-	if h < 1 {
-		h = 1
-	}
+	h := max(min(composerDisplayRows(m.textarea), composerMaxHeight), 1)
 	m.textarea.SetHeight(h)
 }
 
