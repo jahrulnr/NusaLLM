@@ -18,6 +18,8 @@ import (
 	repohistory "github.com/jahrulnr/nusallm/infrastructure/repository/history"
 	repoworkspace "github.com/jahrulnr/nusallm/infrastructure/repository/workspace"
 	"github.com/jahrulnr/nusallm/infrastructure/system"
+
+	_ "go.uber.org/automaxprocs"
 )
 
 // version is the release version, set when the binary is linked
