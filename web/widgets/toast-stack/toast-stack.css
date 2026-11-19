@@ -1,9 +1,18 @@
 /* Sits on the left of the conversation column, just above the composer
    (the shell sets --toast-lift), so it never covers the send control. */
 :host {
-  position: absolute;
-  left: 16px;
-  bottom: var(--toast-lift, 12px);
+  /* Popover UA centers the box (inset:0; margin:auto). Pin it back to
+     the composer corner. Top layer, not z-index, is what clears a modal. */
+  position: fixed;
+  inset: auto auto var(--toast-lift, 12px) 16px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  width: auto;
+  height: auto;
+  background: transparent;
+  color: inherit;
+  overflow: visible;
   z-index: 100;
   font-family: var(--font-ui);
 }
@@ -58,7 +67,7 @@
 .toast-action:hover { text-decoration: underline; }
 
 @media (max-width: 760px) {
-  :host { left: 8px; right: 8px; bottom: var(--toast-lift, 12px); }
+  :host { inset: auto 8px var(--toast-lift, 12px) 8px; }
   .stack { width: auto; }
   .toast { padding: 12px 14px; }
   .toast-title { font-size: 15px; }

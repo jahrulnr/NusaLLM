@@ -10,6 +10,16 @@ const MODEL_TYPES = ['text', 'embedding', 'video', 'image', 'speech', 'transcrip
 const MODALITIES = ['text', 'image', 'audio', 'video', 'file'];
 const MODALITY_LETTERS = { text: 't', image: 'i', audio: 'a', video: 'v', file: 'f' };
 
+// `listed` is computed for the chat picker and is not a write field.
+// The upsert decoder rejects unknown keys, so round-tripping a GET
+// model (which always carries `listed`) makes every save a 400.
+function modelForWrite(m) {
+  if (!m || !Object.hasOwn(m, 'listed')) return m;
+  const copy = { ...m };
+  delete copy.listed;
+  return copy;
+}
+
 // Catalog token counts compact to M/k; 0 means "not declared" and the
 // caller renders the placeholder instead.
 function fmtCount(n) {
@@ -653,7 +663,7 @@ class ProviderManager extends Widget {
         style: g.style,
         endpoint: g.endpoint || '',
         stream: g.stream,
-        models: (g.models || []).map((x) => (x.id === m.id ? next : x)),
+        models: (g.models || []).map((x) => modelForWrite(x.id === m.id ? next : x)),
       };
       this._saving = true;
       this._pendingSaveId = g.id;
@@ -794,7 +804,7 @@ class ProviderManager extends Widget {
         style: style.value,
         endpoint: endpoint.value.trim(),
         stream: stream.checked,
-        models: [...this._modelIds].map((mid) => byId.get(mid) || {
+        models: [...this._modelIds].map((mid) => modelForWrite(byId.get(mid)) || {
           id: mid, route: '', contextWindow: 0,
           pricing: { inputPerMillionUsd: 0, outputPerMillionUsd: 0, cacheReadPerMillionUsd: 0, cacheWritePerMillionUsd: 0 },
         }),

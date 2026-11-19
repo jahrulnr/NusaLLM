@@ -36,6 +36,7 @@ class ToastStack extends Widget {
       }, [icon('x', 12)]),
     ]);
     this.root.append(toast);
+    this._raise();
     setTimeout(() => { if (toast.isConnected) toast.classList.add('show'); }, 10);
     setTimeout(() => {
       toast.classList.remove('show');
@@ -50,9 +51,38 @@ class ToastStack extends Widget {
       this.root.focus?.();
     }
     toast.remove();
+    const left = [...this.root.children].some((n) => String(n.className || '').includes('toast'));
+    if (!left) this._lower();
   }
 
-  clear() { clear(this.root); }
+  clear() {
+    clear(this.root);
+    this._lower();
+  }
+
+  // Re-show so this stack becomes the topmost top-layer entry. A dialog
+  // that opened after the previous toast would otherwise cover the new one.
+  _raise() {
+    if (typeof this.showPopover !== 'function' || !this.isConnected) return;
+    // Not in the constructor: a custom element constructor must not set
+    // attributes. A manual popover joins the top layer, so this toast
+    // paints in front of a modal <dialog> that is already open.
+    this.setAttribute?.('popover', 'manual');
+    try {
+      if (typeof this.matches === 'function' && this.matches(':popover-open')) this.hidePopover();
+      this.showPopover();
+    } catch {
+      // Not connected, or the browser refused the top layer. The stack
+      // still renders in normal flow.
+    }
+  }
+
+  _lower() {
+    if (typeof this.hidePopover !== 'function') return;
+    try {
+      if (typeof this.matches === 'function' && this.matches(':popover-open')) this.hidePopover();
+    } catch { /* already hidden */ }
+  }
 }
 
 customElements.define('nusa-toast-stack', ToastStack);

@@ -124,3 +124,21 @@ test('manual dismiss does not strand focus in a removed toast', () => {
     assert.equal(active?.isConnected, true, 'focus moved to a detached node after dismiss');
   }
 });
+
+// A modal dialog owns the top layer. The stack has to re-enter it on
+// each push or the toast paints behind the dialog that is already open.
+test('a push promotes the stack into the top layer', () => {
+  const ToastStack = globalThis.__ToastStack;
+  const calls = [];
+  HTMLElement.prototype.showPopover = function showPopover() { calls.push('show'); this._popoverOpen = true; };
+  HTMLElement.prototype.hidePopover = function hidePopover() { calls.push('hide'); this._popoverOpen = false; };
+  HTMLElement.prototype.matches = function matches(sel) {
+    return sel === ':popover-open' && !!this._popoverOpen;
+  };
+  const stack = new ToastStack();
+  stack.isConnected = true;
+  stack.push({ tone: 'error', title: 'Gateway', message: 'rejected' });
+  assert.deepEqual(calls, ['show']);
+  stack.push({ tone: 'error', title: 'Gateway', message: 'again' });
+  assert.deepEqual(calls, ['show', 'hide', 'show'], 'a later toast restacks above a dialog opened in between');
+});

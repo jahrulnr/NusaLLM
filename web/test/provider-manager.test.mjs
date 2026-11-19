@@ -156,6 +156,26 @@ test('models view search filters by id and name', () => {
   assert.ok(byText(pm.root, '3 of 3').length, 'count reports filter coverage');
 });
 
+test('gateway save drops the read-only listed flag', () => {
+  const pm = new PM();
+  pm.gateways = [{
+    ...GW,
+    models: [{
+      id: 'big-pickle', listed: true, contextWindow: 128000, customFlag: 'keep-me',
+      pricing: { inputPerMillionUsd: 0, outputPerMillionUsd: 0, cacheReadPerMillionUsd: 0, cacheWritePerMillionUsd: 0 },
+    }],
+  }];
+  byAria(pm.root, 'Edit gw1').fire('click');
+  saveBtn(openDialog(pm)).fire('click');
+  const evt = pm.events.find((e) => e.type === 'gateway-save');
+  assert.ok(evt, 'gateway-save emitted');
+  const model = evt.detail.body.models[0];
+  assert.equal(model.id, 'big-pickle');
+  assert.equal(model.contextWindow, 128000);
+  assert.equal(model.customFlag, 'keep-me');
+  assert.ok(!('listed' in model), 'listed is not a write field');
+});
+
 test('model editor save emits gateway-save with the full catalog', () => {
   const pm = new PM();
   pm.gateways = [GW];
