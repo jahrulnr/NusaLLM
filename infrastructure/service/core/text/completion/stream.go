@@ -60,7 +60,7 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 			// Keep text and reasoning that already arrived. A tool call
 			// stays only when its argument delta is valid JSON; a call
 			// still streaming arguments is dropped.
-			kept := completeToolCalls(calls)
+			kept := completeToolCalls(calls, false)
 			if content.Len() > 0 || reasoning.Len() > 0 || reasoningContent.Len() > 0 || len(kept) > 0 {
 				// Details are deliberately dropped on cancel: a partially
 				// streamed signature/encrypted blob is not replayable.
@@ -80,7 +80,7 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 			if finish == "" {
 				finish = "stop"
 			}
-			return s.commitStream(conv, onEvent, content.String(), reasoning.String(), reasoningContent.String(), details, completeToolCalls(calls), finish, usage, logged)
+			return s.commitStream(conv, onEvent, content.String(), reasoning.String(), reasoningContent.String(), details, completeToolCalls(calls, true), finish, usage, logged)
 		case err := <-errs:
 			s.logAppend(ctx, "provider.stream", logged)
 			// stream closed — only commit when a real terminal marker was
@@ -100,7 +100,7 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 				// partial (canceled) commits.
 				finish = "stop"
 			}
-			return s.commitStream(conv, onEvent, content.String(), reasoning.String(), reasoningContent.String(), details, completeToolCalls(calls), finish, usage, logged)
+			return s.commitStream(conv, onEvent, content.String(), reasoning.String(), reasoningContent.String(), details, completeToolCalls(calls, true), finish, usage, logged)
 		case ev := <-events:
 			timer.Reset(s.idle)
 			if ev.done {
@@ -204,13 +204,23 @@ func (s *Service) commitStream(conv *aggregate.Conversation, onEvent event.TurnE
 	return nil
 }
 
-// completeToolCalls keeps calls whose id, name, and argument JSON all
-// arrived. A truncated argument string is not a call yet.
-func completeToolCalls(calls []ToolCallBody) []ToolCallBody {
+// completeToolCalls keeps calls whose id and name arrived and whose
+// argument JSON is closed. A truncated argument string is not a call yet.
+// On a terminal commit, arguments that never arrived are the zero-arg
+// form ({}); on cancel they are still in flight and the call is dropped.
+func completeToolCalls(calls []ToolCallBody, terminal bool) []ToolCallBody {
 	kept := make([]ToolCallBody, 0, len(calls))
 	for _, c := range calls {
+		if c.ID == "" || c.Function.Name == "" {
+			continue
+		}
 		args := c.Function.Arguments
-		if c.ID == "" || c.Function.Name == "" || args == "" || !json.Valid([]byte(args)) {
+		if args == "" {
+			if !terminal {
+				continue
+			}
+			c.Function.Arguments = "{}"
+		} else if !json.Valid([]byte(args)) {
 			continue
 		}
 		kept = append(kept, c)
@@ -238,8 +248,18 @@ func mergeCallDelta(calls []ToolCallBody, d ToolCallBody) []ToolCallBody {
 	if d.ID != "" {
 		calls[i].ID = d.ID
 	}
-	if d.Function.Name != "" {
-		calls[i].Function.Name += d.Function.Name
+	if name := d.Function.Name; name != "" {
+		cur := calls[i].Function.Name
+		switch {
+		case cur == "" || strings.HasPrefix(name, cur):
+			// First fragment, or a resent head that already contains
+			// everything we have ("exec" replayed as "exec").
+			calls[i].Function.Name = name
+		case strings.HasPrefix(cur, name):
+			// Shorter replay of a name already assembled.
+		default:
+			calls[i].Function.Name = cur + name
+		}
 	}
 	calls[i].Function.Arguments += d.Function.Arguments
 	return calls

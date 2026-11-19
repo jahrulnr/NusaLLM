@@ -32,6 +32,12 @@ func (r LocalRunner) Run(ctx context.Context, command, workspace string, stdin i
 		return dservice.ProcessExit{}, err
 	}
 	err := cmd.Wait()
+	// WaitDelay fires when a descendant still holds the inherited pipe
+	// after the leader has exited. A successful process state is the
+	// leader's real status — the delay is not a command failure.
+	if errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
+		return dservice.ProcessExit{Code: 0}, nil
+	}
 	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 		if code := exitErr.ExitCode(); code > 0 {
 			return dservice.ProcessExit{Code: code}, nil

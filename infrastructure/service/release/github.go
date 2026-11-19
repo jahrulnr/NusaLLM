@@ -6,6 +6,7 @@ package release
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -95,12 +96,18 @@ func (g *GitHub) Fetch(ctx context.Context, url string, dst io.Writer, limit int
 	if res.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("download: %s answered %s", url, res.Status)
 	}
-	n, err := io.Copy(dst, io.LimitReader(res.Body, limit+1))
+	// Copy only the accepted span. Reading limit+1 into dst wrote the
+	// byte that proves the refusal, leaving a staging writer with
+	// corrupt content despite the failure — the deciding byte is
+	// consumed from the body instead, never stored.
+	n, err := io.Copy(dst, io.LimitReader(res.Body, limit))
 	if err != nil {
 		return n, fmt.Errorf("download: %w", err)
 	}
-	if n > limit {
+	if _, err := io.CopyN(io.Discard, res.Body, 1); err == nil {
 		return n, fmt.Errorf("download: file exceeds %d bytes", limit)
+	} else if !errors.Is(err, io.EOF) {
+		return n, fmt.Errorf("download: %w", err)
 	}
 	return n, nil
 }

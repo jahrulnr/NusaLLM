@@ -1,6 +1,25 @@
 import { Widget, el, emit, clear, deepActiveElement, focusKeyOf, findByFocusKey } from '../../lib/dom.js';
 import { icon } from '../../lib/icons.js';
 
+// The disabled state as rendered. The headless stand-ins reflect the
+// attribute as a string, which is falsy as a property, so both forms
+// count.
+function isDisabled(node) {
+  return !!node && (node.disabled === true || node.getAttribute?.('disabled') != null);
+}
+
+// First enabled button under a node — walked, so the headless stand-ins
+// resolve it exactly like the real DOM.
+function firstEnabledButton(root) {
+  if (!root) return null;
+  if (root.tagName === 'BUTTON' && !isDisabled(root)) return root;
+  for (const child of root.children || []) {
+    const hit = firstEnabledButton(child);
+    if (hit) return hit;
+  }
+  return null;
+}
+
 // The conversation surface. Assistant content renders through
 // nusa-markdown-view; user messages stay escaped plain text. Tool calls —
 // persisted and live — render as nusa-tool-activity with their full
@@ -9,7 +28,6 @@ import { icon } from '../../lib/icons.js';
 // survive every delta.
 class MessageThread extends Widget {
   static stylesheet = new URL('./message-thread.css', import.meta.url);
-
   constructor() {
     super();
     this._messages = [];
@@ -23,8 +41,14 @@ class MessageThread extends Widget {
     this._compactState = null;
     this._failedTurn = null; // {note, retryable} — the turn-failed card
     this._failSig = null;
+    // The scroller is a programmatic focus target (tabindex="-1", never
+    // in the tab order): a dismissed control whose successors are all
+    // gone hands focus here instead of stranding it on a detached node.
+    this.root.setAttribute('tabindex', '-1');
     this._editingId = null;
     this._editDraft = null; // typed edit kept when the shell vetoes dispatch
+    this._editInput = null;
+    this._editInputId = null;
     this._commandsBusy = false;
     this._pinned = true; // pinned to bottom until the user scrolls up
     this._lastScrollTop = 0;
@@ -76,6 +100,8 @@ class MessageThread extends Widget {
     if (!next.some((m) => m.id === this._editingId)) {
       this._editingId = null;
       this._editDraft = null;
+      this._editInput = null;
+      this._editInputId = null;
     }
     // A completed turn usually replaces one pending user record and
     // appends assistant records. Keep the existing conversation DOM.
@@ -157,6 +183,8 @@ class MessageThread extends Widget {
     this._commandsBusy = !!v;
     this._editingId = null;
     this._editDraft = null;
+    this._editInput = null;
+    this._editInputId = null;
     this._render();
   }
 
@@ -178,9 +206,33 @@ class MessageThread extends Widget {
     const sig = f ? `${f.title || ''}|${f.note || ''}|${!!f.retryable}` : '';
     if (sig === this._failSig) return;
     this._failSig = sig;
+    // A control the rebuild replaces wholesale follows the same rule
+    // as _render: its stable key carries focus to the rebuilt control.
+    // Captured before the teardown, while the node still reports as
+    // the active element.
+    const prev = deepActiveElement();
+    const focusKey = prev && this.failEl.contains?.(prev) ? focusKeyOf(prev) : null;
     clear(this.failEl);
     this.failEl.hidden = !f;
-    if (!f) return;
+    if (!f) {
+      // Dismiss removes the focused control with the whole card. The
+      // keyboard must not stay on the detached button (nor drop to
+      // BODY): the failed line's own edit affordance is the first
+      // successor. No editable line survives (watched failure,
+      // history-derived tail, busy command) — the scroller takes it,
+      // programmatically focusable and outside the tab order, so the
+      // next Tab resumes from the conversation.
+      if (focusKey) {
+        const msgs = this._renderedMessages || [];
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          if (msgs[i].role !== 'user' || !this._editableMsg(msgs[i])) continue;
+          this._focusEditOf(msgs[i].id);
+          return;
+        }
+        this.root.focus?.();
+      }
+      return;
+    }
     this.failEl.append(
       el('div', { class: 'fail-note' }, [
         el('span', { class: 'fail-title', text: f.title || 'Turn failed' }),
@@ -201,6 +253,13 @@ class MessageThread extends Widget {
         }, [el('span', { text: 'Dismiss' })]),
       ]),
     );
+    if (focusKey) {
+      // The rebuilt successor by key — or, when that control rebuilt
+      // disabled (a failed line arrived behind the card, so Retry is no
+      // longer legal), the first enabled action in the card.
+      const hit = findByFocusKey(this.failEl, focusKey);
+      (hit && !isDisabled(hit) ? hit : firstEnabledButton(this.failEl))?.focus?.();
+    }
     if (this._pinned) this._scrollToEnd();
   }
   // stream: a live turn projection, or null. A different projection id
@@ -248,16 +307,44 @@ class MessageThread extends Widget {
     // window rewrite (an earlier page prepending, a refresh) rebuilds
     // the block from stored content, so carry the typed text forward
     // before the DOM is torn down.
-    if (this._editingId && this._editInput) {
-      this._editDraft = { id: this._editingId, content: this._editInput.value };
+    if (this._editInput && this._editInputId) {
+      this._editDraft = { id: this._editInputId, content: this._editInput.value };
     }
     // A control the rebuild replaces wholesale — the earlier-page
     // button survives prepends — hands focus to its successor by
-    // stable key instead of dropping it to BODY.
+    // stable key instead of dropping it to BODY. The focused
+    // control's message slot is captured too: when its message dies
+    // with the rebuild (an edit cut it), the nearest surviving edit
+    // affordance inherits focus.
     const prev = deepActiveElement();
     const focusKey = prev && this.root.contains?.(prev) ? focusKeyOf(prev) : null;
+    let focusAt = -1;
+    if (focusKey) {
+      const nodes = this._messageNodes || [];
+      for (let i = 0; i < nodes.length; i++) {
+        if (nodes[i] && nodes[i].contains?.(prev)) { focusAt = i; break; }
+      }
+    }
     this._renderBody();
-    if (focusKey) findByFocusKey(this.root, focusKey)?.focus?.();
+    if (!focusKey) return;
+    const hit = findByFocusKey(this.root, focusKey);
+    if (hit) {
+      hit.focus?.();
+      return;
+    }
+    // The focused control's message is gone. The nearest message that
+    // still offers an edit keeps the keyboard inside the conversation
+    // instead of on a detached node.
+    const msgs = this._renderedMessages || [];
+    const maxD = Math.max(focusAt, msgs.length - 1 - focusAt);
+    for (let d = 0; d <= maxD; d++) {
+      for (const i of [focusAt - d, focusAt + d]) {
+        if (i < 0 || i >= msgs.length) continue;
+        if (msgs[i].role !== 'user' || !this._editableMsg(msgs[i])) continue;
+        this._focusEditOf(msgs[i].id);
+        return;
+      }
+    }
   }
 
   _renderBody() {
@@ -404,6 +491,13 @@ class MessageThread extends Widget {
     ]);
   }
 
+  // The inline-edit affordance rule — owner-typed user lines while no
+  // command is in flight. Shared by the message render and the focus
+  // fallbacks so the hand-off always targets a control that exists.
+  _editableMsg(m) {
+    return !this._commandsBusy && (m.userType === 'origin' || m.userType === '' || !m.userType);
+  }
+
   _userMessage(m) {
     const calls = m.toolCalls || [];
     const injected = calls.filter((tc) => tc.type === 'injection');
@@ -414,9 +508,10 @@ class MessageThread extends Widget {
       kids.push(el('div', { class: 'attachments' }, m.attachments.map((a) => this._attachmentChip(a))));
     }
     const block = el('div', { class: 'user-msg' }, kids);
-    if (!this._commandsBusy && (m.userType === 'origin' || m.userType === '' || !m.userType)) {
+    if (this._editableMsg(m)) {
       block.append(el('button', {
         class: 'edit-btn', type: 'button', 'aria-label': 'Edit message',
+        'data-id': `edit-${m.id}`,
         onclick: () => {
           this._editingId = m.id;
           this._render();
@@ -455,7 +550,8 @@ class MessageThread extends Widget {
       ? this._editDraft.content : m.content;
     const input = el('textarea', { class: 'edit-input', value: draft, 'aria-label': 'Edit message content' });
     this._editInput = input;
-    const cancel = () => { this._editingId = null; this._editDraft = null; this._render(); this._focusEditOf(m.id); };
+    this._editInputId = m.id;
+    const cancel = () => { this._editingId = null; this._editDraft = null; this._editInput = null; this._editInputId = null; this._render(); this._focusEditOf(m.id); };
     const commit = () => {
       const content = input.value.trim();
       if (content && content !== m.content) {
@@ -473,6 +569,8 @@ class MessageThread extends Widget {
       }
       this._editingId = null;
       this._editDraft = null;
+      this._editInput = null;
+      this._editInputId = null;
       this._render();
       this._focusEditOf(m.id);
     };
@@ -583,6 +681,11 @@ class MessageThread extends Widget {
       this.compactText,
     ]);
     this.failEl = el('div', { class: 'turn-fail', role: 'alert', hidden: true });
+    // The signature cache describes what is painted INSIDE the fail
+    // container; a full render recreates that node, so the cache
+    // resets with it — otherwise the skip leaves the fresh container
+    // empty and silently drops an existing failed-turn card.
+    this._failSig = null;
     this.root.append(this.streamEl, this.compactEl, this.failEl, this.liveEl);
     this._contentResize.observe(this.streamEl);
     this._renderCompactState();

@@ -11,6 +11,7 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
+	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
 	"github.com/jahrulnr/nusallm/infrastructure/service/wire"
 )
 
@@ -39,14 +40,15 @@ var errUnsupported = errPlain("modality has no carrier on this wire")
 // to sendable form here (url/base64/text sources) — the domain stores
 // references only.
 func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool, fileRoot wire.MediaRoot) (*RequestBody, error) {
+	maxTokens, err := coretext.MaxTokensOr(model, defaultMaxTokens, conv.EstimatedTokens())
+	if err != nil {
+		return nil, err
+	}
 	body := &RequestBody{
 		Model:     model.ID(),
-		MaxTokens: defaultMaxTokens,
+		MaxTokens: maxTokens,
 		Stream:    stream,
 		Metadata:  &MetadataBody{UserID: conv.ID()},
-	}
-	if mt := model.MaxOutputTokens(); mt != nil {
-		body.MaxTokens = *mt
 	}
 	if sp := conv.SystemPrompt(); sp != "" {
 		body.System = sp
@@ -390,6 +392,11 @@ func encodeAssistantBlocks(m entity.Message, text string, origin []entity.ToolCa
 	}
 	textDone, used := false, 0
 	emitText := func() {
+		// The domain stores one concatenated string. A second text
+		// placeholder must not refill that whole string again.
+		if textDone {
+			return
+		}
 		blocks = append(blocks, ContentBlock{Type: "text", Text: text})
 		textDone = true
 	}

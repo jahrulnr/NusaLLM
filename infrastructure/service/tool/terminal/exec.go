@@ -117,12 +117,13 @@ func (tool *ExecTool) Execute(ctx context.Context, call entity.ToolCall, emit se
 	// Exit status is data the model must see — a nonzero exit is not a
 	// Go error. It belongs at the end of the stream, so it lands inside
 	// the tail of the excerpt and at the end of the spill file.
+	// The suffix describes the process, not the caller's ctx. A clean
+	// exit that races a canceled deadline is still a clean exit; a kill
+	// arrives as Signal or Err from the runner.
 	suffix := ""
 	switch {
 	case exit.Code > 0:
 		suffix = fmt.Sprintf("\n(exit %d)", exit.Code)
-	case ctx.Err() != nil:
-		suffix = fmt.Sprintf("\n(killed: %v)", ctx.Err())
 	case exit.Signal != "":
 		suffix = fmt.Sprintf("\n(%s)", exit.Signal)
 	case exit.Err != nil:

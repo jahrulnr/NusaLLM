@@ -162,7 +162,11 @@ func (app *GatewayApp) write(ctx context.Context, in GatewayInput) error {
 		// is dead weight. A missing entry is already clean.
 		if err := app.secrets.Delete(ctx, drepo.GatewaySecretKey(in.ID)); err != nil &&
 			apperror.As(err).StatusCode() != apperror.StatusNotFound {
-			return err
+			// Save already replaced the record. Returning this cleanup
+			// error would make the caller retry a write that committed,
+			// and a cleared key cannot be rebuilt from the empty record.
+			// The leftover vault entry is unnamed and inert.
+			return nil
 		}
 	}
 	return nil

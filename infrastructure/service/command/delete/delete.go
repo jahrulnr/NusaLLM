@@ -8,6 +8,7 @@ import (
 
 	appcommand "github.com/jahrulnr/nusallm/application/command"
 	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 	commandinternal "github.com/jahrulnr/nusallm/infrastructure/service/command/internal"
 )
 
@@ -41,7 +42,14 @@ func (c *DeleteCommand) Execute(ctx context.Context, _ string, emitter dservice.
 		return errors.New("no active conversation; /delete <id> or /resume first")
 	}
 	if err := c.h.DeleteConversation(ctx, id); err != nil {
-		return err
+		// The room may already be gone. For the active room the user's
+		// intent is fulfilled — leaving the id bound traps every later
+		// command on the same 404 — so a 404 there clears it like any
+		// successful delete. Any other failure, and a 404 for a target
+		// the user named explicitly, still reports.
+		if apperror.As(err).StatusCode() != apperror.StatusNotFound || id != c.h.ConversationID() {
+			return err
+		}
 	}
 	if id == c.h.ConversationID() {
 		c.h.SetConversationID("")

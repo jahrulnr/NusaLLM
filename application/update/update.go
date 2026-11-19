@@ -244,7 +244,10 @@ func (a *App) Install() (Progress, error) {
 	}
 	a.jobMu.Lock()
 	defer a.jobMu.Unlock()
-	if a.job.State == StateRunning {
+	// Succeeded means the new binary is on disk and this process still
+	// has to restart. Another install in that window would download and
+	// replace the binary again before the first restart lands.
+	if a.job.State == StateRunning || a.job.State == StateSucceeded {
 		return a.job, ErrBusy
 	}
 	a.job = Progress{State: StateRunning, Phase: PhaseDownload, Version: rel.Version().String()}

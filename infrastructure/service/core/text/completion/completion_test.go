@@ -564,6 +564,55 @@ func TestStreamAssemblesMessage(t *testing.T) {
 	}
 }
 
+// A call with no arguments is complete the moment the provider's
+// finish_reason lands — "arguments" empty or absent is the zero-arg
+// form, not an unfinished stream. Dropping it commits a turn that
+// reports finish_reason=tool_calls with zero calls: a 502 where the
+// provider answered.
+func TestStreamKeepsZeroArgumentCall(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"noop\"}}]}}]}\n\n"))
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
+		w.Write([]byte("data: [DONE]\n\n"))
+	})
+	conv := newConv(t)
+	u, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(u)
+	model, _ := entity.NewModel("m", "test")
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
+		t.Fatalf("zero-arg call turn failed: %v", err)
+	}
+	calls := conv.Last().ToolCalls()
+	if len(calls) != 1 || calls[0].Name() != "noop" {
+		t.Fatalf("zero-arg call dropped: %+v", calls)
+	}
+}
+
+// Fragments of one call repeat id+name on some providers — the merge
+// must be idempotent, not cumulative: a resent head that concatenates
+// the name turns "exec" into "execexec" and the tool dispatch misses.
+func TestStreamToolCallNameIsIdempotentOnResend(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"exec\",\"arguments\":\"\"}}]}}]}\n\n"))
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"exec\",\"arguments\":\"{}\"}}]}}]}\n\n"))
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
+		w.Write([]byte("data: [DONE]\n\n"))
+	})
+	conv := newConv(t)
+	u, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(u)
+	model, _ := entity.NewModel("m", "test")
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
+		t.Fatal(err)
+	}
+	calls := conv.Last().ToolCalls()
+	if len(calls) != 1 || calls[0].Name() != "exec" {
+		t.Fatalf("resent name corrupted the call: %+v", calls)
+	}
+}
+
 func TestErrorMapping(t *testing.T) {
 	for _, tc := range []struct {
 		status int

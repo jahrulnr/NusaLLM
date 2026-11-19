@@ -10,6 +10,7 @@ import (
 	appcommand "github.com/jahrulnr/nusallm/application/command"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
 // RouteCommand is the /route command.
@@ -74,10 +75,14 @@ func (c *RouteCommand) Execute(ctx context.Context, _ string, emitter dservice.C
 		selected := c.h.Route()
 		if selected == "" && c.h.ConversationID() != "" {
 			info, err := c.h.ConversationInfo(ctx, c.h.ConversationID())
-			if err != nil {
+			// A room deleted in another tab has no metadata to copy.
+			// The configured gateway list is still the repair view.
+			if err != nil && apperror.As(err).StatusCode() != apperror.StatusNotFound {
 				return err
 			}
-			selected = info.Route
+			if err == nil {
+				selected = info.Route
+			}
 		}
 		for _, gateway := range gateways {
 			marker := " "

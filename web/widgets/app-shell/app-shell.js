@@ -102,6 +102,7 @@ class AppShell extends Widget {
     this.compactPending = new Set(); // room ids with a compact request in flight
     this.generation = 0;        // stale-response token
     this._settingsSeq = 0;      // stale PATCH response token
+    this._contextSeq = 0;       // stale context-stats response token
     // The open rail is part of the desktop layout; on a phone the same
     // state is a dismissible overlay. Crossing the breakpoint snaps the
     // state to the layout rather than leaving a scrimless drawer up —
@@ -437,17 +438,21 @@ class AppShell extends Widget {
 
   // The composer footer reports "~used/total Tokens" from the backend —
   // a fresh room still resolves the capacity half via route+modelId.
+  // generation covers room changes; the per-request seq covers two
+  // quick model picks in one room — the older response must not land
+  // its capacity under the newer selection.
   async _syncContext() {
     const gen = this.generation;
+    const seq = ++this._contextSeq;
     try {
       const stats = await this.api.contextStats({
         conversationId: this.activeId || '',
         route: this.selection ? this.selection.route : '',
         modelId: this.selection ? this.selection.modelId : '',
       });
-      if (gen === this.generation) this.composer.context = stats;
+      if (gen === this.generation && seq === this._contextSeq) this.composer.context = stats;
     } catch {
-      if (gen === this.generation) this.composer.context = null;
+      if (gen === this.generation && seq === this._contextSeq) this.composer.context = null;
     }
   }
 
@@ -518,6 +523,16 @@ class AppShell extends Widget {
       // The room is gone or unreadable — land on onboarding rather
       // than a half-loaded view with an armed composer.
       this._toast('error', 'Conversation', this._errText(err));
+      // A 404 means the room is gone — the same release as an explicit
+      // delete drops its queue and draft. Clear the composer first —
+      // _loadViewDraft already moved this room's draft into it, and
+      // the fresh view's stash would otherwise re-park that text
+      // under the dead id. Other failures keep the state: the room
+      // still exists, and a retry restores its draft.
+      if (err && err.status === 404) {
+        this.composer.clear();
+        this._releaseRoom(id);
+      }
       this.newConversation();
       return;
     } finally {
@@ -545,8 +560,22 @@ class AppShell extends Widget {
   // view's. Selecting a fresh entry's Open action returns to that same
   // token via _showFresh — the lines stay attached.
   newConversation() {
-    this.freshToken = `fresh:${++this._freshSeq}`;
-    this._showFresh(this.freshToken);
+    // _showFresh stashes the view it is leaving, then adopts this token.
+    // Minting it onto freshToken first made the stash key the new view,
+    // so the old draft was stored there and loaded straight back.
+    this._showFresh(this._mintFreshToken());
+  }
+
+  // The next fresh-view id. A caller can park an explicit token ahead of
+  // the counter (a test, a restored view); skip that id so the new thread
+  // does not reuse the view being left.
+  _mintFreshToken() {
+    const current = this._viewRoomKey();
+    let token = '';
+    do {
+      token = `fresh:${++this._freshSeq}`;
+    } while (token === current);
+    return token;
   }
 
   _showFresh(token) {
@@ -1678,13 +1707,23 @@ class AppShell extends Widget {
             this.settledStreams.set(cmd.conversationId, {
               turnId: f.turnId, stream: cmd.stream, seq: ++this._settledSeq,
             });
-            const lost = enqueue(this.queue, {
-              text: cmd.content,
-              room: roomKey,
-              opts: cmd.opts,
-            });
-            lost.state = UNKNOWN;
-            this._dropStaleDraft(roomKey, cmd.content);
+            // A dispatched queue entry rejoins at its original ordinal
+            // with its original id — a fresh entry would lose the
+            // receipt the user already saw and fall behind later
+            // submissions.
+            if (cmd.fromQueue) {
+              requeue(this.queue, cmd.fromQueue);
+              cmd.fromQueue.state = UNKNOWN;
+              cmd.fromQueue.turnId = null;
+            } else {
+              const lost = enqueue(this.queue, {
+                text: cmd.content,
+                room: roomKey,
+                opts: cmd.opts,
+              });
+              lost.state = UNKNOWN;
+              this._dropStaleDraft(roomKey, cmd.content);
+            }
             this._retireCommand(cmd);
             this._syncComposer();
             this._syncStream();
@@ -2091,6 +2130,12 @@ class AppShell extends Widget {
           // deleted in another tab) — keeping it bound would render a
           // dead room behind a permanently failed refresh gate.
           if (convId === this.activeId && err && err.status === 404) {
+            // Same release as an explicit delete: the room is gone, so
+            // its draft and queue must not keep offering actions for it.
+            // Clear the composer first — the fresh view stashes whatever
+            // is typed while the view key is still this id.
+            this.composer.clear();
+            this._releaseRoom(convId);
             this._toast('error', 'Conversation', this._errText(err));
             this.newConversation();
           }
@@ -2211,8 +2256,29 @@ class AppShell extends Widget {
     }
   }
 
+  // Every piece of per-room state keyed by the id must not outlive the
+  // room — a lingering command, draft, or queued line would render
+  // against a record that is already gone.
+  _releaseRoom(id) {
+    this.commands.delete(id);
+    this.settledStreams.delete(id);
+    this.drafts.delete(id);
+    this.failedTurns.delete(id);
+    this._dismissedTails.delete(id);
+    this._gates.delete(id);
+    this.compactPending.delete(id);
+    for (const e of [...this.queue.items]) {
+      if (e.room === id) removeEntry(this.queue, e);
+    }
+  }
+
   async _delete() {
     const id = this.activeId;
+    // Disable once the delete is accepted so a second click cannot
+    // post again. A newer claim — another room starting its own
+    // delete, which assigns the same flag — must survive this
+    // request's completion.
+    const gen = claimDeletePending(this.header);
     try {
       await this.api.deleteConversation(id);
       // Committed — every list response already on the wire answers a
@@ -2230,16 +2296,7 @@ class AppShell extends Widget {
       // Every piece of per-room state keyed by the id must not outlive
       // the room — a lingering command, draft, or card would render
       // against nothing.
-      this.commands.delete(id);
-      this.settledStreams.delete(id);
-      this.drafts.delete(id);
-      this.failedTurns.delete(id);
-      this._dismissedTails.delete(id);
-      this._gates.delete(id);
-      this.compactPending.delete(id);
-      for (const e of [...this.queue.items]) {
-        if (e.room === id) removeEntry(this.queue, e);
-      }
+      this._releaseRoom(id);
       this._pushConversations();
       if (this.activeId === id) {
         // Clear first — the fresh view's draft stash reads the composer
@@ -2249,46 +2306,75 @@ class AppShell extends Widget {
       }
       this._toast('info', 'Deleted', 'Thread removed.');
     } catch (err) { this._toast('error', 'Delete', this._errText(err)); }
+    finally { releaseDeletePending(this.header, gen); }
   }
 
   async _saveGateway(id, body) {
+    let doc;
     try {
-      const doc = await this.api.saveGateway(id, body);
-      // The record saved before the catalog merge ran — refresh the
-      // list behind the dialog either way, then hand the outcome back:
-      // a catalogError keeps the editor open with the failure text.
-      await this._refreshGateways();
-      const catalogError = (doc && doc.catalogError) || '';
-      this.settingsPage.gatewaySaveResult = {
-        id, models: doc.models || [], added: doc.added || [], catalogError,
-      };
-      if (!catalogError) this._toast('info', 'Gateway', `${id} saved.`);
+      doc = await this.api.saveGateway(id, body);
     } catch (err) {
       const message = this._errText(err);
       this.settingsPage.gatewaySaveResult = { id, error: message };
       this._toast('error', 'Gateway', message);
+      return;
     }
+    // The record saved before the catalog merge ran. The list refresh
+    // is a projection of that write — its failure must not reopen the
+    // editor or invite a second save of a record that already landed.
+    // A catalogError still keeps the editor open with the failure text.
+    try {
+      await this._refreshGateways();
+    } catch { /* committed write; the list read is separate */ }
+    const catalogError = (doc && doc.catalogError) || '';
+    this.settingsPage.gatewaySaveResult = {
+      id, models: (doc && doc.models) || [], added: (doc && doc.added) || [], catalogError,
+    };
+    if (!catalogError) this._toast('info', 'Gateway', `${id} saved.`);
   }
 
   async _deleteGateway(id) {
     try {
       await this.api.deleteGateway(id);
+    } catch (err) {
+      const message = this._errText(err);
+      this.settingsPage.gatewayDeleteResult = { id, error: message };
+      this._toast('error', 'Gateway', message);
+      return;
+    }
+    // DELETE committed. A failed list read is not a failed delete —
+    // reporting it as one leaves the row and invites a retry of an id
+    // that is already gone. Drop the row locally so the screen matches
+    // the write.
+    try {
       await this._refreshGateways();
-      this._toast('info', 'Gateway', `${id} deleted.`);
-    } catch (err) { this._toast('error', 'Gateway', this._errText(err)); }
+    } catch {
+      this.gateways = (this.gateways || []).filter((g) => g.id !== id);
+      this.header.gateways = this.gateways;
+      this.settingsPage.gateways = this.gateways;
+      this._reconcileSelection();
+    }
+    this._toast('info', 'Gateway', `${id} deleted.`);
   }
 
   async _importGatewayModels(id) {
+    let doc;
     try {
-      const doc = await this.api.importGatewayModels(id);
-      await this._refreshGateways();
-      this.settingsPage.gatewayImportResult = {
-        id, models: doc.models || [], added: doc.added || [],
-        catalogError: doc.catalogError || '',
-      };
+      doc = await this.api.importGatewayModels(id);
     } catch (err) {
       this.settingsPage.gatewayImportResult = { id, error: this._errText(err) };
+      return;
     }
+    // The merge response is the write. A failed list refresh only
+    // means the screen is stale — it must not be reported as an import
+    // failure, which would invite a second merge.
+    try {
+      await this._refreshGateways();
+    } catch { /* committed import; the list read is separate */ }
+    this.settingsPage.gatewayImportResult = {
+      id, models: (doc && doc.models) || [], added: (doc && doc.added) || [],
+      catalogError: (doc && doc.catalogError) || '',
+    };
   }
 
   async _refreshGateways() {
@@ -2396,6 +2482,41 @@ class AppShell extends Widget {
   _errText(err) {
     return (err && (err.detail || err.message)) || 'request failed';
   }
+}
+
+// One header flag stands in for every in-flight thread delete. Each
+// `_delete` takes a claim; assigning true again (a newer room) bumps
+// it. Only the claim that is still current may re-enable the button —
+// the older completion must not, or the newer delete can be posted twice.
+const deleteClaims = new WeakMap();
+
+function claimDeletePending(header) {
+  let state = deleteClaims.get(header);
+  if (!state) {
+    state = { gen: 0 };
+    const proto = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(header), 'deletePending');
+    let storage = !!header.deletePending;
+    Object.defineProperty(header, 'deletePending', {
+      configurable: true,
+      enumerable: true,
+      get() { return proto && proto.get ? proto.get.call(header) : storage; },
+      set(v) {
+        const next = !!v;
+        if (next) state.gen += 1;
+        if (proto && proto.set) proto.set.call(header, next);
+        else storage = next;
+      },
+    });
+    deleteClaims.set(header, state);
+  }
+  header.deletePending = true;
+  return state.gen;
+}
+
+function releaseDeletePending(header, gen) {
+  const state = deleteClaims.get(header);
+  if (!state || state.gen !== gen) return;
+  header.deletePending = false;
 }
 
 // A user stop is a 408 interrupted terminal. The partial reply stays;

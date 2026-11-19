@@ -1,4 +1,4 @@
-import { Widget, el, clear } from '../../lib/dom.js';
+import { Widget, el, clear, deepActiveElement, nodeWithin } from '../../lib/dom.js';
 import { icon } from '../../lib/icons.js';
 
 // Transient notifications: push({tone,title,message}), polite live
@@ -11,6 +11,9 @@ class ToastStack extends Widget {
     this.root.classList.add('stack');
     this.root.setAttribute('aria-live', 'polite');
     this.root.setAttribute('role', 'status');
+    // Programmatic only: expiry moves focus here before a focused toast
+    // is removed. -1 keeps the stack out of the tab order.
+    this.root.setAttribute('tabindex', '-1');
   }
 
   // action: { label, onClick } adds one text button under the message. It
@@ -22,22 +25,31 @@ class ToastStack extends Widget {
         el('div', { class: 'toast-message', text: message }),
         action ? el('button', {
           class: 'toast-action', type: 'button',
-          onclick: () => { toast.remove(); action.onClick(); },
+          onclick: () => { this._dismiss(toast); action.onClick(); },
         }, [el('span', { text: action.label })]) : null,
       ]),
       el('button', {
         class: 'toast-close',
         type: 'button',
         'aria-label': 'Dismiss notification',
-        onclick: () => toast.remove(),
+        onclick: () => this._dismiss(toast),
       }, [icon('x', 12)]),
     ]);
     this.root.append(toast);
     setTimeout(() => { if (toast.isConnected) toast.classList.add('show'); }, 10);
     setTimeout(() => {
       toast.classList.remove('show');
-      setTimeout(() => toast.remove(), 200);
+      setTimeout(() => this._dismiss(toast), 200);
     }, 6000);
+  }
+
+  // Removing the focused control strands keyboard focus on a detached
+  // node. The stack is programmatically focusable and stays connected.
+  _dismiss(toast) {
+    if (nodeWithin(toast, deepActiveElement()) && this.root?.isConnected) {
+      this.root.focus?.();
+    }
+    toast.remove();
   }
 
   clear() { clear(this.root); }

@@ -129,11 +129,22 @@ class NavSidebar extends Widget {
     // dropping to BODY and forcing a full Tab cycle back into the rail.
     const prev = deepActiveElement();
     let focusKey = null;
+    // A busy Load more parks focus on the old last row (focus() on the
+    // disabled control no-ops). When the loaded page then lands below
+    // it, that parked row must not keep the keyboard: the first row the
+    // old render did not have — the new page — is the successor the
+    // user asked for, else the refreshed control.
+    let parked = null;
     if (prev) {
       if (prev === this._moreBtn) focusKey = { more: true };
       else {
         const at = (this._items || []).indexOf(prev);
-        if (at >= 0) focusKey = { id: prev.getAttribute?.('data-id'), at };
+        if (at >= 0) {
+          focusKey = { id: prev.getAttribute?.('data-id'), at };
+          if (this._moreBusy && at === this._items.length - 1) {
+            parked = new Set((this._items || []).map((b) => b.getAttribute?.('data-id')));
+          }
+        }
       }
     }
     clear(this.listEl);
@@ -172,11 +183,14 @@ class NavSidebar extends Widget {
       // disabled node no-ops — a successor that can't take focus is no
       // successor, so the last loaded row stands in until it can.
       const moreOk = this._moreBtn && !this._moreBtn.disabled ? this._moreBtn : null;
-      const target = focusKey.more
-        ? moreOk || items[items.length - 1] || this.searchEl
-        : items.find((b) => b.getAttribute?.('data-id') === focusKey.id)
-          || items[Math.min(focusKey.at, items.length - 1)]
-          || moreOk || this.searchEl;
+      const target = parked
+        ? items.find((b) => !parked.has(b.getAttribute?.('data-id')))
+          || moreOk || items[items.length - 1] || this.searchEl
+        : focusKey.more
+          ? moreOk || items[items.length - 1] || this.searchEl
+          : items.find((b) => b.getAttribute?.('data-id') === focusKey.id)
+            || items[Math.min(focusKey.at, items.length - 1)]
+            || moreOk || this.searchEl;
       target?.focus?.();
     }
   }

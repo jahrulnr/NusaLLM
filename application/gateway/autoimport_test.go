@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
@@ -491,6 +492,76 @@ func TestRefreshModelsKeepsOutputLimitCompatibleWithExistingMaxOutput(t *testing
 	for _, m := range info.Models {
 		if m.OutputLimit() > 0 && m.MaxOutputTokens() != nil && *m.MaxOutputTokens() > m.OutputLimit() {
 			t.Fatalf("refresh created impossible outputLimit=%d maxOutput=%d", m.OutputLimit(), *m.MaxOutputTokens())
+		}
+	}
+}
+
+// The periodic refresher is a public application entry point; a caller
+// that does not want diagnostics can pass a nil report. A per-gateway
+// result must not turn that nil callback into a process panic.
+func TestStartAutoImportNilReportDoesNotPanic(t *testing.T) {
+	app, _, _ := newApp(t)
+	in := GatewayInput{
+		ID: "g", Name: "n", Style: enum.StyleCompletion, Endpoint: "https://x",
+	}
+	if _, err := app.Upsert(t.Context(), in); err != nil {
+		t.Fatal(err)
+	}
+	app.catalog = fakeCatalog{}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("StartAutoImport with a nil report panicked: %v", r)
+		}
+	}()
+	app.StartAutoImport(ctx, time.Hour, nil)
+}
+
+// The provider catalog is fetched with the credential the record had at
+// request time. Rotating the key while that fetch is in flight makes the
+// response belong to a different credential's catalog (providers expose
+// different models per key); merging it into the new-key record is just
+// as wrong as merging across an endpoint replacement.
+func TestImportModelsDropsCatalogFetchedForReplacedKey(t *testing.T) {
+	app, _, _ := newApp(t)
+	oldKey := "old-key"
+	in := GatewayInput{
+		ID: "g", Name: "n", Style: enum.StyleCompletion, Endpoint: "https://x",
+		ApiKey: &oldKey, Models: []ModelInput{{ID: "a"}},
+	}
+	if _, err := app.Upsert(t.Context(), in); err != nil {
+		t.Fatal(err)
+	}
+	g := &gatedCatalog{started: make(chan struct{}), release: make(chan struct{})}
+	app.catalog = g
+	done := make(chan struct{})
+	go func() {
+		_, _ = app.ImportModels(t.Context(), "g")
+		close(done)
+	}()
+	<-g.started
+
+	newKey := "new-key"
+	replaced := GatewayInput{
+		ID: "g", Name: "n", Style: enum.StyleCompletion, Endpoint: "https://x",
+		ApiKey: &newKey, Models: []ModelInput{{ID: "a"}},
+	}
+	app.catalog = nil
+	if _, err := app.Upsert(t.Context(), replaced); err != nil {
+		t.Fatal(err)
+	}
+	app.catalog = g
+	close(g.release)
+	<-done
+
+	info, err := app.Get(t.Context(), "g")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range info.Models {
+		if m.ID() == "stale-model" {
+			t.Fatalf("catalog fetched with the old key merged into the rotated record: %+v", info.Models)
 		}
 	}
 }

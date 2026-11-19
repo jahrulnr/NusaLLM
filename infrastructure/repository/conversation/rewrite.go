@@ -58,7 +58,7 @@ func (r *ConversationRepository) RewriteFrom(ctx context.Context, convID, msgID,
 	if cut, found, err := rewriteCut(activeLines, msgID, content); err != nil {
 		return err
 	} else if found {
-		if err := writeFileAtomic(active, joinLines(cut), 0o644); err != nil {
+		if err := writeFileAtomic(active, joinLines(cut), 0o600); err != nil {
 			return err
 		}
 		return r.recountMeta(convID)
@@ -138,7 +138,7 @@ func (r *ConversationRepository) RewriteFrom(ctx context.Context, convID, msgID,
 		//     this window and is never republished either.
 		stream := joinLines(merged)
 		payload := filepath.Join(dir, rewritePayload)
-		if err := writeFileAtomic(payload, stream, 0o644); err != nil {
+		if err := writeFileAtomic(payload, stream, 0o600); err != nil {
 			return err // nothing canonical moved yet
 		}
 		parked := make([]string, 0, len(segs))
@@ -181,7 +181,7 @@ func (r *ConversationRepository) RewriteFrom(ctx context.Context, convID, msgID,
 		// Publish — the commit point. Before this rename the canonical
 		// stream is intact and the payload is debris; after it the merged
 		// history is the truth and the parked files are.
-		if err := writeFileAtomic(active, stream, 0o644); err != nil {
+		if err := writeFileAtomic(active, stream, 0o600); err != nil {
 			rollback()
 			return err
 		}

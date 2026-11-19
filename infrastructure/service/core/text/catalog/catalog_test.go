@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
@@ -193,5 +194,29 @@ func TestListProvidersEscapesModelIDPath(t *testing.T) {
 	}
 	if rawQuery != "" {
 		t.Fatalf("model id leaked into provider-discovery query: %q", rawQuery)
+	}
+}
+
+// Provider discovery puts a model id's path segments into the outbound
+// URL. PathEscape deliberately leaves "." and ".." alone, so a catalog
+// id with a parent segment can climb out of /models/ and fetch a
+// different provider resource. Reject or escape traversal segments
+// before issuing the request.
+func TestListProvidersRejectsTraversalModelID(t *testing.T) {
+	var seenPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPath = r.URL.EscapedPath()
+		json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{"endpoints": []map[string]any{{"provider_name": "Alpha"}}},
+		})
+	}))
+	defer srv.Close()
+	g := newGateway(t, srv.URL+"/openrouter.ai", enum.StyleCompletion)
+	g.SetApiKey("k")
+	if _, err := New(nil).ListProviders(t.Context(), g, "../admin"); err != nil {
+		return // rejecting the unsafe id is safe
+	}
+	if strings.Contains(seenPath, "..") {
+		t.Fatalf("model id escaped the provider model path: %q", seenPath)
 	}
 }

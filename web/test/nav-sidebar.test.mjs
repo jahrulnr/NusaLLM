@@ -191,3 +191,28 @@ test('hasMore false renders neither button nor hint', () => {
   sidebar.conversations = ROWS;
   assert.equal(findAll(sidebar.listEl, 'item').length, 1);
 });
+
+// Loading a page is a keyboard action too. When the disabled Load more
+// control comes back, focus must not be left on the old last row: the new
+// page is below it and the user has no signal that content changed. The
+// first new row (or the refreshed control) is the successor.
+test('finishing Load more moves focus to the new page or the control', () => {
+  const originalFocus = FakeEl.prototype.focus;
+  FakeEl.prototype.focus = function focus() { globalThis.document.activeElement = this; };
+  globalThis.document.activeElement = null;
+  try {
+    const sidebar = makeSidebar();
+    const oldLast = findAll(sidebar.listEl, 'item').at(-1);
+    assert.ok(oldLast, 'old last row rendered');
+    oldLast.focus();
+    sidebar.moreBusy = true; // disables the control; focus parks on old last
+    sidebar.conversations = [...ROWS, { id: 'c4', title: 'Room Four', updatedAt: '2026-10-04T09:00:00Z' }];
+    sidebar.moreBusy = false;
+    const active = globalThis.document.activeElement;
+    assert.notEqual(active?.getAttribute?.('data-id'), 'c3',
+      'focus stayed on the pre-page row after new content landed');
+  } finally {
+    FakeEl.prototype.focus = originalFocus;
+    globalThis.document.activeElement = null;
+  }
+});

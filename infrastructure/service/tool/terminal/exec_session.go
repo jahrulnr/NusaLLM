@@ -127,9 +127,12 @@ func clampYield(ms int, fallback, floor, cap time.Duration) time.Duration {
 // oversized tool output.
 func formatPoll(id int, poll dservice.TerminalPoll, start time.Time, body string) string {
 	var header string
-	if poll.Running {
+	switch {
+	case poll.Running:
 		header = fmt.Sprintf("Process running with session ID %d", id)
-	} else {
+	case poll.Signal != "":
+		header = fmt.Sprintf("Process exited (%s)", poll.Signal)
+	default:
 		header = fmt.Sprintf("Process exited with code %d", poll.ExitCode)
 	}
 	return fmt.Sprintf("%s\nWall time: %.3f seconds\nOriginal output: %d bytes\nOutput:\n%s", header, time.Since(start).Seconds(), poll.TotalBytes, body)

@@ -158,3 +158,78 @@ test('a status refresh while open keeps focus inside the dialog', () => {
     globalThis.document.activeElement = null;
   }
 });
+
+// A status refresh can retire the release the dialog was showing (the
+// server loses its cached release, a check returns empty). Rendering an
+// empty body must dismiss the modal; leaving it open presents a blank,
+// inert sheet over the app.
+test('losing the release while open closes the dialog', () => {
+  const dialog = new Dialog();
+  dialog.info = info;
+  dialog.open();
+  assert.equal(dialog.dialog.open, true);
+  dialog.info = { ...info, latest: '', available: false };
+  assert.equal(dialog.dialog.open, false,
+    'an empty update body must close the open modal');
+});
+
+// "Skip this version" and "Later" share the class "btn ghost". A status
+// refresh while focus is on Later must land on Later again, not jump to
+// the first same-class control (Skip).
+test('a refresh keeps focus on the same footer action', () => {
+  const originalFocus = FakeEl.prototype.focus;
+  FakeEl.prototype.focus = function focus() { globalThis.document.activeElement = this; };
+  globalThis.document.activeElement = null;
+  try {
+    const dialog = new Dialog();
+    dialog.info = info;
+    dialog.open();
+    const later = button(dialog.body, 'Later');
+    assert.ok(later, 'Later action rendered');
+    later.focus();
+    dialog.info = { ...info, latest: '0.10.5', notes: '## [0.10.5]\n\n- newer' };
+    const again = button(dialog.body, 'Later');
+    assert.ok(again, 'Later survives the refresh');
+    assert.equal(globalThis.document.activeElement, again,
+      'focus must stay on Later, not move to the first .btn ghost (Skip)');
+  } finally {
+    FakeEl.prototype.focus = originalFocus;
+    globalThis.document.activeElement = null;
+  }
+});
+
+function findDialogClass(node, cls) {
+  if (!node) return null;
+  if (node.className === cls) return node;
+  for (const child of node.children || []) {
+    const hit = findDialogClass(child, cls);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+// A refresh can remove the release URL while the dialog is open. The
+// focused "View release" link dies with that decision; leaving focus on
+// the detached anchor strands the keyboard outside the modal. Any
+// surviving control may own it, but focus must not fall to BODY.
+test('a removed release link keeps focus inside the dialog', () => {
+  const originalFocus = FakeEl.prototype.focus;
+  FakeEl.prototype.focus = function focus() { globalThis.document.activeElement = this; };
+  globalThis.document.activeElement = null;
+  try {
+    const dialog = new Dialog();
+    dialog.info = info;
+    dialog.open();
+    const link = findDialogClass(dialog.body, 'release-link');
+    assert.ok(link, 'release link rendered');
+    link.focus();
+    dialog.info = { ...info, releaseUrl: '' };
+    assert.notEqual(globalThis.document.activeElement, link,
+      'focus stayed on the detached release link');
+    assert.ok(globalThis.document.activeElement,
+      'focus fell to BODY after the release link disappeared');
+  } finally {
+    FakeEl.prototype.focus = originalFocus;
+    globalThis.document.activeElement = null;
+  }
+});

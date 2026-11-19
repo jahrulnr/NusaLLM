@@ -166,3 +166,53 @@ test('an idle view closes an already-open progress dialog', () => {
   assert.equal(popup.dialog.open, false,
     'an idle view must dismiss the progress dialog instead of showing a blank modal');
 });
+
+// A poll can move an open progress dialog from running to failed. The
+// rebuild removes the focused Close control; leaving focus on the
+// detached node drops the keyboard user outside the modal. A surviving
+// control in the rebuilt panel must inherit it.
+test('a running-to-failed view keeps focus inside the dialog', () => {
+  const originalFocus = FakeEl.prototype.focus;
+  FakeEl.prototype.focus = function focus() { globalThis.document.activeElement = this; };
+  globalThis.document.activeElement = null;
+  try {
+    const popup = make({
+      state: 'running', phase: 'download', version: '0.10.4',
+      bytesDone: 10, bytesTotal: 100,
+    });
+    popup.open();
+    const close = button(popup.panel, 'Close');
+    assert.ok(close, 'running Close rendered');
+    close.focus();
+    popup.view = { state: 'failed', phase: 'download', version: '0.10.4', error: 'connection reset' };
+    const active = globalThis.document.activeElement;
+    assert.notEqual(active, close, 'focus stayed on the detached Close button');
+    assert.equal(active?.tagName, 'BUTTON', 'focus must remain on a rebuilt dialog action');
+  } finally {
+    FakeEl.prototype.focus = originalFocus;
+    globalThis.document.activeElement = null;
+  }
+});
+
+// Retry starts a new install from the failed row. The clicked Try again
+// control is replaced by the running view; focus must land on a control
+// in that rebuilt view instead of the detached retry button.
+test('a retry keeps focus inside the rebuilt running dialog', () => {
+  const originalFocus = FakeEl.prototype.focus;
+  FakeEl.prototype.focus = function focus() { globalThis.document.activeElement = this; };
+  globalThis.document.activeElement = null;
+  try {
+    const popup = make({ state: 'failed', phase: 'download', version: '0.10.4', error: 'connection reset' });
+    popup.open();
+    const retry = button(popup.panel, 'Try again');
+    assert.ok(retry, 'retry rendered');
+    retry.focus();
+    popup.view = { state: 'running', phase: 'download', version: '0.10.4', bytesDone: 0, bytesTotal: 100 };
+    const active = globalThis.document.activeElement;
+    assert.notEqual(active, retry, 'focus stayed on the detached retry button');
+    assert.equal(active?.tagName, 'BUTTON', 'focus must remain on a rebuilt dialog action');
+  } finally {
+    FakeEl.prototype.focus = originalFocus;
+    globalThis.document.activeElement = null;
+  }
+});

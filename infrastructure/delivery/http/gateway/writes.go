@@ -182,7 +182,9 @@ func (s *server) delete(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := s.writes.Delete(c.Request.Context(), id); err != nil {
+	// Accepted work outlives the request. The server-lifecycle context
+	// still ends the delete on shutdown.
+	if err := s.writes.Delete(s.jobs, id); err != nil {
 		transport.RespondError(c, err)
 		return
 	}

@@ -30,7 +30,8 @@ class MarkdownView extends Widget {
     if (this._dirty) {
       this._dirty = false;
       cancelAnimationFrame(this._raf);
-      this._render();
+      if (this._streamWrap) this._renderStream();
+      else this._render();
     }
   }
 
@@ -63,8 +64,14 @@ class MarkdownView extends Widget {
       this.root.append(this._streamWrap);
     }
     this._content += chunk;
+    // Same contract as `content =`: a frame canceled by detach must
+    // still paint this chunk when the view connects again.
+    this._dirty = true;
     cancelAnimationFrame(this._raf);
-    this._raf = requestAnimationFrame(() => this._renderStream());
+    this._raf = requestAnimationFrame(() => {
+      this._dirty = false;
+      this._renderStream();
+    });
   }
 
   finishStream() {

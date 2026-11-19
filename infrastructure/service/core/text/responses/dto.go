@@ -148,10 +148,11 @@ type ErrorBody struct {
 	Param   string `json:"param"`
 }
 
-// StreamEvent is one named SSE event's data payload — the event name is the
-// type field inside it as well, so dispatch keys off the payload alone. A
-// top-level "error" event IS an error body itself (code/message/param sit
-// beside type), so those fields live here rather than under Error.
+// StreamEvent is one named SSE event's data payload. Providers usually
+// repeat the event name as the payload's type field; when they don't, the
+// SSE event name is the dispatch token. A top-level "error" event IS an
+// error body itself (code/message/param sit beside type), so those fields
+// live here rather than under Error.
 type StreamEvent struct {
 	Type        string          `json:"type"`
 	OutputIndex int             `json:"output_index"`

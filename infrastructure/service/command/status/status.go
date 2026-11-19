@@ -8,6 +8,7 @@ import (
 
 	appcommand "github.com/jahrulnr/nusallm/application/command"
 	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
 // StatusCommand is the /status command.
@@ -33,25 +34,29 @@ func (c *StatusCommand) Execute(ctx context.Context, _ string, emitter dservice.
 		c.h.Write(emitter, "no active conversation\n")
 	} else {
 		info, err := c.h.ConversationInfo(ctx, c.h.ConversationID())
-		if err != nil {
+		// The room can be gone while the session route and model are
+		// still the facts /status exists to print.
+		if err != nil && apperror.As(err).StatusCode() != apperror.StatusNotFound {
 			return err
 		}
-		if route == "" {
-			route = info.Route
+		if err == nil {
+			if route == "" {
+				route = info.Route
+			}
+			if modelID == "" {
+				modelID = info.ModelID
+			}
+			c.h.Write(emitter, "conversation %s\n", info.ID)
+			if info.Title != "" {
+				c.h.Write(emitter, "title       %q\n", info.Title)
+			}
+			c.h.Write(emitter, "messages    %d active", info.ActiveCount)
+			if info.SealedSegments > 0 {
+				c.h.Write(emitter, " (%d total, %d sealed segments)", info.MessageCount, info.SealedSegments)
+			}
+			c.h.Write(emitter, "\ncreated     %s\nupdated     %s\n",
+				info.CreatedAt.Local().Format(time.RFC3339), info.UpdatedAt.Local().Format(time.RFC3339))
 		}
-		if modelID == "" {
-			modelID = info.ModelID
-		}
-		c.h.Write(emitter, "conversation %s\n", info.ID)
-		if info.Title != "" {
-			c.h.Write(emitter, "title       %q\n", info.Title)
-		}
-		c.h.Write(emitter, "messages    %d active", info.ActiveCount)
-		if info.SealedSegments > 0 {
-			c.h.Write(emitter, " (%d total, %d sealed segments)", info.MessageCount, info.SealedSegments)
-		}
-		c.h.Write(emitter, "\ncreated     %s\nupdated     %s\n",
-			info.CreatedAt.Local().Format(time.RFC3339), info.UpdatedAt.Local().Format(time.RFC3339))
 	}
 	c.h.Write(emitter, "route       %s\nmodel       %s\n", route, modelID)
 	if n := len(c.h.Attachments()); n > 0 {

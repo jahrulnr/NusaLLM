@@ -21,6 +21,15 @@ func TestNewMessage(t *testing.T) {
 	}
 }
 
+// The store hydrates role through ParseRole and refuses unknown values —
+// the constructor cannot accept a value the record layer would reject:
+// one bogus role persisted makes the whole room unloadable.
+func TestNewMessageRejectsUnknownRole(t *testing.T) {
+	if _, err := NewMessage(enum.Role("bogus"), "x"); err == nil {
+		t.Fatal("constructor accepted a role hydration rejects")
+	}
+}
+
 func TestMessageSetToolOutput(t *testing.T) {
 	m, _ := NewMessage(enum.RoleAssistant, "")
 	tc, _ := NewToolCall("call-1", "search", "{}", enum.TooltypeOrigin)

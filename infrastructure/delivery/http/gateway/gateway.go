@@ -33,11 +33,19 @@ type Writer interface {
 type Deps struct {
 	Reads  Reader
 	Writes Writer
+	// Jobs is the server-lifecycle context for an accepted delete.
+	// A dropped connection must not cancel a removal halfway; server
+	// shutdown still cancels it. Nil means Background.
+	Jobs context.Context
 }
 
 // Register mounts this boundary's routes under /api.
 func Register(api *gin.RouterGroup, d Deps) {
-	s := &server{reads: d.Reads, writes: d.Writes}
+	jobs := d.Jobs
+	if jobs == nil {
+		jobs = context.Background()
+	}
+	s := &server{reads: d.Reads, writes: d.Writes, jobs: jobs}
 	if d.Reads != nil {
 		api.GET("/gateways", s.list)
 		api.GET("/gateways/:id", s.get)
@@ -59,4 +67,5 @@ func Register(api *gin.RouterGroup, d Deps) {
 type server struct {
 	reads  Reader
 	writes Writer
+	jobs   context.Context
 }

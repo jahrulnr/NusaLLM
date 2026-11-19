@@ -118,6 +118,8 @@ func (j *Send) Execute(execCtx context.Context) (err error) {
 			fresh = true
 		}
 
+		prevEnv := conv.Environment()
+		prevWorkspace := conv.Workspace()
 		if j.Opts.Environment != "" {
 			previous := conv.Environment()
 			if err := conv.SetEnvironment(j.Opts.Environment); err != nil {
@@ -189,12 +191,24 @@ func (j *Send) Execute(execCtx context.Context) (err error) {
 			return d.Convs.AppendMessage(ctx, convID, user)
 		}); err != nil {
 			if fresh && !j.Receipt.UserMessagePersisted() {
-				_ = d.Convs.Delete(ctx, convID) // roll back an uncommitted room
+				// The caller's ctx may already be canceled. A store that
+				// honors it would leave the partial room behind.
+				_ = d.Convs.Delete(context.WithoutCancel(ctx), convID)
 			}
 			return err
 		}
 
 		if err := d.runTurn(ctx, convID, conv, driver, gw, model, svc, j.OnEvent, j.mailbox()); err != nil {
+			// Route and model rebind only after success. Workspace and
+			// environment must follow that rule for an existing room: a
+			// per-step Save during the failed turn would otherwise keep
+			// the override.
+			if !fresh && (conv.Environment() != prevEnv || conv.Workspace() != prevWorkspace) {
+				if setErr := conv.SetEnvironment(prevEnv); setErr == nil {
+					conv.SetWorkspace(prevWorkspace)
+					_ = d.Convs.Save(context.WithoutCancel(ctx), conv)
+				}
+			}
 			return err
 		}
 		conv.SetRoute(route)     // existing rooms re-bind only on success —

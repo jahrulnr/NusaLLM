@@ -395,6 +395,36 @@ func TestStreamRoundtrip(t *testing.T) {
 	}
 }
 
+// A stored turn's template can carry more than one text placeholder —
+// Anthropic emits text blocks interleaved with thinking and tool_use.
+// The domain keeps only the concatenated content, so each placeholder
+// cannot independently refill the whole text: the wire must receive
+// the turn's text once, not once per placeholder.
+func TestReplayTemplateEmitsTextOnce(t *testing.T) {
+	asst, _ := entity.NewMessage(enum.RoleAssistant, "AB")
+	tc, _ := entity.NewToolCall("c1", "exec", `{"cmd":"a"}`, enum.TooltypeOrigin)
+	tc.SetOutput("out")
+	asst.AddToolCall(tc)
+	asst.SetOptionalContent(blocksKey, `[{"type":"text"},{"type":"tool_use"},{"type":"text"}]`)
+	msgs, err := encodeMessage(asst, entity.Model{}, wire.MediaRoot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("want assistant turn + tool_result turn: %+v", msgs)
+	}
+	blocks, _ := msgs[0].Content.([]any)
+	texts := 0
+	for _, b := range blocks {
+		if cb, ok := b.(ContentBlock); ok && cb.Type == "text" && cb.Text == "AB" {
+			texts++
+		}
+	}
+	if texts != 1 {
+		t.Fatalf("stored text emitted %d times — template placeholders must not duplicate it", texts)
+	}
+}
+
 func TestThinkingReplaysVerbatim(t *testing.T) {
 	// Seed a conversation whose assistant message carries a stored
 	// template — the encode path must replay the thinking block bytes
@@ -1063,5 +1093,74 @@ func TestStreamThinkingOnlyIsAnEmptyAnswer(t *testing.T) {
 	}
 	if last := conv.Last(); last != nil && last.Role() == enum.RoleAssistant {
 		t.Fatalf("thinking-only turn committed: %+v", last.OptionalContent())
+	}
+}
+
+// A model may declare only a small total context. This adapter must fill
+// the wire-required max_tokens, but its 16k default must not exceed what
+// the model can hold — a 4k model would receive a request that can never
+// fit. Capping the default (or rejecting the model) keeps the request
+// honest; the provider default is not a substitute for an impossible
+// explicit max.
+func TestDefaultMaxTokensRespectsSmallContext(t *testing.T) {
+	conv := newConv(t)
+	model, _ := entity.NewModel("small-context", "test")
+	model.SetContextWindow(4096)
+	body, err := encodeRequest(conv, model, false, wire.MediaRoot{})
+	if err != nil {
+		return // rejecting the model is also safe
+	}
+	if body.MaxTokens > 4096 {
+		t.Fatalf("max_tokens=%d exceeds declared contextWindow=4096", body.MaxTokens)
+	}
+}
+
+// Capping the default at the raw context window is not enough: the
+// prompt already consumes part of that window. A 4k model with a
+// one-thousand-token prompt and max_tokens=4096 asks for more than the
+// model can hold. The wire cap must leave room for the input it ships
+// alongside.
+func TestDefaultMaxTokensLeavesRoomForPrompt(t *testing.T) {
+	conv := newConv(t)
+	user, _ := entity.NewMessage(enum.RoleUser, strings.Repeat("x", 4000))
+	conv.Append(user)
+	model, _ := entity.NewModel("small-context", "test")
+	model.SetContextWindow(4096)
+	body, err := encodeRequest(conv, model, false, wire.MediaRoot{})
+	if err != nil {
+		return // rejecting the model is also safe
+	}
+	input := conv.EstimatedTokens()
+	if input == 0 {
+		t.Fatal("test setup has no input estimate")
+	}
+	if body.MaxTokens+input > 4096 {
+		t.Fatalf("max_tokens=%d plus estimated input=%d exceeds contextWindow=4096",
+			body.MaxTokens, input)
+	}
+}
+
+// The explicit request cap is bounded against the raw context at write
+// time, but not against the prompt that shares that context. A user-set
+// max_tokens must still leave room for the input this request sends.
+func TestExplicitMaxTokensLeavesRoomForPrompt(t *testing.T) {
+	conv := newConv(t)
+	user, _ := entity.NewMessage(enum.RoleUser, strings.Repeat("x", 4000))
+	conv.Append(user)
+	maxOut := 4096
+	model, _ := entity.NewModel("small-context", "test")
+	model.SetContextWindow(4096)
+	model.SetMaxOutputTokens(&maxOut)
+	body, err := encodeRequest(conv, model, false, wire.MediaRoot{})
+	if err != nil {
+		return // rejecting the model is also safe
+	}
+	input := conv.EstimatedTokens()
+	if input == 0 {
+		t.Fatal("test setup has no input estimate")
+	}
+	if body.MaxTokens+input > 4096 {
+		t.Fatalf("max_tokens=%d plus estimated input=%d exceeds contextWindow=4096",
+			body.MaxTokens, input)
 	}
 }

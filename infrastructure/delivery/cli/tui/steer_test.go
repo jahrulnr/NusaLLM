@@ -2,9 +2,11 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"io"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -403,5 +405,112 @@ func TestSteerWithoutTurnDegrades(t *testing.T) {
 	m.dispatch("/steer")
 	if len(m.outbox) != 1 || m.outbox[0] == "" {
 		t.Fatalf("bare /steer must print usage, outbox=%v", m.outbox)
+	}
+}
+
+// A send that cannot resolve a route never becomes a turn, but submit
+// already cleared the composer. The typed line must return to the editor
+// so the user can fix the selection and press Enter again instead of
+// fishing it back out of history (and an empty composer looks like the
+// message vanished).
+func TestFailedRouteSelectionRestoresDraft(t *testing.T) {
+	svc := &gatedTextSvc{}
+	m, _ := steerModel(t, svc, nil)
+	if err := m.repl.Gateways.Delete(t.Context(), "gw1"); err != nil {
+		t.Fatal(err)
+	}
+	m.repl.ConversationID = ""
+	m.repl.Route = ""
+	m.repl.ModelID = ""
+	m.textarea.SetValue("draft that must survive")
+
+	nm, _ := m.submit("draft that must survive")
+	failed := nm.(replModel)
+	if got := failed.textarea.Value(); got != "draft that must survive" {
+		t.Fatalf("failed route resolution cleared the draft: composer=%q queued=%v", got, failed.queued)
+	}
+}
+
+// A route miss restores the first failed line to the composer and puts
+// later queued lines back at the front of the queue. drain then sees the
+// non-empty composer on the next iteration and prepends again forever.
+// A failed dispatch must leave the drain loop instead of spinning on the
+// same undeliverable backlog.
+func TestFailedRouteDrainWithBacklogDoesNotLoop(t *testing.T) {
+	m, _ := steerModel(t, &gatedTextSvc{}, nil)
+	if err := m.repl.Gateways.Delete(t.Context(), "gw1"); err != nil {
+		t.Fatal(err)
+	}
+	m.repl.ConversationID = ""
+	m.repl.Route = ""
+	m.repl.ModelID = ""
+	m.textarea.Reset()
+	m.queued = []string{"first undeliverable", "second undeliverable"}
+
+	done := make(chan struct{})
+	go func() {
+		m.drain()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("drain looped on a failed route with queued messages")
+	}
+}
+
+// A send can fail before the user line is persisted — a stale route, an
+// invalid workspace, or a provider-side validation error. The composer was
+// cleared at submit and the turn owns no history line, so the text is the
+// only copy the user has. Finish must hand it back (or queue it), exactly
+// like the route-miss path in beginTurn does.
+func TestFailedSendBeforePersistenceRestoresInput(t *testing.T) {
+	m, _ := steerModel(t, &gatedTextSvc{entered: make(chan struct{}), release: make(chan struct{})}, nil)
+	m.textarea.SetValue("keep this message")
+	next, cmd := m.submit("keep this message")
+	if cmd == nil {
+		t.Fatal("submit did not start the turn")
+	}
+	rm := next.(replModel)
+	after, _ := rm.finishTurn(appconversation.SendResult{ConversationID: "room"}, errors.New("provider rejected the turn"))
+	got := after.(replModel)
+	if strings.TrimSpace(got.textarea.Value()) == "keep this message" || len(got.queued) > 0 {
+		return
+	}
+	t.Fatalf("failed pre-persistence send lost the typed message: composer=%q queued=%v", got.textarea.Value(), got.queued)
+}
+
+// A steer submitted before a later queued message must stay before it
+// when the turn ends without consuming the steer. finishTurn currently
+// appends the missed steer behind newer queued lines, reversing intent.
+func TestMissedSteerKeepsSubmissionOrder(t *testing.T) {
+	svc := &gatedTextSvc{entered: make(chan struct{}), release: make(chan struct{})}
+	m, _ := steerModel(t, svc, nil)
+	done := runTurnCmd(m.beginTurn("go"))
+	<-svc.entered
+
+	nm, _ := m.submit("/steer earlier steer")
+	m = nm.(replModel)
+	nm, _ = m.submit("later queued")
+	m = nm.(replModel)
+	if len(m.pendingSteer) != 1 || len(m.queued) != 1 {
+		t.Fatalf("setup pending=%v queued=%v", m.pendingSteer, m.queued)
+	}
+
+	close(svc.release)
+	finished := awaitMsg(t, done)
+	out := finished.(sendDoneMsg)
+	nm, _ = m.finishTurn(out.result, out.err)
+	m = nm.(replModel)
+	if len(m.queued) == 2 {
+		if m.queued[0] != "earlier steer" || m.queued[1] != "later queued" {
+			t.Fatalf("queued order = %v, want earlier steer before later message", m.queued)
+		}
+	} else if len(m.queued) == 1 {
+		if m.queued[0] != "later queued" {
+			t.Fatalf("queued order = %v, want the earlier steer dispatched first", m.queued)
+		}
+	} else {
+		t.Fatalf("queued order = %v, want earlier steer before later message", m.queued)
 	}
 }

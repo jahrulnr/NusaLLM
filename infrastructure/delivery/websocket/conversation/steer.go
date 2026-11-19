@@ -132,6 +132,12 @@ func (h *Hub) turnSteer(c *conn, cmd command) {
 			c.push(errorFrame(cmd.RequestID, "invalid_argument", "steering requestId reused with different content"))
 			return
 		}
+		// A recalled input is dead. Re-acking it tells the client the
+		// withdrawn text is still pending.
+		if prev.receipt != nil && prev.receipt.State() == appjob.SteeringRecalled {
+			c.push(errorFrame(cmd.RequestID, "gone", "steering input was recalled"))
+			return
+		}
 		// Idempotent re-ack — the verdict is already journaled; the
 		// retry is a reply, not new turn state. Re-journaling each one
 		// would let a retrying client burn the bounded journal and force

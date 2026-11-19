@@ -157,6 +157,28 @@ func TestConversationCompact(t *testing.T) {
 	}
 }
 
+// dropBefore is normalized and then discarded — the method trusts the
+// caller's retained tail blindly, so a mismatch silently produces the
+// wrong history while the repository's own invariant ("retained must be
+// exactly the live tail (dropBefore onward)") is enforced at write time.
+// The aggregate owns the same operation: a tail that does not match
+// dropBefore must be derived or refused, never applied as-is.
+func TestConversationCompactEnforcesDropBefore(t *testing.T) {
+	c := mustConv(t)
+	for _, txt := range []string{"m1", "m2", "m3", "m4"} {
+		m, _ := entity.NewMessage(enum.RoleUser, txt)
+		c.Append(m)
+	}
+	sum, _ := entity.NewMessage(enum.RoleUser, "SUMMARY")
+	sum.SetUserType(enum.LLMUserTypeSystem)
+	// Caller claims dropBefore=2 but passes a tail starting at 3 — m3 is
+	// dropped with no error anywhere in the domain path.
+	c.Compact(sum, 2, c.Messages()[3:])
+	if got := c.Messages(); len(got) != 3 || got[1].Content() != "m3" {
+		t.Fatalf("dropBefore=2 must retain messages[2:], got %+v", got)
+	}
+}
+
 func TestManualCompactWhileTailExceedsKeep(t *testing.T) {
 	c := mustConv(t)
 	for _, role := range []enum.Role{enum.RoleUser, enum.RoleAssistant, enum.RoleUser, enum.RoleAssistant} {

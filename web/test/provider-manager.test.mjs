@@ -549,3 +549,59 @@ test('a failed model save keeps focus on Save', () => {
   assert.equal(document.activeElement, again,
     'the re-enabled Save must recover focus after a failed model save');
 });
+
+// Confirming a delete clears the widget's confirmation state but leaves
+// the old row in the DOM until the server's list refresh lands. That
+// still-enabled Delete button can be clicked again, issuing a second
+// DELETE for the same id (and a spurious error when it 404s). A
+// confirmed action must leave either no confirm row or a disabled one
+// until the request resolves.
+test('a confirmed gateway delete cannot be submitted twice', () => {
+  const pm = new PM();
+  pm.gateways = [GW];
+  byAria(pm.root, 'Delete gw1').fire('click');
+  const confirm = byClass(pm.root, 'danger-btn')[0];
+  assert.ok(confirm, 'delete confirmation rendered');
+  confirm.fire('click');
+  const again = byClass(pm.root, 'danger-btn')[0];
+  if (again && !again.disabled) again.fire('click');
+  const sends = pm.events.filter((e) => e.type === 'gateway-delete');
+  assert.equal(sends.length, 1,
+    'the same confirmed delete must not be emitted twice before the row resolves');
+});
+
+// The Wave I fix retires the stale confirm row, but the normal row's
+// Delete trigger is live again while the first request is still on the
+// wire. A second confirm therefore sends a second DELETE for the same
+// gateway. A delete needs an in-flight state, not just a fresh row.
+test('gateway delete cannot be re-confirmed while in flight', () => {
+  const pm = new PM();
+  pm.gateways = [GW];
+  byAria(pm.root, 'Delete gw1').fire('click');
+  byClass(pm.root, 'danger-btn')[0].fire('click');
+  const rowDelete = byAria(pm.root, 'Delete gw1');
+  if (rowDelete && !rowDelete.disabled) rowDelete.fire('click');
+  const secondConfirm = byClass(pm.root, 'danger-btn')[0];
+  if (secondConfirm && !secondConfirm.disabled) secondConfirm.fire('click');
+  const sends = pm.events.filter((e) => e.type === 'gateway-delete');
+  assert.equal(sends.length, 1,
+    'a gateway delete must stay single-flight until the list refresh resolves it');
+});
+
+// An external refresh can remove the gateway whose Delete control has
+// focus. The row vanishes without a local confirm/delete flow, so focus
+// must fall back to the always-present Add gateway action rather than the
+// detached button.
+test('an externally removed gateway row hands focus to Add gateway', () => {
+  globalThis.document.activeElement = null;
+  const pm = new PM();
+  pm.gateways = [GW];
+  const del = byAria(pm.root, 'Delete gw1');
+  assert.ok(del, 'Delete rendered');
+  del.focus();
+  pm.gateways = [];
+  const add = byAria(pm.root, 'Add gateway');
+  assert.ok(add, 'Add gateway survives the empty list');
+  assert.equal(globalThis.document.activeElement, add,
+    'focus must move to the surviving list action');
+});

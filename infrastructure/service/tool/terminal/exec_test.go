@@ -96,6 +96,39 @@ func TestExecUsesInjectedRunner(t *testing.T) {
 	}
 }
 
+// ctx.Err() at suffix time is uncorrelated with what the runner did —
+// a process reaped cleanly just as the deadline fired reports
+// "(killed: context deadline exceeded)", telling the model a finished
+// command was killed.
+func TestExecCleanExitDoesNotReportKilled(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "c1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tool, err := NewExecTool(mustOutputRepo(t, root), &reapedAtDeadlineRunner{})
+	if err != nil {
+		t.Fatalf("NewExecTool: %v", err)
+	}
+	res, err := tool.Execute(testContext(), mustCall(t, "k-1", `{"command":"fast","timeout_ms":50}`, 0), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(res.Text, "killed") {
+		t.Fatalf("a clean exit rendered as killed: %q", res.Text)
+	}
+}
+
+// reapedAtDeadlineRunner reproduces the LocalRunner interleaving the
+// hunter named: cmd.Wait() returns nil because the process was already
+// reaped when ctx fired — a race the runner resolves as Code:0.
+type reapedAtDeadlineRunner struct{}
+
+func (r *reapedAtDeadlineRunner) Run(ctx context.Context, _, _ string, _ io.Reader, output io.Writer) (service.ProcessExit, error) {
+	_, _ = output.Write([]byte("done"))
+	<-ctx.Done()
+	return service.ProcessExit{Code: 0}, nil
+}
+
 func TestExecStdinReachesRunner(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, "c1"), 0o755); err != nil {

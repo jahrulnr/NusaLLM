@@ -3,6 +3,7 @@ package toolexec
 import (
 	"cmp"
 	"context"
+	"errors"
 	"math/rand/v2"
 	"slices"
 	"sync"
@@ -26,12 +27,20 @@ const (
 type SessionStore struct {
 	mu          sync.Mutex
 	rooms       map[string]map[int]*terminalSession
+	epoch       map[string]uint64 // bumped when a room is reaped
+	globalEpoch uint64            // bumped by TerminateAll
 	environment dservice.CommandEnvironment
 }
 
 func NewSessionStore(environment dservice.CommandEnvironment) *SessionStore {
-	return &SessionStore{rooms: map[string]map[int]*terminalSession{}, environment: environment}
+	return &SessionStore{
+		rooms:       map[string]map[int]*terminalSession{},
+		epoch:       map[string]uint64{},
+		environment: environment,
+	}
 }
+
+var errOpenReaped = errors.New("conversation terminated during session open")
 
 // Open spawns and registers the session before returning — the entry must
 // exist in the map before the caller's first Collect so a racing
@@ -40,6 +49,12 @@ func (s *SessionStore) Open(ctx context.Context, convID string, req dservice.Ter
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
+	// Capture the reap generation before spawn. TerminateConversation can
+	// run in the window Environ/spawn occupies; registering afterwards
+	// would plant the child in a room the reap already finished.
+	s.mu.Lock()
+	gen, global := s.epoch[convID], s.globalEpoch
+	s.mu.Unlock()
 	var env []string
 	if s.environment != nil {
 		env = s.environment.Environ(req.Dir)
@@ -49,6 +64,11 @@ func (s *SessionStore) Open(ctx context.Context, convID string, req dservice.Ter
 		return nil, err
 	}
 	s.mu.Lock()
+	if s.epoch[convID] != gen || s.globalEpoch != global {
+		s.mu.Unlock()
+		sess.Terminate()
+		return nil, errOpenReaped
+	}
 	room := s.rooms[convID]
 	if room == nil {
 		room = map[int]*terminalSession{}
@@ -116,6 +136,7 @@ func (s *SessionStore) TerminateConversation(convID string) {
 	s.mu.Lock()
 	room := s.rooms[convID]
 	delete(s.rooms, convID)
+	s.epoch[convID]++
 	s.mu.Unlock()
 	for _, sess := range room {
 		sess.Terminate()
@@ -126,6 +147,7 @@ func (s *SessionStore) TerminateAll() {
 	s.mu.Lock()
 	rooms := s.rooms
 	s.rooms = map[string]map[int]*terminalSession{}
+	s.globalEpoch++
 	s.mu.Unlock()
 	for _, room := range rooms {
 		for _, sess := range room {

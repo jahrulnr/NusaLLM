@@ -196,6 +196,37 @@ func TestToolCallSetOutputZeroCallAt(t *testing.T) {
 	}
 }
 
+// The store hydrates tooltype through ParseTooltype and refuses unknown
+// values — the constructor cannot accept a value the record layer
+// would reject.
+func TestNewToolCallRejectsUnknownTooltype(t *testing.T) {
+	if _, err := NewToolCall("i", "n", "{}", enum.Tooltype("bogus")); err == nil {
+		t.Fatal("constructor accepted a tooltype hydration rejects")
+	}
+}
+
+// Tool output is untrusted bytes — GBK/latin-1/binary fragments are
+// ordinary. A byte that is not valid UTF-8 inside the window must not
+// collapse the whole provider-facing view: the views exist to bound the
+// window, and one bad byte currently erases everything after it (head)
+// or before it (tail) because the validity check runs on the whole
+// string instead of only the cut boundary.
+func TestToolCallOutputViewsKeepContentWithInvalidBytes(t *testing.T) {
+	tc := mustCall(t, "i", "n", "{}", enum.TooltypeOrigin)
+	tc.SetOutput("ok\n" + "\xff" + strings.Repeat("x", 40*1024))
+	// The 32K budget cuts near the end — the view must retain roughly a
+	// budget of content, not just the bytes before the invalid one.
+	if got := tc.OutputHead(); len(got) < 30*1024 {
+		t.Fatalf("head collapsed at the first invalid byte: %d bytes kept", len(got))
+	}
+
+	tc2 := mustCall(t, "j", "n", "{}", enum.TooltypeOrigin)
+	tc2.SetOutput(strings.Repeat("y", 40*1024) + "\xff")
+	if got := tc2.OutputTail(); len(got) < 30*1024 {
+		t.Fatalf("tail collapsed at the last invalid byte: %d bytes kept", len(got))
+	}
+}
+
 func BenchmarkToolCallSetOutput(b *testing.B) {
 	tc, _ := NewToolCall("i", "n", "{}", enum.TooltypeOrigin)
 	tc.SetOutputBudget(1 << 20)

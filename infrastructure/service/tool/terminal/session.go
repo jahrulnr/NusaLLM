@@ -68,7 +68,8 @@ type terminalSession struct {
 	// write/poll interactions — codex's interaction_lock: calls on one
 	// session share the draining buffer, so they queue instead of racing.
 	interaction chan struct{}
-	exitCode    int // written before done closes
+	exitCode    int    // written before done closes
+	signal      string // set instead of a negative code when a signal reaped the process
 	exited      atomic.Bool
 	lastUsed    atomic.Int64 // unixnano — store's LRU clock
 	terminated  atomic.Bool
@@ -232,13 +233,21 @@ func (s *terminalSession) readPTY() {
 // with a stale zero.
 func (s *terminalSession) wait() {
 	err := s.cmd.Wait()
-	if err == nil {
+	switch {
+	case err == nil:
 		s.exitCode = 0
-	} else {
+	default:
+		// ExitCode is -1 when a signal reaped the process. That is not an
+		// exit status — record the signal and leave the code at 0 so a
+		// poll never renders "code -1".
 		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
-			s.exitCode = exitErr.ExitCode()
+			if code := exitErr.ExitCode(); code > 0 {
+				s.exitCode = code
+			} else {
+				s.signal = exitErr.Error()
+			}
 		} else {
-			s.exitCode = -1
+			s.signal = err.Error()
 		}
 	}
 	s.exited.Store(true)
@@ -252,6 +261,12 @@ func (s *terminalSession) append(p []byte) {
 	s.pending = append(s.pending, p...)
 	if len(s.pending) > sessionBufferCap {
 		drop := len(s.pending) - sessionBufferCap
+		// A drop that lands on a continuation byte splits a rune. Skip
+		// the rest of that rune so the retained head stays valid UTF-8;
+		// those bytes count as omitted, not as text.
+		for drop < len(s.pending) && s.pending[drop]&0xC0 == 0x80 {
+			drop++
+		}
 		s.omitted += drop
 		s.pending = append([]byte(nil), s.pending[drop:]...)
 	}
@@ -323,13 +338,15 @@ func (s *terminalSession) Write(p []byte) error {
 	if len(p) == 0 {
 		return nil
 	}
+	// A dead pipes session has a closed stdin too. Death is the fact the
+	// caller needs; the tty remedy is only for a live pipes child.
+	if s.exited.Load() {
+		return errors.New("session exited")
+	}
 	if !s.tty {
 		return dservice.ErrTerminalStdinClosed
 	}
 	s.touch()
-	if s.exited.Load() {
-		return errors.New("session exited")
-	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	_, err := s.master.Write(p)
@@ -382,8 +399,7 @@ func (s *terminalSession) Collect(ctx context.Context, maxWait time.Duration, si
 			case <-ctx.Done():
 			}
 			flush()
-			_, code := s.Exited()
-			return dservice.TerminalPoll{Output: out.String(), ExitCode: code, TotalBytes: total}
+			return s.finishedPoll(out.String(), total)
 		}
 		select {
 		case <-s.notify:
@@ -397,10 +413,19 @@ func (s *terminalSession) Collect(ctx context.Context, maxWait time.Duration, si
 }
 
 func (s *terminalSession) pollState(out string, total int) dservice.TerminalPoll {
-	if exited, code := s.Exited(); exited {
-		return dservice.TerminalPoll{Output: out, ExitCode: code, TotalBytes: total}
+	if s.exited.Load() {
+		return s.finishedPoll(out, total)
 	}
 	return dservice.TerminalPoll{Output: out, Running: true, TotalBytes: total}
+}
+
+func (s *terminalSession) finishedPoll(out string, total int) dservice.TerminalPoll {
+	return dservice.TerminalPoll{
+		Output:     out,
+		ExitCode:   s.exitCode,
+		Signal:     s.signal,
+		TotalBytes: total,
+	}
 }
 
 // Terminate kills the process tree and waits out the goroutines. The

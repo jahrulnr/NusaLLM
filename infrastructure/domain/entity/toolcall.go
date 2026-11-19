@@ -39,6 +39,9 @@ func (t ToolCall) validateInput() error {
 	if t.input == "" {
 		return errors.New("input is required")
 	}
+	if _, ok := enum.ParseTooltype(t.ttype.String()); !ok {
+		return fmt.Errorf("tooltype %q is invalid", t.ttype)
+	}
 	return nil
 }
 
@@ -120,11 +123,7 @@ func outputHead(s string, budget int) string {
 	if len(s) <= budget {
 		return s
 	}
-	s = s[:budget]
-	for len(s) > 0 && !utf8.ValidString(s) {
-		s = s[:len(s)-1]
-	}
-	return s
+	return trimPartialRuneSuffix(s[:budget])
 }
 
 func outputTail(s string, budget int) string {
@@ -134,11 +133,56 @@ func outputTail(s string, budget int) string {
 	if len(s) <= budget {
 		return s
 	}
-	s = s[len(s)-budget:]
-	for len(s) > 0 && !utf8.ValidString(s) {
-		s = s[1:]
+	return trimPartialRunePrefix(s[len(s)-budget:])
+}
+
+// trimPartialRuneSuffix drops only a multi-byte rune the cut split at the
+// end. Interior invalid bytes stay: they are payload, and scanning the
+// whole window for utf8.Valid would erase everything after the first one.
+func trimPartialRuneSuffix(s string) string {
+	i := len(s) - 1
+	cont := 0
+	for i >= 0 && cont < utf8.UTFMax-1 && s[i]&0xC0 == 0x80 {
+		i--
+		cont++
+	}
+	if i < 0 {
+		return ""
+	}
+	need := utf8LeadSize(s[i])
+	if need > 1 && len(s)-i < need {
+		return s[:i]
 	}
 	return s
+}
+
+// trimPartialRunePrefix drops continuation bytes whose lead the cut left
+// behind. A lead at the front belongs to a rune that continues into the
+// kept suffix; a lone invalid byte is payload and stays.
+func trimPartialRunePrefix(s string) string {
+	i := 0
+	for i < len(s) && i < utf8.UTFMax-1 && s[i]&0xC0 == 0x80 {
+		i++
+	}
+	return s[i:]
+}
+
+// utf8LeadSize is the expected width of a well-formed lead byte. Invalid
+// bytes (including 0xFF) are width 1 so a view keeps them instead of
+// treating them as a truncated rune.
+func utf8LeadSize(b byte) int {
+	switch {
+	case b < 0x80:
+		return 1
+	case b&0xE0 == 0xC0 && b >= 0xC2:
+		return 2
+	case b&0xF0 == 0xE0:
+		return 3
+	case b&0xF8 == 0xF0 && b <= 0xF4:
+		return 4
+	default:
+		return 1
+	}
 }
 
 // OutputWithUntrustedTag is the provider-facing bounded evidence view.

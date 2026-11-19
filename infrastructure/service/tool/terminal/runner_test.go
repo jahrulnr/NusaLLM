@@ -33,6 +33,25 @@ func TestLocalRunnerExitSignalAndStartFailure(t *testing.T) {
 	}
 }
 
+// A process that exits 0 while a descendant keeps the output pipe open
+// trips WaitDelay — the error is not an *exec.ExitError, so it lands in
+// ProcessExit.Err and the tool renders stdlib plumbing as a command
+// error on a successful run. The leader's real exit is 0.
+func TestLocalRunnerStrayPipeHolderIsNotAnError(t *testing.T) {
+	runner := NewLocalRunner(nil)
+	var out bytes.Buffer
+	res, err := runner.Run(t.Context(), "sleep 6 & echo done", "", nil, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Code != 0 || res.Signal != "" || res.Err != nil {
+		t.Fatalf("clean exit with a stray pipe holder => %+v", res)
+	}
+	if !strings.Contains(out.String(), "done") {
+		t.Fatalf("output = %q", out.String())
+	}
+}
+
 // stdout and stderr share one writer, so the merged text keeps arrival
 // order rather than concatenating the streams.
 func TestLocalRunnerMergesStreams(t *testing.T) {

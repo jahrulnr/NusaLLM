@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"strings"
+	"unicode"
 )
 
 // ID is the identity value object: a single path-safe segment — ids name
@@ -21,6 +22,11 @@ func ValidID(raw string) error {
 	}
 	if raw == "." || raw == ".." || strings.ContainsAny(raw, "/\\") {
 		return errors.New("id must not contain path elements")
+	}
+	// Ids are copied into filenames, URLs, and log lines. A control
+	// byte has no representation there and cannot be addressed again.
+	if strings.ContainsFunc(raw, unicode.IsControl) {
+		return errors.New("id must not contain control characters")
 	}
 	return nil
 }

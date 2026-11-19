@@ -46,6 +46,19 @@ export function deepActiveElement() {
 // inherit focus is identified by a stable key — a data-id when the control
 // declares one, else its class signature. The replacement element is found
 // by the same key under the new tree.
+// Whether node sits inside root. A real node answers with contains;
+// the headless stand-ins omit it, so the children the widgets built
+// are walked instead.
+export function nodeWithin(root, node) {
+  if (!root || !node) return false;
+  if (typeof root.contains === 'function') return root.contains(node);
+  if (root === node) return true;
+  for (const child of root.children || []) {
+    if (child && typeof child === 'object' && nodeWithin(child, node)) return true;
+  }
+  return false;
+}
+
 export function focusKeyOf(node) {
   return node?.getAttribute?.('data-id') || node?.className || null;
 }

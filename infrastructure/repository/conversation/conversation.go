@@ -73,7 +73,7 @@ func (r *ConversationRepository) lockStore() (func(), error) {
 	// not brick the store for the process's lifetime the way a once-
 	// cached error would.
 	if r.lockFile == nil {
-		if err := os.MkdirAll(r.path, 0o755); err != nil {
+		if err := os.MkdirAll(r.path, 0o700); err != nil {
 			return nil, err
 		}
 		f, err := os.OpenFile(filepath.Join(r.path, lockFileName), os.O_CREATE|os.O_RDWR, 0o600)
@@ -171,8 +171,12 @@ func (r *ConversationRepository) readMeta(id string) (metaRecord, error) {
 	// empty room would let a turn continue over lost context, and an
 	// append would resurrect a divergent tail.
 	if m.ActiveCount > 0 {
-		if _, err := os.Stat(filepath.Join(dir, activeFile)); errors.Is(err, os.ErrNotExist) {
-			return metaRecord{}, fmt.Errorf("conversation %s: active.jsonl missing while metadata records %d tail messages; stop the app and restore from backup", id, m.ActiveCount)
+		fi, err := os.Stat(filepath.Join(dir, activeFile))
+		if errors.Is(err, os.ErrNotExist) || (err == nil && fi.Size() == 0) {
+			return metaRecord{}, fmt.Errorf("conversation %s: active.jsonl missing or empty while metadata records %d tail messages; stop the app and restore from backup", id, m.ActiveCount)
+		}
+		if err != nil {
+			return metaRecord{}, err
 		}
 	}
 	return m, nil
@@ -208,7 +212,10 @@ func (r *ConversationRepository) writeMeta(id string, m metaRecord) error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(filepath.Join(r.convDir(id), metaFile), raw, 0o644)
+	// History is owner data: every file this store writes carries the
+	// conversation's private content, so the clamp is store-wide, same
+	// rule the gateway and secret stores already apply.
+	return writeFileAtomic(filepath.Join(r.convDir(id), metaFile), raw, 0o600)
 }
 
 // --- line stream ------------------------------------------------------------
@@ -251,11 +258,15 @@ func appendLine(path string, v any) error {
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0o644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
+	// The create mode above only applies to a new file — a legacy
+	// 0644 tail stays loose until it is rewritten, so re-clamp it like
+	// the gateway store re-clamps its record.
+	_ = f.Chmod(0o600)
 	if err := dropTornTail(f); err != nil {
 		return err
 	}

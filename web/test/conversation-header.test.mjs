@@ -344,3 +344,94 @@ test('Keep on the desktop confirm returns focus to Delete', () => {
     globalThis.document.activeElement = null;
   }
 });
+
+// The header's delete confirm is destructive and the API call is async.
+// The confirm state is not cleared or disabled before the request lands,
+// so a second click submits another DELETE for the same room while the
+// first is still in flight. One confirmation must produce one action.
+test('a confirmed desktop delete cannot be submitted twice', () => {
+  const header = makeHeader();
+  findAll(header.root, 'danger')[0].fire('click');
+  const yes = find(header.root, 'confirm-yes');
+  assert.ok(yes, 'desktop confirm rendered');
+  yes.fire('click');
+  const again = find(header.root, 'confirm-yes');
+  if (again) again.fire('click');
+  const sends = header.events.filter((e) => e.type === 'conversation-delete');
+  assert.equal(sends.length, 1,
+    'the same confirmed delete must not be emitted twice before the room resolves');
+});
+
+// A same-room metadata refresh while the phone actions sheet is open
+// rebuilds the sheet. The focused action dies with it; focus must move
+// to the rebuilt action with the same identity, not stay detached (or
+// fall to BODY) inside the modal.
+test('a same-room refresh keeps focus in the open actions sheet', () => {
+  const originalFocus = FakeEl.prototype.focus;
+  FakeEl.prototype.focus = function focus() { globalThis.document.activeElement = this; };
+  globalThis.document.activeElement = null;
+  try {
+    const header = makeHeader();
+    openSheet(header);
+    const rename = findButton(header.sheet, 'Rename thread');
+    assert.ok(rename, 'sheet action rendered');
+    rename.focus();
+    header.conversation = { id: 'c1', title: 'Hello', updatedAt: '2026-11-19T00:00:00Z' };
+    const again = findButton(header.sheet, 'Rename thread');
+    assert.ok(again, 'same action survives the refresh');
+    assert.equal(globalThis.document.activeElement, again,
+      'a sheet rebuild under focus must hand focus to the rebuilt action');
+  } finally {
+    FakeEl.prototype.focus = originalFocus;
+    globalThis.document.activeElement = null;
+  }
+});
+
+// A room can disappear while the phone actions sheet is open (another tab
+// deleted it, or a failed selection lands on a fresh view). The sheet
+// rebuilds with only Settings; the focused Delete action is gone and focus
+// must land on a surviving sheet action, not a detached node behind the
+// modal.
+test('a room disappearing while the sheet is open keeps focus inside it', () => {
+  const originalFocus = FakeEl.prototype.focus;
+  FakeEl.prototype.focus = function focus() { globalThis.document.activeElement = this; };
+  globalThis.document.activeElement = null;
+  try {
+    const header = makeHeader();
+    openSheet(header);
+    const del = findButton(header.sheet, 'Delete thread');
+    assert.ok(del, 'delete action rendered');
+    del.focus();
+    header.conversation = null;
+    const settings = findButton(header.sheet, 'Settings');
+    assert.ok(settings, 'sheet survives as the settings-only action list');
+    assert.equal(globalThis.document.activeElement, settings,
+      'focus must follow the surviving sheet action');
+  } finally {
+    FakeEl.prototype.focus = originalFocus;
+    globalThis.document.activeElement = null;
+  }
+});
+
+// Removing the room (404/delete) also removes the desktop Delete and
+// Compact controls. Focus on Delete must land on a control that still
+// exists — Settings is the always-present successor.
+test('a room disappearing with Delete focused hands focus to Settings', () => {
+  const originalFocus = FakeEl.prototype.focus;
+  FakeEl.prototype.focus = function focus() { globalThis.document.activeElement = this; };
+  globalThis.document.activeElement = null;
+  try {
+    const header = makeHeader();
+    const del = find(header.root, 'danger');
+    assert.ok(del, 'Delete rendered');
+    del.focus();
+    header.conversation = null;
+    const settings = find(header.root, 'settings-btn');
+    assert.ok(settings, 'Settings survives the room removal');
+    assert.equal(globalThis.document.activeElement, settings,
+      'focus must move from removed Delete to Settings');
+  } finally {
+    FakeEl.prototype.focus = originalFocus;
+    globalThis.document.activeElement = null;
+  }
+});

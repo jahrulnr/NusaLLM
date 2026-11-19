@@ -280,3 +280,37 @@ func TestWritesOnlyLeavesProjectionRoutesUnregistered(t *testing.T) {
 		}()
 	}
 }
+
+type cancelAwareWriter struct {
+	fakeWriter
+	deleteCtxErr error
+}
+
+func (w *cancelAwareWriter) Delete(ctx context.Context, id string) error {
+	w.deleteCtxErr = ctx.Err()
+	if w.deleteCtxErr != nil {
+		return w.deleteCtxErr
+	}
+	w.deleted = append(w.deleted, id)
+	return nil
+}
+
+// DELETE is destructive: a browser that navigates away or a proxy that
+// drops the connection mid-request must not cancel the record/vault
+// removal halfway. The conversation boundary already detaches accepted
+// deletes from the request context; the gateway boundary must do the same.
+func TestDeleteGatewaySurvivesRequestCancellation(t *testing.T) {
+	w := &cancelAwareWriter{}
+	r := router(Deps{Reads: &fakeReader{}, Writes: w})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest("DELETE", "/api/gateways/g", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != 204 {
+		t.Fatalf("DELETE with a canceled request context = %d: %s", rec.Code, rec.Body.String())
+	}
+	if w.deleteCtxErr != nil {
+		t.Fatalf("delete ran on the request's canceled context: %v", w.deleteCtxErr)
+	}
+}

@@ -77,5 +77,6 @@ type TerminalPoll struct {
 	Output     string
 	Running    bool
 	ExitCode   int
+	Signal     string // set when a signal reaped the process; ExitCode is then not a status
 	TotalBytes int
 }

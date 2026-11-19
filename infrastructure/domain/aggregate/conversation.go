@@ -67,7 +67,27 @@ func (c *Conversation) Compact(summary entity.Message, dropBefore int, retained 
 	if dropBefore > len(c.messages) {
 		dropBefore = len(c.messages)
 	}
+	// dropBefore is the boundary. A retained tail that is not exactly the
+	// live messages from that index (sanitizers may rewrite optional
+	// content, not which messages survive) would drop history with no
+	// error. Derive the tail from the aggregate instead.
+	live := c.messages[dropBefore:]
+	if !sameMessageIDs(live, retained) {
+		retained = live
+	}
 	c.messages = append([]entity.Message{summary}, retained...)
+}
+
+func sameMessageIDs(live, retained []entity.Message) bool {
+	if len(live) != len(retained) {
+		return false
+	}
+	for i := range live {
+		if live[i].ID() != retained[i].ID() {
+			return false
+		}
+	}
+	return true
 }
 
 // CanManualCompact reports whether a manual checkpoint can fold history.

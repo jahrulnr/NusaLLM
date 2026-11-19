@@ -57,6 +57,8 @@ type replModel struct {
 	historyIdx      int    // -1 while editing the live draft
 	draft           string // live draft stashed while browsing history
 	queued          []string
+	haltDrain       bool             // route miss: stop this drain; the next drain clears it
+	pendingInput    string           // user line of the open turn, until history owns it
 	pendingSteer    []string         // steering input submitted but not yet folded into the turn
 	live            *strings.Builder // in-flight assistant delta not yet sealed
 	liveTimeline    []livePiece      // turn transcript in TurnEvent arrival order
@@ -407,8 +409,11 @@ func (m *replModel) steerLanded(text string) {
 // (/edit, /compact) launches the turn and the rest stay queued for the
 // next finishTurn boundary.
 func (m *replModel) drain() tea.Cmd {
+	// A previous route miss only stopped that drain. The next submit
+	// (or a later finishTurn) is a new attempt.
+	m.haltDrain = false
 	var cmds []tea.Cmd
-	for len(m.queued) > 0 && !m.turnActive && !m.repl.Exit {
+	for len(m.queued) > 0 && !m.turnActive && !m.repl.Exit && !m.haltDrain {
 		next := m.queued[0]
 		m.queued = m.queued[1:]
 		cmd := m.dispatch(next)
@@ -580,8 +585,24 @@ func (m *replModel) beginTurn(text string) tea.Cmd {
 	route, modelID, err := m.repl.ResolveRoute(m.ctx)
 	if err != nil {
 		m.println("error: " + publicError(err))
+		// submit already cleared the composer and drain already dropped
+		// the line. A route miss is not a turn — put the text back so
+		// Enter can try again. A newer draft already in the composer
+		// stays; the failed line waits at the front of the queue.
+		// Stop this drain: the same miss would prepend that line again
+		// on the next queued item and never return.
+		m.haltDrain = true
+		if strings.TrimSpace(m.textarea.Value()) == "" {
+			m.restoreComposer(text)
+		} else {
+			m.queued = append([]string{text}, m.queued...)
+		}
 		return nil
 	}
+	// The composer already gave up this line. Hold it until Send says
+	// the user message is in history; a failure before that still has
+	// nowhere else to read it from.
+	m.pendingInput = text
 	m.println(term.Cyan + term.Bold + "> " + term.Sanitize(text) + term.Reset)
 	m.resetLive()
 	m.turnActive = true
@@ -657,14 +678,33 @@ func (m replModel) finishTurn(result appconversation.SendResult, err error) (tea
 	if len(m.pendingSteer) > 0 {
 		// The turn ended before a safe point — the steer never landed in
 		// history. Queue it as an ordinary message instead of dropping
-		// the line.
-		m.queued = append(m.queued, m.pendingSteer...)
+		// the line, AHEAD of anything queued after it: submission order
+		// decides drain order.
+		m.queued = append(append([]string{}, m.pendingSteer...), m.queued...)
 		m.pendingSteer = nil
 		m.println(term.Dim + "steer missed the turn — queued as a new message" + term.Reset)
 	}
 	if err != nil {
 		m.println("error: " + publicError(err))
 	}
+	// A rejection before the user line is persisted has no history copy.
+	// Hand the line back the same way a route miss does, and do not
+	// drain it straight back into the provider that just refused it.
+	if err != nil && !result.UserMessagePersisted && m.pendingInput != "" {
+		text := m.pendingInput
+		m.pendingInput = ""
+		if strings.TrimSpace(m.textarea.Value()) == "" {
+			m.restoreComposer(text)
+		} else {
+			// A newer draft already occupies the composer. Park the
+			// refused line, but do not drain it back into the same error.
+			m.queued = append([]string{text}, m.queued...)
+			m.haltDrain = true
+			m.refreshContextUsage()
+			return m, nil
+		}
+	}
+	m.pendingInput = ""
 	cmd := m.drain()
 	m.refreshContextUsage()
 	return m, cmd

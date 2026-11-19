@@ -1,6 +1,8 @@
 package repogateway
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -444,5 +446,96 @@ func TestLoadRejectsOrNormalizesNegativeResourceLimits(t *testing.T) {
 	if m.ContextWindow() < 0 || m.OutputLimit() < 0 || m.MaxImages() < 0 {
 		t.Fatalf("loaded negative limits: context=%d output=%d images=%d",
 			m.ContextWindow(), m.OutputLimit(), m.MaxImages())
+	}
+}
+
+type failingSecretDelete struct{}
+
+func (failingSecretDelete) Get(context.Context, string) (string, error) { return "", nil }
+func (failingSecretDelete) Set(context.Context, string, string) error   { return nil }
+func (failingSecretDelete) Delete(context.Context, string) error {
+	return errors.New("secret store unavailable")
+}
+func (failingSecretDelete) Close() error { return nil }
+
+// Delete removes the record before its vault cleanup. If the cleanup
+// fails, returning an error while the record is already gone makes the
+// user retry a delete that can only answer 404. Either tolerate the
+// orphaned vault entry or keep the record so the retry is meaningful.
+func TestDeleteKeepsRecordWhenSecretCleanupFails(t *testing.T) {
+	dir := t.TempDir()
+	repo := NewGatewayRepository(dir, failingSecretDelete{})
+	g, err := aggregate.NewGateway("g", "n", "https://x", enum.StyleCompletion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.SetApiKey("secret:gateway/g/api_key")
+	if err := repo.Save(t.Context(), &g); err != nil {
+		t.Fatal(err)
+	}
+	err = repo.Delete(t.Context(), "g")
+	if err == nil {
+		return // tolerating the orphaned secret is the other safe outcome
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "g.json")); statErr != nil {
+		t.Fatalf("delete reported failure after removing the record: %v", statErr)
+	}
+}
+
+// Delete cleans the vault before removing the record. If the record
+// removal then fails, the record remains with a dangling secret ref and
+// can no longer be loaded. A delete failure must leave a usable record;
+// cleanup order must not trade a transient filesystem error for a broken
+// gateway.
+func TestDeleteKeepsRecordUsableWhenFileRemovalFails(t *testing.T) {
+	dir := t.TempDir()
+	secrets, err := reposecret.New(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755); _ = secrets.Close() })
+	repo := NewGatewayRepository(dir, secrets)
+	g, err := aggregate.NewGateway("g", "n", "https://x", enum.StyleCompletion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.SetApiKey("sk-live")
+	if err := repo.Save(t.Context(), &g); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Delete(t.Context(), "g"); err == nil {
+		t.Fatal("delete succeeded despite a read-only directory")
+	}
+	if _, err := repo.Load(t.Context(), "g"); err != nil {
+		t.Fatalf("failed delete left the record unusable: %v", err)
+	}
+}
+
+type failingSecretStore struct{ drepo.SecretStore }
+
+func (failingSecretStore) Get(context.Context, string) (string, error) {
+	return "", errors.New("secret store bus down")
+}
+
+// A transient vault outage is an operational failure, not a corrupt
+// gateway. Inspect's contract says genuine I/O faults propagate; treating
+// it as KeyResolved=false makes every gateway appear broken during an
+// outage and hides the real failure from the operator.
+func TestInspectPropagatesSecretStoreOutage(t *testing.T) {
+	dir := t.TempDir()
+	repo := NewGatewayRepository(dir, failingSecretStore{})
+	g, err := aggregate.NewGateway("g", "n", "https://x", enum.StyleCompletion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.SetApiKey("secret:gateway/g/api_key")
+	if err := repo.Save(t.Context(), &g); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.Inspect(t.Context(), "g"); err == nil {
+		t.Fatal("secret store outage was reported as a broken record, not an error")
 	}
 }

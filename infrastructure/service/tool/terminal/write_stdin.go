@@ -93,12 +93,14 @@ func (tool *WriteStdinTool) Execute(ctx context.Context, call entity.ToolCall, e
 					}
 				}
 			} else if err := sess.Write([]byte(input.Chars)); err != nil {
-				if errors.Is(err, dservice.ErrTerminalStdinClosed) {
+				exited, _ := sess.Exited()
+				if errors.Is(err, dservice.ErrTerminalStdinClosed) && !exited {
 					// Codex's StdinClosed wording — the model learns
-					// the remedy, not just the failure.
+					// the remedy, not just the failure. A session that
+					// has already exited is not a closed-stdin problem.
 					return errors.New("stdin is closed for this session; rerun exec_session with tty=true to keep stdin open")
 				}
-				if exited, _ := sess.Exited(); !exited {
+				if !exited {
 					return err
 				}
 			} else {

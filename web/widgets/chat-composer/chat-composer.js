@@ -1,4 +1,4 @@
-import { Widget, el, emit, deepActiveElement } from '../../lib/dom.js';
+import { Widget, el, emit, deepActiveElement, findByFocusKey } from '../../lib/dom.js';
 import { icon } from '../../lib/icons.js';
 
 // Composer: autosizing textarea, Enter sends / Shift+Enter newline.
@@ -37,6 +37,20 @@ const STATE_LABELS = {
 // node is reused, so focus and scroll survive unrelated updates.
 function rowSig(item) {
   return [item.state, item.text, item.roomLabel, item.foreign, item.online].join('');
+}
+
+// An action button by its data-action identity — walked, not queried,
+// so the headless stand-ins resolve it exactly like the real DOM.
+// Without an action, the row's first action button answers.
+function actionIn(node, action) {
+  if (!node) return null;
+  if (action ? node.getAttribute?.('data-action') === action
+    : node.className === 'pending-action') return node;
+  for (const child of node.children || []) {
+    const hit = actionIn(child, action);
+    if (hit) return hit;
+  }
+  return null;
 }
 
 class ChatComposer extends Widget {
@@ -206,7 +220,7 @@ class ChatComposer extends Widget {
   // draft, unknown delivery is an explicit Copy/Dismiss decision, and
   // recall stays disabled while the socket can't carry it.
   _pendingRow(item) {
-    const row = el('div', { class: 'pending-item', role: 'listitem' });
+    const row = el('div', { class: 'pending-item', role: 'listitem', 'data-id': item.id });
     row.append(
       el('div', { class: 'pending-head' }, [
         el('span', { class: `pending-state pending-${item.state}`, text: STATE_LABELS[item.state] || item.state }),
@@ -310,6 +324,11 @@ class ChatComposer extends Widget {
       ? 'Enter to queue · Shift+Enter for new line'
       : 'Enter to send · Shift+Enter for new line';
     const c = this._context;
+    // Stats can vanish while the popover is open. Hiding the details
+    // hides the summary with them — focusing that trigger leaves the
+    // keyboard on a control that is no longer in the tab order. The
+    // composer input is the control that remains.
+    const contextHides = !c?.total && this.contextDetails.contains(this.shadowRoot.activeElement);
     this.contextDetails.hidden = !c?.total;
     if (c?.total) {
       const pct = Math.max(0, Math.min(100, Math.round((c.estimate || 0) / c.total * 100)));
@@ -318,6 +337,7 @@ class ChatComposer extends Widget {
       this.contextFill.style.width = `${pct}%`;
     } else {
       this.contextDetails.open = false;
+      if (contextHides) this.input.focus();
     }
   }
 
@@ -346,17 +366,22 @@ class ChatComposer extends Widget {
     this.pendingNotice.hidden = !this._queueNotice;
     this.pendingNotice.textContent = this._queueNotice;
     // Focus preservation: a row REPLACED by a state change hands focus
-    // to the same action in its successor; a removed row moves to the
-    // row now in its place, then the input. Captured before reconcile
-    // and applied only when focus actually lived inside the panel.
+    // to the same action in its successor. Identity is the entry id —
+    // a preceding row disappearing shifts every index, so the old
+    // index would land focus on a different entry's action. A removed
+    // entry still falls back to the row now in its place, then the
+    // input. Captured before reconcile and applied only when focus
+    // actually lived inside the panel.
     const focused = this.shadowRoot.activeElement;
     let keepFocus = null;
     if (focused && this.pendingBody.contains(focused)) {
-      const row = focused.closest('.pending-item');
+      const rows = [...this.pendingBody.children];
+      const row = rows.find((r) => r.contains(focused));
       if (row) {
         keepFocus = {
-          idx: [...this.pendingBody.children].indexOf(row),
+          id: row.getAttribute('data-id'),
           action: focused.getAttribute('data-action'),
+          idx: rows.indexOf(row),
         };
       }
     }
@@ -369,8 +394,13 @@ class ChatComposer extends Widget {
       let cached = this._rowCache.get(item.id);
       if (!cached || cached.sig !== sig) {
         const node = this._pendingRow(item);
-        if (cached) cached.node.replaceWith(node);
-        else this.pendingBody.append(node);
+        // Rows are this body's direct children by construction —
+        // insert-then-remove is the in-place swap on every DOM the
+        // widget runs under.
+        if (cached) {
+          this.pendingBody.insertBefore(node, cached.node);
+          this.pendingBody.removeChild(cached.node);
+        } else this.pendingBody.append(node);
         cached = { node, sig };
         this._rowCache.set(item.id, cached);
       }
@@ -383,24 +413,47 @@ class ChatComposer extends Widget {
     }
     for (const [id, cached] of this._rowCache) {
       if (!seen.has(id)) {
-        cached.node.remove();
+        // Rows are this body's direct children by construction —
+        // removeChild is exact here and answers on every DOM the
+        // widget runs under.
+        this.pendingBody.removeChild(cached.node);
         this._rowCache.delete(id);
       }
     }
     this.pendingBody.scrollTop = scroll;
     if (keepFocus) {
-      const row = this.pendingBody.children[keepFocus.idx]
+      // The entry's own row — reused or rebuilt — wins; only a removed
+      // entry degrades to the successor in its old place.
+      const row = (keepFocus.id && findByFocusKey(this.pendingBody, keepFocus.id))
+        || this.pendingBody.children[keepFocus.idx]
         || this.pendingBody.lastElementChild;
       const btn = row && (keepFocus.action
-        ? row.querySelector(`[data-action="${keepFocus.action}"]`)
-        : null) || (row && row.querySelector('.pending-action'));
-      (btn || this.input).focus();
+        ? actionIn(row, keepFocus.action)
+        : null) || (row && actionIn(row, null));
+      // A successor that cannot take focus (the rebuilt action disabled
+      // while offline) is no successor — the input receives the
+      // keyboard instead of the detached button. The disabled state is
+      // read from the property or the attribute: the headless
+      // stand-ins reflect the attribute as a string, which is falsy as
+      // a property.
+      const off = !!btn && (btn.disabled === true || btn.getAttribute?.('disabled') != null);
+      if (btn && !off) btn.focus();
+      else this.input.focus();
     }
     // Resume shows only while paused WITH this view's lines to send;
     // eligibility to click stays on canResume — required/failed
-    // barriers are exactly what Resume retries.
+    // barriers are exactly what Resume retries. The footer can hide
+    // under its own focus while rows remain — the input inherits it,
+    // same rule as the whole panel closing.
+    const footHides = !this._resumeVisible && this.pendingFoot.contains(this.shadowRoot.activeElement);
+    // Disabling a focused control drops the browser's focus to BODY —
+    // capture the focus before the barrier flip, and hand it to the
+    // input below when the control stays visible but ineligible.
+    const resumeFocused = this.pendingFoot.contains(this.shadowRoot.activeElement);
     this.pendingFoot.hidden = !this._resumeVisible;
+    if (footHides) this.input.focus();
     this.resumeButton.disabled = !this._canResume;
+    if (this.resumeButton.disabled && resumeFocused) this.input.focus();
     this.resumeButton.title = this._canResume
       ? 'Send the next queued message'
       : 'Nothing ready to send — busy, offline, or checking history';

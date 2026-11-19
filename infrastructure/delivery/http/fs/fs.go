@@ -9,6 +9,8 @@
 package fs
 
 import (
+	"errors"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -65,13 +67,23 @@ func browse(c *gin.Context, tree drepo.FileTree) {
 	}
 	dir = filepath.Clean(dir)
 	info, err := tree.Stat(dir)
-	if err != nil || !info.IsDir() {
+	if err != nil {
+		if errors.Is(err, fs.ErrPermission) {
+			transport.WriteProblem(c, 403, "forbidden_origin", "directory is not readable")
+			return
+		}
+		transport.WriteProblem(c, 404, "not_found", "no such directory")
+		return
+	}
+	if !info.IsDir() {
 		transport.WriteProblem(c, 404, "not_found", "no such directory")
 		return
 	}
 	ents, err := tree.ReadDir(dir)
 	if err != nil {
-		transport.WriteProblem(c, 403, "forbidden", "directory is not readable")
+		// The contract's closed code set has no separate "unreadable
+		// directory" member; 403's catalog code is forbidden_origin.
+		transport.WriteProblem(c, 403, "forbidden_origin", "directory is not readable")
 		return
 	}
 	out := browseDTO{Path: dir, Roots: roots(tree), Entries: make([]entryDTO, 0)}

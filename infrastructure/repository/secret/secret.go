@@ -6,7 +6,6 @@ package reposecret
 
 import (
 	"database/sql"
-	"fmt"
 	"os"
 	"path/filepath"
 
@@ -19,28 +18,16 @@ type Store struct {
 }
 
 // New opens (and migrates) the store at path — a file or ":memory:".
-// The db is clamped 0600 and its parent 0700: SQLite's rollback journal
-// is created by the driver with process-umask permissions — a crash
-// mid-commit would leave plaintext values beside the db, so the file's
-// own mode is not enough; the directory must refuse group/other too.
+// A missing parent is created private; an existing one belongs to the
+// caller and is never chmodded — it may be a shared mount, /tmp, or a CI
+// workspace whose access other processes rely on. Sidecar privacy does
+// not need the parent: SQLite creates the rollback journal with the
+// database file's own mode, and the db is clamped 0600 before any value
+// is written, so every journal that can carry secrets inherits 0600 too.
 func New(path string) (*Store, error) {
 	if path != ":memory:" {
-		dir := filepath.Dir(path)
-		if err := os.MkdirAll(dir, 0o700); err != nil {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			return nil, err
-		}
-		// A pre-existing looser dir is reclamped — MkdirAll alone is a
-		// no-op there, and 0755 would leave the journal sidecars (and
-		// the db's directory slot) exposed. A bare filename resolves to
-		// "." — the caller's own directory, which is not ours to tighten.
-		if dir != "." {
-			if fi, err := os.Stat(dir); err == nil {
-				if mode := fi.Mode().Perm(); mode&0o077 != 0 {
-					if err := os.Chmod(dir, mode&^0o077); err != nil {
-						return nil, fmt.Errorf("reclamp secret dir %s: %w", dir, err)
-					}
-				}
-			}
 		}
 	}
 	db, err := sql.Open("sqlite", path)
@@ -50,10 +37,21 @@ func New(path string) (*Store, error) {
 	db.SetMaxOpenConns(1) // single writer keeps the file coherent
 	// Busy timeout so a short-lived writer (gateway add --key-stdin)
 	// retries while the REPL's store holds the write lock, instead of
-	// failing instantly with SQLITE_BUSY.
+	// failing instantly with SQLITE_BUSY. The first statement also
+	// materializes the db file.
 	if _, err := db.Exec(`PRAGMA busy_timeout = 5000`); err != nil {
 		db.Close()
 		return nil, err
+	}
+	if path != ":memory:" {
+		// Values sit plaintext in the file — clamp the db itself, so a
+		// pre-existing 0644 file is fixed too. This runs before the
+		// migration below: the journal inherits the db's mode at
+		// creation, so even the schema transaction's sidecar is 0600.
+		if err := os.Chmod(path, 0o600); err != nil {
+			db.Close()
+			return nil, err
+		}
 	}
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS secrets (
 		key        TEXT PRIMARY KEY,
@@ -63,14 +61,6 @@ func New(path string) (*Store, error) {
 	)`); err != nil {
 		db.Close()
 		return nil, err
-	}
-	if path != ":memory:" {
-		// Values sit plaintext in the file — clamp the db itself, not
-		// just the dir, so a pre-existing 0644 file is fixed too.
-		if err := os.Chmod(path, 0o600); err != nil {
-			db.Close()
-			return nil, err
-		}
 	}
 	return &Store{db: db}, nil
 }

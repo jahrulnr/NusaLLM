@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 )
@@ -565,6 +566,128 @@ func TestSessionPTYCtrlC(t *testing.T) {
 	poll := sess.Collect(context.Background(), 5*time.Second, nil)
 	if poll.Running {
 		t.Fatal("pty session survived Ctrl-C")
+	}
+}
+
+// A signal death must surface as a signal — wait() maps the
+// *exec.ExitError to ExitCode(), which is -1 for SIGKILL/SIGINT, and
+// formatPoll then renders "Process exited with code -1": a nonsense
+// status the model reads as real.
+func TestSignalDeathNeverRendersNegativeExitCode(t *testing.T) {
+	store := NewSessionStore(nil)
+	defer store.TerminateAll()
+	sess := open(t, store, dservice.TerminalOpenRequest{Command: "kill -9 $$"})
+	select {
+	case <-store.rooms[testConv][sess.ID()].done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("session did not exit")
+	}
+	tool, err := NewWriteStdinTool(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := dservice.WithConversationID(context.Background(), testConv)
+	call := mustCall(t, "c9", `{"session_id":`+itoa(sess.ID())+`,"chars":"","yield_time_ms":5000}`, 1<<20)
+	res, err := tool.Execute(ctx, call, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(res.Text, "code -1") {
+		t.Fatalf("signal death rendered as a bogus exit code: %q", res.Text)
+	}
+}
+
+// Open spawns before taking the store lock: a TerminateConversation
+// landing in that window reaps nothing (the room is still empty) and the
+// spawned session then registers into a fresh room — alive and invisible
+// to the completed reap. The environment hook pins the in-flight window
+// open so the ordering is deterministic.
+func TestOpenDuringTerminateConversationLeavesNoSurvivor(t *testing.T) {
+	env := &gatingEnv{entered: make(chan struct{}), release: make(chan struct{})}
+	store := NewSessionStore(env)
+	defer store.TerminateAll()
+	opened := make(chan dservice.TerminalSession, 1)
+	go func() {
+		sess, err := store.Open(context.Background(), testConv, dservice.TerminalOpenRequest{Command: "sleep 60"})
+		if err != nil {
+			opened <- nil
+			return
+		}
+		opened <- sess
+	}()
+	<-env.entered
+	store.TerminateConversation(testConv)
+	close(env.release)
+	sess := <-opened
+	if sess == nil {
+		return // open rejected after the reap — a safe outcome
+	}
+	defer sess.Terminate()
+	if poll := sess.Collect(context.Background(), 5*time.Second, nil); poll.Running {
+		t.Fatal("session spawned during TerminateConversation survived the reap")
+	}
+	store.mu.Lock()
+	registered := len(store.rooms[testConv])
+	store.mu.Unlock()
+	if registered != 0 {
+		t.Fatalf("%d sessions registered after the room was reaped", registered)
+	}
+}
+
+// gatingEnv parks inside Environ — Open's pre-spawn window — until the
+// test releases it, so a concurrent TerminateConversation provably runs
+// while the open is in flight.
+type gatingEnv struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (e *gatingEnv) ToolPaths(string) []string { return nil }
+func (e *gatingEnv) Environ(string) []string {
+	close(e.entered)
+	<-e.release
+	return nil
+}
+
+// The bounded buffer drops bytes at a raw offset — a multibyte rune
+// straddling the boundary leaves the retained head starting inside it,
+// and drain hands the invalid UTF-8 to the model-facing output
+// unvalidated.
+func TestSessionBufferDropBoundaryKeepsValidUTF8(t *testing.T) {
+	sess := &terminalSession{notify: make(chan struct{}, 1)}
+	// 99 'x' + 4-byte rune + filler = cap+100 bytes → drop=100 lands
+	// inside the rune (positions 99-102).
+	payload := append([]byte(strings.Repeat("x", 99)), []byte("😀")...)
+	payload = append(payload, []byte(strings.Repeat("z", sessionBufferCap-3))...)
+	sess.append(payload)
+	out, _ := sess.drain()
+	if !utf8.ValidString(out) {
+		t.Fatal("drain returned output starting inside a dropped rune")
+	}
+}
+
+// A completed pipes session reports the tty remedy for a dead fd — the
+// Write error is ErrTerminalStdinClosed, so the tool answers "rerun
+// exec_session with tty=true" even though the session is gone. The model
+// must learn the process exited, not be sent to open a tty.
+func TestWriteStdinOnExitedSessionDoesNotBlameTty(t *testing.T) {
+	store := NewSessionStore(nil)
+	defer store.TerminateAll()
+	sess := open(t, store, dservice.TerminalOpenRequest{Command: "echo bye"})
+	select {
+	case <-store.rooms[testConv][sess.ID()].done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("session did not exit")
+	}
+	tool, err := NewWriteStdinTool(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := dservice.WithConversationID(context.Background(), testConv)
+	call := mustCall(t, "c2", `{"session_id":`+itoa(sess.ID())+`,"chars":"hi"}`, 1<<20)
+	_, err = tool.Execute(ctx, call, nil)
+	if err != nil && strings.Contains(err.Error(), "tty") {
+		t.Fatalf("dead session blamed on the backend: %v", err)
 	}
 }
 

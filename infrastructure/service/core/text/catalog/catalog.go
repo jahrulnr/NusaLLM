@@ -260,7 +260,14 @@ func (c *Catalog) ListProviders(ctx context.Context, gateway *aggregate.Gateway,
 	// The id is path data, not URL syntax — escape each segment so a
 	// delimiter inside one can't push /endpoints into the query, while
 	// the vendor/name slash keeps the separator it routes on.
+	// PathEscape leaves "." and ".." untouched, so those segments are
+	// rejected before the request: they would climb out of /models/.
 	segs := strings.Split(modelID, "/")
+	for _, s := range segs {
+		if s == "" || s == "." || s == ".." {
+			return nil, apperror.New(400, "invalid model id", fmt.Errorf("model id %q", modelID))
+		}
+	}
 	for i, s := range segs {
 		segs[i] = url.PathEscape(s)
 	}

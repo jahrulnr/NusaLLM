@@ -91,7 +91,12 @@ class UpdateDialog extends Widget {
     this.copyControl = null;
     this.statusEl = null;
     const info = this._info;
-    if (!info || !info.latest) return;
+    if (!info || !info.latest) {
+      // A refresh can retire the release this modal was showing —
+      // leaving it open presents a blank, inert sheet over the app.
+      if (this.dialog.open) this.dialog.close();
+      return;
+    }
 
     const installable = !!info.installable;
     const released = releasedOn(info.publishedAt);
@@ -172,16 +177,23 @@ class UpdateDialog extends Widget {
       this.statusEl,
       el('footer', { class: 'actions' }, [
         el('button', {
-          class: 'btn ghost', type: 'button', onclick: () => this._skip(),
+          class: 'btn ghost', type: 'button', 'data-id': 'update-skip', onclick: () => this._skip(),
         }, [el('span', { text: 'Skip this version' })]),
         el('span', { class: 'spacer' }),
         el('button', {
-          class: 'btn ghost', type: 'button', onclick: () => this.close(),
+          class: 'btn ghost', type: 'button', 'data-id': 'update-later', onclick: () => this.close(),
         }, [el('span', { text: 'Later' })]),
         this.primaryBtn,
       ]),
     );
-    if (focusKey) findByFocusKey(this.body, focusKey)?.focus?.();
+    if (focusKey) {
+      const hit = findByFocusKey(this.body, focusKey);
+      // A refresh can remove the focused control (the release link).
+      // Close stays inside the modal; leaving focus on the detached
+      // node drops the keyboard to BODY outside it.
+      if (hit) hit.focus?.();
+      else this.closeX?.focus?.();
+    }
   }
 }
 

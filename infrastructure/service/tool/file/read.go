@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"strings"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
@@ -83,6 +85,11 @@ func (tool *FileReadTool) Execute(ctx context.Context, call entity.ToolCall, _ s
 	data, err := io.ReadAll(io.LimitReader(f, int64(call.OutputBudget())+1))
 	if err != nil {
 		return service.ToolResult{}, err
+	}
+	// The schema promises UTF-8 text. Sniff the same window read_media
+	// uses and send non-text payloads there — a PNG is not a document.
+	if top, _, _ := strings.Cut(http.DetectContentType(data), "/"); top != "text" {
+		return service.ToolResult{}, fmt.Errorf("%q is not text — use read_media", input.Path)
 	}
 	return service.ToolResult{Text: string(data)}, nil
 }

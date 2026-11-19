@@ -269,6 +269,59 @@ func TestToolCallRoundtrip(t *testing.T) {
 	}
 }
 
+// A stored turn's template can carry more than one refill:"text"
+// placeholder — Gemini emits text/functionCall/text commentary turns.
+// The domain keeps only the concatenated content, so each placeholder
+// cannot independently refill the whole text: the wire must receive
+// the turn's text once, not once per placeholder.
+func TestReplayTemplateEmitsTextOnce(t *testing.T) {
+	asst, _ := entity.NewMessage(enum.RoleAssistant, "AB")
+	tc, _ := entity.NewToolCall("c1", "exec", `{"cmd":"a"}`, enum.TooltypeOrigin)
+	tc.SetOutput("out")
+	asst.AddToolCall(tc)
+	asst.SetOptionalContent(partsKey, `[{"refill":"text"},{"refill":"functionCall"},{"refill":"text"}]`)
+	contents := encodeMessage(asst, entity.Model{}, wire.MediaRoot{})
+	if len(contents) != 2 {
+		t.Fatalf("want model turn + functionResponse turn: %+v", contents)
+	}
+	texts := 0
+	for _, p := range contents[0].Parts {
+		if pb, ok := p.(PartBody); ok && pb.Text == "AB" {
+			texts++
+		}
+	}
+	if texts != 1 {
+		t.Fatalf("stored text emitted %d times — template placeholders must not duplicate it", texts)
+	}
+}
+
+// Parts the adapter does not model — executableCode, codeExecutionResult,
+// future kinds — are committed to the replay template verbatim. A text
+// part that follows one must not be merged INTO it: the merge gate
+// reserializes through the lossy PartBody shape, so the unmodeled
+// payload is erased from history and from every later replay.
+func TestStreamKeepsUnmodeledPartBeforeText(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"executableCode\":{\"language\":\"PYTHON\",\"code\":\"print(1)\"}}]}}]}\n\n"))
+		w.Write([]byte("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hi\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":4}}\n\n"))
+	})
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleUser, "go")
+	conv.Append(m)
+	model, _ := entity.NewModel("gemini-3-flash", "test")
+	if err := svc.Send(context.Background(), conv, gw, model, nil); err != nil {
+		t.Fatal(err)
+	}
+	raw := conv.Last().OptionalContent()[partsKey]
+	if !strings.Contains(raw, "executableCode") {
+		t.Fatalf("unmodeled part was destroyed by a following text part: %s", raw)
+	}
+	if !strings.Contains(raw, `"hi"`) {
+		t.Fatalf("text part lost: %s", raw)
+	}
+}
+
 func mustJSON(v any) string {
 	raw, _ := json.Marshal(v)
 	return string(raw)
@@ -930,5 +983,69 @@ func TestModelIDIsURLPathEncoded(t *testing.T) {
 	}
 	if !strings.Contains(gotPath, "gemini?x=1") {
 		t.Fatalf("model id not preserved as one path segment: path=%q", gotPath)
+	}
+}
+
+// Same wire-required default as messages: generationConfig.maxOutputTokens
+// does not fit a model whose declared total context is only 4k. A fixed
+// 16k ask is an impossible request; cap it by the declared window (or
+// reject the model) before sending.
+func TestDefaultMaxOutputRespectsSmallContext(t *testing.T) {
+	conv := newConv(t)
+	model, _ := entity.NewModel("small-context", "test")
+	model.SetContextWindow(4096)
+	body, err := encodeRequest(conv, model, wire.MediaRoot{})
+	if err != nil {
+		return // rejecting the model is also safe
+	}
+	if body.GenerationConfig != nil && body.GenerationConfig.MaxOutput > 4096 {
+		t.Fatalf("maxOutputTokens=%d exceeds declared contextWindow=4096", body.GenerationConfig.MaxOutput)
+	}
+}
+
+// The same input/output reservation applies here: maxOutputTokens capped
+// at the raw context still exceeds the window once the prompt is added.
+func TestDefaultMaxOutputLeavesRoomForPrompt(t *testing.T) {
+	conv := newConv(t)
+	user, _ := entity.NewMessage(enum.RoleUser, strings.Repeat("x", 4000))
+	conv.Append(user)
+	model, _ := entity.NewModel("small-context", "test")
+	model.SetContextWindow(4096)
+	body, err := encodeRequest(conv, model, wire.MediaRoot{})
+	if err != nil {
+		return // rejecting the model is also safe
+	}
+	input := conv.EstimatedTokens()
+	if input == 0 {
+		t.Fatal("test setup has no input estimate")
+	}
+	if body.GenerationConfig != nil && body.GenerationConfig.MaxOutput+input > 4096 {
+		t.Fatalf("maxOutputTokens=%d plus estimated input=%d exceeds contextWindow=4096",
+			body.GenerationConfig.MaxOutput, input)
+	}
+}
+
+// An explicit request cap is bounded against the raw context at write
+// time, but not against the prompt sharing that context. The explicit
+// maxOutputTokens path must still leave room for the input it ships.
+func TestExplicitMaxOutputLeavesRoomForPrompt(t *testing.T) {
+	conv := newConv(t)
+	user, _ := entity.NewMessage(enum.RoleUser, strings.Repeat("x", 4000))
+	conv.Append(user)
+	maxOut := 4096
+	model, _ := entity.NewModel("small-context", "test")
+	model.SetContextWindow(4096)
+	model.SetMaxOutputTokens(&maxOut)
+	body, err := encodeRequest(conv, model, wire.MediaRoot{})
+	if err != nil {
+		return // rejecting the model is also safe
+	}
+	input := conv.EstimatedTokens()
+	if input == 0 {
+		t.Fatal("test setup has no input estimate")
+	}
+	if body.GenerationConfig != nil && body.GenerationConfig.MaxOutput+input > 4096 {
+		t.Fatalf("maxOutputTokens=%d plus estimated input=%d exceeds contextWindow=4096",
+			body.GenerationConfig.MaxOutput, input)
 	}
 }

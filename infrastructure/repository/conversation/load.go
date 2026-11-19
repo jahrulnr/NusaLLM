@@ -2,6 +2,7 @@ package repoconversation
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
@@ -59,6 +60,12 @@ func (r *ConversationRepository) Load(ctx context.Context, convID string) (*aggr
 	msgs, err := r.loadMessages(convID, 0)
 	if err != nil {
 		return nil, err
+	}
+	// A tail file that still exists but holds no messages — truncated to
+	// whitespace, or only orphan patches — is the same loss as a missing
+	// file: metadata claims a live history the stream no longer has.
+	if meta.ActiveCount > 0 && len(msgs) == 0 {
+		return nil, fmt.Errorf("conversation %s: active.jsonl empty while metadata records %d tail messages; stop the app and restore from backup", convID, meta.ActiveCount)
 	}
 	for _, m := range msgs {
 		c.Append(m)

@@ -9,6 +9,7 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
+	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
 	"github.com/jahrulnr/nusallm/infrastructure/service/wire"
 )
 
@@ -55,7 +56,17 @@ func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool
 		})
 	}
 
-	body.MaxOutputTokens = model.MaxOutputTokens()
+	// An explicit cap shares the window with the prompt: write-path
+	// validation compared it to the raw window only, so clamp it with
+	// the shared rule before sending. Unset stays absent — this wire
+	// does not require the field.
+	if mt := model.MaxOutputTokens(); mt != nil {
+		capN, err := coretext.MaxTokensOr(model, *mt, conv.EstimatedTokens())
+		if err != nil {
+			return nil, err
+		}
+		body.MaxOutputTokens = &capN
+	}
 	body.Temperature = model.Temperature()
 	body.TopP = model.TopP()
 	// Params without a wire home are dropped, not zeroed — top_k, presence/

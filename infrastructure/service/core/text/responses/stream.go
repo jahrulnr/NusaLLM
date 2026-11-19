@@ -84,7 +84,14 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 				continue // partial/garbage lines are dropped, not fatal
 			}
 			logged = append(logged, ev.data)
-			switch se.Type {
+			// The event name is the dispatch token when the payload omits
+			// type — proxies emit `event: response.completed` with a data
+			// object that has no type field. A present type still wins.
+			kind := se.Type
+			if kind == "" {
+				kind = ev.event
+			}
+			switch kind {
 			case "response.output_text.delta":
 				text.WriteString(se.Delta)
 				emit(onEvent, event.NewDeltaEvent(se.Delta))
@@ -319,7 +326,7 @@ func readSSE(body io.Reader, done <-chan struct{}, out chan<- sse, errs chan<- e
 	defer close(errs) // nil receive = clean close
 	sc := wire.ScanSSE(body)
 	for sc.Scan() {
-		_, payload := wire.SSENamed(sc.Bytes())
+		name, payload := wire.SSENamed(sc.Bytes())
 		if bytes.Equal(payload, []byte("[DONE]")) {
 			continue
 		}
@@ -334,7 +341,7 @@ func readSSE(body io.Reader, done <-chan struct{}, out chan<- sse, errs chan<- e
 			continue
 		}
 		select {
-		case out <- sse{data: payload}:
+		case out <- sse{event: name, data: payload}:
 		case <-done:
 			return
 		}

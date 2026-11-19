@@ -345,6 +345,38 @@ func TestSteerRecallPendingAndDedup(t *testing.T) {
 	}
 }
 
+// The dedup branch answers any retry carrying a known requestId+content
+// with a positive ack — it never looks at the receipt state. Resubmit a
+// RECALLED submission and the sender is told the input was accepted
+// while nothing is pending: the withdrawn text can never fold, but the
+// client believes it will. A dead input's id must not re-ack.
+func TestSteerRecalledInputDoesNotReAck(t *testing.T) {
+	b := newBlockedTurn()
+	h := newHub(t, stubSender{fn: b.send})
+	ws := dial(t, h)
+
+	sendCommand(t, ws, `{"type":"turn.send","requestId":"s1","conversationId":"room","payload":{"content":"x"}}`)
+	f := readUntil(t, ws, "turn.opened")
+	convID, turnID := f.ConversationID, f.TurnID
+	<-b.started
+
+	sendCommand(t, ws, fmt.Sprintf(`{"type":"turn.steer","requestId":"st-1","conversationId":%q,"turnId":%q,"payload":{"content":"take this back"}}`, convID, turnID))
+	_ = readUntil(t, ws, "turn.steer_ack")
+	sendCommand(t, ws, fmt.Sprintf(`{"type":"turn.steer_recall","requestId":"rc","conversationId":%q,"turnId":%q,"payload":{"inputId":"st-1"}}`, convID, turnID))
+	if f = readFrame(t, ws); f.Type != "turn.steer_recalled" {
+		t.Fatalf("recall %+v", f)
+	}
+
+	// Same requestId, same content — the dedup branch must notice the
+	// receipt is recalled and refuse, not re-ack a dead input.
+	sendCommand(t, ws, fmt.Sprintf(`{"type":"turn.steer","requestId":"st-1","conversationId":%q,"turnId":%q,"payload":{"content":"take this back"}}`, convID, turnID))
+	if f = readFrame(t, ws); f.Type == "turn.steer_ack" {
+		t.Fatal("recalled input re-acked as accepted — the client believes a dead input is pending")
+	}
+	close(b.release)
+	_ = readUntil(t, ws, "turn.completed")
+}
+
 // A fold whose text matches an unconsumed submission still emits no
 // inputId — receipt-free folds (CLI origin) never adopt a pending web
 // receipt, and the chunk boundary lands on the last piece.

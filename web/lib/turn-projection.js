@@ -196,7 +196,9 @@ export function applyTurnFrame(p, frame, clock = { wall: Date.now(), mono: perfo
       settleTools(p);
       let seg = null;
       if (inputId) {
-        seg = p.segments.find((s) => s.type === 'steer' && s.inputId === inputId) || null;
+        // A final segment is sealed. A later chunk with the same id
+        // opens a new segment instead of rewriting the one that closed.
+        seg = p.segments.find((s) => s.type === 'steer' && s.inputId === inputId && !s.final) || null;
       } else {
         const last = p.segments[p.segments.length - 1];
         if (last && last.type === 'steer' && last.inputId === null && !last.final) seg = last;

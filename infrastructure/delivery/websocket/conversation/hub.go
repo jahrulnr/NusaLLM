@@ -458,10 +458,10 @@ func (h *Hub) runTurn(t *turn) {
 	case err == nil:
 		typ = "turn.completed"
 		p = terminalPayload{ResyncRequired: true}
-	case h.shutting:
+	case h.shutting && shutdownCasualty(err):
 		// Graceful shutdown canceled the turn — classify 503 so the tab
-		// knows the turn died with the server. The receipt's real
-		// persistence state rides along, never fabricated.
+		// knows the turn died with the server. A genuine failure that
+		// happens to land while the hub is stopping keeps its own code.
 		typ = "turn.failed"
 		p = terminalPayload{
 			Status:         http.StatusServiceUnavailable,
@@ -737,6 +737,17 @@ func (h *Hub) evictJournalsLocked(now time.Time) {
 		delete(h.turns, oldest.id)
 		terminal--
 	}
+}
+
+// shutdownCasualty reports whether err is the cancellation Shutdown
+// applied. A provider failure returned while the hub is stopping is not
+// one of those.
+func shutdownCasualty(err error) bool {
+	if err == nil {
+		return false
+	}
+	status, _, _ := classifyError(err)
+	return status == http.StatusRequestTimeout
 }
 
 // Shutdown stops admission, cancels every live turn context so senders

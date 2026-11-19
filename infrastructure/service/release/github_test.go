@@ -168,3 +168,19 @@ func TestFetchFailsBeforeWritingOnNonOK(t *testing.T) {
 		t.Fatalf("bytes written from an error page: %q", got.String())
 	}
 }
+
+// An oversized download must not leave more than the accepted limit in
+// the destination. The current LimitReader(limit+1) writes the refusal
+// byte before returning the size error; a staging writer can't always
+// discard it, and a generic caller sees corrupt bytes despite the failure.
+func TestFetchOversizedWritesAtMostLimit(t *testing.T) {
+	srv, _ := newFake(t, http.StatusOK, strings.Repeat("x", 1000))
+	g := NewGitHub(srv.Client(), srv.URL, "jahrulnr/NusaLLM", "nusallm")
+	var got bytes.Buffer
+	if _, err := g.Fetch(context.Background(), srv.URL, &got, 999); err == nil {
+		t.Fatal("oversized file accepted")
+	}
+	if got.Len() > 999 {
+		t.Fatalf("Fetch wrote %d bytes despite limit 999", got.Len())
+	}
+}

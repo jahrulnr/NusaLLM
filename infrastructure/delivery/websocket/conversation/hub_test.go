@@ -3,6 +3,7 @@ package wsconversation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -585,6 +586,50 @@ func TestShutdownTerminalPreservesReceipt(t *testing.T) {
 	}
 	if !p.ResyncRequired {
 		t.Fatal("shutdown terminal must mark resyncRequired")
+	}
+}
+
+// h.shutting rewrites ANY turn error to "503 server shutting down" — a
+// send that returns a genuine provider failure while shutdown is in
+// progress is misclassified as a shutdown casualty. The 503 belongs to
+// turns the shutdown actually killed; a real error keeps its own
+// classification.
+func TestShutdownDoesNotRewriteGenuineTurnError(t *testing.T) {
+	release := make(chan struct{})
+	h := newHub(t, stubSender{fn: func(ctx context.Context, convID string, _, _, _ string,
+		_ event.TurnEventHandler) (appconversation.SendResult, error) {
+		<-release // the provider call already failed; the send reports it
+		return appconversation.SendResult{ConversationID: convID, UserMessagePersisted: true},
+			apperror.New(http.StatusBadGateway, "upstream broke", errors.New("provider 502"))
+	}})
+	ws := dial(t, h)
+	sendCommand(t, ws, `{"type":"turn.send","requestId":"r","payload":{"content":"x"}}`)
+	if f := readFrame(t, ws); f.Type != "turn.opened" {
+		t.Fatalf("%+v", f)
+	}
+	go h.Shutdown()
+	for deadline := time.Now().Add(2 * time.Second); ; {
+		h.mu.Lock()
+		shutting := h.shutting
+		h.mu.Unlock()
+		if shutting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("shutdown flag never set")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	close(release)
+	var f frame
+	for f = readFrame(t, ws); f.Type != "turn.failed"; f = readFrame(t, ws) {
+	}
+	var p terminalPayload
+	if err := json.Unmarshal(f.Payload, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.Code == "unavailable" {
+		t.Fatalf("genuine provider error rewritten as shutdown casualty: %+v", p)
 	}
 }
 

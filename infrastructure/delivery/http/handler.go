@@ -83,7 +83,7 @@ func NewHandler(d Deps) *gin.Engine {
 		Jobs:      d.Jobs,
 		LiveTurns: d.LiveTurns,
 	})
-	gateway.Register(api, gateway.Deps{Reads: d.Gateways, Writes: d.GatewayWrites})
+	gateway.Register(api, gateway.Deps{Reads: d.Gateways, Writes: d.GatewayWrites, Jobs: d.Jobs})
 	setting.Register(api, setting.Deps{Reads: d.Settings, Writes: d.SettingsWriter})
 	tool.Register(api, tool.Deps{Tools: d.Tools})
 	update.Register(api, update.Deps{Checks: d.Updates})

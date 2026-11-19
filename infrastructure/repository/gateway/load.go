@@ -2,6 +2,7 @@ package repogateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -65,8 +66,18 @@ func (r *GatewayRepository) resolveKey(ctx context.Context, id, stored string) (
 }
 
 // keyResolves probes the stored value through resolveKey — Inspect's
-// resolution flag, same decision Load enforces, read without failing.
-func (r *GatewayRepository) keyResolves(ctx context.Context, id, stored string) bool {
+// resolution flag, the same decision Load enforces. A record-level
+// failure (a dangling ref: unset env, missing secret) reports
+// unresolved; an operational store failure carries errUnreadable and
+// propagates, so a vault outage never looks like every gateway is
+// broken data.
+func (r *GatewayRepository) keyResolves(ctx context.Context, id, stored string) (bool, error) {
 	_, err := r.resolveKey(ctx, id, stored)
-	return err == nil
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, errUnreadable) {
+		return false, err
+	}
+	return false, nil
 }

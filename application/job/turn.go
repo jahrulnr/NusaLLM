@@ -427,7 +427,10 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 				}
 				for _, tc := range last.ToolCalls() {
 					if tc.ID() == call.ID() {
-						return d.Convs.UpdateToolCallOutput(ctx, convID, tc)
+						// The result is already computed. A ctx that died between
+						// the in-memory record and this patch must not drop
+						// it: persistInterrupted skips calls that HasOutput.
+						return d.Convs.UpdateToolCallOutput(context.WithoutCancel(ctx), convID, tc)
 					}
 				}
 				return apperror.New(500, "tool output lost", fmt.Errorf("call %s vanished after update", call.ID()))

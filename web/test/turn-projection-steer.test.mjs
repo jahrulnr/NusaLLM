@@ -62,6 +62,20 @@ test('receipt-free folds (CLI origin) group chunks until the final marker', () =
   assert.equal(s[0].inputId, null);
 });
 
+// The inputId lookup finds the steer segment without checking `final`
+// — the receipt-free path does check — so a late chunk landing after
+// the final marker mutates a sealed segment instead of opening a new
+// one.
+test('a chunk after the final marker opens a new segment, not a mutation', () => {
+  const p = createTurnProjection('req-1');
+  applyTurnFrame(p, F('turn.steer', { text: 'sealed', inputId: 'i1', final: true }, 1), clock());
+  applyTurnFrame(p, F('turn.steer', { text: 'late', inputId: 'i1', final: false }, 2), clock());
+  const s = steers(p);
+  assert.equal(s.length, 2, 'a late chunk must not mutate the final segment');
+  assert.equal(s[0].text, 'sealed');
+  assert.equal(s[1].text, 'late');
+});
+
 test('replayed seq numbers dedupe before any mutation', () => {
   const p = createTurnProjection('req-1');
   applyTurnFrame(p, F('turn.delta', { text: 'a', }, 5), clock());

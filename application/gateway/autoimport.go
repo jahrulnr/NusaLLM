@@ -36,8 +36,16 @@ func (app *GatewayApp) StartAutoImport(ctx context.Context, interval time.Durati
 	if app.catalog == nil || interval <= 0 {
 		return
 	}
+	// A nil report means the caller wants the refresh without
+	// diagnostics. The first pass runs before the select, so a
+	// cancelled ctx does not skip it — the guard has to be on the call.
+	emit := func(r AutoImportResult) {
+		if report != nil {
+			report(r)
+		}
+	}
 	for _, r := range app.RefreshModels(ctx) {
-		report(r)
+		emit(r)
 	}
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
@@ -47,7 +55,7 @@ func (app *GatewayApp) StartAutoImport(ctx context.Context, interval time.Durati
 			return
 		case <-tick.C:
 			for _, r := range app.RefreshModels(ctx) {
-				report(r)
+				emit(r)
 			}
 		}
 	}
@@ -110,6 +118,13 @@ func (app *GatewayApp) ImportModels(ctx context.Context, id string) (UpsertOutco
 // record goes through Save, which writes apiKey verbatim — safe only
 // because Inspect's snapshot carries the raw ref, never resolved material.
 func (app *GatewayApp) importModels(ctx context.Context, id string) ([]string, error) {
+	// The ref is the stored credential identity. Load resolves it, so a
+	// later compare of Gateway.ApiKey alone cannot see that the record
+	// still names the same "secret:" slot.
+	before, err := app.gateways.Inspect(ctx, id)
+	if err != nil {
+		return nil, err
+	}
 	loaded, err := app.gateways.Load(ctx, id)
 	if err != nil {
 		return nil, err
@@ -129,10 +144,18 @@ func (app *GatewayApp) importModels(ctx context.Context, id string) ([]string, e
 	if snap.Gateway == nil {
 		return nil, nil // became unreadable between list and merge — skip
 	}
+	// Resolved material catches a rotation that keeps the same secret
+	// ref: the vault value changed, the stored "secret:" string did not.
+	now, err := app.gateways.Load(ctx, id)
+	if err != nil {
+		return nil, err
+	}
 	// The catalog was fetched against the record as it was — an Upsert
-	// that replaced the endpoint or style since is a different provider
-	// surface, and its models would land on a gateway they cannot serve.
-	if snap.Gateway.Endpoint() != loaded.Endpoint() || snap.Gateway.Style() != loaded.Style() {
+	// that replaced the endpoint, the style, or the credential since is
+	// a different provider surface, and its models would land on a
+	// gateway they cannot serve.
+	if snap.Gateway.Endpoint() != loaded.Endpoint() || snap.Gateway.Style() != loaded.Style() ||
+		snap.ApiKeyRef != before.ApiKeyRef || now.ApiKey() != loaded.ApiKey() {
 		return nil, nil
 	}
 	models := snap.Gateway.Models()

@@ -49,8 +49,8 @@ func NewMessage(role enum.Role, content string) (Message, error) {
 }
 
 func (m Message) validate() error {
-	if m.role == "" {
-		return errors.New("role is required")
+	if _, ok := enum.ParseRole(m.role.String()); !ok {
+		return fmt.Errorf("role %q is invalid", m.role)
 	}
 	return nil
 }

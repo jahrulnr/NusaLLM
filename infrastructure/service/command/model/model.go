@@ -10,6 +10,7 @@ import (
 	appcommand "github.com/jahrulnr/nusallm/application/command"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
 // ModelCommand is the /model command.
@@ -67,14 +68,18 @@ func (c *ModelCommand) Execute(ctx context.Context, _ string, emitter dservice.C
 	route, selected := c.h.Route(), c.h.ModelID()
 	if c.h.ConversationID() != "" && (route == "" || selected == "") {
 		info, err := c.h.ConversationInfo(ctx, c.h.ConversationID())
-		if err != nil {
+		// Listing uses the session route when the room is already gone.
+		// Only a real lookup failure blocks the catalog.
+		if err != nil && apperror.As(err).StatusCode() != apperror.StatusNotFound {
 			return err
 		}
-		if route == "" {
-			route = info.Route
-		}
-		if selected == "" {
-			selected = info.ModelID
+		if err == nil {
+			if route == "" {
+				route = info.Route
+			}
+			if selected == "" {
+				selected = info.ModelID
+			}
 		}
 	}
 	if route == "" {

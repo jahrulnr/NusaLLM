@@ -455,6 +455,29 @@ func TestErrorMapping(t *testing.T) {
 	}
 }
 
+// The SSE event name is captured but never used — dispatch reads only
+// the payload's own type field. A proxy that emits `event:
+// response.completed` with a typeless data block gets "upstream stream
+// truncated" for a perfectly committed answer: the terminal marker is
+// the event name, not an optional field inside data.
+func TestStreamTypelessCompletedCommits(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"hi\"}\n\n"))
+		w.Write([]byte("event: response.completed\ndata: {\"response\":{\"id\":\"r\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hi\"}]}],\"usage\":{\"input_tokens\":5,\"output_tokens\":2}}}\n\n"))
+	})
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(m)
+	model, _ := entity.NewModel("gpt-x", "test")
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
+		t.Fatalf("typeless response.completed treated as truncated: %v", err)
+	}
+	if got := conv.Last().Content(); got != "hi" {
+		t.Fatalf("committed content = %q", got)
+	}
+}
+
 func TestStreamTruncated(t *testing.T) {
 	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

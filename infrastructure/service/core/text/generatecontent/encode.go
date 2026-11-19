@@ -9,6 +9,7 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
+	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
 	"github.com/jahrulnr/nusallm/infrastructure/service/wire"
 )
 
@@ -52,10 +53,11 @@ func encodeRequest(conv *aggregate.Conversation, model entity.Model, fileRoot wi
 		body.Tools = []ToolBody{{FunctionDeclarations: decls}}
 	}
 
-	gen := &GenerationConfigBody{MaxOutput: defaultMaxTokens}
-	if mt := model.MaxOutputTokens(); mt != nil {
-		gen.MaxOutput = *mt
+	maxTokens, err := coretext.MaxTokensOr(model, defaultMaxTokens, conv.EstimatedTokens())
+	if err != nil {
+		return nil, err
 	}
+	gen := &GenerationConfigBody{MaxOutput: maxTokens}
 	gen.Temperature = model.Temperature()
 	gen.TopP = model.TopP()
 	gen.TopK = model.TopK()
@@ -180,6 +182,11 @@ func modelParts(m entity.Message, text, injectedText string, origin []entity.Too
 	}
 	textDone, used := false, 0
 	emitText := func() {
+		// The domain stores one concatenated string. A second text
+		// placeholder must not refill that whole string again.
+		if textDone {
+			return
+		}
 		parts = append(parts, PartBody{Text: text})
 		textDone = true
 	}

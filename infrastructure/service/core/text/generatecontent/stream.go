@@ -170,11 +170,12 @@ func appendPart(parts []json.RawMessage, raw json.RawMessage, onEvent event.Turn
 			emit(onEvent, event.NewDeltaEvent(p.Text))
 		}
 		// Merge into a trailing text-kind part of the same thought-ness.
-		if len(parts) > 0 {
+		// Unmodeled parts (executableCode, codeExecutionResult, …) decode
+		// as an all-zero PartBody; remarshaling them would erase the
+		// payload the template has to replay verbatim.
+		if len(parts) > 0 && mergeableText(parts[len(parts)-1], p.Thought) {
 			var tail PartBody
-			if json.Unmarshal(parts[len(parts)-1], &tail) == nil &&
-				tail.FunctionCall == nil && tail.InlineData == nil && tail.FileData == nil &&
-				tail.Thought == p.Thought {
+			if json.Unmarshal(parts[len(parts)-1], &tail) == nil {
 				tail.Text += p.Text
 				if p.ThoughtSignature != "" {
 					tail.ThoughtSignature = p.ThoughtSignature // signature binds the merged whole
@@ -187,6 +188,35 @@ func appendPart(parts []json.RawMessage, raw json.RawMessage, onEvent event.Turn
 		}
 	}
 	return append(parts, raw)
+}
+
+// mergeableText reports whether raw is a modeled text/thought part of the
+// given thought-ness. Any other key — function payloads, media, or a part
+// this adapter does not model — is a distinct entry and must stay raw.
+func mergeableText(raw json.RawMessage, thought bool) bool {
+	var keys map[string]json.RawMessage
+	if json.Unmarshal(raw, &keys) != nil {
+		return false
+	}
+	for k := range keys {
+		switch k {
+		case "text", "thought", "thoughtSignature":
+		default:
+			return false
+		}
+	}
+	var probe struct {
+		Text             *string `json:"text"`
+		Thought          bool    `json:"thought"`
+		ThoughtSignature string  `json:"thoughtSignature"`
+	}
+	if json.Unmarshal(raw, &probe) != nil {
+		return false
+	}
+	if probe.Text == nil && probe.ThoughtSignature == "" && !probe.Thought {
+		return false
+	}
+	return probe.Thought == thought
 }
 
 // commitStream turns the accumulated parts into the assistant message at

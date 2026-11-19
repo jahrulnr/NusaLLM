@@ -242,7 +242,7 @@ func (r *ConversationRepository) RepairRewrite(ctx context.Context, convID strin
 	if _, err := messagesFromLines(lines); err != nil {
 		return fmt.Errorf("repair %s: rewrite payload does not decode: %w", convID, err)
 	}
-	if err := writeFileAtomic(filepath.Join(dir, activeFile), payload, 0o644); err != nil {
+	if err := writeFileAtomic(filepath.Join(dir, activeFile), payload, 0o600); err != nil {
 		return fmt.Errorf("repair %s: publish payload: %w", convID, err)
 	}
 	// The merged stream is published — every leftover, numbered or

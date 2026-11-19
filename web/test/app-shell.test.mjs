@@ -820,3 +820,173 @@ test('an older settings response cannot overwrite a newer edit', async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+// The save response proves the record is committed; the following list
+// refresh is a projection, not part of the write. If that refresh fails,
+// reporting "Gateway save failed" keeps the editor open and invites a
+// duplicate save for a record that already landed.
+test('a gateway save is not failed when only the list refresh fails', async () => {
+  const { app } = makeApp();
+  await flush();
+  app.api.saveGateway = async () => ({ id: 'gw1', models: [], added: [] });
+  app.api.listGateways = async () => { throw new Error('list unavailable'); };
+  await app._saveGateway('gw1', {});
+  const toasts = app.toasts.pushed || [];
+  const last = toasts.at(-1);
+  assert.ok(last, 'a toast was emitted');
+  assert.equal(last.tone, 'info',
+    `a saved gateway was reported as a failed write: ${JSON.stringify(last)}`);
+  assert.match(last.message, /saved/i);
+});
+
+// The DELETE response proves the server committed the gateway removal;
+// the follow-up list read is a projection. A failed refresh must not be
+// reported as "delete failed", which leaves the row visible and invites
+// a retry against an id that is already gone.
+test('a gateway delete is not failed when only the list refresh fails', async () => {
+  const { app } = makeApp();
+  await flush();
+  app.api.deleteGateway = async () => null;
+  app.api.listGateways = async () => { throw new Error('list unavailable'); };
+  await app._deleteGateway('gw1');
+  const toasts = app.toasts.pushed || [];
+  const last = toasts.at(-1);
+  assert.ok(last, 'a toast was emitted');
+  assert.equal(last.tone, 'info',
+    `a committed delete was reported as a failed write: ${JSON.stringify(last)}`);
+  assert.match(last.message, /deleted/i);
+});
+
+// Same contract for import: the merge response is the write; the list
+// refresh only repaints it. Reporting the refresh failure as an import
+// failure makes the user retry a merge that already happened.
+test('a gateway import is not failed when only the list refresh fails', async () => {
+  const { app } = makeApp();
+  await flush();
+  app.api.importGatewayModels = async () => ({ id: 'gw1', models: [], added: [] });
+  app.api.listGateways = async () => { throw new Error('list unavailable'); };
+  await app._importGatewayModels('gw1');
+  const result = app.settingsPage.gatewayImportResult;
+  assert.ok(result, 'import result was delivered');
+  assert.equal(result.error, undefined,
+    `a completed import was reported as failed: ${JSON.stringify(result)}`);
+});
+
+// A slow delete for room A can outlive navigation to room B. Clearing the
+// header's shared pending flag when A settles must not re-enable B's
+// destructive action while B's own delete is still on the wire.
+test('an older delete completion cannot clear a newer room’s pending flag', async () => {
+  const { app } = makeApp();
+  await flush();
+  app.activeId = 'c1';
+  let release;
+  app.api.deleteConversation = () => new Promise((resolve) => { release = resolve; });
+  const pending = app._delete();
+  assert.equal(app.header.deletePending, true, 'room A delete pending');
+  app.activeId = 'c2';
+  app.header.deletePending = true; // room B started its own delete
+  release();
+  await pending;
+  assert.equal(app.header.deletePending, true,
+    'room A completing must not clear room B’s in-flight delete guard');
+});
+
+// A fresh view's draft belongs to its own token. New Thread mints the
+// next token before stashing the current view, so the old draft was
+// parked under the new token and immediately restored into the new
+// thread. The old fresh view keeps its text; the new view starts empty.
+test('a fresh-view draft does not move into the next new thread', async () => {
+  const { app } = makeApp();
+  await flush();
+  app.activeId = null;
+  app.freshToken = 'fresh:1';
+  app.composer.value = 'draft for the old fresh view';
+  app.newConversation();
+  assert.equal(app.drafts.get('fresh:1'), 'draft for the old fresh view');
+  assert.equal(app.composer.value, '', 'the new thread must start empty');
+});
+
+// A 404 refresh means the room is gone, not merely unreadable. The shell
+// lands on a fresh view, but text and queue entries bound to the deleted
+// id would otherwise stay in memory and keep offering actions for a room
+// that no longer exists. Deleting the room drops them; a 404 must do the
+// same.
+test('a deleted room drops its pending queue and draft', async () => {
+  const { app } = makeApp();
+  const { enqueue } = await import('../lib/pending-queue.js');
+  app.activeId = 'c1';
+  app.conversation = { id: 'c1' };
+  app.header.conversation = app.conversation;
+  app.drafts.set('c1', 'old draft');
+  const queued = enqueue(app.queue, { text: 'queued for c1', room: 'c1', opts: {} });
+  queued.held = true;
+  app.queue.paused = true;
+  app.api.getConversation = async () => { const e = new Error('conversation not found'); e.status = 404; throw e; };
+  app.api.getMessages = async () => { const e = new Error('conversation not found'); e.status = 404; throw e; };
+  await app._refresh('c1');
+  assert.equal(app.activeId, null);
+  assert.equal(app.queue.items.some((e) => e.room === 'c1'), false);
+  assert.equal(app.drafts.has('c1'), false);
+});
+
+// Selecting a room that another tab just deleted lands on a fresh view.
+// That path is separate from _refresh's 404 handling; it must release
+// the selected id's draft and queue too, or the dead room's lines stay
+// actionable in the pending panel.
+test('a failed selection drops the missing room state', async () => {
+  const { app } = makeApp();
+  const { enqueue } = await import('../lib/pending-queue.js');
+  app.activeId = 'c0';
+  app.drafts.set('missing', 'unsent');
+  const queued = enqueue(app.queue, { text: 'queued for missing', room: 'missing', opts: {} });
+  queued.held = true;
+  app.queue.paused = true;
+  app.api.getConversation = async () => { const e = new Error('conversation not found'); e.status = 404; throw e; };
+  app.api.getMessages = async () => { const e = new Error('conversation not found'); e.status = 404; throw e; };
+  await app.select('missing');
+  assert.equal(app.activeId, null);
+  assert.equal(app.drafts.has('missing'), false);
+  assert.equal(app.queue.items.some((e) => e.room === 'missing'), false);
+});
+
+// Context stats are fetched per model selection. The generation token
+// covers room changes, not two quick model picks in one room: an older
+// request landing last would show the previous model's capacity under
+// the new selection.
+test('stale context stats cannot overwrite a newer model selection', async () => {
+  const { app } = makeApp();
+  await flush();
+  const pending = [];
+  app.api.contextStats = () => new Promise((resolve) => pending.push(resolve));
+  app._setSelection({ route: 'gw1', modelId: 'model-a' });
+  app._setSelection({ route: 'gw1', modelId: 'model-b' });
+  assert.equal(pending.length, 2);
+  pending[1]({ estimate: 20, total: 200 });
+  await flush();
+  assert.deepEqual(app.composer.context, { estimate: 20, total: 200 });
+  pending[0]({ estimate: 10, total: 100 });
+  await flush();
+  assert.deepEqual(app.composer.context, { estimate: 20, total: 200 });
+});
+
+// A queued entry that was dispatched and whose outcome is lost must
+// rejoin the queue with its original identity/ordinal. Enqueuing a new
+// entry moves the unknown line behind later submissions and loses the
+// receipt id the user already saw.
+test('an unknown queued turn requeues its original entry', async () => {
+  const { app } = makeApp();
+  const { enqueue } = await import('../lib/pending-queue.js');
+  app.activeId = 'c1';
+  app.gateways = [{ id: 'gw1', models: [{ id: 'm1' }] }];
+  app.selection = { route: 'gw1', modelId: 'm1' };
+  app.socket.state = 'open';
+  const original = enqueue(app.queue, { text: 'queued send', room: 'c1', opts: {} });
+  app._drainQueue('c1');
+  const cmd = app._viewCommand();
+  assert.ok(cmd && cmd.fromQueue === original, 'queued entry dispatched');
+  app._onFrame({ type: 'turn.opened', requestId: cmd.requestId, turnId: 't1', conversationId: 'c1', seq: 1 });
+  app._onFrame({ type: 'turn.resync_required', conversationId: 'c1', turnId: 't1', payload: { turn: 'unknown' } });
+  assert.equal(app.queue.items.length, 1);
+  assert.equal(app.queue.items[0].id, original.id, 'the original entry identity must survive');
+  assert.equal(app.queue.items[0].state, 'unknown');
+});

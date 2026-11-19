@@ -156,6 +156,36 @@ export function parseInline(source) {
       continue;
     }
 
+    // A run of exactly three * or _ is em(strong) per CommonMark
+    // (`***x***`). Matching the inner `**` first absorbs the third
+    // marker into the text and leaks the leftover closer.
+    if ((c === '*' || c === '_') && src[i + 1] === c && src[i + 2] === c && src[i + 3] !== c) {
+      const openerOK = c !== '_' || i === 0 || !WORDCHAR.test(src[i - 1]);
+      if (openerOK) {
+        let j = i + 3;
+        let matched = null;
+        while (j < src.length) {
+          if (src[j] !== c) { j++; continue; }
+          let n = 0;
+          while (src[j + n] === c) n++;
+          const next = src[j + 3];
+          const closerOK = n >= 3 && j > i + 3 && !/\s/.test(src[j - 1]) &&
+            (c !== '_' || next === undefined || !WORDCHAR.test(next));
+          if (closerOK) {
+            matched = { inner: src.slice(i + 3, j), end: j + 3 };
+            break;
+          }
+          j += n;
+        }
+        if (matched && matched.inner.length > 0) {
+          flush();
+          out.push({ type: 'em', children: [{ type: 'strong', children: parseInline(matched.inner) }] });
+          i = matched.end;
+          continue;
+        }
+      }
+    }
+
     // Strong / strike before emphasis so `**`/`~~` aren't eaten by `*`.
     const strongHit = src.startsWith('**', i) ? '**'
       : src.startsWith('__', i) ? '__'

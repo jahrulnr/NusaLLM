@@ -1,4 +1,4 @@
-import { Widget, el, emit, clear, deepActiveElement, focusKeyOf, findByFocusKey } from '../../lib/dom.js';
+import { Widget, el, emit, clear, deepActiveElement, focusKeyOf, findByFocusKey, nodeWithin } from '../../lib/dom.js';
 import { icon } from '../../lib/icons.js';
 
 // Thread chrome: title with inline rename, the model and workspace
@@ -21,6 +21,7 @@ class ConversationHeader extends Widget {
     this._renaming = false;
     this._renameDraft = null;
     this._confirmingDelete = false;
+    this._deletePending = false;
     // The control a render could not refocus yet — it matched but sat
     // disabled (a compact in flight). Held across renders until the
     // control re-enables or vanishes.
@@ -62,9 +63,22 @@ class ConversationHeader extends Widget {
       this._renameDraft = null;
       this._confirmingDelete = false;
       this._pendingFocus = null;
+      this._deletePending = false;
     }
     this._render();
   }
+  // The shell clears this when the delete it started settles. A failed
+  // delete keeps the same room, so the flag — not a room change — is
+  // what re-enables the trigger. Setting the same value must not
+  // rebuild the header. Overlapping deletes share this one flag; the
+  // shell, not a room change, decides which completion may clear it.
+  set deletePending(v) {
+    const next = !!v;
+    if (next === this._deletePending) return;
+    this._deletePending = next;
+    this._render();
+  }
+  get deletePending() { return this._deletePending; }
   // gateways/selection land mid-pick — forwarding to the live picker
   // keeps its open menu alive; a full re-render would destroy it.
   set gateways(list) {
@@ -96,7 +110,7 @@ class ConversationHeader extends Widget {
     // fresh control matching the old one's identity inherits it. A new
     // in-root focus supersedes any queued restore — the user moved on.
     const prev = deepActiveElement();
-    let focusKey = prev && this.root.contains?.(prev) ? focusKeyOf(prev) : null;
+    let focusKey = prev && nodeWithin(this.root, prev) ? focusKeyOf(prev) : null;
     if (focusKey) this._pendingFocus = null;
     else if (this._pendingFocus) focusKey = this._pendingFocus;
     clear(this.root);
@@ -191,7 +205,7 @@ class ConversationHeader extends Widget {
         el('span', { class: 'confirm-text', text: 'Delete this thread?' }),
         el('button', {
           class: 'confirm-yes', type: 'button',
-          onclick: () => emit(this, 'conversation-delete'),
+          onclick: () => this._requestDelete(false),
         }, [el('span', { text: 'Delete' })]),
         this._confirmNo = el('button', {
           class: 'confirm-no', type: 'button',
@@ -215,7 +229,9 @@ class ConversationHeader extends Widget {
         }, [el('span', { text: this._compactLabel('Compact') })]),
         el('button', {
           class: 'icon-btn danger', type: 'button', 'aria-label': 'Delete conversation',
+          disabled: this._deletePending || null,
           onclick: () => {
+            if (this._deletePending) return;
             this._confirmingDelete = true;
             this._render();
             // The destructive choice is never the default: Keep owns
@@ -244,8 +260,15 @@ class ConversationHeader extends Widget {
       if (hit && !hit.disabled) {
         hit.focus?.();
         this._pendingFocus = null;
+      } else if (hit) {
+        this._pendingFocus = focusKey;
       } else {
-        this._pendingFocus = hit ? focusKey : null;
+        // The focused control died with the room — Delete, Compact,
+        // and the confirm row all leave with it. The keyboard must
+        // not stay on the detached node: Settings renders in every
+        // state, so it is the surviving successor.
+        this._pendingFocus = null;
+        this._settingsBtn?.focus?.();
       }
     }
   }
@@ -284,6 +307,11 @@ class ConversationHeader extends Widget {
   }
 
   _renderSheet() {
+    // The sheet lives outside .header, so the header's focus restore
+    // never sees an action focused here. A same-room refresh rebuilds
+    // the sheet and would otherwise leave focus on the detached button.
+    const prev = deepActiveElement();
+    const focusKey = nodeWithin(this.sheet, prev) ? focusKeyOf(prev) : null;
     const conv = this._conversation;
     const head = el('div', { class: 'sheet-head' }, [
       el('span', { class: 'sheet-title', text: conv ? (conv.title || 'Untitled') : 'NusaLLM' }),
@@ -312,7 +340,7 @@ class ConversationHeader extends Widget {
           }, [el('span', { text: 'Keep' })]),
           el('button', {
             class: 'sheet-yes', type: 'button',
-            onclick: () => { this._closeSheet(); emit(this, 'conversation-delete'); },
+            onclick: () => this._requestDelete(true),
           }, [el('span', { text: 'Delete' })]),
         ]),
       ])
@@ -323,38 +351,65 @@ class ConversationHeader extends Widget {
       head,
       body,
     ]));
+    if (!focusKey) return;
+    const hit = findByFocusKey(this.sheet, focusKey);
+    if (hit && !hit.disabled) hit.focus?.();
+    else {
+      // The focused action died with the room (or rebuilt disabled) —
+      // leaving the keyboard on the detached node strands focus
+      // behind the modal. The first surviving action carries it;
+      // Settings renders in every state, and the confirm row's Keep
+      // answers before it.
+      this.sheet.querySelector('.sheet-action, .sheet-no')?.focus?.();
+    }
+  }
+
+  // One confirmation, one delete. The confirm row dies immediately so a
+  // second click cannot emit again, and the trigger stays disabled until
+  // the shell reports the request settled. Settings is the control that
+  // remains once the confirm button is gone.
+  _requestDelete(fromSheet) {
+    if (this._deletePending || !this._conversation) return;
+    this._deletePending = true;
+    this._confirmingDelete = false;
+    if (fromSheet) this._closeSheet();
+    else this._render();
+    this._settingsBtn?.focus?.();
+    emit(this, 'conversation-delete');
   }
 
   _sheetActions() {
     const conv = this._conversation;
-    const action = (label, iconName, onclick, { danger = false, disabled = false } = {}) => el('button', {
-      class: `sheet-action${danger ? ' danger' : ''}`, type: 'button', disabled: disabled || null, onclick,
+    const action = (id, label, iconName, onclick, { danger = false, disabled = false } = {}) => el('button', {
+      class: `sheet-action${danger ? ' danger' : ''}`, type: 'button', 'data-id': id,
+      disabled: disabled || null, onclick,
     }, [icon(iconName, 18), el('span', { text: label })]);
     const items = [];
     if (conv) {
-      items.push(action('Rename thread', 'pencil', () => {
+      items.push(action('rename', 'Rename thread', 'pencil', () => {
         // Rename runs after the sheet closes, so the input gets focus.
         this._closeSheet();
         this._renaming = true;
         this._renameDraft = null;
         this._render();
       }));
-      items.push(action(this._compactLabel('Compact thread'), 'compact', () => {
+      items.push(action('compact', this._compactLabel('Compact thread'), 'compact', () => {
         this._closeSheet();
         emit(this, 'conversation-compact');
       }, { disabled: !!(this._compactState || !this._compactAvailable) }));
     }
-    items.push(action('Settings', 'gear', () => {
+    items.push(action('settings', 'Settings', 'gear', () => {
       this._closeSheet();
       emit(this, 'settings-open');
     }));
     if (conv) {
-      items.push(action('Delete thread', 'trash', () => {
+      items.push(action('delete', 'Delete thread', 'trash', () => {
+        if (this._deletePending) return;
         this._confirmingDelete = true;
         this._renderSheet();
         // The confirm opens on Keep, the safe choice.
         this.sheet.querySelector('.sheet-no').focus();
-      }, { danger: true }));
+      }, { danger: true, disabled: this._deletePending }));
     }
     return items;
   }

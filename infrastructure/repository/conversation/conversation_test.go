@@ -610,6 +610,67 @@ func TestPatchSurvivesLaterCompact(t *testing.T) {
 	}
 }
 
+// Patch binding is positional — a patch targets the most recent
+// preceding message carrying its call id. Compact relocates every
+// patch line behind the retained tail, so when two messages carry the
+// same call id (adapters mint exec#0 per message), the sealed message's
+// patch slides onto the surviving one: its pending call picks up
+// output it never produced while the sealed call stays pending.
+func TestCompactKeepsPatchBoundToItsOwnCall(t *testing.T) {
+	repo := newRepo(t)
+	if err := repo.Save(t.Context(), newConv(t, "c1")); err != nil {
+		t.Fatal(err)
+	}
+	m1, _ := entity.NewMessage(enum.RoleAssistant, "")
+	tc1, _ := entity.NewToolCall("exec#0", "exec", `{"cmd":"a"}`, enum.TooltypeOrigin)
+	m1.AddToolCall(tc1)
+	if _, err := repo.AppendMessage(t.Context(), "c1", m1); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpdateToolCallOutput(t.Context(), "c1", patchCall(t, "exec#0", "OUT-1")); err != nil {
+		t.Fatal(err)
+	}
+	m2, _ := entity.NewMessage(enum.RoleAssistant, "")
+	tc2, _ := entity.NewToolCall("exec#0", "exec", `{"cmd":"b"}`, enum.TooltypeOrigin)
+	m2.AddToolCall(tc2) // second turn, same derived call id — still pending
+	if _, err := repo.AppendMessage(t.Context(), "c1", m2); err != nil {
+		t.Fatal(err)
+	}
+	sum, _ := entity.NewMessage(enum.RoleUser, "S")
+	if err := compactAt(t, repo, "c1", sum, 1); err != nil { // seg0=[m1], active=[S,m2,+m1's patch]
+		t.Fatal(err)
+	}
+	all, err := repo.LoadAt(t.Context(), "c1", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := all[0].ToolCalls()[0].Output(); got != "OUT-1" {
+		t.Fatalf("sealed call lost its output: %q", got)
+	}
+	if all[2].ToolCalls()[0].HasOutput() {
+		t.Fatalf("patch rebound to a later call with the same id: %q", all[2].ToolCalls()[0].Output())
+	}
+}
+
+// The vanished-tail guard exists because an ActiveCount>0 room whose
+// messages are gone must not hydrate as an empty room — a turn would
+// continue over silently lost context. A truncated-to-zero active.jsonl
+// is the same loss the guard names, not a different one.
+func TestLoadDetectsEmptiedActiveTail(t *testing.T) {
+	repo := newRepo(t)
+	r := repo.(*ConversationRepository)
+	if err := repo.Save(t.Context(), newConv(t, "c1")); err != nil {
+		t.Fatal(err)
+	}
+	appendMsgs(t, repo, "c1", "m1", "m2", "m3")
+	if err := os.WriteFile(filepath.Join(r.path, "c1", activeFile), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.Load(t.Context(), "c1"); err == nil {
+		t.Fatal("metadata claims 3 tail messages but active.jsonl is empty — Load must fail, not return an empty room")
+	}
+}
+
 func TestListOrdering(t *testing.T) {
 	repo := newRepo(t)
 	for _, id := range []string{"a", "b"} {

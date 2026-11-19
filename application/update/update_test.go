@@ -532,3 +532,23 @@ func TestProgressIsIdleBeforeAnyInstall(t *testing.T) {
 		t.Fatalf("progress before any install = %+v", p)
 	}
 }
+
+// A succeeded install means the new binary is on disk and the restart is
+// queued, not that the running process already reports the new version.
+// Starting a second install in that window downloads and replaces the
+// binary again while the first restart is still pending.
+func TestInstallAfterSucceededWaitsForRestart(t *testing.T) {
+	payload := []byte("new")
+	src := release(t, "0.1.0", payload, goodSums(payload))
+	app := newApp(t, src, "0.0.0", &fakeBinary{}, &fakeRestarter{mode: "service"})
+	app.Status(context.Background())
+	if _, err := app.Install(); err != nil {
+		t.Fatal(err)
+	}
+	if final := waitDone(t, app); final.State != StateSucceeded {
+		t.Fatalf("first install final = %+v", final)
+	}
+	if _, err := app.Install(); err == nil {
+		t.Fatal("second Install after success was accepted while the restart was still pending")
+	}
+}

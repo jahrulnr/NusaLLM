@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -92,5 +94,82 @@ func TestToolOutputReserveRejectsEscapingConversationIDs(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(base, "sibling", "tool-output")); !os.IsNotExist(err) {
 		t.Fatalf("reserve wrote into a sibling directory: %v", err)
+	}
+}
+
+// Tool output is conversation-owned. A symlink planted at the spill
+// directory must not redirect a write outside the conversation; reserve
+// must reject the non-real directory instead of treating EEXIST as fine.
+func TestToolOutputReserveRejectsSymlinkedSpillDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation needs privileges on Windows")
+	}
+	base := t.TempDir()
+	root := filepath.Join(base, "store")
+	room := filepath.Join(root, "c1")
+	outside := filepath.Join(base, "outside")
+	if err := os.MkdirAll(room, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(room, "tool-output")); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := NewToolOutputRepository(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spill, err := repo.Reserve(context.Background(), "c1", "call-1")
+	if err != nil {
+		return // rejecting the symlinked spill directory is the safe outcome
+	}
+	w, err := spill.Open()
+	if err != nil {
+		return
+	}
+	_, _ = w.Write([]byte("escaped"))
+	_ = w.Close()
+	if _, err := os.Stat(filepath.Join(outside, filepath.Base(spill.Reference()))); err == nil {
+		t.Fatal("tool output was written through a symlinked spill directory")
+	}
+}
+
+// The symlink guard covers the tool-output child — but Stat on the
+// conversation directory itself follows links, so a planted
+// <root>/<id> symlink reaches the same escape one component earlier:
+// Mkdir lands tool-output at the link's target and the exclusive write
+// happens outside the store entirely.
+func TestToolOutputReserveRejectsSymlinkedConversationDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation needs privileges on Windows")
+	}
+	base := t.TempDir()
+	root := filepath.Join(base, "store")
+	outside := filepath.Join(base, "outside")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "c1")); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := NewToolOutputRepository(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spill, err := repo.Reserve(context.Background(), "c1", "call-1")
+	if err == nil {
+		resolved, evalErr := filepath.EvalSymlinks(spill.Reference())
+		if evalErr == nil && !strings.HasPrefix(resolved, root+string(os.PathSeparator)) {
+			t.Fatalf("spill path escapes the store root through a symlinked conversation dir: %q", resolved)
+		}
+		t.Fatalf("symlinked conversation dir accepted: %q", spill.Reference())
+	}
+	if _, err := os.Stat(filepath.Join(outside, "tool-output")); err == nil {
+		t.Fatal("reserve created tool-output outside the store root")
 	}
 }

@@ -1,6 +1,9 @@
 package enum
 
-import "strings"
+import (
+	"net/url"
+	"strings"
+)
 
 // Provider enumerates known provider hosts as the anchor for per-gateway
 // wire characteristics: adapters branch on provider identity for quirks
@@ -26,11 +29,19 @@ func (r Provider) String() string {
 	return string(r)
 }
 
-// MatchesEndpoint reports whether a gateway endpoint names this provider.
-// DNS hosts are case-insensitive, so the match must be too — an endpoint
-// saved as HTTPS://OPENROUTER.AI/API is still OpenRouter.
+// MatchesEndpoint reports whether a gateway endpoint's host is this
+// provider. DNS hosts are case-insensitive, so the match must be too —
+// an endpoint saved as HTTPS://OPENROUTER.AI/API is still OpenRouter.
+// The host is the identity: a lookalike (notopencode.ai), a foreign
+// subdomain (openrouter.ai.evil.com), or the provider string sitting in
+// a path are different origins and must not inherit this provider's
+// headers or quirks.
 func (r Provider) MatchesEndpoint(endpoint string) bool {
-	return strings.Contains(strings.ToLower(endpoint), strings.ToLower(string(r)))
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(u.Hostname(), string(r))
 }
 
 func ParseProvider(v string) (Provider, bool) {

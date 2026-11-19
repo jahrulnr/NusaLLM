@@ -7,6 +7,7 @@ import (
 
 	appcommand "github.com/jahrulnr/nusallm/application/command"
 	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
+	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
 // NewCommand is the /new command.
@@ -29,17 +30,22 @@ func (c *NewCommand) Execute(ctx context.Context, _ string, emitter dservice.Com
 	}
 	if c.h.ConversationID() != "" {
 		info, err := c.h.ConversationInfo(ctx, c.h.ConversationID())
-		if err != nil {
+		// Another tab can delete the room /new is leaving. The metadata
+		// read then 404s, but the command's job is to leave that id —
+		// returning the error would keep the user on a room that is gone.
+		if err != nil && apperror.As(err).StatusCode() != apperror.StatusNotFound {
 			return err
 		}
-		if c.h.Route() == "" {
-			c.h.SetRoute(info.Route)
-		}
-		if c.h.ModelID() == "" {
-			if c.h.Route() == info.Route {
-				c.h.SetModelID(info.ModelID)
-			} else if gateway, err := c.h.GetGateway(ctx, c.h.Route()); err == nil && !gateway.Broken && gateway.CatalogContains(info.ModelID) {
-				c.h.SetModelID(info.ModelID)
+		if err == nil {
+			if c.h.Route() == "" {
+				c.h.SetRoute(info.Route)
+			}
+			if c.h.ModelID() == "" {
+				if c.h.Route() == info.Route {
+					c.h.SetModelID(info.ModelID)
+				} else if gateway, err := c.h.GetGateway(ctx, c.h.Route()); err == nil && !gateway.Broken && gateway.CatalogContains(info.ModelID) {
+					c.h.SetModelID(info.ModelID)
+				}
 			}
 		}
 	}

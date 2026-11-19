@@ -14,6 +14,7 @@ class SettingsPage extends Widget {
   set gateways(value) { this.providers.gateways = value || []; }
   set gatewayImportResult(value) { this.providers.gatewayImportResult = value; }
   set gatewaySaveResult(value) { this.providers.gatewaySaveResult = value; }
+  set gatewayDeleteResult(value) { this.providers.gatewayDeleteResult = value; }
   set settings(value) { this.editor.settings = value || {}; }
   // manage-models entry point: the sections start collapsed, so the
   // provider section opens before the gateway focus delegates down.
@@ -84,7 +85,10 @@ class SettingsPage extends Widget {
     // successor is disabled mid-flight the key queues and the section
     // itself holds focus so the keyboard stays inside the page.
     const prev = deepActiveElement();
-    let focusKey = prev && this.about.contains?.(prev) ? focusKeyOf(prev) : null;
+    // The section itself is the parking spot while a disabled successor
+    // waits — it is not user focus; only a real descendant supersedes a
+    // queued restore.
+    let focusKey = prev && prev !== this.about && this.about.contains?.(prev) ? focusKeyOf(prev) : null;
     if (focusKey) this._aboutFocus = null;
     else if (this._aboutFocus) focusKey = this._aboutFocus;
     clear(this.about);
@@ -99,9 +103,22 @@ class SettingsPage extends Widget {
       if (hit && !hit.disabled) {
         hit.focus?.();
         this._aboutFocus = null;
+      } else if (hit) {
+        this._aboutFocus = focusKey;
+        this.about.focus?.();
       } else {
-        this._aboutFocus = hit ? focusKey : null;
-        if (hit) this.about.focus?.();
+        // The focused action was removed — Update now leaves when the
+        // release is no longer available. Check is the control that stays.
+        const check = findByFocusKey(this.about, 'update-check');
+        if (check && !check.disabled) {
+          check.focus?.();
+          this._aboutFocus = null;
+        } else if (check) {
+          this._aboutFocus = 'update-check';
+          this.about.focus?.();
+        } else {
+          this._aboutFocus = null;
+        }
       }
     }
   }

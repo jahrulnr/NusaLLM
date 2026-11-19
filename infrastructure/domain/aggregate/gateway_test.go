@@ -31,3 +31,13 @@ func TestNewGateway(t *testing.T) {
 		t.Fatal("DisableStream did not take")
 	}
 }
+
+// Style resolves the wire driver — an unknown value passes validate today
+// and then fails TextService resolution on every turn. The constructor
+// must reject what no style registry contains, the same decision the
+// store re-runs on hydrate.
+func TestNewGatewayRejectsUnknownStyle(t *testing.T) {
+	if _, err := NewGateway("g", "n", "https://x", enum.Style("bogus")); err == nil {
+		t.Fatal("constructor accepted a style no driver speaks")
+	}
+}

@@ -268,6 +268,16 @@ function apiMock(fixture) {
       }
       return json({ id: 'gw1', models: [{ id: 'm1', name: 'Mock' }], added: [] });
     }
+    if (p === '/api/gateways/gw1' && request.method() === 'DELETE') {
+      // Hold the delete so a scenario can prove the confirm row cannot
+      // be submitted twice while the first request is still in flight.
+      const held = fixture.stalls.get(`DELETE ${p}`);
+      if (held && held.count < held.limit) {
+        held.count += 1;
+        await new Promise((r) => held.release.push(r));
+      }
+      return json({});
+    }
     if (request.method() !== 'GET') return json({});
     fixture.getLog.push(p);
     // Truthful failure injection: 500s the app must survive.
@@ -2320,6 +2330,54 @@ await scenarioRun('gateway-delete-confirm-focuses-keep', async (s) => {
   });
   check('gateway delete confirmation focuses Keep',
     focus.tag === 'BUTTON' && /Keep/.test(focus.text), JSON.stringify(focus));
+});
+
+// The confirm action disappears from the widget's state before the HTTP
+// delete resolves, but the old row stays painted until the list refresh.
+// Clicking that still-enabled button again would send a second DELETE for
+// the same id; a confirmed action must disable or retire the control
+// while the request is in flight.
+await scenarioRun('gateway-delete-not-double-submitted', async (s) => {
+  const held = stall(s.fixture, 'DELETE /api/gateways/gw1', 2);
+  await open(s, '#conversation=c1');
+  await s.page.getByRole('button', { name: 'Open settings' }).click();
+  await s.page.getByRole('button', { name: 'Delete gw1' }).click();
+  const confirm = s.page.locator('nusa-provider-manager .danger-btn').first();
+  await poll(async () => confirm.isVisible().catch(() => false));
+  await confirm.click();
+  await poll(() => held.count === 1);
+  const again = s.page.locator('nusa-provider-manager .danger-btn').first();
+  if (await again.isVisible().catch(() => false)) await again.click();
+  await s.page.waitForTimeout(120);
+  const requests = held.count;
+  release(held);
+  check('confirmed gateway delete sends one DELETE',
+    requests === 1, `requests=${requests}`);
+});
+
+// After the first confirmation retires the confirm row, the normal row's
+// Delete trigger is live again while the DELETE is still in flight. A
+// user can reopen the confirm and submit the same delete a second time;
+// the delete action needs a busy state on the row, not just a fresh row.
+await scenarioRun('gateway-delete-not-reconfirmed', async (s) => {
+  const held = stall(s.fixture, 'DELETE /api/gateways/gw1', 2);
+  await open(s, '#conversation=c1');
+  await s.page.getByRole('button', { name: 'Open settings' }).click();
+  await s.page.getByRole('button', { name: 'Delete gw1' }).click();
+  const firstConfirm = s.page.locator('nusa-provider-manager .danger-btn').first();
+  await poll(async () => firstConfirm.isVisible().catch(() => false));
+  await firstConfirm.click();
+  await poll(() => held.count === 1);
+  const rowDelete = s.page.getByRole('button', { name: 'Delete gw1' });
+  await poll(async () => rowDelete.isVisible().catch(() => false));
+  if (await rowDelete.isEnabled().catch(() => false)) await rowDelete.click();
+  const secondConfirm = s.page.locator('nusa-provider-manager .danger-btn').first();
+  if (await secondConfirm.isVisible().catch(() => false)) await secondConfirm.click();
+  await s.page.waitForTimeout(120);
+  const requests = held.count;
+  release(held);
+  check('gateway delete stays single-flight after a fresh confirm',
+    requests === 1, `requests=${requests}`);
 });
 
 // Manual compaction replaces the Compact button's label/status while

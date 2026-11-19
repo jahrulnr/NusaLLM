@@ -76,7 +76,20 @@ func (s *session) Close() error { return s.root.Close() }
 func (s *session) FS() fs.FS { return s.root.FS() }
 
 func (s *session) CreateFile(name string) (io.WriteCloser, error) {
-	return s.root.Create(name)
+	// Create is OpenFile with mode 0666, i.e. whatever the umask lets
+	// through. This path exports transcripts — pasted secrets travel
+	// with them — so the file is owner-only regardless of the process
+	// umask. Mode applies only when the name is created; truncating an
+	// existing export leaves its old mode, so clamp the descriptor too.
+	f, err := s.root.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return f, nil
 }
 
 func (s *session) Stat(name string) (fs.FileInfo, error) { return s.root.Stat(name) }

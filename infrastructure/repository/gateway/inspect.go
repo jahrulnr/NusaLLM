@@ -41,10 +41,17 @@ func (r *GatewayRepository) Inspect(ctx context.Context, id string) (drepo.Gatew
 			ApiKey string `json:"apiKey"`
 		}
 		_ = json.Unmarshal(raw, &stub)
+		resolved, err := r.keyResolves(ctx, id, stub.ApiKey)
+		if err != nil {
+			return drepo.GatewaySnapshot{}, err
+		}
 		return drepo.GatewaySnapshot{ID: id, ApiKeyRef: stub.ApiKey,
-			KeyResolved: r.keyResolves(ctx, id, stub.ApiKey)}, nil
+			KeyResolved: resolved}, nil
 	}
-	resolved := r.keyResolves(ctx, id, rec.ApiKey)
+	resolved, err := r.keyResolves(ctx, id, rec.ApiKey)
+	if err != nil {
+		return drepo.GatewaySnapshot{}, err
+	}
 	g, err := decodeGateway(rec, "")
 	if err != nil {
 		return drepo.GatewaySnapshot{ID: id, ApiKeyRef: rec.ApiKey, KeyResolved: resolved}, nil

@@ -19,8 +19,20 @@ class FakeEl {
     this.children.push(...kids.map((k) => (k !== null && typeof k === 'object' ? k : String(k))));
   }
   addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
-  setAttribute(k, v) { this.attrs[k] = v; this[k] = v; }
+  setAttribute(k, v) {
+    this.attrs[k] = v;
+    // The .disabled DOM property is boolean — the attribute's presence,
+    // not its value, disables the control.
+    this[k] = k === 'disabled' ? true : v;
+  }
   getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }
+  contains(node) {
+    if (node === this) return true;
+    for (const child of this.children || []) {
+      if (child === node || (child && child.contains && child.contains(node))) return true;
+    }
+    return false;
+  }
   dispatchEvent(event) { this.events.push(event); return true; }
   get firstChild() { return this.children[0] || null; }
   removeChild(child) {
@@ -166,4 +178,67 @@ test('a failed refresh beside a known update says so and keeps the update', () =
   const text = textOf(page.about);
   assert.ok(text.includes('NusaLLM 0.10.4 is available.'));
   assert.ok(text.includes('Last check failed: rate limited'));
+});
+
+// The section parks focus while the Check control is disabled in flight;
+// once the answer re-enables it, the pending key must land back on the
+// button the user activated. Treating the section's own focus as the
+// observed key clears the queued restore and leaves focus on the section.
+test('a finished update check restores focus to its control', () => {
+  const originalFocus = FakeEl.prototype.focus;
+  FakeEl.prototype.focus = function focus() { globalThis.document.activeElement = this; };
+  globalThis.document.activeElement = null;
+  try {
+    const page = new SettingsPage();
+    page.update = release;
+    const check = button(page.about, 'Check for updates');
+    assert.ok(check, 'Check for updates rendered');
+    check.focus();
+    page.updateBusy = true;
+    assert.equal(button(page.about, 'Checking…').attrs.disabled, '');
+    page.updateBusy = false;
+    const again = button(page.about, 'Check for updates');
+    assert.ok(again, 'Check for updates re-enabled');
+    assert.equal(globalThis.document.activeElement, again,
+      'the completed check must return focus to its control');
+  } finally {
+    FakeEl.prototype.focus = originalFocus;
+    globalThis.document.activeElement = null;
+  }
+});
+
+// When a newer release stops being available while focus is on "Update
+// now", that action disappears. Focus cannot stay on the detached node;
+// the always-present Check for updates control is the successor.
+test('retiring the focused install action moves focus to Check', () => {
+  const originalFocus = FakeEl.prototype.focus;
+  FakeEl.prototype.focus = function focus() { globalThis.document.activeElement = this; };
+  globalThis.document.activeElement = null;
+  try {
+    const page = new SettingsPage();
+    page.update = { ...release, available: true, latest: '0.10.4', installable: true };
+    const install = button(page.about, 'Update now');
+    assert.ok(install, 'Update now rendered');
+    install.focus();
+    page.update = { ...release, available: false };
+    const check = button(page.about, 'Check for updates');
+    assert.ok(check, 'Check for updates remains');
+    assert.equal(globalThis.document.activeElement, check,
+      'the removed install action must hand focus to the remaining check control');
+  } finally {
+    FakeEl.prototype.focus = originalFocus;
+    globalThis.document.activeElement = null;
+  }
+});
+
+// A failed gateway delete must reach the provider manager so it can drop
+// its in-flight guard and re-enable the row. The shell writes
+// settingsPage.gatewayDeleteResult; without a setter here that write
+// lands on the host element and the delete trigger stays disabled
+// forever.
+test('gateway delete results reach the provider manager', () => {
+  const page = new SettingsPage();
+  const providers = page.providers;
+  page.gatewayDeleteResult = { id: 'gw1', error: 'delete refused' };
+  assert.deepEqual(providers.gatewayDeleteResult, { id: 'gw1', error: 'delete refused' });
 });

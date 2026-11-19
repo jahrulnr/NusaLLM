@@ -80,6 +80,30 @@ class SettingsEditor extends Widget {
   }
 
   _render() {
+    // A shape change rebuilds every field. The focused leaf has a stable
+    // key and usually survives; focus has to follow that key onto the
+    // new input instead of staying on the detached one.
+    let focusKey = null;
+    let summarySection = null;
+    const prev = deepActiveElement();
+    if (prev) {
+      for (const [key, input] of this._inputs) {
+        if (input === prev) {
+          focusKey = key;
+          break;
+        }
+      }
+      // A collapsed section leaves focus on its summary, which is not
+      // one of the inputs. The section id is what survives a rebuild.
+      if (!focusKey && prev.tagName === 'SUMMARY') {
+        for (const group of this.root.querySelectorAll('details')) {
+          if (group.querySelector('summary') === prev) {
+            summarySection = group.dataset?.section || null;
+            break;
+          }
+        }
+      }
+    }
     const expanded = new Set([...this.root.querySelectorAll('details[open]')].map((group) => group.dataset.section));
     clear(this.root);
     this._inputs = new Map();
@@ -117,6 +141,17 @@ class SettingsEditor extends Widget {
       group.append(body);
       this.root.append(group);
     }
+    if (focusKey) this._inputs.get(focusKey)?.focus?.();
+    else if (summarySection) {
+      // The focused section's rebuilt summary — or, when the
+      // projection stopped exposing that section, the first
+      // surviving one: the keyboard must not stay on the detached
+      // summary of a section that no longer exists.
+      const groups = this.root.querySelectorAll('details');
+      const group = [...groups].find((g) => g.dataset?.section === summarySection)
+        || groups[0];
+      group?.querySelector('summary')?.focus?.();
+    }
   }
 
   _input(key, value) {
@@ -139,8 +174,14 @@ class SettingsEditor extends Widget {
     }
     if (typeof value === 'number') {
       const input = el('input', { class: 'in', type: 'number', id: `s-${key}`, value });
-      input.addEventListener('change', () =>
-        emit(this, 'setting-change', { key, value: Number(input.value) }));
+      input.addEventListener('change', () => {
+        // Number('') is 0. An emptied field is an unfinished draft, not
+        // a request to store zero over the current setting.
+        if (input.value.trim() === '') return;
+        const n = Number(input.value);
+        if (!Number.isFinite(n)) return;
+        emit(this, 'setting-change', { key, value: n });
+      });
       return input;
     }
     const input = el('input', { class: 'in', type: 'text', id: `s-${key}`, value: String(value ?? '') });

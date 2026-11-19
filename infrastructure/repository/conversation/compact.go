@@ -41,17 +41,38 @@ func (r *ConversationRepository) Compact(ctx context.Context, convID string, sum
 		return err
 	}
 
-	var msgLines, patchLines [][]byte
+	// Patches bind to the most recent preceding message with their call
+	// id. Splitting them off and appending every patch after the retained
+	// tail moves a sealed call's output behind a later message that reused
+	// the id, so the loader attaches it to the wrong call. Keep each patch
+	// with the message it bound to in this stream.
+	var msgLines [][]byte
+	type streamItem struct {
+		raw      []byte
+		msgIndex int
+		message  bool
+	}
+	var items []streamItem
+	callOwner := map[string]int{}
 	for _, l := range lines {
 		var lr lineRecord
 		if err := json.Unmarshal(l, &lr); err != nil {
 			return fmt.Errorf("corrupt line: %w", err)
 		}
 		if lr.Type == lineMessage {
+			idx := len(msgLines)
+			for _, call := range lr.Data.ToolCalls {
+				callOwner[call.ID] = idx
+			}
 			msgLines = append(msgLines, l)
-		} else {
-			patchLines = append(patchLines, l)
+			items = append(items, streamItem{raw: l, msgIndex: idx, message: true})
+			continue
 		}
+		bound := -1
+		if idx, ok := callOwner[lr.CallID]; ok {
+			bound = idx
+		}
+		items = append(items, streamItem{raw: l, msgIndex: bound})
 	}
 	if dropBefore <= 0 || dropBefore > len(msgLines) {
 		// Nothing to fold, or a boundary beyond the stream — an empty or
@@ -67,14 +88,32 @@ func (r *ConversationRepository) Compact(ctx context.Context, convID string, sum
 		return fmt.Errorf("compact %s: %w", convID, err)
 	}
 
-	// Seal the dropped prefix verbatim into the next numbered segment.
+	// Seal the dropped prefix verbatim — messages and the patches that
+	// already bound to them — into the next numbered segment.
 	sealed := filepath.Join(r.convDir(convID), fmt.Sprintf("%d.jsonl", meta.SealedSegments))
 	var buf bytes.Buffer
-	for _, l := range msgLines[:dropBefore] {
-		buf.Write(l)
-		buf.WriteByte('\n')
+	patchesFor := map[int][][]byte{}
+	var unbound [][]byte
+	for _, it := range items {
+		if it.message {
+			if it.msgIndex < dropBefore {
+				buf.Write(it.raw)
+				buf.WriteByte('\n')
+			}
+			continue
+		}
+		if it.msgIndex >= 0 && it.msgIndex < dropBefore {
+			buf.Write(it.raw)
+			buf.WriteByte('\n')
+			continue
+		}
+		if it.msgIndex >= dropBefore {
+			patchesFor[it.msgIndex] = append(patchesFor[it.msgIndex], it.raw)
+			continue
+		}
+		unbound = append(unbound, it.raw)
 	}
-	if err := writeFileAtomic(sealed, buf.Bytes(), 0o644); err != nil {
+	if err := writeFileAtomic(sealed, buf.Bytes(), 0o600); err != nil {
 		return err
 	}
 	// The sealed file is committed only once meta counts it. A crash before
@@ -89,11 +128,19 @@ func (r *ConversationRepository) Compact(ctx context.Context, convID string, sum
 	}
 	buf.Write(sum)
 	buf.WriteByte('\n')
-	for _, l := range append(tailLines, patchLines...) {
+	for i, l := range tailLines {
 		buf.Write(l)
 		buf.WriteByte('\n')
+		for _, p := range patchesFor[dropBefore+i] {
+			buf.Write(p)
+			buf.WriteByte('\n')
+		}
 	}
-	if err := writeFileAtomic(active, buf.Bytes(), 0o644); err != nil {
+	for _, p := range unbound {
+		buf.Write(p)
+		buf.WriteByte('\n')
+	}
+	if err := writeFileAtomic(active, buf.Bytes(), 0o600); err != nil {
 		// Active never changed — it still holds the prefix, so the
 		// sealed copy is a pure duplicate: safe to remove.
 		_ = os.Remove(sealed)

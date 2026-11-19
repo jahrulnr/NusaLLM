@@ -42,16 +42,31 @@ func (r *ToolOutputRepository) Reserve(ctx context.Context, conversationID, call
 		return nil, err
 	}
 	convDir := filepath.Join(r.root, conversationID)
-	info, err := os.Stat(convDir)
+	// Stat follows links. A conversation directory that is itself a
+	// symlink would make the spill Mkdir land at the link target, outside
+	// the store. Lstat sees the link; only a real directory is a room.
+	info, err := os.Lstat(convDir)
 	if err != nil {
 		return nil, fmt.Errorf("exec conversation %s unavailable: %w", conversationID, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("exec conversation %s is a symlink", conversationID)
 	}
 	if !info.IsDir() {
 		return nil, fmt.Errorf("exec conversation %s is not a directory", conversationID)
 	}
 	spillDir := filepath.Join(convDir, "tool-output")
-	if err := os.Mkdir(spillDir, 0o755); err != nil && !os.IsExist(err) {
+	if err := os.Mkdir(spillDir, 0o700); err != nil && !os.IsExist(err) {
 		return nil, fmt.Errorf("exec output dir: %w", err)
+	}
+	// A planted symlink would redirect the spill outside the store —
+	// Mkdir's EEXIST only says the name is taken, and the link's
+	// target can live anywhere. Lstat does not follow it. Other
+	// non-directories cannot redirect a write: the exclusive create
+	// on the joined path fails, and the caller reports that failure
+	// through the spill it reserved.
+	if info, err := os.Lstat(spillDir); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("exec output dir %s is a symlink", spillDir)
 	}
 	safe := strings.Map(func(r rune) rune {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == '_' || r == '.' {

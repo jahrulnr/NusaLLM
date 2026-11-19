@@ -24,7 +24,11 @@ var keyPattern = regexp.MustCompile(`(?i)(api[-_]?key|access[-_]?token|auth[-_]?
 // valuePatterns mask secrets hiding in otherwise-innocent string fields —
 // token shapes, auth header values, PEM blocks.
 var valuePatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)bearer\s+\S+`),                                           // Authorization header value
+	regexp.MustCompile(`(?i)bearer\s+\S+`),                                           // Authorization: Bearer
+	regexp.MustCompile(`(?i)\bbasic\s+[A-Za-z0-9+/=]{8,}`),                           // Authorization: Basic <user:pass>
+	regexp.MustCompile(`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`),                              // AWS access key ids
+	regexp.MustCompile(`\bglpat-[A-Za-z0-9\-_]{20,}`),                                // GitLab personal access tokens
+	regexp.MustCompile(`\bnpm_[A-Za-z0-9]{36}\b`),                                    // npm access tokens
 	regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{8,}`),                                     // OpenAI/OpenRouter-style keys
 	regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{20,}`),                                   // Google API keys
 	regexp.MustCompile(`\bgh[opsur]_[A-Za-z0-9]{20,}`),                               // GitHub ghp_/gho_/ghu_/ghs_/ghr_

@@ -111,8 +111,12 @@ func decodeParts(rawParts []json.RawMessage, finishReason string) (entity.Messag
 			keepTemplate = true
 		case p.Text != "" || textPart(raw):
 			text.WriteString(p.Text)
-			if signed {
-				template = append(template, raw) // signed answer — verbatim
+			// A template that already keeps verbatim parts (a signature,
+			// or a part this adapter does not model) must keep this
+			// text's own bytes too. A refill placeholder drops them, so
+			// the following text disappears from history.
+			if signed || keepTemplate {
+				template = append(template, raw)
 				keepTemplate = true
 			} else {
 				template = append(template, json.RawMessage(`{"refill":"text"}`))

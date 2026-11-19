@@ -175,9 +175,82 @@ test('a leaf kind change falls back to a full render', () => {
   assert.notEqual(after['s-log.max_lines'], before);
 });
 
+// Clearing a numeric field must not emit 0 — Number('') coerces an
+// empty draft into a real, valid setting the autosave then PATCHes
+// over the server's actual value. An unfilled draft is not a value.
+test('clearing a numeric field does not emit 0', () => {
+  const editor = new Editor();
+  editor.settings = DOC;
+  const port = collect(editor)['s-server.port'];
+  assert.ok(port, 'port field rendered');
+  port.value = '';
+  port.fire('change');
+  const evt = editor.events.find((e) => e.type === 'setting-change');
+  assert.ok(!evt || evt.detail.value !== 0,
+    `empty draft emitted a 0 setting-change: ${JSON.stringify(evt && evt.detail)}`);
+});
+
 test('a setting key reads as its leaf label', async () => {
   const { settingLabel } = await import('../widgets/settings-editor/settings-editor.js');
   assert.equal(settingLabel('log.max_lines'), 'max lines');
   assert.equal(settingLabel('server.port'), 'port');
 });
 
+
+// A settings document can gain or lose a leaf (an app upgrade, a config
+// section becoming available). That shape change forces a full rebuild;
+// the focused field has a stable id and survives, so focus must follow
+// it instead of staying on the detached old input.
+test('a shape change restores focus to the same field', () => {
+  const editor = new Editor();
+  editor.settings = DOC;
+  const before = collect(editor)['s-conversation.max_turn_steps'];
+  assert.ok(before, 'field rendered');
+  before.focus();
+  editor.settings = {
+    ...DOC,
+    conversation: { ...DOC.conversation, history_notice: 'shown' },
+  };
+  const after = collect(editor)['s-conversation.max_turn_steps'];
+  assert.ok(after, 'field survives the shape change');
+  assert.equal(document.activeElement, after,
+    'a rebuild adding a leaf must keep focus on the same field');
+});
+
+// A shape change also rebuilds the section summaries. A keyboard user can
+// be parked on a summary after collapsing a group; focus must follow the
+// same section, not stay on the detached summary.
+test('a shape change keeps focus on the same section summary', () => {
+  const editor = new Editor();
+  editor.settings = DOC;
+  const before = editor.root.querySelectorAll('summary')[0];
+  assert.ok(before, 'section summary rendered');
+  before.focus();
+  editor.settings = {
+    ...DOC,
+    conversation: { ...DOC.conversation, history_notice: 'shown' },
+  };
+  const after = editor.root.querySelectorAll('summary')[0];
+  assert.ok(after, 'section summary survives the shape change');
+  assert.equal(document.activeElement, after,
+    'focus must remain on the rebuilt section summary');
+});
+
+// A projection can stop exposing a section the user was inspecting. Its
+// summary is removed by the rebuild; focus must move to a surviving
+// section summary instead of the detached node.
+test('a removed section hands focus to a surviving summary', () => {
+  const editor = new Editor();
+  editor.settings = DOC;
+  const logGroup = editor.root.querySelectorAll('details').find((d) => d.dataset.section === 'log');
+  const summary = logGroup.querySelector('summary');
+  assert.ok(summary, 'log summary rendered');
+  summary.focus();
+  const { log, ...withoutLog } = DOC;
+  void log;
+  editor.settings = withoutLog;
+  const survivors = editor.root.querySelectorAll('details');
+  assert.ok(survivors.length > 0, 'sections remain');
+  assert.equal(document.activeElement, survivors[0].querySelector('summary'),
+    'focus must move to a surviving section summary');
+});

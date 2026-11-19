@@ -613,3 +613,48 @@ func TestUpsertZeroTopKDoesNotBecomeAWireZero(t *testing.T) {
 		t.Fatalf("stored topK=0 would be sent as a provider cutoff")
 	}
 }
+
+// A syntactically valid http(s) URL can still carry a port outside the
+// TCP range. url.Parse accepts it, but every send fails at dial time —
+// the same "saved but unusable" failure the endpoint shape validation
+// exists to catch. Reject the port at write time.
+func TestUpsertRejectsOutOfRangeEndpointPort(t *testing.T) {
+	app, _, _ := newApp(t)
+	in := GatewayInput{
+		ID: "g", Name: "n", Style: enum.StyleCompletion,
+		Endpoint: "https://example.test:99999",
+	}
+	if _, err := app.Upsert(t.Context(), in); err == nil || apperror.As(err).StatusCode() != 400 {
+		t.Fatalf("out-of-range endpoint port → %v, want 400", err)
+	}
+}
+
+// A trailing colon names an empty port; url.Parse accepts it but the
+// request address cannot be dialed. It is the same unusable base the
+// range check rejects, just represented as "no port" rather than a
+// number.
+func TestUpsertRejectsEmptyEndpointPort(t *testing.T) {
+	app, _, _ := newApp(t)
+	in := GatewayInput{
+		ID: "g", Name: "n", Style: enum.StyleCompletion,
+		Endpoint: "https://example.test:",
+	}
+	if _, err := app.Upsert(t.Context(), in); err == nil || apperror.As(err).StatusCode() != 400 {
+		t.Fatalf("empty endpoint port → %v, want 400", err)
+	}
+}
+
+// Credentials in an endpoint URL are not a credential reference — they
+// are secret material embedded in the stored, browser-projected base URL.
+// The gateway has a first-class ApiKey field for that; reject userinfo in
+// the endpoint so a password cannot leak through settings/UI/logs.
+func TestUpsertRejectsEndpointUserInfo(t *testing.T) {
+	app, _, _ := newApp(t)
+	in := GatewayInput{
+		ID: "g", Name: "n", Style: enum.StyleCompletion,
+		Endpoint: "https://user:secret@example.test/v1",
+	}
+	if _, err := app.Upsert(t.Context(), in); err == nil || apperror.As(err).StatusCode() != 400 {
+		t.Fatalf("endpoint userinfo → %v, want 400", err)
+	}
+}

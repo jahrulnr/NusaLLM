@@ -445,6 +445,63 @@ func TestRunTurnCancelCleanupUsesDeadCtx(t *testing.T) {
 	}
 }
 
+// successCancelingTool cancels the turn ctx then reports a RESULT — the
+// interrupt lands between Execute and the patch write, the shape of an
+// onEvent-driven cancel.
+type successCancelingTool struct {
+	schema valueobject.ToolSchema
+	do     context.CancelFunc
+}
+
+func (t successCancelingTool) Schema() valueobject.ToolSchema { return t.schema }
+func (t successCancelingTool) Execute(ctx context.Context, _ entity.ToolCall, _ dservice.ToolEmitter) (dservice.ToolResult, error) {
+	t.do()
+	return dservice.ToolResult{Text: "ok"}, nil
+}
+
+// The cancel-cleanup fix covers cancel-during-Execute. One hole remains:
+// when the tool succeeds but the ctx died before UpdateToolCallOutput,
+// the in-memory call already reports HasOutput() — persistInterrupted
+// skips it, so the computed output never persists and never gets the
+// interrupted stamp either. On disk the call is pending forever; the
+// next turn replays an unanswered call the model may re-execute.
+func TestRunTurnOutputPatchSurvivesLateCancel(t *testing.T) {
+	repo := repoconversation.NewConversationRepository(t.TempDir())
+	d := Deps{
+		SummaryTool: mustSummaryTool(t),
+		Convs:       honoringConvs{repo},
+		Config:      config.ConversationConfig{MaxTurnStep: 4},
+	}
+	conv, _ := aggregate.NewConversation("room")
+	user, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(user)
+	if err := repo.Save(t.Context(), conv); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.AppendMessage(t.Context(), "room", user); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	schema, _ := valueobject.NewToolSchema("push", "test tool", nil, true, enum.ToolPermissionAgent)
+	driver := EnvironmentBundle{Tools: map[string]dservice.Tool{
+		"push": successCancelingTool{schema: schema, do: cancel},
+	}}
+	svc := &twoPendingSvc{}
+	_ = d.runTurn(ctx, "room", conv, driver, nil, entity.Model{}, svc, nil, nil)
+	stored, err := repo.Load(context.Background(), "room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs := stored.Messages()
+	last := msgs[len(msgs)-1]
+	for _, tc := range last.ToolCalls() {
+		if !tc.HasOutput() {
+			t.Errorf("call %s left pending on disk — its computed output died with the ctx: %+v", tc.ID(), last.ToolCalls())
+		}
+	}
+}
+
 // SteeringReceipt is exported and zero-value-constructible — a caller can
 // hand &SteeringReceipt{} to SteeringInput.Recall, which reads State() on
 // it. State()'s unchecked atomic.Value assertion must not panic on the

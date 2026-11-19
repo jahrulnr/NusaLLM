@@ -44,6 +44,17 @@ func TestValuePatterns(t *testing.T) {
 	}
 }
 
+// The auth-header pattern covers Bearer only — a Basic credential
+// (base64 user:password, the scheme proxies and self-hosted gateways
+// use) survives String() verbatim inside free-text fields like
+// "detail", persisting a live credential into the diagnostic log.
+func TestBasicAuthValueMasked(t *testing.T) {
+	got := String("upstream said: Authorization: Basic dXNlcjpwYXNz")
+	if strings.Contains(got, "dXNlcjpwYXNz") {
+		t.Fatalf("basic auth credential survived redaction: %q", got)
+	}
+}
+
 func TestPEMBlock(t *testing.T) {
 	in := "-----BEGIN PRIVATE KEY-----\nabc123\n-----END PRIVATE KEY-----"
 	if got := String(in); got != Mask {

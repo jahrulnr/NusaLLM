@@ -1,4 +1,4 @@
-import { Widget, el, emit, clear } from '../../lib/dom.js';
+import { Widget, el, emit, clear, deepActiveElement, nodeWithin } from '../../lib/dom.js';
 import { icon } from '../../lib/icons.js';
 import {
   headline, restartNote, percent, sizeLabel, stepStates,
@@ -46,6 +46,11 @@ class UpdateProgress extends Widget {
   }
 
   _render() {
+    // A poll replaces the open panel. The control that had focus is
+    // about to be detached; a button in the rebuilt panel has to take
+    // it, or the keyboard user lands outside the modal.
+    const prev = deepActiveElement();
+    const restoreFocus = !!(prev && nodeWithin(this.panel, prev));
     clear(this.panel);
     const v = this._view;
     this.primaryBtn = null;
@@ -80,6 +85,7 @@ class UpdateProgress extends Widget {
       v.state === 'failed' && v.error ? el('p', { class: 'error', role: 'alert', text: v.error }) : null,
       this._footer(v),
     ].filter(Boolean));
+    if (restoreFocus) this.closeX?.focus?.();
   }
 
   _bar(v, pct) {

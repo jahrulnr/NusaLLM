@@ -34,6 +34,7 @@ class ProviderManager extends Widget {
     this._editing = null;   // existing gateway object being edited
     this._creating = false;
     this._confirmId = null; // gateway id awaiting delete confirmation
+    this._deleting = new Set(); // ids whose DELETE is still on the wire
     this._confirmKeep = null; // the safe button inside the confirm row
     this._modelsOf = null;  // gateway whose models view is open
     this._editingModel = null; // model object open in the model editor
@@ -48,7 +49,11 @@ class ProviderManager extends Widget {
   }
 
   set gateways(list) {
-    this._gateways = list || [];
+    const next = list || [];
+    for (const id of this._deleting) {
+      if (!next.some((g) => g.id === id)) this._deleting.delete(id);
+    }
+    this._gateways = next;
     // Re-resolve the open models view against the fresh list — a stale
     // object must never become an edit target.
     if (this._modelsOf) {
@@ -70,6 +75,15 @@ class ProviderManager extends Widget {
     const g = this._gateways.find((x) => x.id === id);
     if (g) this._openModels(g);
     else this._pendingModelsFor = id;
+  }
+
+  // A failed delete leaves the row in place. The in-flight guard has to
+  // drop or the trigger stays disabled after the error toast.
+  set gatewayDeleteResult(result) {
+    if (!result?.id || !this._deleting.has(result.id)) return;
+    this._deleting.delete(result.id);
+    if (this._confirmId === result.id) this._confirmId = null;
+    if (!this._editing && !this._creating && !this._editingModel) this._render();
   }
 
   set gatewaySaveResult(result) {
@@ -176,7 +190,16 @@ class ProviderManager extends Widget {
   // state change hands focus back instead of dropping it to BODY.
   _refocusLabel(label) {
     if (!label) return;
-    this._findLabel(label)?.focus?.();
+    const hit = this._findLabel(label);
+    if (hit) {
+      hit.focus?.();
+      return;
+    }
+    // The focused control's row left with the refresh (the gateway
+    // was deleted elsewhere). Add gateway is the always-present list
+    // action — the keyboard lands there instead of on the detached
+    // button. Views without it keep the browser's own fallback.
+    this._findLabel('Add gateway')?.focus?.();
   }
 
   _findLabel(label) {
@@ -256,11 +279,17 @@ class ProviderManager extends Widget {
           el('button', {
             class: 'btn danger-btn', type: 'button',
             onclick: () => {
+              if (this._deleting.has(g.id)) return;
+              this._deleting.add(g.id);
               this._confirmId = null;
               // The whole row dies with the gateway — the list's first
               // action is the stable successor for the keyboard flow.
               this._pendingFocus = 'Add gateway';
               emit(this, 'gateway-delete', { id: g.id });
+              // The confirmed action is consumed — leaving the stale
+              // confirm row rendered lets a second click submit the
+              // same delete again before the list refresh lands.
+              this._render();
             },
           }, [el('span', { text: 'Delete' })]),
           this._confirmKeep = el('button', {
@@ -298,20 +327,32 @@ class ProviderManager extends Widget {
               this._firstField?.focus?.();
             },
           }, [icon('pencil', 12)]),
-          el('button', {
-            class: 'icon-btn danger', type: 'button', 'aria-label': `Delete ${g.id}`,
-            onclick: () => {
-              this._confirmId = g.id;
-              this._render();
-              this._confirmKeep?.focus?.();
-            },
-          }, [icon('trash', 12)]),
+          this._deleteButton(g),
         ]),
       ]));
     }
     if (this._editing || this._creating) this._renderForm();
     if (this._pendingFocus) this._settlePending();
     else this._refocusLabel(focusLabel);
+  }
+
+  // disabled is a boolean property. The attribute alone is enough in a
+  // browser; assigning it here also keeps test stand-ins honest, because
+  // setAttribute('disabled','') does not make `.disabled` true.
+  _deleteButton(g) {
+    const busy = this._deleting.has(g.id);
+    const button = el('button', {
+      class: 'icon-btn danger', type: 'button', 'aria-label': `Delete ${g.id}`,
+      disabled: busy || null,
+      onclick: () => {
+        if (this._deleting.has(g.id)) return;
+        this._confirmId = g.id;
+        this._render();
+        this._confirmKeep?.focus?.();
+      },
+    }, [icon('trash', 12)]);
+    button.disabled = busy;
+    return button;
   }
 
   _openModels(g) {

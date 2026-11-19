@@ -42,6 +42,19 @@ test('inline: strong/em/strike/code/escape', () => {
   assert.ok(flatText(ast).includes('_unclosed')); // unmatched stays literal
 });
 
+// `***x***` / `___x___` are em(strong(x)) per CommonMark — the strong
+// matcher searches for the next two-char delimiter, so the third char
+// gets absorbed into the inner text and a stray delimiter leaks literal.
+test('triple delimiters nest emphasis inside strong', () => {
+  for (const src of ['***x***', '___x___']) {
+    const [n] = parseInline(src);
+    assert.equal(n.type, 'em', src);
+    assert.equal(n.children[0].type, 'strong', src);
+    assert.equal(flatText([n]), 'x', src);
+  }
+  assert.equal(flatText(parseInline('***x***')), 'x');
+});
+
 test('nested syntax degrades to literal without losing characters', () => {
   const ast = parseInline('**a `code` tail** and **unclosed');
   assert.equal(ast[0].type, 'strong');

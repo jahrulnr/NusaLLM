@@ -257,3 +257,212 @@ test('loading earlier preserves an open message edit draft', () => {
   assert.equal(reopened.value, 'typed but not saved',
     'a window rewrite must preserve the unsaved edit draft');
 });
+
+function findThreadClasses(node, cls, out = []) {
+  if (!node) return out;
+  if (node.className === cls) out.push(node);
+  for (const child of node.children || []) findThreadClasses(child, cls, out);
+  return out;
+}
+
+// A rebuild under a focused Edit control must return focus to the SAME
+// message. Every edit button shares the class "edit-btn"; a class-only
+// focus key lands on the first message instead, silently moving the
+// keyboard user's place after a prepend/refresh.
+test('a full refresh keeps focus on the same message edit control', () => {
+  const originalFocus = FakeEl.prototype.focus;
+  FakeEl.prototype.focus = function focus() { globalThis.document.activeElement = this; };
+  globalThis.document.activeElement = null;
+  try {
+    const thread = new MessageThread();
+    thread.hasConversation = true;
+    thread.messages = [
+      { id: 'u1', role: 'user', userType: 'origin', content: 'one' },
+      { id: 'u2', role: 'user', userType: 'origin', content: 'two' },
+    ];
+    findThreadClasses(thread.root, 'edit-btn')[1].focus();
+    thread.messages = [
+      { id: 'u0', role: 'user', userType: 'origin', content: 'zero' },
+      { id: 'u1', role: 'user', userType: 'origin', content: 'one' },
+      { id: 'u2', role: 'user', userType: 'origin', content: 'two' },
+    ];
+    const edits = findThreadClasses(thread.root, 'edit-btn');
+    assert.equal(globalThis.document.activeElement, edits[2],
+      'focus must follow the same message, not the first edit button');
+  } finally {
+    FakeEl.prototype.focus = originalFocus;
+    globalThis.document.activeElement = null;
+  }
+});
+
+// The preserved edit draft belongs to the message being edited. After a
+// cancel/commit leaves the old textarea cached, opening another message
+// must not seed that editor with the previous message's draft.
+test('switching edit targets does not inherit the previous draft', () => {
+  const thread = new MessageThread();
+  thread.hasConversation = true;
+  thread.messages = [
+    { id: 'u1', role: 'user', userType: 'origin', content: 'one' },
+    { id: 'u2', role: 'user', userType: 'origin', content: 'two' },
+  ];
+  findThreadClasses(thread.root, 'edit-btn')[0].fire('click');
+  const first = findThreadClass(thread.root, 'edit-input');
+  assert.ok(first, 'first editor opened');
+  first.value = 'draft for one';
+  findThreadClass(thread.root, 'edit-cancel').fire('click');
+
+  findThreadClasses(thread.root, 'edit-btn')[1].fire('click');
+  const second = findThreadClass(thread.root, 'edit-input');
+  assert.ok(second, 'second editor opened');
+  assert.equal(second.value, 'two',
+    'the second message must open with its own content, not the previous draft');
+});
+
+// A refresh can update the failed-turn card's note while the user has
+// focus on Retry. The card rebuild replaces the button; focus must move to
+// the rebuilt Retry, not a detached node.
+test('a changed failed card keeps focus on Retry', () => {
+  FakeEl.prototype.focus = function focus() { globalThis.document.activeElement = this; };
+  globalThis.document.activeElement = null;
+  try {
+    const thread = new MessageThread();
+    thread.hasConversation = true;
+    thread.messages = [{ id: 'u1', role: 'user', userType: 'origin', content: 'hi' }];
+    thread.failedTurn = { title: 'Turn failed', note: 'first', retryable: true };
+    const retry = findThreadClass(thread.root, 'fail-retry');
+    assert.ok(retry, 'Retry rendered');
+    retry.focus();
+    thread.failedTurn = { title: 'Turn failed', note: 'second', retryable: true };
+    const rebuilt = findThreadClass(thread.root, 'fail-retry');
+    assert.ok(rebuilt, 'Retry survives the card rebuild');
+    assert.equal(globalThis.document.activeElement, rebuilt,
+      'focus must move to the rebuilt Retry control');
+  } finally {
+    delete FakeEl.prototype.focus;
+    globalThis.document.activeElement = null;
+  }
+});
+
+// Dismiss removes the focused control with the whole card. Leaving focus
+// on the detached button is just as broken as losing it to BODY; a
+// surviving control (or the composer, via the shell) must take over.
+test('dismissing the failed card moves focus off the removed control', () => {
+  FakeEl.prototype.focus = function focus() { globalThis.document.activeElement = this; };
+  globalThis.document.activeElement = null;
+  try {
+    const thread = new MessageThread();
+    thread.hasConversation = true;
+    thread.messages = [{ id: 'u1', role: 'user', userType: 'origin', content: 'hi' }];
+    thread.failedTurn = { title: 'Turn failed', note: 'boom', retryable: true };
+    const dismiss = findThreadClass(thread.root, 'fail-dismiss');
+    assert.ok(dismiss, 'Dismiss rendered');
+    dismiss.focus();
+    thread.failedTurn = null;
+    assert.notEqual(globalThis.document.activeElement, dismiss,
+      'focus must not stay on the removed Dismiss control');
+  } finally {
+    delete FakeEl.prototype.focus;
+    globalThis.document.activeElement = null;
+  }
+});
+
+// An edit/refresh can shrink the visible history and remove the focused
+// message's controls. Focus must follow to a surviving message action,
+// not stay on the detached edit button.
+test('a removed message hands focus to the nearest surviving edit', () => {
+  FakeEl.prototype.focus = function focus() { globalThis.document.activeElement = this; };
+  globalThis.document.activeElement = null;
+  try {
+    const thread = new MessageThread();
+    thread.hasConversation = true;
+    thread.messages = [
+      { id: 'u1', role: 'user', userType: 'origin', content: 'one' },
+      { id: 'u2', role: 'user', userType: 'origin', content: 'two' },
+    ];
+    const edits = [];
+    const walk = (node) => {
+      if (node.className === 'edit-btn') edits.push(node);
+      for (const child of node.children || []) walk(child);
+    };
+    walk(thread.root);
+    assert.equal(edits.length, 2);
+    edits[1].focus();
+    thread.messages = [{ id: 'u1', role: 'user', userType: 'origin', content: 'one' }];
+    const after = [];
+    const walkAfter = (node) => {
+      if (node.className === 'edit-btn') after.push(node);
+      for (const child of node.children || []) walkAfter(child);
+    };
+    walkAfter(thread.root);
+    assert.ok(after.length >= 1, 'surviving edit button rendered');
+    assert.equal(globalThis.document.activeElement, after[0],
+      'focus must move to the surviving message action');
+  } finally {
+    delete FakeEl.prototype.focus;
+    globalThis.document.activeElement = null;
+  }
+});
+
+// A full thread rebuild recreates the failed-card container. The
+// signature cache must not suppress painting into the new container —
+// otherwise toggling loading (or any full render) silently drops an
+// existing failed-turn card.
+test('a full render repaints an existing failed card', () => {
+  const thread = new MessageThread();
+  thread.hasConversation = true;
+  thread.messages = [{ id: 'u1', role: 'user', userType: 'origin', content: 'hi' }];
+  thread.failedTurn = { title: 'Turn failed', note: 'boom', retryable: true };
+  assert.ok(findThreadClass(thread.root, 'fail-retry'), 'card initially rendered');
+  thread.loading = true;
+  thread.loading = false;
+  assert.ok(findThreadClass(thread.root, 'fail-retry'),
+    'failed card disappeared after a full render');
+});
+
+// A failed card can exist without a surviving editable user line (a
+// watched failure, a history-derived tail, or a busy command). Dismiss
+// still removes the focused control; the browser fallback must not be the
+// only hand-off.
+test('dismissing a failed card with no editable line moves focus off the removed control', () => {
+  FakeEl.prototype.focus = function focus() { globalThis.document.activeElement = this; };
+  globalThis.document.activeElement = null;
+  try {
+    const thread = new MessageThread();
+    thread.hasConversation = true;
+    thread.messages = [{ id: 'a1', role: 'assistant', content: 'answer' }];
+    thread.failedTurn = { title: 'Turn failed', note: 'boom', retryable: true };
+    const dismiss = findThreadClass(thread.root, 'fail-dismiss');
+    assert.ok(dismiss, 'Dismiss rendered');
+    dismiss.focus();
+    thread.failedTurn = null;
+    assert.notEqual(globalThis.document.activeElement, dismiss,
+      'focus must not stay on the removed Dismiss control');
+  } finally {
+    delete FakeEl.prototype.focus;
+    globalThis.document.activeElement = null;
+  }
+});
+
+// Retryability can change while Retry is focused (a new user line arrives).
+// The rebuilt Retry is disabled; focus must move to the surviving Dismiss
+// action, not stay on the detached old control.
+test('a Retry that becomes disabled hands focus to Dismiss', () => {
+  FakeEl.prototype.focus = function focus() { if (this.disabled) return; globalThis.document.activeElement = this; };
+  globalThis.document.activeElement = null;
+  try {
+    const thread = new MessageThread();
+    thread.hasConversation = true;
+    thread.messages = [{ id: 'u1', role: 'user', userType: 'origin', content: 'hi' }];
+    thread.failedTurn = { title: 'Turn failed', note: 'boom', retryable: true };
+    const retry = findThreadClass(thread.root, 'fail-retry');
+    retry.focus();
+    thread.failedTurn = { title: 'Turn failed', note: 'boom', retryable: false };
+    const dismiss = findThreadClass(thread.root, 'fail-dismiss');
+    assert.ok(dismiss, 'Dismiss survives');
+    assert.equal(globalThis.document.activeElement, dismiss,
+      'focus must move to the enabled Dismiss action');
+  } finally {
+    delete FakeEl.prototype.focus;
+    globalThis.document.activeElement = null;
+  }
+});

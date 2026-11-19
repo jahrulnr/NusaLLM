@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"unicode/utf8"
 
 	appcommand "github.com/jahrulnr/nusallm/application/command"
 	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
@@ -50,7 +51,23 @@ func (c *DiffCommand) Execute(ctx context.Context, _ string, emitter dservice.Co
 		return nil
 	}
 	if len(text) > cap {
-		text = text[:cap] + "\n… truncated, run git diff directly for the full patch"
+		// A byte cap can land inside a multibyte rune and leave an
+		// invalid UTF-8 tail no terminal can render. Back up to the
+		// rune start — the same boundary rule the websocket delta
+		// splitter applies to its chunk cuts.
+		end := cap
+		if !utf8.RuneStart(text[end]) {
+			start := end
+			for start > 0 && end-start < utf8.UTFMax && !utf8.RuneStart(text[start]) {
+				start--
+			}
+			if utf8.RuneStart(text[start]) {
+				if _, size := utf8.DecodeRuneInString(text[start:]); start+size > end {
+					end = start
+				}
+			}
+		}
+		text = text[:end] + "\n… truncated, run git diff directly for the full patch"
 	}
 	c.h.Write(emitter, "%s\n", text)
 	return nil

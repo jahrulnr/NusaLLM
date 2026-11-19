@@ -63,14 +63,15 @@ func TestNotFound(t *testing.T) {
 	}
 }
 
-// SQLite creates the rollback journal with process-umask permissions —
-// a crash mid-commit leaves <db>-journal behind containing plaintext
-// secret values. The db's own 0600 cannot stop that; the protection
-// lives one level up: the parent must refuse group/other so no sidecar
-// file is reachable.
+// SQLite creates the rollback journal beside the db and gives it the db
+// file's own mode — a crash mid-commit leaves <db>-journal behind with
+// plaintext secret values. The store clamps the db 0600 before any value
+// is written, so the journal inherits 0600 and stays private even when
+// the db sits in a caller-owned loose parent that New must not touch.
 func TestJournalSidecarCoveredByDirPerms(t *testing.T) {
 	dir := t.TempDir()
-	// A pre-existing permissive parent gets reclamped by New.
+	// The caller owns this directory — a shared 0755 parent must survive
+	// the open exactly as the caller left it.
 	if err := os.Chmod(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -99,25 +100,30 @@ func TestJournalSidecarCoveredByDirPerms(t *testing.T) {
 		t.Fatal(err)
 	}
 	journal := dbPath + "-journal"
-	if _, statErr := os.Stat(journal); statErr != nil {
+	jfi, statErr := os.Stat(journal)
+	if statErr != nil {
 		_ = tx.Rollback()
 		t.Skipf("no -journal file materialized on this driver/filesystem: %v", statErr)
 	}
 	_ = tx.Rollback()
 
+	if jfi.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("journal mode = %o — a sidecar carrying secret values must be owner-only", jfi.Mode().Perm())
+	}
 	dfi, err := os.Stat(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dfi.Mode().Perm()&0o077 != 0 {
-		t.Fatalf("secret dir mode = %o — journal sidecars are umask-created, so the dir itself must refuse group/other", dfi.Mode().Perm())
+	if dfi.Mode().Perm() != 0o755 {
+		t.Fatalf("pre-existing parent mode changed to %o", dfi.Mode().Perm())
 	}
 }
 
-// A pre-existing loose parent is reclamped on open — a 0755 dir leaves
-// the (0600) db reachable for unlink/replace by other users and exposes
-// every umask-created sidecar file.
-func TestPreExistingParentDirReclamped(t *testing.T) {
+// A pre-existing loose parent is opened as-is: Mutating a caller-owned
+// directory breaks a shared parent (a mount root, /tmp, a CI workspace)
+// for every other process. Privacy does not depend on the parent — the
+// db and every journal it spawns are clamped 0600.
+func TestPreExistingParentModeUntouched(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -126,12 +132,12 @@ func TestPreExistingParentDirReclamped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	_ = s.Close()
 	fi, err := os.Stat(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o700 {
-		t.Fatalf("dir mode = %o, want 0700 (0755 reclamped)", fi.Mode().Perm())
+	if fi.Mode().Perm() != 0o755 {
+		t.Fatalf("pre-existing parent mode changed to %o", fi.Mode().Perm())
 	}
 }
