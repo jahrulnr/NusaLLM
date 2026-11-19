@@ -12,9 +12,9 @@ import (
 
 // EmptyAnswerError enforces the reply contract every wire's settled
 // commit shares: a finished provider call must leave something
-// deliverable — non-blank answer text, origin calls, or non-reasoning
-// provider artifacts. Reasoning/thinking payloads are replay metadata
-// and display chrome, never the answer. The gate only applies to
+// deliverable — non-blank answer text, origin calls, attachments, or
+// non-reasoning provider artifacts. Reasoning/thinking payloads are
+// replay metadata and display chrome, never the answer. The gate only applies to
 // settled commits — a partial (canceled) commit keeps whatever arrived.
 // A suppressed answer is a definitive 400 — retrying the identical
 // request cannot unblock it; a bare 200 carrying nothing is an upstream
@@ -27,7 +27,8 @@ func EmptyAnswerError(msg entity.Message, artifacts bool, blocked string, logged
 	if msg.FinishReason() == "" {
 		return nil // partial commit — not a settled reply
 	}
-	if strings.TrimSpace(msg.Content()) != "" || len(msg.ToolCalls()) > 0 || artifacts {
+	if strings.TrimSpace(msg.Content()) != "" || len(msg.ToolCalls()) > 0 ||
+		len(msg.Attachments()) > 0 || artifacts {
 		return nil
 	}
 	raw, _ := json.Marshal(logged)

@@ -848,3 +848,87 @@ func TestStreamThoughtOnlyIsAnEmptyAnswer(t *testing.T) {
 		t.Fatalf("thought-only turn committed: %+v", last.OptionalContent())
 	}
 }
+
+// Legacy functionCall parts may omit the provider id; the adapter then
+// falls back to the function name. Two parallel calls to the same tool
+// (read two files) would collapse onto one internal id, so the first
+// SetToolOutput overwrites the first call and the second keeps no
+// result. Synthetic ids must stay unique while the provider-facing
+// replay still omits the id it never issued.
+func TestParallelMissingIDsGetDistinctInternalIDs(t *testing.T) {
+	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(okBody([]any{
+			map[string]any{"functionCall": map[string]any{"name": "read_file", "args": map[string]any{"path": "a.txt"}}},
+			map[string]any{"functionCall": map[string]any{"name": "read_file", "args": map[string]any{"path": "b.txt"}}},
+		}))
+	})
+	conv := newConv(t)
+	model, _ := entity.NewModel("gemini-2.5-flash", "test")
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
+		t.Fatal(err)
+	}
+	last := conv.Last()
+	if last == nil || len(last.ToolCalls()) != 2 {
+		t.Fatalf("calls = %+v", last)
+	}
+	a, b := last.ToolCalls()[0], last.ToolCalls()[1]
+	if a.ID() == b.ID() {
+		t.Fatalf("parallel id-less calls collapsed onto id %q", a.ID())
+	}
+	if a.Input() == b.Input() {
+		t.Fatalf("inputs collapsed: %q", a.Input())
+	}
+	for _, tc := range []entity.ToolCall{a, b} {
+		if tc.OptionalContent()[callIDKey] != "" {
+			t.Fatalf("synthetic id %q must not become a provider call id", tc.OptionalContent()[callIDKey])
+		}
+	}
+}
+
+// An image model answers with inlineData and no text. That part is the
+// deliverable, but the adapter keeps it only as a raw replay template:
+// the Message has no attachment, so the UI (which renders message
+// attachments) shows a successful but completely blank assistant stripe.
+func TestInlineDataOnlyReplyCarriesAttachment(t *testing.T) {
+	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(okBody([]any{
+			map[string]any{"inlineData": map[string]any{"mimeType": "image/png", "data": "aGVsbG8="}},
+		}))
+	})
+	conv := newConv(t)
+	model, _ := entity.NewModel("gemini-2.5-flash-image", "test")
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
+		t.Fatalf("inline image must settle as a reply, not an error: %v", err)
+	}
+	last := conv.Last()
+	if last == nil {
+		t.Fatal("no assistant message committed")
+	}
+	atts := last.Attachments()
+	if len(atts) != 1 || atts[0].Modality() != enum.ModalityImage {
+		t.Fatalf("inline image is invisible to the message surface: content=%q attachments=%+v", last.Content(), atts)
+	}
+}
+
+// The model id is placed in the request URL path. A user- or catalog-
+// supplied id containing a query/fragment delimiter must not be parsed
+// as URL syntax: `gemini?x` would otherwise send the `:generateContent`
+// suffix as part of the query and address a different model.
+func TestModelIDIsURLPathEncoded(t *testing.T) {
+	var gotPath, gotRawQuery string
+	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotRawQuery = r.URL.Path, r.URL.RawQuery
+		json.NewEncoder(w).Encode(okBody([]any{map[string]any{"text": "ok"}}))
+	})
+	conv := newConv(t)
+	model, _ := entity.NewModel("gemini?x=1", "test")
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
+		return // rejecting the unsafe id is also safe
+	}
+	if gotRawQuery != "" {
+		t.Fatalf("model id leaked into the query: rawQuery=%q path=%q", gotRawQuery, gotPath)
+	}
+	if !strings.Contains(gotPath, "gemini?x=1") {
+		t.Fatalf("model id not preserved as one path segment: path=%q", gotPath)
+	}
+}

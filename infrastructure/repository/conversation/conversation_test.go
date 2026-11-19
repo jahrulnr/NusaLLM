@@ -302,7 +302,12 @@ func TestToolOutputPatchRejectsPendingCall(t *testing.T) {
 	}
 }
 
-func TestMessagePatchesKeepFirstCallAndLastOutput(t *testing.T) {
+// A patch binds to the call's owning message — the most recent message
+// carrying that id ahead of the patch. Two turns can legitimately repeat
+// a provider-derived id (every no-id exec call hydrates as exec#0), so a
+// first-match map would answer an output with the wrong turn's call.
+// Successive patches for that call then land in order, latest output wins.
+func TestMessagePatchesBindToOwningMessageInOrder(t *testing.T) {
 	first, _ := entity.NewMessage(enum.RoleAssistant, "first")
 	call, _ := entity.NewToolCall("shared-call", "tool", "{}", enum.TooltypeOrigin)
 	first.AddToolCall(call)
@@ -327,11 +332,11 @@ func TestMessagePatchesKeepFirstCallAndLastOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := msgs[0].ToolCalls()[0].Output(); got != "late" {
-		t.Fatalf("first call output = %q", got)
+	if got := msgs[0].ToolCalls()[0].Output(); got != "" {
+		t.Fatalf("the earlier turn's call must stay untouched, got %q", got)
 	}
-	if got := msgs[1].ToolCalls()[0].Output(); got != "" {
-		t.Fatalf("second matching call should remain untouched, got %q", got)
+	if got := msgs[1].ToolCalls()[0].Output(); got != "late" {
+		t.Fatalf("owning call output = %q, want latest patch", got)
 	}
 }
 
@@ -1436,5 +1441,47 @@ func TestListPropagatesInvalidDirName(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "invalid id") {
 		t.Fatalf("expected the invalid-id error to propagate: %v", err)
+	}
+}
+
+// The Gemini adapter derives an internal call id from name#part-index
+// when the provider omits ids; that derivation repeats across turns
+// (every no-id exec call becomes exec#0), while the domain only
+// requires ids unique within one message. A tool-output patch is keyed
+// by call id alone, so the loader must bind it to the message that owns
+// the call — a global first-match map applies the second turn's output
+// to the first turn's still-pending call and leaves the real call
+// unresolved.
+func TestToolOutputPatchTargetsTheCallInItsOwnMessage(t *testing.T) {
+	repo := newRepo(t)
+	if err := repo.Save(t.Context(), newConv(t, "c1")); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		m, _ := entity.NewMessage(enum.RoleAssistant, "")
+		call, _ := entity.NewToolCall("exec#0", "exec", `{"command":"date"}`, enum.TooltypeOrigin)
+		if err := m.AddToolCall(call); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repo.AppendMessage(t.Context(), "c1", m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := repo.UpdateToolCallOutput(t.Context(), "c1", patchCall(t, "exec#0", "second-turn output")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.Load(t.Context(), "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs := got.Messages()
+	if len(msgs) != 2 {
+		t.Fatalf("history = %d messages", len(msgs))
+	}
+	if msgs[0].ToolCalls()[0].HasOutput() {
+		t.Fatalf("first turn's call received the second turn's output: %q", msgs[0].ToolCalls()[0].Output())
+	}
+	if output := msgs[1].ToolCalls()[0].Output(); output != "second-turn output" {
+		t.Fatalf("second turn's call output = %q, want the patch", output)
 	}
 }

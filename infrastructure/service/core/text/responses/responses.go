@@ -86,7 +86,7 @@ func (s *Service) Send(ctx context.Context, conv *aggregate.Conversation, gw *ag
 	// Bearer auth is canonical on this surface.
 	req.Header.Set("Authorization", "Bearer "+gw.ApiKey())
 	req.Header.Set("Content-Type", "application/json")
-	if strings.Contains(gw.Endpoint(), enum.OpenCode.String()) {
+	if enum.OpenCode.MatchesEndpoint(gw.Endpoint()) {
 		req.Header.Set("x-opencode-session", conv.ID())
 	}
 	if s.referer != "" {

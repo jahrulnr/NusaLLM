@@ -31,18 +31,24 @@ export class UpdateInstaller {
     this.target = '';
     this.timer = null;
     this.restartAt = 0;
+    this._epoch = 0;
   }
 
   // Starts an install of `version`. A refusal because one is already running
   // on the server turns into following that run instead.
   async begin(version) {
     this.stop();
+    const epoch = ++this._epoch;
     this.target = version;
     this.restartAt = 0;
     this._set({ state: 'running', phase: 'download', version, reconnecting: false, error: '' });
     try {
-      this._apply(await this.api.startUpdate());
+      const progress = await this.api.startUpdate();
+      // A newer begin()/resume() owns the follow loop now.
+      if (epoch !== this._epoch) return this.view;
+      this._apply(progress);
     } catch (err) {
+      if (epoch !== this._epoch) return this.view;
       if (err && err.code === 'update_busy') return this.resume();
       this._finish('failed', messageOf(err));
       return this.view;
@@ -56,10 +62,21 @@ export class UpdateInstaller {
   // an earlier page, or a reply that names no state all leave the view alone.
   async resume() {
     this.stop();
+    const epoch = ++this._epoch;
     this.restartAt = 0;
     try {
       const progress = await this.api.getUpdateProgress();
-      if (!IN_FLIGHT.has(progress.state)) return this.view;
+      // A begin() during this probe owns the follow loop — the older
+      // answer must not take over view/target.
+      if (epoch !== this._epoch) return this.view;
+      if (!IN_FLIGHT.has(progress.state)) {
+        // The probe answers for the server as it is now: nothing in
+        // flight means whatever a busy refusal named already ended, so a
+        // view still claiming "running" is stale. A boot-time resume
+        // carries an idle view — nothing to settle.
+        if (this.view.state === 'running') this._finish('idle');
+        return this.view;
+      }
       this.target = progress.version || this.target;
       this._apply(progress);
     } catch {
@@ -84,8 +101,10 @@ export class UpdateInstaller {
   async _tick() {
     this.timer = null;
     if (this.view.state !== 'running') return;
+    const epoch = this._epoch;
     try {
       const progress = await this.api.getUpdateProgress();
+      if (epoch !== this._epoch) return; // a newer entry owns the loop
       if (progress.state === 'idle') {
         // The server answers with no job: the new process is up. Confirm it runs the target.
         this._set({ phase: 'restart', reconnecting: true });
@@ -94,6 +113,7 @@ export class UpdateInstaller {
         this._apply(progress);
       }
     } catch {
+      if (epoch !== this._epoch) return;
       // The connection dropped: the server is replacing its process.
       this._set({ phase: 'restart', reconnecting: true });
       await this._awaitVersion();
@@ -105,8 +125,10 @@ export class UpdateInstaller {
   // restart window is bounded from the first moment the server went quiet.
   async _awaitVersion() {
     if (!this.restartAt) this.restartAt = this.now();
+    const epoch = this._epoch;
     try {
       const info = await this.api.getUpdate();
+      if (epoch !== this._epoch) return; // superseded mid-restart
       if (info.current === this.target) {
         this._finish('succeeded');
         return;
@@ -114,6 +136,7 @@ export class UpdateInstaller {
     } catch {
       /* still down: keep waiting */
     }
+    if (epoch !== this._epoch) return;
     if (this.now() - this.restartAt > this.deadlineMs) {
       this._finish('failed', `NusaLLM did not come back on ${this.target} in time. Start it again to run the new version.`);
     }

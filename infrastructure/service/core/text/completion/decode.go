@@ -50,7 +50,9 @@ func decodeMessage(w MessageBody, finishReason string) (entity.Message, error) {
 		if err != nil {
 			return entity.Message{}, err
 		}
-		msg.AddToolCall(tc)
+		if err := msg.AddToolCall(tc); err != nil {
+			return entity.Message{}, err
+		}
 	}
 	if w.Reasoning != "" {
 		msg.SetOptionalContent(reasoningKey, w.Reasoning)

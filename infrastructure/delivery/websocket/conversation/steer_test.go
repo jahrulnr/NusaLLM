@@ -38,6 +38,25 @@ func readUntil(t *testing.T, ws *websocket.Conn, want string) frame {
 	}
 }
 
+// readUntilTurn scopes the wait to one turn. Each turn runs on its own
+// goroutine, so a queued turn's frames can legitimately precede the
+// running turn's terminal — a type-only wait would consume them.
+func readUntilTurn(t *testing.T, ws *websocket.Conn, want, turnID string) frame {
+	t.Helper()
+	for {
+		f := readFrame(t, ws)
+		if f.Type == "error" {
+			t.Fatalf("waiting for %s on %s: %+v", want, turnID, f)
+		}
+		if f.Type == "turn.failed" && f.TurnID == turnID {
+			t.Fatalf("waiting for %s on %s: %+v", want, turnID, f)
+		}
+		if f.Type == want && f.TurnID == turnID {
+			return f
+		}
+	}
+}
+
 // gatedTool blocks in Execute until released — the deterministic window
 // in which steering commands act on a live turn. entered closes once.
 type gatedTool struct {
@@ -509,7 +528,11 @@ func TestSteerTargetsQueuedTurn(t *testing.T) {
 	}
 
 	close(gate.release)
-	_ = readUntil(t, ws, "turn.completed") // A finishes; B's job starts
+	// A finishes and B's job starts. The worker releases the room as
+	// soon as A's job returns while A's terminal is emitted on its own
+	// goroutine, so the two turns' frames interleave: B's fold may
+	// precede A's turn.completed. Scan for B's frame without waiting on
+	// A first.
 
 	// B folds the mailbox at step zero — the frame lands on B with the
 	// submission's inputId.
@@ -532,7 +555,7 @@ func TestSteerTargetsQueuedTurn(t *testing.T) {
 	if sp["inputId"] != "st-B" || sp["text"] != "for the queued job" {
 		t.Fatalf("queued-turn steer frame %s", f.Payload)
 	}
-	f = readUntil(t, ws, "turn.completed")
+	f = readUntilTurn(t, ws, "turn.completed", turnB)
 	var term terminalPayload
 	if err := json.Unmarshal(f.Payload, &term); err != nil {
 		t.Fatal(err)

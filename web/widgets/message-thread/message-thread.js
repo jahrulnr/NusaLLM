@@ -1,4 +1,4 @@
-import { Widget, el, emit, clear } from '../../lib/dom.js';
+import { Widget, el, emit, clear, deepActiveElement, focusKeyOf, findByFocusKey } from '../../lib/dom.js';
 import { icon } from '../../lib/icons.js';
 
 // The conversation surface. Assistant content renders through
@@ -244,6 +244,23 @@ class MessageThread extends Widget {
   }
 
   _render() {
+    // The open editor holds its draft only in the live textarea — a
+    // window rewrite (an earlier page prepending, a refresh) rebuilds
+    // the block from stored content, so carry the typed text forward
+    // before the DOM is torn down.
+    if (this._editingId && this._editInput) {
+      this._editDraft = { id: this._editingId, content: this._editInput.value };
+    }
+    // A control the rebuild replaces wholesale — the earlier-page
+    // button survives prepends — hands focus to its successor by
+    // stable key instead of dropping it to BODY.
+    const prev = deepActiveElement();
+    const focusKey = prev && this.root.contains?.(prev) ? focusKeyOf(prev) : null;
+    this._renderBody();
+    if (focusKey) findByFocusKey(this.root, focusKey)?.focus?.();
+  }
+
+  _renderBody() {
     // A hidden scroller (settings covers the thread) reports zero
     // rects — the anchor recorded on the last real scroll is the only
     // position still known, and scrollTop writes are no-ops anyway.
@@ -374,11 +391,16 @@ class MessageThread extends Widget {
 
   // Attachment chip — the stored reference (uri, or its display name
   // when set) is owner-visible. The full uri rides the tooltip; both
-  // are untrusted text inserted via textContent only.
+  // are untrusted text inserted via textContent only. A data: URI is a
+  // payload, not a name: neither the visible label nor the tooltip may
+  // carry the base64 blob.
   _attachmentChip(a) {
-    return el('span', { class: 'attachment', title: a.uri || '' }, [
+    const uri = a.uri || '';
+    const data = /^data:/i.test(uri);
+    const label = a.name || (data ? 'attachment' : uri) || 'attachment';
+    return el('span', { class: 'attachment', title: data ? label : uri }, [
       el('span', { class: 'att-kind', text: `${a.modality} · ${a.mediaType}` }),
-      el('span', { class: 'att-name', text: a.name || a.uri || 'attachment' }),
+      el('span', { class: 'att-name', text: label }),
     ]);
   }
 
@@ -395,7 +417,13 @@ class MessageThread extends Widget {
     if (!this._commandsBusy && (m.userType === 'origin' || m.userType === '' || !m.userType)) {
       block.append(el('button', {
         class: 'edit-btn', type: 'button', 'aria-label': 'Edit message',
-        onclick: () => { this._editingId = m.id; this._render(); },
+        onclick: () => {
+          this._editingId = m.id;
+          this._render();
+          // Typing is the next action — the editor must own focus, not
+          // the destroyed button's BODY fallback.
+          this._editInput?.focus?.();
+        },
       }, [icon('pencil', 11)]));
     }
     if (!injected.length) return block;
@@ -404,11 +432,30 @@ class MessageThread extends Widget {
     return el('div', {}, [block, contextLines()]);
   }
 
+  // The editor's exit hands focus to the control that opened it — the
+  // rebuilt bubble's edit button. Without it a cancel or commit drops
+  // the keyboard user onto BODY one message away from their context.
+  _focusEditOf(messageId) {
+    const i = (this._renderedMessages || []).findIndex((x) => x.id === messageId);
+    const node = this._messageNodes?.[i];
+    if (!node) return;
+    const find = (n) => {
+      if (n.className === 'edit-btn') return n;
+      for (const c of n.children || []) {
+        const hit = find(c);
+        if (hit) return hit;
+      }
+      return null;
+    };
+    find(node)?.focus?.();
+  }
+
   _editBlock(m) {
     const draft = this._editDraft && this._editDraft.id === m.id
       ? this._editDraft.content : m.content;
     const input = el('textarea', { class: 'edit-input', value: draft, 'aria-label': 'Edit message content' });
-    const cancel = () => { this._editingId = null; this._editDraft = null; this._render(); };
+    this._editInput = input;
+    const cancel = () => { this._editingId = null; this._editDraft = null; this._render(); this._focusEditOf(m.id); };
     const commit = () => {
       const content = input.value.trim();
       if (content && content !== m.content) {
@@ -417,14 +464,20 @@ class MessageThread extends Widget {
         if (!emit(this, 'message-edit', { messageId: m.id, content }, { cancelable: true })) {
           this._editDraft = { id: m.id, content };
           this._render();
+          // The vetoed save took focus down with its button — the draft
+          // is still open for retry, so the new textarea is where
+          // typing continues.
+          this._editInput?.focus?.();
           return;
         }
       }
       this._editingId = null;
       this._editDraft = null;
       this._render();
+      this._focusEditOf(m.id);
     };
     input.addEventListener('keydown', (e) => {
+      if (e.isComposing) return; // IME candidate keys are not editor commands
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commit(); }
       if (e.key === 'Escape') cancel();
     });

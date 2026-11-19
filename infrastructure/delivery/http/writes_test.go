@@ -94,8 +94,9 @@ func doBody(t *testing.T, h *stdhttp.Handler, method, path, contentType, body st
 
 func TestBodyEnvelopeRules(t *testing.T) {
 	fcw := &fakeConvWrites{}
-	h := newTestHandler(t, Deps{ConversationWrites: fcw})
-
+	// PATCH answers with a fresh projection, so it only exists when the
+	// read surface is wired — the envelope rules below exercise that route.
+	h := newTestHandler(t, Deps{Conversations: &fakeConversations{}, ConversationWrites: fcw})
 	cases := []struct {
 		name, method, path, ct, body string
 	}{
@@ -377,5 +378,26 @@ func TestSettingsProjectionDropsUnlistedLeaves(t *testing.T) {
 	conv := decodeBody(t, rec)["conversation"].(map[string]any)
 	if len(conv) != 1 || conv["mailbox_cap"] != 64.0 {
 		t.Fatalf("conversation section must carry whitelisted leaves only: %v", conv)
+	}
+}
+
+// Deps documents the read and write surfaces as independently optional.
+// Rename and compaction answer with a fresh conversation projection, so a
+// writes-only composition cannot serve them: the handler must not be
+// mounted and dereference a nil reader (recoverProblem turns that panic
+// into a 500, which reads as a server fault instead of an absent route).
+func TestConversationWritesOnlyLeavesProjectionMutationsUnregistered(t *testing.T) {
+	h := newTestHandler(t, Deps{ConversationWrites: &fakeConvWrites{}})
+	for _, tc := range []struct {
+		name, method, path, body string
+	}{
+		{"rename", "PATCH", "/api/conversations/c_1", `{"title":"new"}`},
+		{"compact", "POST", "/api/conversations/c_1/compactions", ""},
+	} {
+		rec := doBody(t, h, tc.method, tc.path, "application/json", tc.body)
+		if rec.Code != 404 {
+			t.Fatalf("%s with writes only: want 404 for an unregistered projection route, got %d: %s",
+				tc.name, rec.Code, rec.Body.String())
+		}
 	}
 }

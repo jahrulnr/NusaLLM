@@ -31,7 +31,10 @@ func ReadBody(ctx context.Context, body io.ReadCloser, idle time.Duration) ([]by
 		_ = body.Close() // the read underneath errors out; Send's deferred close is idempotent
 	})
 	defer t.Stop()
-	raw, err := readCapped(body)
+	// The deadline is per-chunk idle, not a wall clock on the whole read —
+	// a body arriving steadily, however slowly, is alive and must not be
+	// cut; only a stretch with no bytes at all is "upstream body idle".
+	raw, err := readCapped(&resetOnRead{r: body, reset: func() { t.Reset(idle) }})
 	if err == nil {
 		return raw, nil
 	}
@@ -53,6 +56,22 @@ func ReadBody(ctx context.Context, body io.ReadCloser, idle time.Duration) ([]by
 func isAppError(err error) bool {
 	_, ok := errors.AsType[apperror.IAppError](err)
 	return ok
+}
+
+// resetOnRead rolls the idle deadline forward on every chunk that
+// arrives — the stream dies only after a stretch with no bytes at all,
+// never for being merely slow in total.
+type resetOnRead struct {
+	r     io.Reader
+	reset func()
+}
+
+func (rr *resetOnRead) Read(p []byte) (int, error) {
+	n, err := rr.r.Read(p)
+	if n > 0 {
+		rr.reset()
+	}
+	return n, err
 }
 
 func readCapped(r io.Reader) ([]byte, error) {

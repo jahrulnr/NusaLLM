@@ -29,3 +29,16 @@ func ParseModelType(v string) (ModelType, bool) {
 	}
 	return "", false
 }
+
+// ChatCapable reports whether a model of this type answers a chat turn —
+// text, image, and audio-understanding models can; the single-purpose
+// surfaces (embedding, rerank, speech, transcription, video, decision)
+// cannot. The unset type is not "capable": callers decide fail-open for
+// catalogs that omit the declaration.
+func (t ModelType) ChatCapable() bool {
+	switch t {
+	case ModelTypeText, ModelTypeImage, ModelTypeAudio:
+		return true
+	}
+	return false
+}

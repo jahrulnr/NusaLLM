@@ -228,3 +228,33 @@ func TestMediaGateFoldAtTurnEnd(t *testing.T) {
 		t.Fatalf("post-fold live image count = %d, want 0", got)
 	}
 }
+
+// The per-request image cap applies to every image the next provider
+// call replays, not just tool output. User attachments are the other
+// source: sending two images to a serving that declares maxImages=1
+// guarantees a provider rejection. The turn must reject or trim before
+// the provider call, never hand it an over-cap history.
+type mediaCountSvc struct {
+	seen int
+}
+
+func (s *mediaCountSvc) Send(_ context.Context, conv *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, _ event.TurnEventHandler) error {
+	s.seen = conv.MediaCount(enum.ModalityImage)
+	m, _ := entity.NewMessage(enum.RoleAssistant, "done")
+	conv.Append(m)
+	return nil
+}
+
+func TestUserAttachmentsRespectMaxImages(t *testing.T) {
+	d := mediaDeps(t, 100)
+	conv := snapRoom(t, d, 2, 0)
+	model := entity.Model{}
+	model.SetMaxImages(1)
+	svc := &mediaCountSvc{}
+	if err := d.runTurn(t.Context(), "room", conv, EnvironmentBundle{}, nil, model, svc, nil, nil); err != nil {
+		return // rejecting the over-cap send is also safe
+	}
+	if svc.seen > 1 {
+		t.Fatalf("provider saw %d images despite maxImages=1", svc.seen)
+	}
+}

@@ -75,7 +75,9 @@ func (d Deps) appendToolContexts(ctx context.Context, convID string, conv *aggre
 			return err
 		}
 		call.SetStoredOutput(record.Output, "")
-		msg.AddToolCall(call)
+		if err := msg.AddToolCall(call); err != nil {
+			return err
+		}
 	}
 	if len(msg.ToolCalls()) == 0 {
 		return nil

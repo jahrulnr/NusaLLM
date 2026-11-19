@@ -44,9 +44,15 @@ func Register(api *gin.RouterGroup, d Deps) {
 		api.GET("/gateways/:id/providers", s.providers)
 	}
 	if d.Writes != nil {
-		api.PUT("/gateways/:id", s.put)
-		api.POST("/gateways/:id/import-models", s.importModels)
 		api.DELETE("/gateways/:id", s.delete)
+		// PUT and import answer with the write outcome merged into a fresh
+		// read projection — a Writes-only composition has no projection to
+		// render, so those routes stay unregistered rather than mounting a
+		// handler that dereferences a nil reader.
+		if d.Reads != nil {
+			api.PUT("/gateways/:id", s.put)
+			api.POST("/gateways/:id/import-models", s.importModels)
+		}
 	}
 }
 

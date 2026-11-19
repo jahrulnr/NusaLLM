@@ -49,7 +49,9 @@ class UpdateProgress extends Widget {
     clear(this.panel);
     const v = this._view;
     this.primaryBtn = null;
-    if (v.state === 'idle') return;
+    // Idle means nothing is running — a dialog still open over the
+    // cleared panel is an empty modal, so the view itself dismisses it.
+    if (v.state === 'idle') { this.close(); return; }
 
     const pct = percent(v);
     const steps = stepStates(v);

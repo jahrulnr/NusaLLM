@@ -104,3 +104,25 @@ test('a first failure reports only the error, with no status to keep', async () 
   await poller.start();
   assert.deepEqual(seen, [{ error: 'no route' }]);
 });
+
+// A background poll and a manual check can overlap (the interval is not
+// paused by the About button). The older request must not land last and
+// replace the newer release picture — that would hide an update the user
+// just asked for, or resurrect one they already skipped.
+test('an older poll response cannot overwrite a newer manual check', async () => {
+  const seen = [];
+  let releaseRefresh;
+  const oldRefresh = new Promise((resolve) => { releaseRefresh = resolve; });
+  const poller = new UpdatePoller({
+    fetchStatus: () => oldRefresh,
+    checkNow: async () => ({ latest: '0.10.5', checkedAt: 'new' }),
+    onStatus: (status) => seen.push(status),
+    timers: fakeTimers(),
+  });
+  const pending = poller.refresh();
+  await poller.check();
+  releaseRefresh({ latest: '0.10.3', checkedAt: 'old' });
+  await pending;
+  assert.equal(poller.status.latest, '0.10.5');
+  assert.equal(seen[seen.length - 1].latest, '0.10.5');
+});

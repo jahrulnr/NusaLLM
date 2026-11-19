@@ -336,3 +336,161 @@ func TestImportModelsConcurrentMergeWindow(t *testing.T) {
 		t.Fatalf("merged record lost an id: %+v", info.Models)
 	}
 }
+
+// gatedCatalog holds the first catalog fetch open so a test can change
+// the gateway's endpoint while that fetch is in flight. Later fetches
+// answer immediately with no models.
+type gatedCatalog struct {
+	started  chan struct{}
+	release  chan struct{}
+	calls    sync.Once
+	start    sync.Once
+	releaseO sync.Once
+}
+
+func (g *gatedCatalog) ListModels(context.Context, *aggregate.Gateway) ([]dservice.CatalogModel, error) {
+	first := false
+	g.calls.Do(func() {
+		first = true
+		g.start.Do(func() { close(g.started) })
+	})
+	if first {
+		<-g.release
+		return []dservice.CatalogModel{{ID: "stale-model"}}, nil
+	}
+	return nil, nil
+}
+
+func (g *gatedCatalog) ListProviders(context.Context, *aggregate.Gateway, string) ([]dservice.UpstreamProvider, error) {
+	return nil, nil
+}
+
+// An auto-import fetches the catalog before it takes the merge lock.
+// Replacing the endpoint while that fetch is in flight must not merge
+// the old provider's models into the new record — the response is about
+// a gateway that no longer exists, and the stale ids would make the
+// picker offer models the new endpoint cannot serve.
+func TestImportModelsDropsCatalogFetchedForReplacedEndpoint(t *testing.T) {
+	app, _, _ := newApp(t)
+	g := &gatedCatalog{started: make(chan struct{}), release: make(chan struct{})}
+	in := GatewayInput{
+		ID: "g", Name: "old", Style: enum.StyleCompletion, Endpoint: "https://old.example",
+		Models: []ModelInput{{ID: "a"}},
+	}
+	if _, err := app.Upsert(t.Context(), in); err != nil {
+		t.Fatal(err)
+	}
+	app.catalog = g
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = app.ImportModels(t.Context(), "g")
+		close(done)
+	}()
+	<-g.started
+
+	replaced := GatewayInput{
+		ID: "g", Name: "new", Style: enum.StyleCompletion, Endpoint: "https://new.example",
+		Models: []ModelInput{{ID: "a"}},
+	}
+	// The replacement write must not itself fetch a catalog: the point
+	// is the in-flight old fetch landing after this write.
+	app.catalog = nil
+	if _, err := app.Upsert(t.Context(), replaced); err != nil {
+		t.Fatal(err)
+	}
+	app.catalog = g
+	close(g.release)
+	<-done
+
+	info, err := app.Get(t.Context(), "g")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(info.Models) != 1 || info.Models[0].ID() != "a" {
+		t.Fatalf("old provider catalog merged into the replaced endpoint: %+v", info.Models)
+	}
+}
+
+// A refreshed catalog is a write path too: a provider that declares an
+// output ceiling above its own context window is describing an
+// impossible request, and storing the pair would bypass the cross-field
+// validation every manual gateway write applies. The merge must not
+// persist a model that can never be sent.
+func TestRefreshModelsRejectsOutputLimitAboveContext(t *testing.T) {
+	app, _, _ := newApp(t)
+	in := GatewayInput{
+		ID: "g", Name: "n", Style: enum.StyleCompletion, Endpoint: "https://x",
+	}
+	if _, err := app.Upsert(t.Context(), in); err != nil {
+		t.Fatal(err)
+	}
+	app.catalog = fakeCatalog{list: []dservice.CatalogModel{{
+		ID: "bad-model", ContextWindow: 8_192, OutputLimit: 16_384,
+	}}}
+	app.RefreshModels(t.Context())
+	info, err := app.Get(t.Context(), "g")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range info.Models {
+		if m.ContextWindow() > 0 && m.OutputLimit() > m.ContextWindow() {
+			t.Fatalf("impossible catalog entry was stored: %+v", m)
+		}
+	}
+}
+
+// A catalog context declaration must not make an existing request cap
+// impossible. A model saved while the window was unknown may carry a
+// maxOutputTokens larger than a later-discovered window; filling the
+// window blindly would create the exact context/max-output pair write
+// validation rejects. Skip or reconcile the declaration.
+func TestRefreshModelsKeepsContextCompatibleWithExistingMaxOutput(t *testing.T) {
+	app, _, _ := newApp(t)
+	maxOut := 8_000
+	in := GatewayInput{
+		ID: "g", Name: "n", Style: enum.StyleCompletion, Endpoint: "https://x",
+		Models: []ModelInput{{ID: "m", MaxOutputTokens: &maxOut}},
+	}
+	if _, err := app.Upsert(t.Context(), in); err != nil {
+		t.Fatal(err)
+	}
+	app.catalog = fakeCatalog{list: []dservice.CatalogModel{{ID: "m", ContextWindow: 4_096}}}
+	app.RefreshModels(t.Context())
+	info, err := app.Get(t.Context(), "g")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range info.Models {
+		if m.ContextWindow() > 0 && m.MaxOutputTokens() != nil && *m.MaxOutputTokens() > m.ContextWindow() {
+			t.Fatalf("refresh created impossible context=%d maxOutput=%d", m.ContextWindow(), *m.MaxOutputTokens())
+		}
+	}
+}
+
+// The converse cross-field gap: a catalog-declared output ceiling below
+// an existing request cap (maxOutputTokens) creates maxOutput > output
+// limit, which write validation rejects. The merge must not persist
+// that pair either.
+func TestRefreshModelsKeepsOutputLimitCompatibleWithExistingMaxOutput(t *testing.T) {
+	app, _, _ := newApp(t)
+	maxOut := 8_000
+	in := GatewayInput{
+		ID: "g", Name: "n", Style: enum.StyleCompletion, Endpoint: "https://x",
+		Models: []ModelInput{{ID: "m", ContextWindow: 100_000, MaxOutputTokens: &maxOut}},
+	}
+	if _, err := app.Upsert(t.Context(), in); err != nil {
+		t.Fatal(err)
+	}
+	app.catalog = fakeCatalog{list: []dservice.CatalogModel{{ID: "m", OutputLimit: 4_096}}}
+	app.RefreshModels(t.Context())
+	info, err := app.Get(t.Context(), "g")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range info.Models {
+		if m.OutputLimit() > 0 && m.MaxOutputTokens() != nil && *m.MaxOutputTokens() > m.OutputLimit() {
+			t.Fatalf("refresh created impossible outputLimit=%d maxOutput=%d", m.OutputLimit(), *m.MaxOutputTokens())
+		}
+	}
+}

@@ -254,10 +254,17 @@ func (c *Catalog) ListModels(ctx context.Context, gateway *aggregate.Gateway) ([
 // routable upstream backends — the names a provider.order pin accepts.
 // Non-aggregator surfaces have no upstream layer and return empty.
 func (c *Catalog) ListProviders(ctx context.Context, gateway *aggregate.Gateway, modelID string) ([]dservice.UpstreamProvider, error) {
-	if !strings.Contains(gateway.Endpoint(), string(enum.OpenRouter)) || !strings.Contains(modelID, "/") {
+	if !enum.OpenRouter.MatchesEndpoint(gateway.Endpoint()) || !strings.Contains(modelID, "/") {
 		return nil, nil
 	}
-	u := strings.TrimRight(gateway.Endpoint(), "/") + "/models/" + modelID + "/endpoints"
+	// The id is path data, not URL syntax — escape each segment so a
+	// delimiter inside one can't push /endpoints into the query, while
+	// the vendor/name slash keeps the separator it routes on.
+	segs := strings.Split(modelID, "/")
+	for i, s := range segs {
+		segs[i] = url.PathEscape(s)
+	}
+	u := strings.TrimRight(gateway.Endpoint(), "/") + "/models/" + strings.Join(segs, "/") + "/endpoints"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, apperror.New(400, "invalid gateway endpoint", err)

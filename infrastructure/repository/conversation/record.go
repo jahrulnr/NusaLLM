@@ -199,7 +199,9 @@ func decodeMessage(r messageRecord) (entity.Message, error) {
 		if err != nil {
 			return entity.Message{}, err
 		}
-		m.AddToolCall(tc)
+		if err := m.AddToolCall(tc); err != nil {
+			return entity.Message{}, err
+		}
 	}
 	for k, v := range r.OptionalContent {
 		m.SetOptionalContent(k, v)

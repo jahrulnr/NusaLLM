@@ -125,3 +125,122 @@ test('choosing a route returns focus to the picker trigger', () => {
   assert.equal(picker._open, false);
   assert.equal(globalThis.document.activeElement, picker.trigger);
 });
+
+// The trigger advertises a listbox and opens it on ArrowDown. Inside the
+// menu, ArrowDown must enter the results; otherwise the only keyboard
+// route is Tab, and the advertised ArrowDown stops working one key later.
+test('ArrowDown moves focus from the search field to the first result', () => {
+  const picker = new ModelPicker();
+  picker.gateways = [{ id: 'gw', name: 'Gateway', models: [{ id: 'm1' }] }];
+  picker._openMenu();
+  const option = firstOption(picker.root);
+  assert.ok(option, 'model option rendered');
+  assert.notEqual(globalThis.document.activeElement, option);
+  picker._onMenuKeydown({ key: 'ArrowDown', preventDefault() {} });
+  assert.equal(globalThis.document.activeElement, option);
+});
+
+// Escape while an IME composition is open dismisses the candidate list,
+// not the whole picker. The menu's Escape path must respect isComposing
+// just like the composer's Enter path does.
+function firstClass(node, cls) {
+  if (String(node.className || '').split(/\s+/).includes(cls)) return node;
+  for (const child of node.children || []) {
+    const hit = firstClass(child, cls);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+test('Escape during IME composition keeps the picker open', () => {
+  const picker = new ModelPicker();
+  picker.gateways = [{ id: 'gw', name: 'Gateway', models: [{ id: 'm1' }] }];
+  picker._openMenu();
+  const search = firstClass(picker.root, 'menu-search');
+  assert.ok(search, 'search input rendered');
+  search.focus();
+  search.dispatch('keydown', { key: 'Escape', isComposing: true, preventDefault() {} });
+  assert.equal(picker._open, true, 'the search input must not close during composition');
+  picker._onMenuKeydown({ key: 'Escape', isComposing: true, preventDefault() {} });
+  assert.equal(picker._open, true, 'the menu handler must not close during composition');
+  search.dispatch('keydown', { key: 'Escape', isComposing: false, preventDefault() {} });
+  assert.equal(picker._open, false);
+});
+
+// The picker chooses a model for a chat turn. The server marks which
+// catalog entries answer one (`listed` — embedding/rerank/speech types
+// and tiny context windows are out); offering an unlisted model sets
+// the user up for a guaranteed provider error. Absent stays eligible.
+test('unlisted models are not offered in the chat picker', () => {
+  const picker = new ModelPicker();
+  picker.gateways = [{
+    id: 'gw', name: 'Gateway',
+    models: [
+      { id: 'chat-text', listed: true },
+      { id: 'embed-me', listed: false },
+      { id: 'rerank-me', listed: false },
+      { id: 'untyped' },
+    ],
+  }];
+  picker._openMenu();
+  const labels = [];
+  const walk = (node) => {
+    if (node.role === 'option') labels.push(node.children?.[0]?.textContent || '');
+    for (const child of node.children || []) walk(child);
+  };
+  walk(picker.root);
+  assert.deepEqual(labels.sort(), ['chat-text', 'untyped']);
+});
+
+// The capture-phase Escape listener exists so Escape works after a pick
+// drops focus to the body. It must honor IME composition too, otherwise
+// it closes the picker before the focused search/menu guard can run.
+test('document Escape does not close the picker during IME composition', () => {
+  const picker = new ModelPicker();
+  picker.gateways = [{ id: 'gw', name: 'Gateway', models: [{ id: 'm1' }] }];
+  picker._openMenu();
+  globalThis.document.dispatch('keydown', { key: 'Escape', isComposing: true, preventDefault() {} });
+  assert.equal(picker._open, true);
+  globalThis.document.dispatch('keydown', { key: 'Escape', isComposing: false, preventDefault() {} });
+  assert.equal(picker._open, false);
+});
+
+// ArrowDown enters the first result; a second ArrowDown must move to the
+// next result rather than refocusing the first. The menu is a listbox,
+// not a one-shot focus shortcut.
+test('repeated ArrowDown moves through the result list', () => {
+  const picker = new ModelPicker();
+  picker.gateways = [{
+    id: 'gw', name: 'Gateway',
+    models: [{ id: 'm1' }, { id: 'm2' }],
+  }];
+  picker._openMenu();
+  const options = [];
+  const walk = (node) => {
+    if (node.role === 'option') options.push(node);
+    for (const child of node.children || []) walk(child);
+  };
+  walk(picker.root);
+  assert.equal(options.length, 2);
+  picker._onMenuKeydown({ key: 'ArrowDown', preventDefault() {} });
+  assert.equal(globalThis.document.activeElement, options[0]);
+  picker._onMenuKeydown({ key: 'ArrowDown', preventDefault() {} });
+  assert.equal(globalThis.document.activeElement, options[1]);
+});
+
+// Choosing a model swaps the menu to the effort step. The clicked option
+// is destroyed with the old menu, so focus must move to the new step's
+// first option; otherwise Enter drops the user onto BODY and the
+// keyboard flow dies between model and effort.
+test('picking a model moves focus into the effort step', () => {
+  const picker = new ModelPicker();
+  picker.gateways = [{ id: 'gw', name: 'Gateway', models: [{ id: 'm1' }] }];
+  picker._openMenu();
+  const model = firstOption(picker.root);
+  assert.ok(model, 'model option rendered');
+  model.focus();
+  model.dispatch('click');
+  const next = firstOption(picker.root);
+  assert.ok(next, 'effort option rendered');
+  assert.equal(globalThis.document.activeElement, next);
+});

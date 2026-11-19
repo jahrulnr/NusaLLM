@@ -1,6 +1,9 @@
 package valueobject
 
-import "errors"
+import (
+	"errors"
+	"math"
+)
 
 // Pricing is the per-1M-token USD rate card a gateway publishes for a
 // model. Rates are catalog metadata — informational, never authoritative
@@ -23,8 +26,13 @@ func NewPricing(inputPerM, outputPerM, cacheReadPerM, cacheWritePerM float64) (P
 }
 
 func (p Pricing) validate() error {
-	if p.inputPerM < 0 || p.outputPerM < 0 || p.cacheReadPerM < 0 || p.cacheWritePerM < 0 {
-		return errors.New("rates cannot be negative")
+	// Rates persist as JSON — NaN and ±Inf have no JSON spelling, so a
+	// non-finite value would make the whole record unmarshalable. NaN
+	// also fails every ordered comparison, including the < 0 check.
+	for _, r := range []float64{p.inputPerM, p.outputPerM, p.cacheReadPerM, p.cacheWritePerM} {
+		if r < 0 || math.IsNaN(r) || math.IsInf(r, 0) {
+			return errors.New("rates must be finite and non-negative")
+		}
 	}
 	return nil
 }

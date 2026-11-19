@@ -129,6 +129,12 @@ func (app *GatewayApp) importModels(ctx context.Context, id string) ([]string, e
 	if snap.Gateway == nil {
 		return nil, nil // became unreadable between list and merge — skip
 	}
+	// The catalog was fetched against the record as it was — an Upsert
+	// that replaced the endpoint or style since is a different provider
+	// surface, and its models would land on a gateway they cannot serve.
+	if snap.Gateway.Endpoint() != loaded.Endpoint() || snap.Gateway.Style() != loaded.Style() {
+		return nil, nil
+	}
 	models := snap.Gateway.Models()
 	index := make(map[string]int, len(models))
 	for i, m := range models {
@@ -187,13 +193,30 @@ func applyCatalogModel(m *entity.Model, cm dservice.CatalogModel) bool {
 		m.SetAliasOf(cm.AliasOf)
 		changed = true
 	}
+	// The request cap (maxOutputTokens) is a third side of the same
+	// triangle the write path validates: a window or ceiling below it
+	// pairs into a request the provider can never honor — skip the
+	// claim that would create it.
+	maxOut := 0
+	if v := m.MaxOutputTokens(); v != nil {
+		maxOut = *v
+	}
 	if m.ContextWindow() == 0 && cm.ContextWindow > 0 {
-		m.SetContextWindow(cm.ContextWindow)
-		changed = true
+		// A window smaller than the declared output ceiling would pair
+		// into an impossible request — skip a claim that conflicts with
+		// what the record already says.
+		if (m.OutputLimit() == 0 || cm.ContextWindow >= m.OutputLimit()) &&
+			(maxOut == 0 || cm.ContextWindow >= maxOut) {
+			m.SetContextWindow(cm.ContextWindow)
+			changed = true
+		}
 	}
 	if m.OutputLimit() == 0 && cm.OutputLimit > 0 {
-		m.SetOutputLimit(cm.OutputLimit)
-		changed = true
+		if (m.ContextWindow() == 0 || cm.OutputLimit <= m.ContextWindow()) &&
+			(maxOut == 0 || cm.OutputLimit >= maxOut) {
+			m.SetOutputLimit(cm.OutputLimit)
+			changed = true
+		}
 	}
 	if len(m.InputModalities()) == 0 && len(cm.InputModalities) > 0 {
 		m.SetInputModalities(cm.InputModalities)

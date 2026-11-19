@@ -18,18 +18,22 @@ type pricingDTO struct {
 // modelDTO is the readable catalog entry — optionalContent is
 // server-owned and never projected.
 type modelDTO struct {
-	ID               string     `json:"id"`
-	Route            string     `json:"route,omitempty"`
-	Temperature      *float64   `json:"temperature,omitempty"`
-	TopP             *float64   `json:"topP,omitempty"`
-	TopK             *int       `json:"topK,omitempty"`
-	MaxOutputTokens  *int       `json:"maxOutputTokens,omitempty"`
-	PresencePenalty  *float64   `json:"presencePenalty,omitempty"`
-	FrequencyPenalty *float64   `json:"frequencyPenalty,omitempty"`
-	Seed             *int64     `json:"seed,omitempty"`
-	StopSequences    []string   `json:"stopSequences,omitempty"`
-	Effort           string     `json:"effort,omitempty"`
-	ModelType        string     `json:"modelType,omitempty"`
+	ID               string   `json:"id"`
+	Route            string   `json:"route,omitempty"`
+	Temperature      *float64 `json:"temperature,omitempty"`
+	TopP             *float64 `json:"topP,omitempty"`
+	TopK             *int     `json:"topK,omitempty"`
+	MaxOutputTokens  *int     `json:"maxOutputTokens,omitempty"`
+	PresencePenalty  *float64 `json:"presencePenalty,omitempty"`
+	FrequencyPenalty *float64 `json:"frequencyPenalty,omitempty"`
+	Seed             *int64   `json:"seed,omitempty"`
+	StopSequences    []string `json:"stopSequences,omitempty"`
+	Effort           string   `json:"effort,omitempty"`
+	ModelType        string   `json:"modelType,omitempty"`
+	// Listed marks the entries the chat picker offers — the shared
+	// ModelListedInPicker floor, so every client surface applies the
+	// same rule. Management views still show the full catalog.
+	Listed           bool       `json:"listed"`
 	Style            string     `json:"style,omitempty"`
 	ContextWindow    int        `json:"contextWindow"`
 	Pricing          pricingDTO `json:"pricing"`
@@ -58,6 +62,7 @@ func toModel(m entity.Model) modelDTO {
 		FrequencyPenalty: m.FrequencyPenalty(),
 		Seed:             m.Seed(),
 		ModelType:        m.ModelType().String(),
+		Listed:           appgateway.ModelListedInPicker(m),
 		ContextWindow:    m.ContextWindow(),
 		Name:             m.Name(),
 		Canonical:        m.Canonical(),

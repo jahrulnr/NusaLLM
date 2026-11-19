@@ -1,4 +1,4 @@
-import { Widget, el, emit, clear } from '../../lib/dom.js';
+import { Widget, el, emit, clear, deepActiveElement, focusKeyOf, findByFocusKey } from '../../lib/dom.js';
 import { icon } from '../../lib/icons.js';
 import { releaseBody, releasedOn } from '../../lib/update-state.js';
 
@@ -81,6 +81,11 @@ class UpdateDialog extends Widget {
   }
 
   _render() {
+    // The status poller refreshes while the modal sits open — a control
+    // the rebuild replaces hands focus to its same-key successor
+    // instead of dropping the keyboard user to BODY outside the modal.
+    const prev = deepActiveElement();
+    const focusKey = prev && this.body.contains?.(prev) ? focusKeyOf(prev) : null;
     clear(this.body);
     this.primaryBtn = null;
     this.copyControl = null;
@@ -132,32 +137,37 @@ class UpdateDialog extends Widget {
         ]),
         this.closeX,
       ]),
-      el('div', { class: 'versions' }, [
-        el('span', { class: 'from', text: info.current }),
-        icon('chevron', 12),
-        el('span', { class: 'to', text: info.latest }),
-        el('span', { class: 'badge', text: 'Latest' }),
-        released ? el('span', { class: 'released', text: `Released ${released}` }) : null,
-      ]),
-      el('section', { class: 'block' }, [
-        el('div', { class: 'block-head' }, [
-          el('h3', { class: 'label', text: "What's new" }),
-          releaseLink,
+      // The middle is the scroll owner: on a short viewport it absorbs
+      // the deficit so the header's Close and the footer actions always
+      // stay reachable — a clipped sheet would focus-scroll them away.
+      el('div', { class: 'scroll' }, [
+        el('div', { class: 'versions' }, [
+          el('span', { class: 'from', text: info.current }),
+          icon('chevron', 12),
+          el('span', { class: 'to', text: info.latest }),
+          el('span', { class: 'badge', text: 'Latest' }),
+          released ? el('span', { class: 'released', text: `Released ${released}` }) : null,
         ]),
-        el('div', { class: 'notes' }, [notesEl]),
-      ]),
-      el('section', { class: 'block' }, [
-        el('div', { class: 'block-head' }, [
-          el('h3', { class: 'label', text: 'Install in a terminal' }),
-          installable ? copyButton : null,
+        el('section', { class: 'block' }, [
+          el('div', { class: 'block-head' }, [
+            el('h3', { class: 'label', text: "What's new" }),
+            releaseLink,
+          ]),
+          el('div', { class: 'notes' }, [notesEl]),
         ]),
-        el('pre', { class: 'command' }, [el('code', { text: info.installCommand || '' })]),
-        el('p', {
-          class: 'hint',
-          text: installable
-            ? 'Update now installs this release in place and restarts NusaLLM. The command does the same from a terminal.'
-            : 'This build cannot replace itself. Run the command in a terminal to install the release.',
-        }),
+        el('section', { class: 'block' }, [
+          el('div', { class: 'block-head' }, [
+            el('h3', { class: 'label', text: 'Install in a terminal' }),
+            installable ? copyButton : null,
+          ]),
+          el('pre', { class: 'command' }, [el('code', { text: info.installCommand || '' })]),
+          el('p', {
+            class: 'hint',
+            text: installable
+              ? 'Update now installs this release in place and restarts NusaLLM. The command does the same from a terminal.'
+              : 'This build cannot replace itself. Run the command in a terminal to install the release.',
+          }),
+        ]),
       ]),
       this.statusEl,
       el('footer', { class: 'actions' }, [
@@ -171,6 +181,7 @@ class UpdateDialog extends Widget {
         this.primaryBtn,
       ]),
     );
+    if (focusKey) findByFocusKey(this.body, focusKey)?.focus?.();
   }
 }
 

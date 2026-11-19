@@ -896,3 +896,56 @@ func TestStreamReasoningOnlyIsAnEmptyAnswer(t *testing.T) {
 		t.Fatalf("reasoning-only turn committed: %+v", last.OptionalContent())
 	}
 }
+
+// Responses' incomplete_details.reason has two settled causes:
+// max_output_tokens (a truncation) and content_filter (a suppression).
+// Collapsing both to Length hides the filter and, for an empty reply,
+// turns a definitive blocked answer into a retryable 502.
+func TestIncompleteContentFilterMapsContentFilter(t *testing.T) {
+	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": "r", "status": "incomplete",
+			"output":             []any{map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "partial"}}}},
+			"incomplete_details": map[string]any{"reason": "content_filter"},
+		})
+	})
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(m)
+	model, _ := entity.NewModel("gpt-x", "test")
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := conv.Last().FinishReason(); got != enum.FinishReasonContentFilter {
+		t.Fatalf("incomplete/content_filter finish = %v, want content_filter", got)
+	}
+}
+
+// Some Responses-compatible proxies repeat only item shells in the
+// terminal payload while the text arrived in deltas/output_item.done.
+// The fallback path exists exactly for that partial implementation, but
+// it is consulted only when terminal output is empty — a terminal
+// message with empty content suppresses the accumulated text and the
+// turn commits blank (or 502).
+func TestStreamEmptyTerminalMessageUsesFallbackContent(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("" +
+			"event: response.output_text.delta\n" +
+			"data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"hello\"}\n\n" +
+			"event: response.output_item.done\n" +
+			"data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}}\n\n" +
+			"event: response.completed\n" +
+			"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[]}]}}\n\n"))
+	})
+	conv := newConv(t)
+	m, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(m)
+	model, _ := entity.NewModel("gpt-x", "test")
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
+		t.Fatalf("streamed text with an empty terminal shell must commit: %v", err)
+	}
+	if got := conv.Last().Content(); got != "hello" {
+		t.Fatalf("content = %q, want fallback text hello", got)
+	}
+}

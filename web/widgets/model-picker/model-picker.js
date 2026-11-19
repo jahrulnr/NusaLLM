@@ -1,4 +1,4 @@
-import { Widget, el, emit, clear } from '../../lib/dom.js';
+import { Widget, el, emit, clear, deepActiveElement, focusKeyOf, findByFocusKey, listOptions } from '../../lib/dom.js';
 import { icon } from '../../lib/icons.js';
 import { APIClient } from '../../lib/api-client.js';
 
@@ -41,6 +41,40 @@ class ModelPicker extends Widget {
     this._providers = null;   // upstream choices for the draft route/model
     this._providersFailed = false;
     this._gen = 0;            // stale-response token for the provider fetch
+    this._innerFocus = null;   // focus key of the node inside this shadow
+    this._clearTok = null;     // pending focusout clear token
+    this._droppedOpen = false; // the drop-close below ran on our own detach
+    // A header rebuild detaches and re-appends this host — the shadow
+    // menu survives but the browser drops whatever focus it held,
+    // firing focusout mid-detach. The clear must wait a microtask: a
+    // synchronous detach+reattach is a move, not a leave, and the
+    // recorded key hands focus back on reconnect.
+    this.root.addEventListener('focusin', (e) => {
+      this._clearTok = null;
+      this._innerFocus = focusKeyOf(e.target);
+    });
+    this.root.addEventListener('focusout', (e) => {
+      if (e.relatedTarget && this.root.contains(e.relatedTarget)) return;
+      const tok = this._clearTok = {};
+      // Our own render also swaps the focused node — that drop is a
+      // move, not a leave, and the render's restore hands focus to the
+      // replacement.
+      const wasOpen = this._open && !this._rendering;
+      if (wasOpen) {
+        // Focus genuinely left, so the popover dismisses — but this same
+        // event fires mid-detach while the host is inside a removeChild:
+        // mutating the DOM here (render) throws inside the browser's
+        // removal. Mark closed now, paint it on the microtask — a
+        // same-task reconnect cancels that and reopens instead.
+        this._droppedOpen = true;
+        this._open = false;
+      }
+      queueMicrotask(() => {
+        if (this._clearTok !== tok) return;
+        this._innerFocus = null;
+        if (wasOpen && !this._open) this._render();
+      });
+    });
     this._render();
   }
 
@@ -107,8 +141,25 @@ class ModelPicker extends Widget {
 
   _onMenuKeydown(e) {
     if (e.key === 'Escape') {
+      // An open IME composition owns Escape until it commits — the key
+      // dismisses the candidate list, not the whole picker.
+      if (e.isComposing) return;
       e.preventDefault();
       this._closeMenu(true);
+    } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      // The menu advertises listbox semantics — arrows must walk the
+      // options, or the key the trigger promises stops one key in.
+      e.preventDefault();
+      const options = this._menuOptions();
+      if (!options.length) return;
+      // Focus inside the shadow resolves to the host at document level;
+      // the shadow root's own activeElement names the real option.
+      const active = this.shadowRoot?.activeElement || document.activeElement;
+      const i = options.indexOf(active);
+      const dir = e.key === 'ArrowDown' ? 1 : -1;
+      const next = i < 0 ? (dir > 0 ? 0 : options.length - 1)
+        : Math.max(0, Math.min(options.length - 1, i + dir));
+      options[next].focus();
     } else if (e.key === 'Tab') {
       // Tab must move focus normally — never trap it. The popover
       // closes only once focus has actually left: tabbing from the
@@ -122,6 +173,12 @@ class ModelPicker extends Widget {
     }
   }
 
+  // The options the current step renders, in document order — the
+  // arrow-key walk and the re-render focus target both read this.
+  _menuOptions() {
+    return listOptions(this._menuEl);
+  }
+
   _stepTitle(text) {
     return el('div', { class: 'menu-group' }, [
       el('button', {
@@ -132,9 +189,10 @@ class ModelPicker extends Widget {
     ]);
   }
 
-  _item(label, meta, onclick, sel = false) {
+  _item(label, meta, onclick, sel = false, key = label) {
     return el('button', {
       class: `menu-item${sel ? ' selected' : ''}`, type: 'button', role: 'option',
+      'data-id': key,
       'aria-selected': sel ? 'true' : 'false', onclick,
     }, [
       el('span', { class: 'menu-id', text: label }),
@@ -155,7 +213,7 @@ class ModelPicker extends Widget {
       clear(list);
       this._renderResults(list);
     });
-    input.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); this._closeMenu(true); } });
+    input.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !e.isComposing) { e.preventDefault(); this._closeMenu(true); } });
     menu.append(input, list);
     this._renderResults(list);
     // Manage-models navigates to the gateway's settings view — the
@@ -182,7 +240,11 @@ class ModelPicker extends Widget {
     const groups = usable
       .map((g) => ({
         g,
-        models: q ? g.models.filter((m) => m.id.toLowerCase().includes(q) || (m.name || '').toLowerCase().includes(q) || g.id.toLowerCase().includes(q) || (g.name || '').toLowerCase().includes(q)) : g.models,
+        // `listed` is the server's picker floor — one rule shared with
+        // the CLI. Absent means undeclared: the floor fails open.
+        models: g.models
+          .filter((m) => m.listed !== false)
+          .filter((m) => !q || m.id.toLowerCase().includes(q) || (m.name || '').toLowerCase().includes(q) || g.id.toLowerCase().includes(q) || (g.name || '').toLowerCase().includes(q)),
       }))
       .filter(({ models }) => models.length);
     if (!groups.length) {
@@ -205,7 +267,7 @@ class ModelPicker extends Widget {
           this._emitDraft();
           this._step = 'effort';
           this._render();
-        }, sel));
+        }, sel, `${g.id}/${m.id}`));
       }
     }
   }
@@ -267,7 +329,17 @@ class ModelPicker extends Widget {
 
   _render() {
     this._detachDismiss(); // any pending outside-tap listener dies here
-    clear(this.root);
+    // A re-render replaces the focused node wholesale — a pick's option
+    // dies with the step it belonged to. The replacement carries the
+    // same identity (data-id, else class); a step transition has none,
+    // so focus falls through to the new step's start below.
+    const prev = deepActiveElement();
+    const focusKey = prev && this.root.contains?.(prev) ? focusKeyOf(prev) : null;
+    // Removing the focused node fires focusout before the unlink —
+    // flag the removal window so the leave-close knows this drop is a
+    // move the restore below is about to undo.
+    this._rendering = true;
+    try { clear(this.root); } finally { this._rendering = false; }
     this.root.classList.add('picker');
 
     this.trigger = el('button', {
@@ -293,23 +365,33 @@ class ModelPicker extends Widget {
     });
     this.root.append(this.trigger);
 
-    if (!this._open) return;
-    // Phones: dims the page and takes the tap that dismisses the sheet.
-    // It sits inside this host, so the outside-tap listener ignores it and
-    // the tap never reaches the page underneath.
-    this.root.append(el('div', { class: 'menu-backdrop', 'aria-hidden': 'true', onclick: () => this._closeMenu() }));
-    const menu = el('div', { class: 'menu', role: 'listbox', 'aria-label': 'Models' });
-    switch (this._step) {
-      case 'effort': this._renderEffort(menu); break;
-      case 'route': this._renderRoute(menu); break;
-      default: this._renderSearch(menu);
+    if (this._open) {
+      // Phones: dims the page and takes the tap that dismisses the sheet.
+      // It sits inside this host, so the outside-tap listener ignores it and
+      // the tap never reaches the page underneath.
+      this.root.append(el('div', { class: 'menu-backdrop', 'aria-hidden': 'true', onclick: () => this._closeMenu() }));
+      const menu = el('div', { class: 'menu', role: 'listbox', 'aria-label': 'Models' });
+      switch (this._step) {
+        case 'effort': this._renderEffort(menu); break;
+        case 'route': this._renderRoute(menu); break;
+        default: this._renderSearch(menu);
+      }
+      menu.addEventListener('keydown', (e) => this._onMenuKeydown(e));
+      this.root.append(menu);
+      this._clampMenu(menu);
+      this._menuEl = menu;
+      this._installDismiss();
+    } else {
+      this._menuEl = null;
     }
-    menu.addEventListener('keydown', (e) => this._onMenuKeydown(e));
-    this.root.append(menu);
-    this._clampMenu(menu);
-    this._menuEl = menu;
-
-    this._installDismiss();
+    if (focusKey) {
+      const hit = findByFocusKey(this.root, focusKey);
+      // A step transition leaves no same-key node — land on the new
+      // step's start (the search field, else the first option) instead
+      // of dropping the keyboard flow to BODY.
+      const start = this._open ? (this.root.querySelector?.('.menu-search') || this._menuOptions()[0]) : null;
+      (hit || start)?.focus?.();
+    }
   }
 
   // Keep the popup inside the viewport even when the header picker
@@ -337,7 +419,7 @@ class ModelPicker extends Widget {
     // the close must also live at document level. Capture phase keeps
     // inner handlers that close the menu idempotent.
     const esc = (e) => {
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape' && !e.isComposing) {
         e.preventDefault();
         this._closeMenu(true);
       }
@@ -350,9 +432,24 @@ class ModelPicker extends Widget {
   }
 
   // Header re-renders move this node (disconnect+reconnect) — the menu's
-  // shadow DOM survives, but the document listener must be reinstalled.
+  // shadow DOM survives, but the document listener must be reinstalled
+  // and the detached focus handed back.
   connectedCallback() {
-    if (this._open) this._installDismiss();
+    this._clearTok = null; // a pending detach-clear must not erase this
+    if (this._droppedOpen) {
+      this._droppedOpen = false;
+      // The leave that closed us was our own detach — reopen what the
+      // removal interrupted. A real leave clears the key first, so it
+      // stays closed.
+      if (this._innerFocus) { this._open = true; this._render(); }
+    }
+    if (this._open) {
+      this._installDismiss();
+      if (this._innerFocus) {
+        const hit = findByFocusKey(this.root, this._innerFocus);
+        (hit || this.root.querySelector?.('.menu-search') || this._menuOptions()[0])?.focus?.();
+      }
+    }
   }
 
   disconnectedCallback() {

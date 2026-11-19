@@ -12,6 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Hydration dedup no longer compares tool outputs verbatim: `EnvironmentDriver.ToolContexts` renders every enabled system-callable tool per pass and `appendToolContexts` anchors each record on the newest live (name, input) injection call, so a tool whose output carries volatile fields (a rendered timestamp) no longer re-records every step. A tool implements `job.ToolDeduper` (`DedupKey`) to attach its own output normalizer; changed records still land as injection calls on one system message.
+- Duplicate tool-call ids are rejected at the entity (`Message.AddToolCall` returns an error) instead of silently making `SetToolOutput` ambiguous; all four wire decoders, hydration, and record decode propagate the failure.
+- Gateway and model writes validate provider contracts up front: endpoints must be absolute http(s) URLs with a hostname, temperature stays within [0,2], TopP within [0,1], presence/frequency penalties within [-2,2], and a declared output limit cannot exceed the context window.
+- A Responses API `incomplete` turn caused by `content_filter` reports `FinishReasonContentFilter` (a definitive blocked answer) instead of a retryable truncation.
+- The chat model picker only offers chat-capable entries: `ModelListedInPicker` now filters non-chat model types alongside the context floor, the `/gateways` projection carries a `listed` flag each model, and the WebUI picker plus default selection honor it (absent stays eligible).
+- Focus no longer drops to the page body when a re-render replaces the control under it: the sidebar list restores focus to the same row (or its successor, skipping the disabled busy state), the conversation header maps focus to the rebuilt control, rename commit/cancel returns focus to the title button, the message editor focuses its textarea on open, and the desktop delete confirm opens on Keep.
+- Leaving Settings through browser Back restores focus to its trigger, matching the close control.
+- Provider manager: Save and Import lock each other in both directions, and an in-flight import is no longer released by closing the dialog.
 
 ## [0.0.0] - 2026-10-27
 

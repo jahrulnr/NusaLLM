@@ -94,7 +94,7 @@ func (s *Service) Send(ctx context.Context, conv *aggregate.Conversation, gw *ag
 	if beta := betaHeaderValue(model); beta != "" {
 		req.Header.Set("anthropic-beta", beta)
 	}
-	if strings.Contains(gw.Endpoint(), enum.OpenCode.String()) {
+	if enum.OpenCode.MatchesEndpoint(gw.Endpoint()) {
 		req.Header.Set("x-opencode-session", conv.ID())
 	}
 	if s.referer != "" {

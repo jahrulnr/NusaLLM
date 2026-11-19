@@ -1,6 +1,9 @@
 package valueobject
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestNewPricing(t *testing.T) {
 	if _, err := NewPricing(2, 12, 0.2, 2.5); err != nil {
@@ -25,5 +28,27 @@ func TestPricingCost(t *testing.T) {
 	got := p.Cost(u)
 	if got < 10.69 || got > 10.71 {
 		t.Fatalf("Cost = %v, want ~10.7", got)
+	}
+}
+
+// Rates are JSON-persisted catalog metadata. NaN and ±Inf are not valid
+// JSON numbers: json.Marshal rejects them, so a provider catalog that
+// spells a rate "NaN" or "Inf" would make the gateway record
+// unsaveable. Validate finiteness at the value object rather than
+// discovering it at the store.
+func TestNewPricingRejectsNonFiniteRates(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   float64
+	}{
+		{"NaN", math.NaN()},
+		{"+Inf", math.Inf(1)},
+		{"-Inf", math.Inf(-1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := NewPricing(tc.in, 0, 0, 0); err == nil {
+				t.Fatalf("NewPricing(%v) accepted a non-finite rate", tc.in)
+			}
+		})
 	}
 }

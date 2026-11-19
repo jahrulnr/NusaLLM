@@ -28,6 +28,13 @@ class FakeEl {
   showModal() { this.open = true; }
   close() { this.open = false; }
   get firstChild() { return this.children[0] || null; }
+  contains(node) {
+    if (node === this) return true;
+    for (const child of this.children || []) {
+      if (child === node || (child && child.contains && child.contains(node))) return true;
+    }
+    return false;
+  }
   removeChild(child) {
     this.children = this.children.filter((node) => node !== child);
     return child;
@@ -123,4 +130,31 @@ test('a build that cannot replace itself offers the command, not Update now', ()
   assert.equal(button(dialog.body, 'Update now'), null);
   assert.notEqual(button(dialog.body, 'Copy install command'), null);
   assert.ok(textOf(dialog.body).includes('cannot replace itself'));
+});
+
+// The update poller keeps running while the dialog is open. A status
+// refresh rebuilds every control in the modal; if the focused action is
+// replaced without a successor, the native modal leaves the keyboard
+// user on BODY and Tab can escape the dialog. The release action is the
+// stable successor for a same-release refresh.
+test('a status refresh while open keeps focus inside the dialog', () => {
+  const originalFocus = FakeEl.prototype.focus;
+  FakeEl.prototype.focus = function focus() { globalThis.document.activeElement = this; };
+  globalThis.document.activeElement = null;
+  try {
+    const dialog = new Dialog();
+    dialog.info = info;
+    dialog.open();
+    const before = button(dialog.body, 'Update now');
+    assert.ok(before, 'install action rendered');
+    before.focus();
+    dialog.info = { ...info, latest: '0.10.5', notes: '## [0.10.5]\n\n- newer' };
+    const after = button(dialog.body, 'Update now');
+    assert.ok(after, 'install action survives the refresh');
+    assert.equal(globalThis.document.activeElement, after,
+      'a rerender under an open modal must hand focus to the new action');
+  } finally {
+    FakeEl.prototype.focus = originalFocus;
+    globalThis.document.activeElement = null;
+  }
 });

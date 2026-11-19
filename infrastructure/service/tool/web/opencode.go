@@ -101,7 +101,7 @@ func (c *openCodeClient) search(ctx context.Context, p service.WebProvider, args
 	// text adapter sends. Without it Zen answers MissingSessionID and the
 	// call silently degrades to the searchwire fallback every time.
 	var headers map[string]string
-	if convID := service.ConversationID(ctx); convID != "" && strings.Contains(p.Endpoint, string(enum.OpenCode)) {
+	if convID := service.ConversationID(ctx); convID != "" && enum.OpenCode.MatchesEndpoint(p.Endpoint) {
 		headers = map[string]string{"x-opencode-session": convID}
 	}
 	if err := postProviderJSON(ctx, c.http, p, "/responses", payload, &response, headers); err != nil {

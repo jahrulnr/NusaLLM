@@ -198,3 +198,56 @@ test('choosing a folder returns focus to the trigger', () => {
     sheetMatches = false;
   }
 });
+
+// The workspace menu declares itself a listbox, so ArrowDown must walk
+// its options just like the model picker's does. Without a key handler
+// the container keeps focus and the advertised keyboard contract stops
+// at the first key.
+test('the workspace listbox walks entries with the arrow keys', () => {
+  sheetMatches = false;
+  const picker = new Picker();
+  try {
+    picker._open = true;
+    picker._browse = {
+      path: '/w', roots: [], entries: [
+        { name: 'a', path: '/w/a' }, { name: 'b', path: '/w/b' },
+      ],
+    };
+    picker._render();
+    const menu = find(picker.root, 'menu');
+    assert.ok(menu, 'menu rendered');
+    menu.focus();
+    const entries = findAll(picker.root, 'menu-item');
+    assert.ok(entries.length >= 2, 'entry options rendered');
+    menu.listeners.keydown[0]({ key: 'ArrowDown', preventDefault() {} });
+    assert.equal(globalThis.document.activeElement, entries[0],
+      'ArrowDown must focus the first directory option');
+    menu.listeners.keydown[0]({ key: 'ArrowDown', preventDefault() {} });
+    assert.equal(globalThis.document.activeElement, entries[1],
+      'the next ArrowDown must walk to the next option');
+  } finally {
+    picker.disconnectedCallback();
+    sheetMatches = false;
+  }
+});
+
+// A keyboard user tabs out of the workspace popover into the page. The
+// menu covers the thread, and unlike the model picker it must dismiss
+// when focus truly leaves the picker; otherwise the popover keeps
+// floating over the content the user just moved to.
+test('the workspace menu closes when focus leaves the picker', () => {
+  sheetMatches = false;
+  const picker = openPicker();
+  try {
+    picker._browse = { path: '/w', roots: [], entries: [] };
+    picker._render();
+    const menu = find(picker.root, 'menu');
+    assert.ok(menu, 'menu rendered');
+    menu.focus();
+    picker.root.fire('focusout', { relatedTarget: null });
+    assert.equal(picker._open, false, 'focus leaving the picker must dismiss the popover');
+  } finally {
+    picker.disconnectedCallback();
+    sheetMatches = false;
+  }
+});

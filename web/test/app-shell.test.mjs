@@ -788,3 +788,35 @@ test('a partial assistant tail with no finish reason is interrupted', () => {
   app._markInterrupted({ id: 'c1' });
   assert.ok(app.failedTurns.get('c1'), 'truncated assistant tail must park an interrupted card');
 });
+
+// Settings autosave sends PATCH requests as the user edits. Two quick
+// edits can overlap; the response to the older edit must not land last
+// and roll the projected document back to the older value.
+test('an older settings response cannot overwrite a newer edit', async () => {
+  const { app } = makeApp();
+  const originalFetch = globalThis.fetch;
+  const pending = [];
+  globalThis.fetch = (path, init) => new Promise((resolve) => {
+    pending.push({ body: JSON.parse(init.body), resolve });
+  });
+  try {
+    app.settings = { conversation: { mailbox_cap: 0 } };
+    app.settingsPage.settings = app.settings;
+    const first = app._patchSetting('conversation.mailbox_cap', 1);
+    while (pending.length < 1) await new Promise((r) => setImmediate(r));
+    const second = app._patchSetting('conversation.mailbox_cap', 2);
+    while (pending.length < 2) await new Promise((r) => setImmediate(r));
+    pending[1].resolve(new Response(JSON.stringify({ conversation: { mailbox_cap: 2 } }), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    }));
+    await second;
+    pending[0].resolve(new Response(JSON.stringify({ conversation: { mailbox_cap: 1 } }), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    }));
+    await first;
+    assert.equal(app.settings.conversation.mailbox_cap, 2);
+    assert.equal(app.settingsPage.settings.conversation.mailbox_cap, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

@@ -1,4 +1,4 @@
-import { Widget, el, emit, clear } from '../../lib/dom.js';
+import { Widget, el, emit, clear, deepActiveElement } from '../../lib/dom.js';
 import { icon } from '../../lib/icons.js';
 
 // Left rail: brand, New thread, search, the recent conversation list,
@@ -44,6 +44,41 @@ class NavSidebar extends Widget {
     this.setAttribute('aria-hidden', this._open ? 'false' : 'true');
   }
   set connection(state) { this._connection = state; this._renderFooter(); }
+  // Focus target for the phone overlay — the Close control is both the
+  // first interactive element and the way out.
+  focusInitial() { this._closeBtn?.focus?.(); }
+
+  // Keyboard containment for the phone overlay. The drawer covers the
+  // page while open, so Tab at either end wraps to the other end rather
+  // than walking into the page hidden behind the scrim. Returns true when
+  // the key was handled.
+  trapTab(event) {
+    const els = this._focusables();
+    if (!els.length) return false;
+    const idx = els.indexOf(deepActiveElement());
+    if (idx === -1) {
+      event.preventDefault();
+      els[0].focus();
+      return true;
+    }
+    if (!event.shiftKey && idx === els.length - 1) {
+      event.preventDefault();
+      els[0].focus();
+      return true;
+    }
+    if (event.shiftKey && idx === 0) {
+      event.preventDefault();
+      els[els.length - 1].focus();
+      return true;
+    }
+    return false;
+  }
+
+  _focusables() {
+    return [...this.shadowRoot.querySelectorAll('button, input, select, textarea, a[href], [tabindex]')]
+      .filter((n) => !n.disabled && n.tabIndex >= 0 && n.getClientRects().length > 0);
+  }
+
   // Programmatic reset for the shell's new-browsing-context navigations —
   // clears the box and the narrowed list without emitting a user search.
   set query(v) {
@@ -69,7 +104,7 @@ class NavSidebar extends Widget {
       el('div', { class: 'brand' }, [
         el('span', { class: 'brand-mark', text: 'N' }),
         el('span', { class: 'brand-name', text: 'NusaLLM' }),
-        el('button', {
+        this._closeBtn = el('button', {
           class: 'icon-btn close-btn', type: 'button', 'aria-label': 'Close sidebar',
           onclick: () => emit(this, 'sidebar-close'),
         }, [icon('x', 14)]),
@@ -88,12 +123,28 @@ class NavSidebar extends Widget {
 
   _renderList() {
     if (!this.listEl) return;
+    // Every mutation rebuilds the list — a rebuild under the user's
+    // focus must hand it to the logical successor (same row id, else the
+    // row that took its slot, else the refreshed Load more) instead of
+    // dropping to BODY and forcing a full Tab cycle back into the rail.
+    const prev = deepActiveElement();
+    let focusKey = null;
+    if (prev) {
+      if (prev === this._moreBtn) focusKey = { more: true };
+      else {
+        const at = (this._items || []).indexOf(prev);
+        if (at >= 0) focusKey = { id: prev.getAttribute?.('data-id'), at };
+      }
+    }
     clear(this.listEl);
+    this._items = [];
+    this._moreBtn = null;
     const q = this._query.trim().toLowerCase();
     const rows = (this._conversations || []).filter((c) =>
       !q || (c.title || c.id).toLowerCase().includes(q));
     if (this._loading) {
       this.listEl.append(el('div', { class: 'hint', text: 'Loading…' }));
+      if (focusKey) this.searchEl?.focus?.();
       return;
     }
     if (!rows.length) {
@@ -101,17 +152,33 @@ class NavSidebar extends Widget {
     }
     for (const c of rows) {
       const active = c.id === this._activeId;
-      this.listEl.append(el('button', {
+      const row = el('button', {
         class: `item${active ? ' active' : ''}`,
         type: 'button',
+        'data-id': c.id,
         'aria-current': active ? 'true' : null,
         onclick: () => emit(this, 'conversation-select', { id: c.id }),
       }, [
         el('span', { class: 'item-title', text: c.title || 'Untitled' }),
         el('span', { class: 'item-meta', text: this._when(c.updatedAt) }),
-      ]));
+      ]);
+      this._items.push(row);
+      this.listEl.append(row);
     }
     this._renderMore();
+    if (focusKey) {
+      const items = this._items;
+      // The busy render disables the Load-more control and focus() on a
+      // disabled node no-ops — a successor that can't take focus is no
+      // successor, so the last loaded row stands in until it can.
+      const moreOk = this._moreBtn && !this._moreBtn.disabled ? this._moreBtn : null;
+      const target = focusKey.more
+        ? moreOk || items[items.length - 1] || this.searchEl
+        : items.find((b) => b.getAttribute?.('data-id') === focusKey.id)
+          || items[Math.min(focusKey.at, items.length - 1)]
+          || moreOk || this.searchEl;
+      target?.focus?.();
+    }
   }
 
   // Load-more control, rendered after the rows. The server still holds
@@ -120,7 +187,7 @@ class NavSidebar extends Widget {
   _renderMore() {
     if (!this._hasMore) return;
     this.listEl.append(el('div', { class: 'more' }, [
-      el('button', {
+      this._moreBtn = el('button', {
         class: 'more-btn', type: 'button',
         disabled: this._moreBusy || null,
         onclick: () => emit(this, 'conversation-more'),

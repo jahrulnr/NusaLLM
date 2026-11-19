@@ -34,6 +34,48 @@ export function clear(node) {
   while (node.firstChild) node.removeChild(node.firstChild);
 }
 
+// Focus inside a shadow root stops at its host on document.activeElement;
+// the element that actually has focus needs the composed walk.
+export function deepActiveElement() {
+  let active = document.activeElement;
+  while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+  return active;
+}
+
+// A re-render replaces the focused node wholesale; the element that should
+// inherit focus is identified by a stable key — a data-id when the control
+// declares one, else its class signature. The replacement element is found
+// by the same key under the new tree.
+export function focusKeyOf(node) {
+  return node?.getAttribute?.('data-id') || node?.className || null;
+}
+
+export function findByFocusKey(root, key) {
+  if (!key) return null;
+  const match = (n) => {
+    if (n !== root && focusKeyOf(n) === key) return n;
+    for (const c of n.children || []) {
+      const hit = match(c);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  return match(root);
+}
+
+// The options a listbox exposes, in document order — arrow-key walks and
+// focus restores both read this set.
+export function listOptions(root) {
+  const roleOf = (n) => n.role || (n.getAttribute ? n.getAttribute('role') : '');
+  const options = [];
+  const collect = (n) => {
+    if (roleOf(n) === 'option') options.push(n);
+    for (const c of n.children || []) collect(c);
+  };
+  if (root) collect(root);
+  return options;
+}
+
 // Widget base: every widget is an autonomous custom element with a
 // shadow root carrying its own paired stylesheet. Sheets are shared per
 // class: the CSS file is fetched once and parsed into ONE constructed

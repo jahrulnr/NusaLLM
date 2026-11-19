@@ -101,6 +101,7 @@ class AppShell extends Widget {
     this._gates = new Map();
     this.compactPending = new Set(); // room ids with a compact request in flight
     this.generation = 0;        // stale-response token
+    this._settingsSeq = 0;      // stale PATCH response token
     // The open rail is part of the desktop layout; on a phone the same
     // state is a dismissible overlay. Crossing the breakpoint snaps the
     // state to the layout rather than leaving a scrimless drawer up —
@@ -109,7 +110,9 @@ class AppShell extends Widget {
     this.sidebarOpen = this._wideMq.matches;
     this._wideMq.addEventListener('change', () => {
       this.sidebarOpen = this._wideMq.matches;
-      this._syncSidebar();
+      // A layout change is not an overlay dismissal — dragging the
+      // window must not yank focus out of whatever field is being edited.
+      this._syncSidebar({ restoreFocus: false });
     });
     this.settingsOpen = false;
 
@@ -249,10 +252,15 @@ class AppShell extends Widget {
     this.socket.addEventListener('frame', (e) => this._onFrame(e.detail.frame));
 
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && this.sidebarOpen &&
-          matchMedia('(max-width: 760px)').matches) {
+      if (!this.sidebarOpen || this._wideMq.matches) return;
+      if (e.key === 'Escape') {
         this.sidebarOpen = false;
         this._syncSidebar();
+      } else if (e.key === 'Tab') {
+        // The phone drawer covers the page and owns the tab order while
+        // open — Tab cycles its controls instead of reaching the page
+        // hidden behind the scrim.
+        this.sidebar.trapTab(e);
       }
     });
   }
@@ -265,6 +273,10 @@ class AppShell extends Widget {
     this.installer.resume().then((view) => {
       if (view.state === 'running') this._openProgress();
     });
+    // The settings GET shares the PATCH epoch — a user edit issued while
+    // boot is still on the wire is newer than this snapshot, so a stale
+    // answer landing later must not roll the projection back.
+    const settingsSeq = ++this._settingsSeq;
     const [convs, gws, cfg] = await Promise.allSettled([
       this.api.listConversations({ limit: 100 }),
       this.api.listGateways({ limit: 100 }),
@@ -282,9 +294,11 @@ class AppShell extends Widget {
       this._defaultSelection();
     } else this._toast('error', 'Gateways', this._errText(gws.reason));
     if (cfg.status === 'fulfilled') {
-      this.settings = cfg.value;
-      this.settingsPage.settings = this.settings;
-      this._syncCompact();
+      if (settingsSeq === this._settingsSeq) {
+        this.settings = cfg.value;
+        this.settingsPage.settings = this.settings;
+        this._syncCompact();
+      }
     } else this._toast('error', 'Settings', this._errText(cfg.reason));
     const settingsRoute = location.hash === '#settings';
     if (!this._selectFromHash() && this.allConversations.length) {
@@ -317,17 +331,25 @@ class AppShell extends Widget {
   }
 
   _showSettings() {
+    const wasOpen = this.settingsOpen;
     this.settingsOpen = true;
     this.main.hidden = true;
     this.settingsPage.hidden = false;
     this._liftToasts();
+    // The page covers the chat: focus must follow the view, or a
+    // keyboard user is left on <body> tabbing from the top.
+    if (!wasOpen) this.settingsPage.focusInitial?.();
   }
 
   _showChat() {
+    const wasOpen = this.settingsOpen;
     this.settingsOpen = false;
     this.main.hidden = false;
     this.settingsPage.hidden = true;
     this._liftToasts();
+    // Settings replaced the chat; every exit — the close control or
+    // browser Back — hands focus back to its trigger.
+    if (wasOpen) this.header.focusSettings?.();
   }
 
   // Toasts sit just above the composer, so they never cover the send control.
@@ -358,8 +380,12 @@ class AppShell extends Widget {
     if (this.selection && this._usable(this.selection)) return;
     this.selection = null;
     for (const g of this.gateways) {
-      if (!g.broken && (g.models || []).length) {
-        this.selection = { route: g.id, modelId: g.models[0].id };
+      // The first listed entry — an unlisted model (embedding, rerank,
+      // tiny context) defaults a send to a guaranteed provider error.
+      // Absent means undeclared: the floor fails open.
+      const pick = (g.models || []).find((m) => m.listed !== false);
+      if (!g.broken && pick) {
+        this.selection = { route: g.id, modelId: pick.id };
         break;
       }
     }
@@ -593,10 +619,17 @@ class AppShell extends Widget {
 
   // The scrim belongs to the mobile overlay only — on desktop the
   // rail is a grid track and there is nothing to dismiss through.
-  _syncSidebar() {
+  _syncSidebar({ restoreFocus = true } = {}) {
+    const wasOpen = this._sidebarOpen;
+    this._sidebarOpen = this.sidebarOpen;
     this.sidebar.open = this.sidebarOpen;
-    this.scrim.hidden = !this.sidebarOpen ||
-      matchMedia('(min-width: 761px)').matches;
+    this.scrim.hidden = !this.sidebarOpen || this._wideMq.matches;
+    // On a phone the drawer is a modal overlay: focus enters it when it
+    // opens and returns to the toggle when it closes. Desktop ownership
+    // is layout, not an overlay transition — no focus movement.
+    if (this._wideMq.matches || !restoreFocus) return;
+    if (this.sidebarOpen && wasOpen !== true) this.sidebar.focusInitial?.();
+    else if (!this.sidebarOpen && wasOpen === true) this.header.focusSidebarToggle?.();
   }
 
   _syncComposer() {
@@ -2267,13 +2300,19 @@ class AppShell extends Widget {
   }
 
   async _patchSetting(key, value) {
+    const seq = ++this._settingsSeq;
     try {
-      this.settings = await this.api.patchSetting(key, value);
+      const doc = await this.api.patchSetting(key, value);
+      // Two quick edits overlap on the wire — the older response landing
+      // last must not roll the projection back to the older value.
+      if (seq !== this._settingsSeq) return;
+      this.settings = doc;
       this.settingsPage.settings = this.settings;
       this._syncCompact();
       const label = settingLabel(key);
       this._toast('info', 'Settings', `${label[0].toUpperCase()}${label.slice(1)} updated.`);
     } catch (err) {
+      if (seq !== this._settingsSeq) return;
       // Re-project the last good document so a failed input doesn't
       // masquerade as a saved value.
       this.settingsPage.settings = this.settings;

@@ -1,4 +1,4 @@
-import { Widget, el, emit, clear } from '../../lib/dom.js';
+import { Widget, el, emit, clear, deepActiveElement, focusKeyOf, findByFocusKey } from '../../lib/dom.js';
 import { icon } from '../../lib/icons.js';
 
 // Thread chrome: title with inline rename, the model and workspace
@@ -21,6 +21,10 @@ class ConversationHeader extends Widget {
     this._renaming = false;
     this._renameDraft = null;
     this._confirmingDelete = false;
+    // The control a render could not refocus yet — it matched but sat
+    // disabled (a compact in flight). Held across renders until the
+    // control re-enables or vanishes.
+    this._pendingFocus = null;
     // Beside .header rather than inside it, so a header re-render never
     // detaches an open modal.
     this.sheet = el('dialog', { class: 'sheet', 'aria-label': 'Thread actions' });
@@ -41,6 +45,12 @@ class ConversationHeader extends Widget {
     this._render();
   }
 
+  // Focus targets for the shell's overlay transitions: the settings page
+  // and the phone drawer take focus on open and hand it back here on
+  // close. The refs are rebuilt by every _render, so read them fresh.
+  focusSettings() { this._settingsBtn?.focus?.(); }
+  focusSidebarToggle() { this._toggleBtn?.focus?.(); }
+
   // A same-room metadata refresh must not steal in-progress UI — the
   // rename draft and the delete confirm survive; only a different room
   // resets them.
@@ -51,6 +61,7 @@ class ConversationHeader extends Widget {
       this._renaming = false;
       this._renameDraft = null;
       this._confirmingDelete = false;
+      this._pendingFocus = null;
     }
     this._render();
   }
@@ -81,11 +92,18 @@ class ConversationHeader extends Widget {
       const cur = this.root.querySelector('.rename-input');
       if (cur) this._renameDraft = cur.value;
     }
+    // A rebuild under the user's focus must not drop it to BODY: the
+    // fresh control matching the old one's identity inherits it. A new
+    // in-root focus supersedes any queued restore — the user moved on.
+    const prev = deepActiveElement();
+    let focusKey = prev && this.root.contains?.(prev) ? focusKeyOf(prev) : null;
+    if (focusKey) this._pendingFocus = null;
+    else if (this._pendingFocus) focusKey = this._pendingFocus;
     clear(this.root);
     this.root.classList.add('header');
     const conv = this._conversation;
 
-    this.root.append(el('button', {
+    this.root.append(this._toggleBtn = el('button', {
       class: 'icon-btn sidebar-toggle', type: 'button', 'aria-label': 'Toggle sidebar',
       onclick: () => emit(this, 'sidebar-toggle'),
     }, [icon('menu', 15)]));
@@ -99,7 +117,10 @@ class ConversationHeader extends Widget {
       // One-shot: Enter's re-render can still fire blur; Escape must
       // never commit. `settled` gates the first terminal action only.
       let settled = false;
-      const commit = () => {
+      // The input's successor on settle is the title control — but only
+      // when the keyboard settled the edit. A blur means focus already
+      // moved on; grabbing it back would steal the click's target.
+      const commit = (refocus) => {
         if (settled) return;
         settled = true;
         const title = input.value.trim();
@@ -107,6 +128,7 @@ class ConversationHeader extends Widget {
         this._renameDraft = null;
         if (title && title !== conv.title) emit(this, 'conversation-rename', { title });
         this._render();
+        if (refocus) this._titleBtn?.focus?.();
       };
       const cancel = () => {
         if (settled) return;
@@ -114,16 +136,25 @@ class ConversationHeader extends Widget {
         this._renaming = false;
         this._renameDraft = null;
         this._render();
+        this._titleBtn?.focus?.();
       };
       input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') commit();
+        // An open IME composition owns Enter/Escape until it commits —
+        // acting on either mid-composition submits a half-written title
+        // or kills the editor the candidate list needs.
+        if (e.isComposing) return;
+        // Enter must be cancelled, not just handled: the commit moves
+        // focus to the title button, and an uncancelled Enter goes on to
+        // activate whatever has focus — reopening the editor it just
+        // closed (the edit textarea does the same).
+        if (e.key === 'Enter') { e.preventDefault(); commit(true); }
         if (e.key === 'Escape') cancel();
       });
-      input.addEventListener('blur', commit);
+      input.addEventListener('blur', () => commit(false));
       this.root.append(input);
       setTimeout(() => input.focus(), 0);
     } else {
-      this.root.append(el('button', {
+      this.root.append(this._titleBtn = el('button', {
         class: 'title', type: 'button',
         'aria-label': conv ? `Rename ${conv.title || 'conversation'}` : 'No conversation',
         onclick: () => { if (conv) { this._renaming = true; this._renameDraft = null; this._render(); } },
@@ -162,9 +193,16 @@ class ConversationHeader extends Widget {
           class: 'confirm-yes', type: 'button',
           onclick: () => emit(this, 'conversation-delete'),
         }, [el('span', { text: 'Delete' })]),
-        el('button', {
+        this._confirmNo = el('button', {
           class: 'confirm-no', type: 'button',
-          onclick: () => { this._confirmingDelete = false; this._render(); },
+          onclick: () => {
+            this._confirmingDelete = false;
+            this._render();
+            // Keep resolves the confirm under its own focus — the
+            // Delete trigger it replaced inherits it, same hand-off
+            // the phone sheet makes.
+            findByFocusKey(this.root, 'icon-btn danger')?.focus?.();
+          },
         }, [el('span', { text: 'Keep' })]),
       ]));
     } else if (conv) {
@@ -177,12 +215,18 @@ class ConversationHeader extends Widget {
         }, [el('span', { text: this._compactLabel('Compact') })]),
         el('button', {
           class: 'icon-btn danger', type: 'button', 'aria-label': 'Delete conversation',
-          onclick: () => { this._confirmingDelete = true; this._render(); },
+          onclick: () => {
+            this._confirmingDelete = true;
+            this._render();
+            // The destructive choice is never the default: Keep owns
+            // focus, the same rule the phone sheet follows.
+            this._confirmNo?.focus?.();
+          },
         }, [icon('trash', 13)]),
       );
     }
 
-    this.root.append(el('button', {
+    this.root.append(this._settingsBtn = el('button', {
       class: 'icon-btn settings-btn', type: 'button', 'aria-label': 'Open settings',
       onclick: () => emit(this, 'settings-open'),
     }, [icon('gear', 15)]));
@@ -193,6 +237,17 @@ class ConversationHeader extends Widget {
       onclick: () => this._openSheet(),
     }, [icon('more', 18)]));
     if (this.sheet.open) this._renderSheet();
+    if (focusKey) {
+      const hit = findByFocusKey(this.root, focusKey);
+      // A match that sits disabled (a compact in flight) cannot hold
+      // focus — keep the key queued so the re-enable render lands it.
+      if (hit && !hit.disabled) {
+        hit.focus?.();
+        this._pendingFocus = null;
+      } else {
+        this._pendingFocus = hit ? focusKey : null;
+      }
+    }
   }
 
   _updatePill() {

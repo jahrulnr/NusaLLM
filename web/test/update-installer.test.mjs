@@ -190,3 +190,49 @@ test('an idle server after the restart waits for the target version', async () =
   assert.equal(h.installer.view.state, 'succeeded');
   assert.equal(h.installer.view.restart, 'process');
 });
+
+// Boot starts resume() to adopt an install left by a reload. If the user
+// starts a newer install before that probe answers, the old answer must
+// not take over the view/target — the newest begin owns the follow loop.
+test('a late resume answer cannot overwrite a newer begin', async () => {
+  let releaseResume;
+  const oldProgress = new Promise((resolve) => { releaseResume = resolve; });
+  let progressCalls = 0;
+  const timers = manualTimers();
+  const views = [];
+  const installer = new UpdateInstaller({
+    api: {
+      startUpdate: async () => running('download', { version: '0.2.0' }),
+      getUpdateProgress: () => {
+        progressCalls += 1;
+        return progressCalls === 1 ? oldProgress : Promise.resolve(running('download', { version: '0.2.0' }));
+      },
+      getUpdate: async () => ({ current: '0.2.0' }),
+    },
+    onChange: (v) => views.push(v),
+    timers,
+    pollMs: 1,
+  });
+  const resuming = installer.resume();
+  await installer.begin('0.2.0');
+  releaseResume(running('install', { version: '0.1.0' }));
+  await resuming;
+  assert.equal(installer.view.version, '0.2.0');
+  assert.equal(installer.target, '0.2.0');
+  assert.equal(installer.view.phase, 'download');
+});
+
+// A start can be refused as busy while the job it names finishes before
+// the follow-up progress probe. The probe then sees idle; the installer
+// must not keep rendering the initial "running" state it set before the
+// refusal, or the popup spins forever with no timer.
+test('a busy start whose job finishes before the probe does not hang', async () => {
+  const busy = Object.assign(new Error('x'), { code: 'update_busy', detail: 'an update is already running' });
+  const h = harness({
+    start: [busy],
+    progress: [{ state: 'idle' }],
+  });
+  await h.installer.begin('0.1.0');
+  assert.notEqual(h.installer.view.state, 'running',
+    'an idle follow-up must settle the view, not leave the pre-refusal running state');
+});

@@ -365,17 +365,17 @@ func tornLine(line []byte) bool {
 	return json.Unmarshal(trimmed, &probe) != nil || probe.Type == ""
 }
 
-// messagesFromLines decodes message lines and applies tool_output patches
-// globally by callID — a patch may target a call sealed in an earlier
-// segment.
+// messagesFromLines decodes message lines and applies tool_output patches.
+// A patch only ever targets a call that precedes it in the stream — the
+// append-only writer emits a patch after the message that owns the call —
+// so each patch binds to the most recent message carrying that call id.
+// Positional binding is what keeps repeated ids honest: provider adapters
+// derive internal ids per message (every no-id exec call becomes exec#0),
+// and a global first-match would paste a later turn's output onto an
+// earlier turn's still-pending call.
 func messagesFromLines(lines [][]byte) ([]entity.Message, error) {
 	var msgs []entity.Message
 	callMessage := make(map[string]int)
-	type patch struct {
-		callID, output, latency string
-		atts                    []valueobject.Attachment
-	}
-	var patches []patch
 	for _, l := range lines {
 		var lr lineRecord
 		if err := json.Unmarshal(l, &lr); err != nil {
@@ -388,12 +388,17 @@ func messagesFromLines(lines [][]byte) ([]entity.Message, error) {
 				return nil, err
 			}
 			for _, call := range m.ToolCalls() {
-				if _, exists := callMessage[call.ID()]; !exists {
-					callMessage[call.ID()] = len(msgs)
-				}
+				callMessage[call.ID()] = len(msgs)
 			}
 			msgs = append(msgs, m)
 		case lineToolOutput:
+			i, exists := callMessage[lr.CallID]
+			if !exists { // patches for calls discarded by an edit stay inert
+				continue
+			}
+			if err := msgs[i].SetStoredToolOutput(lr.CallID, lr.Output, lr.OutputLatency); err != nil {
+				return nil, err // index was built from these messages
+			}
 			var atts []valueobject.Attachment
 			for _, a := range lr.Attachments {
 				att, err := valueobject.NewAttachment(a.URI, a.MediaType)
@@ -404,20 +409,10 @@ func messagesFromLines(lines [][]byte) ([]entity.Message, error) {
 				att.SetSHA256(a.SHA256)
 				atts = append(atts, att)
 			}
-			patches = append(patches, patch{lr.CallID, lr.Output, lr.OutputLatency, atts})
-		}
-	}
-	for _, p := range patches {
-		i, exists := callMessage[p.callID]
-		if !exists { // patches for calls discarded by an edit stay inert
-			continue
-		}
-		if err := msgs[i].SetStoredToolOutput(p.callID, p.output, p.latency); err != nil {
-			return nil, err // index was built from these messages
-		}
-		if p.atts != nil {
-			if err := msgs[i].SetToolOutputAttachments(p.callID, p.atts); err != nil {
-				return nil, err
+			if atts != nil {
+				if err := msgs[i].SetToolOutputAttachments(lr.CallID, atts); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}

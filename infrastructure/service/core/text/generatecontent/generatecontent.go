@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -82,13 +83,16 @@ func (s *Service) Send(ctx context.Context, conv *aggregate.Conversation, gw *ag
 	// https://generativelanguage.googleapis.com/v1beta); the model id
 	// lives in the path, prefixed ids ("google/gemini-x", "models/x")
 	// normalize to the bare id.
-	url := strings.TrimRight(gw.Endpoint(), "/") + "/models/" + modelPath(model.ID())
+	// The id becomes one path segment — escape it so a query or fragment
+	// delimiter inside the id ("gemini?x") can't rewrite the URL's shape
+	// and address a different model.
+	u := strings.TrimRight(gw.Endpoint(), "/") + "/models/" + url.PathEscape(modelPath(model.ID()))
 	if stream {
-		url += ":streamGenerateContent?alt=sse"
+		u += ":streamGenerateContent?alt=sse"
 	} else {
-		url += ":generateContent"
+		u += ":generateContent"
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(raw))
 	if err != nil {
 		return err
 	}

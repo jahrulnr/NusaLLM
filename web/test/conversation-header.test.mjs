@@ -299,3 +299,48 @@ test('a same-room refresh preserves an in-progress rename draft', () => {
   assert.ok(kept, 'rename editor must survive the same-room refresh');
   assert.equal(kept.value, 'typed but not submitted');
 });
+
+// Enter during an IME composition commits the candidate, not the form.
+// The message composer already guards this; the inline title editor must
+// too, or Japanese/Chinese/Korean users submit a half-composed title and
+// lose the editor mid-word.
+test('Enter during IME composition does not commit a rename', () => {
+  const header = makeHeader();
+  header._renaming = true;
+  header._render();
+  const input = find(header.root, 'rename-input');
+  assert.ok(input, 'rename input rendered');
+  input.value = '漢字';
+  input.fire('keydown', { key: 'Enter', isComposing: true, preventDefault() {} });
+  assert.equal(header._renaming, true);
+  assert.ok(find(header.root, 'rename-input'), 'editor must stay open');
+  input.fire('keydown', { key: 'Escape', isComposing: true, preventDefault() {} });
+  assert.equal(header._renaming, true);
+  input.fire('keydown', { key: 'Escape', isComposing: false, preventDefault() {} });
+  assert.equal(header._renaming, false);
+});
+
+// Keep is the safe choice in the desktop delete confirm. Resolving the
+// confirm removes both its buttons; focus must return to the Delete
+// trigger the confirm replaced, not stay on a detached node (the browser
+// moves that to BODY). The phone sheet already does this hand-off.
+test('Keep on the desktop confirm returns focus to Delete', () => {
+  const originalFocus = FakeEl.prototype.focus;
+  FakeEl.prototype.focus = function focus() { globalThis.document.activeElement = this; };
+  globalThis.document.activeElement = null;
+  try {
+    const header = makeHeader();
+    findAll(header.root, 'danger')[0].fire('click');
+    const keep = find(header.root, 'confirm-no');
+    assert.ok(keep, 'desktop confirm rendered');
+    keep.focus();
+    keep.fire('click');
+    const del = findAll(header.root, 'danger')[0];
+    assert.ok(del, 'Delete trigger restored after Keep');
+    assert.equal(globalThis.document.activeElement, del,
+      'Keep must hand focus back to the Delete trigger, never BODY');
+  } finally {
+    FakeEl.prototype.focus = originalFocus;
+    globalThis.document.activeElement = null;
+  }
+});

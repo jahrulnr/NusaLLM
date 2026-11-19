@@ -58,7 +58,7 @@ func encodeRequest(conv *aggregate.Conversation, model entity.Model, stream bool
 	}
 	// An upstream pin routes an aggregator request to one named backend —
 	// no silent fallback to a provider the user did not pick.
-	if up := model.Upstream(); up != "" && strings.Contains(endpoint, string(enum.OpenRouter)) {
+	if up := model.Upstream(); up != "" && enum.OpenRouter.MatchesEndpoint(endpoint) {
 		pref, err := json.Marshal(map[string]any{
 			"order":           []string{up},
 			"allow_fallbacks": false,

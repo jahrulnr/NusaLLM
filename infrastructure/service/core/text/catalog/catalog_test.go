@@ -171,3 +171,27 @@ func TestListModelsGenerateContent(t *testing.T) {
 		t.Fatalf("gemini limits mismatch: %+v", models[0])
 	}
 }
+
+// Provider discovery places the model id in the URL path. An id
+// containing a query delimiter must not rewrite the request: the
+// `/endpoints` suffix otherwise lands in the query and the gateway
+// fetches the wrong resource. Escape the id or reject it before the
+// request; never interpolate raw URL syntax.
+func TestListProvidersEscapesModelIDPath(t *testing.T) {
+	var rawQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rawQuery = r.URL.RawQuery
+		json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{"endpoints": []map[string]any{{"provider_name": "Alpha"}}},
+		})
+	}))
+	defer srv.Close()
+	g := newGateway(t, srv.URL+"/openrouter.ai", enum.StyleCompletion)
+	g.SetApiKey("k")
+	if _, err := New(nil).ListProviders(t.Context(), g, "vendor/model?x=1"); err != nil {
+		return // rejecting the unsafe id is safe
+	}
+	if rawQuery != "" {
+		t.Fatalf("model id leaked into provider-discovery query: %q", rawQuery)
+	}
+}

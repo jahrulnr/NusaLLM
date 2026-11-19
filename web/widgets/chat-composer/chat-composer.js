@@ -1,4 +1,4 @@
-import { Widget, el, emit } from '../../lib/dom.js';
+import { Widget, el, emit, deepActiveElement } from '../../lib/dom.js';
 import { icon } from '../../lib/icons.js';
 
 // Composer: autosizing textarea, Enter sends / Shift+Enter newline.
@@ -124,18 +124,19 @@ class ChatComposer extends Widget {
     this.contextPct = el('span', { class: 'context-pct' });
     this.contextUsage = el('span', { class: 'context-usage' });
     this.contextFill = el('span', { class: 'context-fill' });
+    this.contextTrigger = el('summary', { class: 'context-trigger', 'aria-label': 'Context usage' }, [
+      el('span', { class: 'context-dot', 'aria-hidden': 'true' }),
+      el('span', { text: 'Context' }),
+      this.contextPct,
+    ]);
     this.contextDetails = el('details', { class: 'context', hidden: true }, [
-      el('summary', { class: 'context-trigger', 'aria-label': 'Context usage' }, [
-        el('span', { class: 'context-dot', 'aria-hidden': 'true' }),
-        el('span', { text: 'Context' }),
-        this.contextPct,
-      ]),
+      this.contextTrigger,
       el('div', { class: 'context-popover' }, [
         el('div', { class: 'context-head' }, [
           el('span', { text: 'Context usage' }),
           el('button', {
             class: 'context-close', type: 'button', 'aria-label': 'Close context usage',
-            onclick: () => { this.contextDetails.open = false; },
+            onclick: () => this._closeContext(),
           }, [icon('x', 13)]),
         ]),
         this.contextUsage,
@@ -144,7 +145,7 @@ class ChatComposer extends Widget {
       ]),
     ]);
     this.root.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') this.contextDetails.open = false;
+      if (e.key === 'Escape') this._closeContext();
     });
     this.shortcutEl = el('span', { class: 'shortcut', text: 'Enter to send · Shift+Enter for new line' });
     this.root.append(
@@ -170,6 +171,17 @@ class ChatComposer extends Widget {
   _autosize() {
     this.input.style.height = 'auto';
     this.input.style.height = Math.min(this.input.scrollHeight, 220) + 'px';
+  }
+
+  // Closing the popover must not strand focus: the close control hides
+  // with it, so the summary — the only surviving focusable — inherits
+  // it. A close while focus lives elsewhere (or the popover was never
+  // open) leaves focus alone.
+  _closeContext() {
+    if (!this.contextDetails.open) return;
+    const inside = this.contextDetails.contains(deepActiveElement());
+    this.contextDetails.open = false;
+    if (inside) this.contextTrigger.focus();
   }
 
   // Enter submits: the shell routes it — a dispatchable view sends,
@@ -316,13 +328,18 @@ class ChatComposer extends Widget {
   _syncPending() {
     if (!this.pendingPanel) return;
     const items = this._pendingItems || [];
-    this.pendingPanel.hidden = !items.length;
     if (!items.length) {
-      if (this.pendingBody.contains(this.shadowRoot.activeElement)) this.input.focus();
+      // Hiding under a focused control drops focus to BODY — the check
+      // covers the whole panel (rows AND the Resume footer), not just
+      // the body rows, and must run before the hide while the control
+      // still reports as the active element.
+      if (this.pendingPanel.contains(this.shadowRoot.activeElement)) this.input.focus();
+      this.pendingPanel.hidden = true;
       this._rowCache.clear();
       this.pendingBody.replaceChildren();
       return;
     }
+    this.pendingPanel.hidden = false;
     this.pendingHead.textContent = this._queuePaused
       ? `Pending (${items.length}) · paused`
       : `Pending (${items.length})`;

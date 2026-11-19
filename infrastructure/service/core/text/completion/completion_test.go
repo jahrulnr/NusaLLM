@@ -21,6 +21,7 @@ import (
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 	repoworkspace "github.com/jahrulnr/nusallm/infrastructure/repository/workspace"
 	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
+	textwire "github.com/jahrulnr/nusallm/infrastructure/service/wire"
 )
 
 // newService spins an httptest server and a fake gateway pointing at it.
@@ -1273,5 +1274,113 @@ func TestStreamIdleAfterFinishCommits(t *testing.T) {
 	}
 	if last := conv.Last(); last == nil || last.Content() != "hi" {
 		t.Fatalf("completed turn lost: %+v", last)
+	}
+}
+
+// Provider tool call ids are the only correlation key between a call and
+// its output on every wire. Two calls with the same id make SetToolOutput
+// target the first one twice: the second result overwrites the first and
+// the second call stays unresolved. Reject the malformed turn instead of
+// committing corrupt history.
+func TestDuplicateToolCallIDsFailTurn(t *testing.T) {
+	svc, gw, _ := newService(t, false, func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"model": "m",
+			"choices": []any{map[string]any{
+				"index": 0,
+				"message": map[string]any{
+					"role": "assistant",
+					"tool_calls": []any{
+						map[string]any{"id": "dup", "type": "function", "function": map[string]any{"name": "read_file", "arguments": `{"path":"a"}`}},
+						map[string]any{"id": "dup", "type": "function", "function": map[string]any{"name": "read_file", "arguments": `{"path":"b"}`}},
+					},
+				},
+				"finish_reason": "tool_calls",
+			}},
+		})
+	})
+	conv := newConv(t)
+	model, _ := entity.NewModel("m", "test")
+	err := svc.Send(t.Context(), conv, gw, model, nil)
+	if err == nil {
+		t.Fatalf("duplicate tool ids committed: calls=%+v", conv.Last().ToolCalls())
+	}
+}
+
+// URL hosts are case-insensitive. The OpenRouter-only upstream pin is
+// selected by a substring check on the endpoint, so an endpoint typed
+// as HTTPS://OPENROUTER.AI/API silently loses the pin and lets the
+// aggregator fall back to a different backend — the exact behavior the
+// pin exists to prevent.
+func TestOpenRouterUpstreamPinIsCaseInsensitive(t *testing.T) {
+	conv, _ := aggregate.NewConversation("c1")
+	model, _ := entity.NewModel("m1", "")
+	model.SetUpstream("anthropic")
+	body, err := encodeRequest(conv, model, false, textwire.MediaRoot{}, "https://OPENROUTER.AI/api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, ok := body.Extra["provider"]
+	if !ok {
+		t.Fatalf("uppercase OpenRouter host dropped the upstream pin: extra=%v", body.Extra)
+	}
+	var pref struct {
+		Order          []string `json:"order"`
+		AllowFallbacks bool     `json:"allow_fallbacks"`
+	}
+	if err := json.Unmarshal(raw, &pref); err != nil {
+		t.Fatal(err)
+	}
+	if len(pref.Order) != 1 || pref.Order[0] != "anthropic" || pref.AllowFallbacks {
+		t.Fatalf("provider preference = %+v, want anthropic/no-fallbacks", pref)
+	}
+}
+
+// The unary idle deadline is meant to catch a body that stops sending,
+// not a body that is merely slow in total. A large response streamed in
+// regular chunks over a connection slower than idle is alive; cutting it
+// at a fixed wall-clock deadline turns a valid answer into "upstream
+// body idle". Each chunk must reset the deadline, exactly like the
+// streaming path's per-chunk timer.
+func TestUnaryBodyChunksResetTheIdleDeadline(t *testing.T) {
+	body := `{"model":"m","choices":[{"message":{"role":"assistant","content":"slow but alive"},"finish_reason":"stop"}]}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		f, _ := w.(http.Flusher)
+		const step = 30 * time.Millisecond
+		for i := 0; i < len(body); i += 12 {
+			end := min(i+12, len(body))
+			if _, err := w.Write([]byte(body[i:end])); err != nil {
+				return
+			}
+			if f != nil {
+				f.Flush()
+			}
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(step):
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	gw, err := aggregate.NewGateway("test", "t", srv.URL, enum.StyleCompletion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw.SetApiKey("sk-test")
+	gw.DisableStream()
+	// Total body ~11 chunks * 30ms = 330ms, far past idle; each gap is
+	// well under it.
+	svc := New(coretext.Options{FileStore: repoworkspace.NewLocal(), IdleTimeout: 100 * time.Millisecond})
+
+	conv := newConv(t)
+	model, _ := entity.NewModel("m", "test")
+	if err := svc.Send(t.Context(), conv, &gw, model, nil); err != nil {
+		t.Fatalf("a steadily arriving body was cut as idle: %v", err)
+	}
+	if last := conv.Last(); last == nil || last.Content() != "slow but alive" {
+		t.Fatalf("answer lost: %+v", conv.Last())
 	}
 }

@@ -1,4 +1,4 @@
-import { Widget, el, emit, clear } from '../../lib/dom.js';
+import { Widget, el, emit, clear, deepActiveElement } from '../../lib/dom.js';
 
 // The control kind _input renders for a leaf — part of the document's
 // shape, so a kind change must fall back to a full render.
@@ -14,16 +14,6 @@ function kindOf(value) {
 function sectionEntries(settings) {
   return Object.entries(settings || {})
     .filter(([, value]) => value && typeof value === 'object');
-}
-
-// The element actually holding focus, pierced through open shadow
-// roots — document.activeElement stops at the outermost host.
-function deepActiveElement() {
-  let active = document.activeElement;
-  while (active && active.shadowRoot && active.shadowRoot.activeElement) {
-    active = active.shadowRoot.activeElement;
-  }
-  return active;
 }
 
 // Settings editor: groups projected values by section and emits the

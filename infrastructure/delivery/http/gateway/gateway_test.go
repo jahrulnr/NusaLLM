@@ -254,3 +254,29 @@ func TestImportModelsMissingGateway404(t *testing.T) {
 		t.Fatalf("missing gateway: want 404, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+// Reads and Writes are documented as independently optional: a nil
+// surface leaves its routes unregistered. The PUT and import responses
+// are built from the write outcome plus a fresh read projection, so a
+// Writes-only composition cannot serve them — it must leave them
+// unregistered rather than mounting a handler that dereferences a nil
+// reader.
+func TestWritesOnlyLeavesProjectionRoutesUnregistered(t *testing.T) {
+	r := router(Deps{Writes: &fakeWriter{}})
+	for _, tc := range []struct{ method, path, body string }{
+		{"PUT", "/api/gateways/g", `{"name":"G","style":"completion","endpoint":"https://x","models":[]}`},
+		{"POST", "/api/gateways/g/import-models", ""},
+	} {
+		func() {
+			defer func() {
+				if rec := recover(); rec != nil {
+					t.Fatalf("%s %s panicked on a writes-only composition: %v", tc.method, tc.path, rec)
+				}
+			}()
+			rec := doJSON(r, tc.method, tc.path, tc.body)
+			if rec.Code != 404 {
+				t.Fatalf("%s %s: want 404 for an unregistered projection route, got %d", tc.method, tc.path, rec.Code)
+			}
+		}()
+	}
+}

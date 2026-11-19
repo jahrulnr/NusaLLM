@@ -64,7 +64,9 @@ func decodeResponse(rb *ResponseBody) (entity.Message, decodeMeta, error) {
 			if err != nil {
 				return entity.Message{}, decodeMeta{}, err
 			}
-			msg.AddToolCall(tc)
+			if err := msg.AddToolCall(tc); err != nil {
+				return entity.Message{}, decodeMeta{}, err
+			}
 			template = append(template, json.RawMessage(`{"type":"function_call"}`))
 		case "reasoning":
 			for _, s := range it.Summary {
@@ -121,8 +123,15 @@ func mapStatus(rb *ResponseBody, refused, hasCalls bool) enum.FinishReason {
 	case "completed":
 		return enum.FinishReasonStop
 	case "incomplete":
-		if rb.IncompleteDetails != nil && rb.IncompleteDetails.Reason == "max_output_tokens" {
-			return enum.FinishReasonLength
+		if rb.IncompleteDetails != nil {
+			switch rb.IncompleteDetails.Reason {
+			case "max_output_tokens":
+				return enum.FinishReasonLength
+			case "content_filter":
+				// A filter suppression is a definitive blocked answer,
+				// not a retryable truncation.
+				return enum.FinishReasonContentFilter
+			}
 		}
 		return enum.FinishReasonLength // incomplete without detail is still truncation-shaped
 	case "failed", "":

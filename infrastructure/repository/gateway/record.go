@@ -130,17 +130,68 @@ func decodeGateway(rec gatewayRecord, apiKey string) (*aggregate.Gateway, error)
 		g.DisableStream()
 	}
 	var models []entity.Model
+	seenIDs := map[string]bool{}
+	// Generation params persisted before their write-time bounds — or
+	// hand-edited past them — are impossible on the wire: hydrate them
+	// as unset (provider default) rather than a value every send
+	// forwards to a rejection.
+	boundedPtr := func(v *float64, lo, hi float64) *float64 {
+		if v != nil && (*v < lo || *v > hi) {
+			return nil
+		}
+		return v
+	}
 	for _, mr := range rec.Models {
+		// The catalog is keyed by id — a hand-edited record can carry the
+		// same id twice, which leaves the second row unreachable while
+		// the picker displays both. Collapse to the first entry, matching
+		// the first-match lookup Model(id) applies at read time.
+		if seenIDs[mr.ID] {
+			continue
+		}
+		seenIDs[mr.ID] = true
 		m, err := entity.NewModel(mr.ID, mr.Route)
 		if err != nil {
 			return nil, fmt.Errorf("gateway %q: %w", rec.ID, err)
 		}
-		m.SetTemperature(mr.Temperature)
-		m.SetTopP(mr.TopP)
+		// Negative resource limits carry no meaning a provider accepts:
+		// a negative window/limit hides the model or breaks the image
+		// gate. Hydrate them as unset (unknown), like the generation
+		// params below.
+		if mr.ContextWindow < 0 {
+			mr.ContextWindow = 0
+		}
+		if mr.OutputLimit < 0 {
+			mr.OutputLimit = 0
+		}
+		if mr.MaxImages < 0 {
+			mr.MaxImages = 0
+		}
+		if mr.TopK != nil && *mr.TopK <= 0 {
+			mr.TopK = nil
+		}
+		if mr.MaxOutputTokens != nil && *mr.MaxOutputTokens <= 0 {
+			mr.MaxOutputTokens = nil
+		}
+		// The write-time pair rules hold on hydrate too: an output
+		// ceiling above the window — or a request cap above either bound
+		// — is the impossible pair buildModel rejects, so the lesser
+		// claim drops to unset.
+		if mr.ContextWindow > 0 && mr.OutputLimit > mr.ContextWindow {
+			mr.OutputLimit = 0
+		}
+		if mr.MaxOutputTokens != nil && mr.ContextWindow > 0 && *mr.MaxOutputTokens > mr.ContextWindow {
+			mr.MaxOutputTokens = nil
+		}
+		if mr.MaxOutputTokens != nil && mr.OutputLimit > 0 && *mr.MaxOutputTokens > mr.OutputLimit {
+			mr.MaxOutputTokens = nil
+		}
+		m.SetTemperature(boundedPtr(mr.Temperature, 0, 2))
+		m.SetTopP(boundedPtr(mr.TopP, 0, 1))
 		m.SetTopK(mr.TopK)
 		m.SetMaxOutputTokens(mr.MaxOutputTokens)
-		m.SetPresencePenalty(mr.PresencePenalty)
-		m.SetFrequencyPenalty(mr.FrequencyPenalty)
+		m.SetPresencePenalty(boundedPtr(mr.PresencePenalty, -2, 2))
+		m.SetFrequencyPenalty(boundedPtr(mr.FrequencyPenalty, -2, 2))
 		m.SetSeed(mr.Seed)
 		m.SetStopSequences(mr.StopSequences)
 		if mr.Effort != "" {

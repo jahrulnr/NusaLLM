@@ -21,6 +21,7 @@ export class UpdatePoller {
     this.timers = timers;
     this.timer = null;
     this.status = null;
+    this._seq = 0;
   }
 
   // Refreshes now, then on every interval until stop().
@@ -52,12 +53,16 @@ export class UpdatePoller {
   }
 
   async _apply(load) {
+    const seq = ++this._seq;
     let next;
     try {
       next = await load();
     } catch (err) {
       next = { ...(this.status || {}), error: (err && err.message) || 'request failed' };
     }
+    // A stale request landing after a newer one was issued would
+    // resurrect an old release picture — only the latest request wins.
+    if (seq !== this._seq) return this.status;
     this.status = next;
     this.onStatus(next);
     return next;

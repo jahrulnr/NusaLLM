@@ -153,3 +153,16 @@ test('a service restart says which restart is happening and shows no byte bar', 
   walk(popup.panel, (node) => { if (node.attrs.role === 'progressbar') bar = node; });
   assert.equal(bar, null);
 });
+
+// A busy update can finish between the start refusal and the follow-up
+// probe. The shell then pushes an idle view into an already-open popup;
+// the panel clears, but the empty dialog must not stay modal over the
+// app.
+test('an idle view closes an already-open progress dialog', () => {
+  const popup = make({ state: 'running', phase: 'download', version: '0.10.4' });
+  popup.open();
+  assert.equal(popup.dialog.open, true);
+  popup.view = { state: 'idle' };
+  assert.equal(popup.dialog.open, false,
+    'an idle view must dismiss the progress dialog instead of showing a blank modal');
+});

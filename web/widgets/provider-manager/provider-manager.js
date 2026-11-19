@@ -1,4 +1,4 @@
-import { Widget, el, emit, clear } from '../../lib/dom.js';
+import { Widget, el, emit, clear, deepActiveElement } from '../../lib/dom.js';
 import { icon } from '../../lib/icons.js';
 
 const STYLES = ['completion', 'responses', 'messages', 'generatecontent'];
@@ -34,8 +34,12 @@ class ProviderManager extends Widget {
     this._editing = null;   // existing gateway object being edited
     this._creating = false;
     this._confirmId = null; // gateway id awaiting delete confirmation
+    this._confirmKeep = null; // the safe button inside the confirm row
     this._modelsOf = null;  // gateway whose models view is open
     this._editingModel = null; // model object open in the model editor
+    this._openedBy = null;  // aria-label of the control that opened the dialog
+    this._pendingFocus = null; // label queued by a click that went busy
+    this._firstField = null; // the editor's first focusable field
     this._viewQuery = '';   // models-view search text, survives re-renders
     this._importing = false;
     this._saving = false;
@@ -72,6 +76,7 @@ class ProviderManager extends Widget {
     if (!result || result.id !== this._pendingSaveId) return;
     this._saving = false;
     this._pendingSaveId = null;
+    this._syncImportState(); // exits below may skip a re-render
     if (this._modelsOf && this._modelsOf.id === result.id) {
       // A model-editor save keeps the models view open: the returned
       // catalog replaces the gateway's list in place, and a failure
@@ -86,6 +91,10 @@ class ProviderManager extends Widget {
       }
       this._editingModel = null;
       this._render();
+      // The saved row is where the user continues — the dead save
+      // button can't hold focus, so the row it opened inherits it.
+      this._refocusLabel(this._openedBy);
+      this._openedBy = null;
       return;
     }
     if (result.error) {
@@ -107,6 +116,10 @@ class ProviderManager extends Widget {
     this._editing = null;
     this._creating = false;
     this._render();
+    // Same contract as the model editor — the dead save control hands
+    // its focus to the row that opened the form.
+    this._refocusLabel(this._openedBy);
+    this._openedBy = null;
   }
 
   // Refresh answer: the import runs server-side against the stored
@@ -158,13 +171,50 @@ class ProviderManager extends Widget {
       : 'No new models from the provider.', false);
   }
 
+  // The aria-label is a control's stable identity across a rebuild —
+  // a focused node's successor carries the same name, so a refresh or
+  // state change hands focus back instead of dropping it to BODY.
+  _refocusLabel(label) {
+    if (!label) return;
+    this._findLabel(label)?.focus?.();
+  }
+
+  _findLabel(label) {
+    const match = (n) => {
+      if (n !== this.root && n.getAttribute?.('aria-label') === label) return n;
+      for (const c of n.children || []) {
+        const hit = match(c);
+        if (hit) return hit;
+      }
+      return null;
+    };
+    return match(this.root);
+  }
+
+  // A control that goes busy when clicked drops focus the moment it
+  // disables — queue the label and land it on the first enabled
+  // successor. A rebuild or an in-place re-enable both count; a label
+  // that leaves the view entirely dies with it.
+  _settlePending() {
+    const hit = this._findLabel(this._pendingFocus);
+    if (!hit) { this._pendingFocus = null; return; }
+    if (hit.disabled) return;
+    hit.focus?.();
+    this._pendingFocus = null;
+  }
+
   _render() {
+    const prev = deepActiveElement();
+    const focusLabel = prev && this.root.contains?.(prev) ? prev.getAttribute?.('aria-label') : null;
     if (this._dialog?.open) this._dialog.close();
     this._dialog = null;
     this._formError = null;
     this._modelFormError = null;
     this._importBtn = null;
+    this._saveBtn = null;
     this._importNote = null;
+    this._confirmKeep = null;
+    this._firstField = null;
     this._modelList = null;
     this._modelSearch = null;
     this._modelsListEl = null;
@@ -174,14 +224,23 @@ class ProviderManager extends Widget {
 
     if (this._modelsOf) {
       this._renderModelsView();
+      if (this._pendingFocus) this._settlePending();
+      else this._refocusLabel(focusLabel);
       return;
     }
 
     this.root.append(el('div', { class: 'row-head' }, [
       el('span', { class: 'count', text: `${this._gateways.length} gateway${this._gateways.length === 1 ? '' : 's'}` }),
       el('button', {
-        class: 'btn accent', type: 'button',
-        onclick: () => { this._creating = true; this._render(); },
+        class: 'btn accent', type: 'button', 'aria-label': 'Add gateway',
+        // A data-entry dialog must open on its first field — the
+        // browser default lands on the header's Close.
+        onclick: () => {
+          this._creating = true;
+          this._openedBy = 'Add gateway';
+          this._render();
+          this._firstField?.focus?.();
+        },
       }, [icon('plus', 12), el('span', { text: 'Add gateway' })]),
     ]));
 
@@ -198,12 +257,22 @@ class ProviderManager extends Widget {
             class: 'btn danger-btn', type: 'button',
             onclick: () => {
               this._confirmId = null;
+              // The whole row dies with the gateway — the list's first
+              // action is the stable successor for the keyboard flow.
+              this._pendingFocus = 'Add gateway';
               emit(this, 'gateway-delete', { id: g.id });
             },
           }, [el('span', { text: 'Delete' })]),
-          el('button', {
+          this._confirmKeep = el('button', {
             class: 'btn', type: 'button',
-            onclick: () => { this._confirmId = null; this._render(); },
+            // The destructive choice is never the default — Keep owns
+            // focus while the row stands, and dismiss hands it back to
+            // the Delete trigger that opened the row.
+            onclick: () => {
+              this._confirmId = null;
+              this._render();
+              this._refocusLabel(`Delete ${g.id}`);
+            },
           }, [el('span', { text: 'Keep' })]),
         ]));
         continue;
@@ -222,16 +291,27 @@ class ProviderManager extends Widget {
           }, [el('span', { text: `${(g.models || []).length} models` }), icon('chevron', 12)]),
           el('button', {
             class: 'icon-btn', type: 'button', 'aria-label': `Edit ${g.id}`,
-            onclick: () => { this._editing = g; this._importing = false; this._render(); },
+            onclick: () => {
+              this._editing = g;
+              this._openedBy = `Edit ${g.id}`;
+              this._render();
+              this._firstField?.focus?.();
+            },
           }, [icon('pencil', 12)]),
           el('button', {
             class: 'icon-btn danger', type: 'button', 'aria-label': `Delete ${g.id}`,
-            onclick: () => { this._confirmId = g.id; this._render(); },
+            onclick: () => {
+              this._confirmId = g.id;
+              this._render();
+              this._confirmKeep?.focus?.();
+            },
           }, [icon('trash', 12)]),
         ]),
       ]));
     }
     if (this._editing || this._creating) this._renderForm();
+    if (this._pendingFocus) this._settlePending();
+    else this._refocusLabel(focusLabel);
   }
 
   _openModels(g) {
@@ -242,6 +322,9 @@ class ProviderManager extends Widget {
     this._confirmId = null;
     this._viewQuery = '';
     this._render();
+    // The row's controls are gone — the view's Back is the way out and
+    // its first control, so opening the view hands focus to it.
+    this._refocusLabel('Back to gateways');
   }
 
   // Second view level: the per-gateway model catalog. A model editor
@@ -252,13 +335,23 @@ class ProviderManager extends Widget {
     this.root.append(el('div', { class: 'models-head' }, [
       el('button', {
         class: 'btn back', type: 'button', 'aria-label': 'Back to gateways',
-        onclick: () => { this._modelsOf = null; this._editingModel = null; this._render(); },
+        onclick: () => {
+          this._modelsOf = null;
+          this._editingModel = null;
+          this._render();
+          // Back replaces the whole view — the list's first action is
+          // where the keyboard flow resumes.
+          this._refocusLabel('Add gateway');
+        },
       }, [icon('chevron', 12), el('span', { text: 'Gateways' })]),
       el('span', { class: 'models-title', text: g.name || g.id }),
       this._importBtn = el('button', {
-        class: 'btn', type: 'button', disabled: this._importing,
+        class: 'btn', type: 'button', disabled: this._importing || this._saving,
+        'aria-label': 'Refresh models',
         text: this._importing ? 'Importing…' : 'Refresh models from provider',
-        onclick: () => this._importModels(g.id),
+        // Going busy disables this control and drops its focus — queue
+        // the label so the answer's rebuild hands it back.
+        onclick: () => { this._pendingFocus = 'Refresh models'; this._importModels(g.id); },
       }),
       this._modelsCount = el('span', { class: 'count' }),
     ]));
@@ -326,7 +419,12 @@ class ProviderManager extends Widget {
       if (nEff) meta.push(el('span', { class: 'mm', text: `${nEff} effort${nEff === 1 ? '' : 's'}` }));
       this._modelsListEl.append(el('button', {
         class: 'model-row', type: 'button', 'aria-label': `Edit ${m.id}`,
-        onclick: () => { this._editingModel = m; this._renderModelEditor(); },
+        onclick: () => {
+          this._editingModel = m;
+          this._openedBy = `Edit ${m.id}`;
+          this._renderModelEditor();
+          this._firstField?.focus?.();
+        },
       }, [
         el('span', { class: 'model-row-main' }, [
           el('span', { class: 'model-row-id', text: m.name || m.id }),
@@ -350,6 +448,10 @@ class ProviderManager extends Widget {
       if (this._saving) return;
       this._editingModel = null;
       this._render();
+      // Back to the row that opened the editor — same hand-off the
+      // gateway form and the confirm row use.
+      this._refocusLabel(this._openedBy);
+      this._openedBy = null;
     };
     dialog.addEventListener('cancel', (event) => {
       event.preventDefault();
@@ -433,7 +535,9 @@ class ProviderManager extends Widget {
     const error = el('div', { class: 'form-error' });
 
     const save = () => {
-      if (this._saving) return;
+      // A catalog import is a full-record write too — saving while it
+      // is on the wire can replace the models it is about to merge.
+      if (this._saving || this._importing) return;
       // Resolve against the LIVE gateway: a refresh/import landing while
       // this dialog sits open replaces the object it opened from — a PUT
       // built on the captured snapshot would roll that merge back and
@@ -512,6 +616,10 @@ class ProviderManager extends Widget {
       };
       this._saving = true;
       this._pendingSaveId = g.id;
+      this._pendingFocus = 'Save model';
+      // Disabling the live Save drops its focus — queue the label so
+      // the answer's re-enable hands it back instead of stranding BODY.
+      this._syncImportState();
       error.textContent = 'Saving…';
       emit(this, 'gateway-save', { id: g.id, body });
     };
@@ -555,7 +663,11 @@ class ProviderManager extends Widget {
       ]),
       form,
       el('div', { class: 'form-actions' }, [
-        el('button', { class: 'btn accent', type: 'button', onclick: save }, [el('span', { text: 'Save' })]),
+        this._saveBtn = el('button', {
+          class: 'btn accent', type: 'button', 'aria-label': 'Save model',
+          disabled: this._importing || this._saving,
+          onclick: save,
+        }, [el('span', { text: 'Save' })]),
         el('button', { class: 'btn', type: 'button', onclick: close }, [el('span', { text: 'Cancel' })]),
       ]),
     );
@@ -563,6 +675,8 @@ class ProviderManager extends Widget {
     this._dialog = dialog;
     this._modelFormError = error;
     dialog.showModal();
+    // Model id stays disabled — the first editable field is the name.
+    this._firstField = f.name;
   }
 
   _renderForm() {
@@ -573,8 +687,13 @@ class ProviderManager extends Widget {
       if (this._saving) return;
       this._editing = null;
       this._creating = false;
-      this._importing = false;
+      // _importing is wire state, not dialog state — a flight that
+      // outlives the dialog still owns the lock until its answer lands.
       this._render();
+      // Back to the control that opened the dialog — the row's Edit or
+      // the Add gateway button — never BODY.
+      this._refocusLabel(this._openedBy);
+      this._openedBy = null;
     };
     dialog.addEventListener('cancel', (event) => {
       event.preventDefault();
@@ -593,7 +712,7 @@ class ProviderManager extends Widget {
     this._modelIds = new Set((g?.models || []).map((m) => m.id));
     this._modelSearch = el('input', {
       class: 'in', type: 'search', placeholder: 'Search configured models',
-      'aria-label': 'Search configured models',
+      'aria-label': 'Search configured models', value: '',
     });
     this._modelList = el('div', { class: 'model-list', role: 'list', 'aria-label': 'Configured models', tabindex: '0' });
     this._modelCount = el('span', { class: 'count' });
@@ -618,7 +737,10 @@ class ProviderManager extends Widget {
     const error = el('div', { class: 'form-error' });
 
     const save = () => {
-      if (this._saving) return;
+      // Import and full-replace save are mutually exclusive server-side
+      // operations on the same record: a save built mid-import would
+      // replace the catalog before the merge lands.
+      if (this._saving || this._importing) return;
       const gid = g ? g.id : id.value.trim();
       if (!gid) {
         error.textContent = 'gateway id is required';
@@ -648,6 +770,11 @@ class ProviderManager extends Widget {
       if (keyMode.value === 'clear') body.apiKey = '';
       this._saving = true;
       this._pendingSaveId = gid;
+      this._pendingFocus = 'Save gateway';
+      // The import reads the STORED record — while the save is on the
+      // wire that record is still the old endpoint/key, so the control
+      // goes disabled for the save's duration.
+      this._syncImportState();
       error.textContent = 'Saving…';
       emit(this, 'gateway-save', { id: gid, body });
     };
@@ -667,9 +794,10 @@ class ProviderManager extends Widget {
       ]),
       el('div', { class: 'import-actions' }, [
         this._importBtn = el('button', {
-          class: 'btn', type: 'button', disabled: !g || this._importing,
+          class: 'btn', type: 'button', disabled: !g || this._importing || this._saving,
+          'aria-label': 'Refresh models',
           text: this._importing ? 'Importing…' : 'Refresh models from provider',
-          onclick: () => this._importModels(g.id),
+          onclick: () => { this._pendingFocus = 'Refresh models'; this._importModels(g.id); },
         }),
         g
           ? el('span', { class: 'hint', text: 'Re-reads the provider catalog with the saved endpoint and key.' })
@@ -687,13 +815,19 @@ class ProviderManager extends Widget {
       ]),
       form,
       el('div', { class: 'form-actions' }, [
-        el('button', { class: 'btn accent', type: 'button', onclick: save }, [el('span', { text: 'Save' })]),
+        this._saveBtn = el('button', {
+          class: 'btn accent', type: 'button', 'aria-label': 'Save gateway',
+          disabled: this._importing || this._saving,
+          onclick: save,
+        }, [el('span', { text: 'Save' })]),
         el('button', { class: 'btn', type: 'button', onclick: close }, [el('span', { text: 'Cancel' })]),
       ]),
     );
     this.root.append(dialog);
     this._dialog = dialog;
     dialog.showModal();
+    // New gateways start at the id field; edits skip the disabled id.
+    this._firstField = g ? name : id;
     this._renderModels();
     this._formError = error;
   }
@@ -715,6 +849,9 @@ class ProviderManager extends Widget {
   // The import runs server-side against the stored record — a field the
   // user edited but never saved (endpoint, key) does NOT apply here.
   _importModels(id) {
+    // One import at a time, and never while a save is on the wire — the
+    // import reads the stored record, not the form's unsaved edits.
+    if (this._saving || this._importing) return;
     this._importing = true;
     this._syncImportState();
     this._noteImport('Importing the provider catalog…', false);
@@ -722,10 +859,16 @@ class ProviderManager extends Widget {
   }
 
   _syncImportState() {
+    // Save mirrors the import guard: the import reads the stored record,
+    // and a save on the wire is not that record yet.
+    if (this._saveBtn) this._saveBtn.disabled = this._importing || this._saving;
     if (!this._importBtn) return;
-    this._importBtn.disabled = !(this._editing || this._modelsOf) || this._importing;
+    this._importBtn.disabled = !(this._editing || this._modelsOf) || this._importing || this._saving;
     this._importBtn.textContent = this._importing
       ? 'Importing…' : 'Refresh models from provider';
+    // Re-enabling in place is a valid successor too — land a queued
+    // restore on the freshly enabled control.
+    if (this._pendingFocus) this._settlePending();
   }
 
   _noteImport(text, isError) {

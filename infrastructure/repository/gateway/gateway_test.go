@@ -330,3 +330,119 @@ func TestListPropagatesUnreadableRecord(t *testing.T) {
 		t.Fatalf("List returned %d gateways and no error — an unreadable record must fail the listing, not hide", len(got))
 	}
 }
+
+// Write validation rejects an explicit maxOutputTokens=0, but a record
+// written before that rule (or repaired by hand) still loads into an
+// active gateway with the zero pointer intact — every send then carries
+// max_tokens:0. Load must not activate an impossible request param:
+// reject the record or normalize the zero back to unset.
+func TestLoadNormalizesZeroMaxOutputTokens(t *testing.T) {
+	dir := t.TempDir()
+	rec := `{"id":"g","style":"completion","endpoint":"https://x","stream":true,"models":[{"id":"m","maxOutputTokens":0}]}`
+	if err := os.WriteFile(filepath.Join(dir, "g.json"), []byte(rec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	g, err := NewGatewayRepository(dir, nil).Load(t.Context(), "g")
+	if err != nil {
+		return // rejecting the invalid record is also safe
+	}
+	m, ok := g.Model("m")
+	if !ok {
+		t.Fatal("model missing after load")
+	}
+	if v := m.MaxOutputTokens(); v != nil && *v == 0 {
+		t.Fatalf("loaded gateway still sends max_tokens=0")
+	}
+}
+
+// Write-time validation covers temperature, topP, penalties, and the
+// context/output cross-field rule; stored records must not bypass it.
+// A hand-edited or pre-rule record with impossible generation params
+// otherwise becomes an active gateway that sends every request with
+// values the provider rejects.
+func TestLoadRejectsOrNormalizesInvalidGenerationParams(t *testing.T) {
+	dir := t.TempDir()
+	rec := `{
+		"id":"g","style":"completion","endpoint":"https://x","stream":true,
+		"models":[{"id":"m","contextWindow":8192,"outputLimit":16384,
+			"temperature":5,"topP":2,"presencePenalty":3,"frequencyPenalty":-4}]
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "g.json"), []byte(rec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	g, err := NewGatewayRepository(dir, nil).Load(t.Context(), "g")
+	if err != nil {
+		return // rejecting the record is safe
+	}
+	m, ok := g.Model("m")
+	if !ok {
+		t.Fatal("model missing after load")
+	}
+	if v := m.Temperature(); v != nil && (*v < 0 || *v > 2) {
+		t.Fatalf("loaded temperature=%v outside [0,2]", *v)
+	}
+	if v := m.TopP(); v != nil && (*v < 0 || *v > 1) {
+		t.Fatalf("loaded topP=%v outside [0,1]", *v)
+	}
+	if v := m.PresencePenalty(); v != nil && (*v < -2 || *v > 2) {
+		t.Fatalf("loaded presencePenalty=%v outside [-2,2]", *v)
+	}
+	if v := m.FrequencyPenalty(); v != nil && (*v < -2 || *v > 2) {
+		t.Fatalf("loaded frequencyPenalty=%v outside [-2,2]", *v)
+	}
+	if m.ContextWindow() > 0 && m.OutputLimit() > m.ContextWindow() {
+		t.Fatalf("loaded outputLimit=%d exceeds contextWindow=%d", m.OutputLimit(), m.ContextWindow())
+	}
+}
+
+// A catalog is keyed by model id; Upsert rejects duplicates, but a
+// hand-edited or older record can still carry them. Loading it makes
+// Model(id) first-match and leaves the second row unreachable while the
+// picker displays both. Load must reject the record or collapse the
+// duplicate before the gateway becomes active.
+func TestLoadRejectsOrCollapsesDuplicateModelIDs(t *testing.T) {
+	dir := t.TempDir()
+	rec := `{"id":"g","style":"completion","endpoint":"https://x","stream":true,
+		"models":[{"id":"m","contextWindow":200000},{"id":"m","contextWindow":400000}]}`
+	if err := os.WriteFile(filepath.Join(dir, "g.json"), []byte(rec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	g, err := NewGatewayRepository(dir, nil).Load(t.Context(), "g")
+	if err != nil {
+		return // rejecting the record is safe
+	}
+	seen := map[string]bool{}
+	for _, m := range g.Models() {
+		if seen[m.ID()] {
+			t.Fatalf("loaded gateway keeps duplicate model id %q", m.ID())
+		}
+		seen[m.ID()] = true
+	}
+}
+
+// A record written before a validation rule — or repaired by hand — must
+// not activate negative capacity limits: a negative context hides the
+// model from the picker while looking "declared", and a negative image
+// cap silently fails open because every check is `limit > 0`. Write
+// validation rejects these values; hydrate must reject or normalize them
+// just like the generation-param cases above.
+func TestLoadRejectsOrNormalizesNegativeResourceLimits(t *testing.T) {
+	dir := t.TempDir()
+	rec := `{"id":"g","style":"completion","endpoint":"https://x","stream":true,
+		"models":[{"id":"m","contextWindow":-1,"outputLimit":-2,"maxImages":-3}]}`
+	if err := os.WriteFile(filepath.Join(dir, "g.json"), []byte(rec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	g, err := NewGatewayRepository(dir, nil).Load(t.Context(), "g")
+	if err != nil {
+		return // rejecting the invalid record is also safe
+	}
+	m, ok := g.Model("m")
+	if !ok {
+		t.Fatal("model missing after load")
+	}
+	if m.ContextWindow() < 0 || m.OutputLimit() < 0 || m.MaxImages() < 0 {
+		t.Fatalf("loaded negative limits: context=%d output=%d images=%d",
+			m.ContextWindow(), m.OutputLimit(), m.MaxImages())
+	}
+}

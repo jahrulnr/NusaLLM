@@ -68,8 +68,13 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 	didCompact := false
 	// Set by the media gate below when a tool's image output had to be
 	// withheld for the serving's per-request cap — the fold that frees
-	// the count happens at the next step or turn end.
+	// the count happens at the next step or turn end. A history that
+	// arrives already over the cap — user attachments are not withheld
+	// like tool output — asks for the same fold.
 	hitMediaLimit := false
+	if limit := model.MaxImages(); limit > 0 && conv.MediaCount(enum.ModalityImage) > limit {
+		hitMediaLimit = true
+	}
 	// pinnedID is the record the last pin attempt left the tail on — a
 	// kept tail ending on it must not take a second pin after a fold.
 	// The dedup inside appendWorkspaceContext makes this a fast path:
@@ -179,6 +184,15 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 		var added []entity.Message
 		var err error
 		var canceled bool
+		// The cap holds on every wire leg, user attachments included —
+		// they enter history uncounted by the tool gate, so a history
+		// still over the limit after its fold chance must not send at
+		// all rather than leak the excess upstream.
+		if limit := model.MaxImages(); limit > 0 && conv.MediaCount(enum.ModalityImage) > limit {
+			return apperror.New(400, "image limit", fmt.Errorf(
+				"conversation carries %d images but model %q accepts at most %d per request — compact the conversation to seal earlier images",
+				conv.MediaCount(enum.ModalityImage), model.ID(), limit))
+		}
 		for attempt := 0; ; attempt++ {
 			// Output capture resets per attempt — a retried call
 			// rebuilds parts from its own stream only.
@@ -576,7 +590,9 @@ scan:
 		return err
 	}
 	call.SetStoredOutput("workspace changed to "+shown, "")
-	msg.AddToolCall(call)
+	if err := msg.AddToolCall(call); err != nil {
+		return err
+	}
 	conv.Append(msg)
 	_, err = d.Convs.AppendMessage(ctx, convID, msg)
 	return err

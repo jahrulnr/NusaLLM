@@ -30,8 +30,15 @@ func (c *DiffCommand) Execute(ctx context.Context, _ string, emitter dservice.Co
 		return errors.New("usage: /diff")
 	}
 	const cap = 64 << 10
-	out, err := exec.CommandContext(ctx, "git", "-C", c.h.Path(), "diff", "HEAD", "--", ".").CombinedOutput()
-	if err != nil && strings.Contains(string(out), "invalid object name") {
+	var out []byte
+	var err error
+	// `git diff HEAD` only has meaning once a first commit exists — and the
+	// failure message for an unborn branch differs across Git versions
+	// ("invalid object name", "bad revision 'HEAD'", "ambiguous argument").
+	// Probe the ref instead of parsing that error text.
+	if probe := exec.CommandContext(ctx, "git", "-C", c.h.Path(), "rev-parse", "--verify", "--quiet", "HEAD"); probe.Run() == nil {
+		out, err = exec.CommandContext(ctx, "git", "-C", c.h.Path(), "diff", "HEAD", "--", ".").CombinedOutput()
+	} else {
 		out, err = exec.CommandContext(ctx, "git", "-C", c.h.Path(), "diff", "--", ".").CombinedOutput()
 	}
 	if err != nil {

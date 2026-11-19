@@ -49,7 +49,9 @@ func decodeMessage(rawBlocks []json.RawMessage, stopReason string) (entity.Messa
 			if err != nil {
 				return entity.Message{}, decodeMeta{}, err
 			}
-			msg.AddToolCall(tc)
+			if err := msg.AddToolCall(tc); err != nil {
+				return entity.Message{}, decodeMeta{}, err
+			}
 			template = append(template, json.RawMessage(`{"type":"tool_use"}`))
 		default:
 			// redacted_thinking and server-side blocks — keep the raw

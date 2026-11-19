@@ -258,14 +258,24 @@ func (s *Service) commitStream(conv *aggregate.Conversation, onEvent event.TurnE
 	rb := terminal
 	if rb == nil {
 		rb = &ResponseBody{Status: "completed", Output: fallback}
-	} else if len(rb.Output) == 0 && len(fallback) > 0 {
-		cp := *rb
-		cp.Output = fallback
-		rb = &cp
 	}
 	msg, meta, err := decodeResponse(rb) // reasoning already streamed live
 	if err != nil {
 		return err
+	}
+	// A partial proxy may repeat only item shells in the terminal
+	// payload — present but carrying nothing deliverable — while the
+	// real parts streamed in output_item.done. An output that decodes
+	// to no text, calls, or artifacts is an empty output for commit
+	// purposes: the accumulated items stand in the same way they do
+	// when the terminal array is missing entirely.
+	if len(fallback) > 0 && msg.Content() == "" && len(msg.ToolCalls()) == 0 && !meta.artifacts {
+		cp := *rb
+		cp.Output = fallback
+		if alt, altMeta, altErr := decodeResponse(&cp); altErr == nil &&
+			(alt.Content() != "" || len(alt.ToolCalls()) > 0 || altMeta.artifacts) {
+			rb, msg, meta = &cp, alt, altMeta
+		}
 	}
 	if err := coretext.EmptyAnswerError(msg, meta.artifacts, "", logged); err != nil {
 		return err

@@ -429,3 +429,187 @@ func TestUpsertPreservesOptionalContent(t *testing.T) {
 		}
 	}
 }
+
+// An endpoint is the base URL every provider call is built from. Saving
+// "not a url" succeeds today (only emptiness is checked) and every later
+// send fails as a generic network error; the UI even says "saved."
+// Reject a non-absolute, non-http(s) endpoint at write time.
+func TestUpsertRejectsMalformedEndpoint(t *testing.T) {
+	app, _, _ := newApp(t)
+	in := GatewayInput{
+		ID: "g", Name: "n", Style: enum.StyleCompletion,
+		Endpoint: "not a url",
+	}
+	if _, err := app.Upsert(t.Context(), in); err == nil || apperror.As(err).StatusCode() != 400 {
+		t.Fatalf("malformed endpoint → %v, want 400", err)
+	}
+}
+
+// Generation parameters are provider contracts. A negative temperature
+// is never valid and a probability outside [0,1] is not a TopP; accepting
+// them stores a gateway that can only fail at send time. Reject at write.
+func TestUpsertRejectsOutOfRangeModelParams(t *testing.T) {
+	app, _, _ := newApp(t)
+	neg := -0.5
+	in := GatewayInput{
+		ID: "g", Name: "n", Style: enum.StyleCompletion, Endpoint: "https://x",
+		Models: []ModelInput{{ID: "m", Temperature: &neg}},
+	}
+	if _, err := app.Upsert(t.Context(), in); err == nil || apperror.As(err).StatusCode() != 400 {
+		t.Fatalf("negative temperature → %v, want 400", err)
+	}
+	over := 1.5
+	in.Models = []ModelInput{{ID: "m", TopP: &over}}
+	if _, err := app.Upsert(t.Context(), in); err == nil || apperror.As(err).StatusCode() != 400 {
+		t.Fatalf("TopP > 1 → %v, want 400", err)
+	}
+}
+
+// Temperature has an upper bound as well as a lower one. Providers cap it
+// at 2 (some at 1); storing 100 guarantees a rejected request on every
+// send. The negative-side check alone leaves this the other half.
+func TestUpsertRejectsExcessiveTemperature(t *testing.T) {
+	app, _, _ := newApp(t)
+	hot := 100.0
+	in := GatewayInput{
+		ID: "g", Name: "n", Style: enum.StyleCompletion, Endpoint: "https://x",
+		Models: []ModelInput{{ID: "m", Temperature: &hot}},
+	}
+	if _, err := app.Upsert(t.Context(), in); err == nil || apperror.As(err).StatusCode() != 400 {
+		t.Fatalf("temperature 100 → %v, want 400", err)
+	}
+}
+
+// A model cannot reserve more output tokens than its whole context
+// window. The budgeting code subtracts OutputLimit from ContextWindow;
+// storing 2k output over a 1k window leaves no room for input and makes
+// every turn compact/thrash before the provider even sees it.
+func TestUpsertRejectsOutputLimitAboveContext(t *testing.T) {
+	app, _, _ := newApp(t)
+	in := GatewayInput{
+		ID: "g", Name: "n", Style: enum.StyleCompletion, Endpoint: "https://x",
+		Models: []ModelInput{{ID: "m", ContextWindow: 1000, OutputLimit: 2000}},
+	}
+	if _, err := app.Upsert(t.Context(), in); err == nil || apperror.As(err).StatusCode() != 400 {
+		t.Fatalf("output limit above context → %v, want 400", err)
+	}
+}
+
+// Presence/frequency penalties are bounded knobs too (OpenAI-style
+// providers use [-2, 2]). A value of 100 is impossible on every surface
+// this gateway can target; storing it guarantees a provider rejection.
+func TestUpsertRejectsAbsurdPenalty(t *testing.T) {
+	app, _, _ := newApp(t)
+	penalty := 100.0
+	in := GatewayInput{
+		ID: "g", Name: "n", Style: enum.StyleCompletion, Endpoint: "https://x",
+		Models: []ModelInput{{ID: "m", PresencePenalty: &penalty}},
+	}
+	if _, err := app.Upsert(t.Context(), in); err == nil || apperror.As(err).StatusCode() != 400 {
+		t.Fatalf("presence penalty 100 → %v, want 400", err)
+	}
+}
+
+// MaxOutputTokens is the per-request output cap. It cannot exceed the
+// whole context window either; the previous cross-check covers only the
+// catalog OutputLimit, leaving a request cap that asks for more tokens
+// than the model can hold.
+func TestUpsertRejectsMaxOutputTokensAboveContext(t *testing.T) {
+	app, _, _ := newApp(t)
+	cw, maxOut := 1000, 2000
+	in := GatewayInput{
+		ID: "g", Name: "n", Style: enum.StyleCompletion, Endpoint: "https://x",
+		Models: []ModelInput{{ID: "m", ContextWindow: cw, MaxOutputTokens: &maxOut}},
+	}
+	if _, err := app.Upsert(t.Context(), in); err == nil || apperror.As(err).StatusCode() != 400 {
+		t.Fatalf("maxOutputTokens above context → %v, want 400", err)
+	}
+}
+
+// The catalog's OutputLimit is the provider's maximum response length;
+// MaxOutputTokens is the per-request cap we ask for. Asking for more
+// than the declared maximum is impossible and should be rejected at
+// write time instead of on every send.
+func TestUpsertRejectsMaxOutputTokensAboveOutputLimit(t *testing.T) {
+	app, _, _ := newApp(t)
+	maxOut := 8000
+	in := GatewayInput{
+		ID: "g", Name: "n", Style: enum.StyleCompletion, Endpoint: "https://x",
+		Models: []ModelInput{{ID: "m", ContextWindow: 8192, OutputLimit: 4096, MaxOutputTokens: &maxOut}},
+	}
+	if _, err := app.Upsert(t.Context(), in); err == nil || apperror.As(err).StatusCode() != 400 {
+		t.Fatalf("maxOutputTokens above outputLimit → %v, want 400", err)
+	}
+}
+
+// Adapters append their own path (/chat/completions, /messages,
+// /models/…) to the base endpoint. A query or fragment on the stored
+// base therefore ends up in the wrong place ("...?api-version=x/
+// chat/completions"), so a save that looks valid is broken on every
+// send. Reject query/fragment bases until an adapter can merge them.
+func TestUpsertRejectsEndpointQueryOrFragment(t *testing.T) {
+	app, _, _ := newApp(t)
+	base := GatewayInput{ID: "g", Name: "n", Style: enum.StyleCompletion}
+	for _, ep := range []string{
+		"https://example.test/v1?api-version=2024-01-01",
+		"https://example.test/v1#frag",
+	} {
+		base.Endpoint = ep
+		if _, err := app.Upsert(t.Context(), base); err == nil || apperror.As(err).StatusCode() != 400 {
+			t.Fatalf("endpoint %q → %v, want 400", ep, err)
+		}
+	}
+}
+
+// MaxOutputTokens is sent verbatim as the request's max_tokens whenever
+// the pointer is non-nil. A pointer to zero is therefore a request to
+// cap the reply at zero tokens, which every provider rejects — the
+// editor's "0" (and any API client) must not become a stored request
+// that can never succeed. Nil is the unset sentinel; zero is invalid.
+func TestUpsertRejectsZeroMaxOutputTokens(t *testing.T) {
+	app, _, _ := newApp(t)
+	zero := 0
+	in := GatewayInput{
+		ID: "g", Name: "n", Style: enum.StyleCompletion, Endpoint: "https://x",
+		Models: []ModelInput{{ID: "m", MaxOutputTokens: &zero}},
+	}
+	if _, err := app.Upsert(t.Context(), in); err == nil || apperror.As(err).StatusCode() != 400 {
+		t.Fatalf("maxOutputTokens=0 → %v, want 400", err)
+	}
+}
+
+// TopK is a positive cutoff on a provider's token candidate set — an
+// explicit zero cannot mean "no tokens" or "provider default" while
+// still crossing the wire as top_k:0 (Gemini's range starts at 1, and
+// OpenAI-compatible routes treat a non-nil top_k as a request). Write
+// must reject it or normalize it to unset, never store a zero that
+// every send forwards.
+func TestUpsertZeroTopKDoesNotBecomeAWireZero(t *testing.T) {
+	app, _, _ := newApp(t)
+	zero := 0
+	in := GatewayInput{
+		ID: "g", Name: "n", Style: enum.StyleCompletion, Endpoint: "https://x",
+		Models: []ModelInput{{ID: "m", TopK: &zero}},
+	}
+	if _, err := app.Upsert(t.Context(), in); err != nil {
+		return // rejecting the zero is the other safe outcome
+	}
+	info, err := app.Get(t.Context(), "g")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var top *int
+	found := false
+	for i := range info.Models {
+		if info.Models[i].ID() == "m" {
+			top, found = info.Models[i].TopK(), true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("model missing")
+	}
+	if top != nil && *top == 0 {
+		t.Fatalf("stored topK=0 would be sent as a provider cutoff")
+	}
+}

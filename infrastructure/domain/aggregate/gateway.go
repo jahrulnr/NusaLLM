@@ -2,6 +2,9 @@ package aggregate
 
 import (
 	"errors"
+	"fmt"
+	"net/url"
+	"strings"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
@@ -37,8 +40,19 @@ func (g Gateway) validate() error {
 	if _, err := valueobject.NewID("gw", g.id); err != nil {
 		return err
 	}
-	if g.endpoint == "" {
-		return errors.New("endpoint is required")
+	// The endpoint is the base every provider call is built from. A
+	// relative or non-http(s) value cannot produce a request — accept it
+	// here and every later send fails as an opaque network error.
+	u, err := url.Parse(g.endpoint)
+	if err != nil || !u.IsAbs() || u.Hostname() == "" ||
+		(!strings.EqualFold(u.Scheme, "http") && !strings.EqualFold(u.Scheme, "https")) {
+		return fmt.Errorf("endpoint %q must be an absolute http(s) URL", g.endpoint)
+	}
+	// Adapters append their own path to this base — a stored query or
+	// fragment lands mid-URL on every send ("...?api-version=x/chat/
+	// completions"), so a save that looks valid is broken everywhere.
+	if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return fmt.Errorf("endpoint %q must not carry a query or fragment", g.endpoint)
 	}
 	if g.style == "" {
 		return errors.New("style is required")

@@ -1,4 +1,4 @@
-import { Widget, el, emit, clear } from '../../lib/dom.js';
+import { Widget, el, emit, clear, deepActiveElement, focusKeyOf, findByFocusKey, listOptions } from '../../lib/dom.js';
 import { icon } from '../../lib/icons.js';
 import { APIClient } from '../../lib/api-client.js';
 
@@ -25,6 +25,40 @@ class WorkspacePicker extends Widget {
     this._browse = null;      // {path, parent, roots, entries} | null
     this._browseError = '';
     this._gen = 0;            // stale-response token for browse fetches
+    this._innerFocus = null;   // focus key of the node inside this shadow
+    this._clearTok = null;     // pending focusout clear token
+    this._droppedOpen = false; // the drop-close below ran on our own detach
+    // A header rebuild detaches and re-appends this host — the shadow
+    // menu survives but the browser drops whatever focus it held,
+    // firing focusout mid-detach. The clear must wait a microtask: a
+    // synchronous detach+reattach is a move, not a leave, and the
+    // recorded key hands focus back on reconnect.
+    this.root.addEventListener('focusin', (e) => {
+      this._clearTok = null;
+      this._innerFocus = focusKeyOf(e.target);
+    });
+    this.root.addEventListener('focusout', (e) => {
+      if (e.relatedTarget && this.root.contains(e.relatedTarget)) return;
+      const tok = this._clearTok = {};
+      // Our own render also swaps the focused node — that drop is a
+      // move, not a leave, and the render's restore hands focus to the
+      // replacement.
+      const wasOpen = this._open && !this._rendering;
+      if (wasOpen) {
+        // Focus genuinely left, so the popover dismisses — but this same
+        // event fires mid-detach while the host is inside a removeChild:
+        // mutating the DOM here (render) throws inside the browser's
+        // removal. Mark closed now, paint it on the microtask — a
+        // same-task reconnect cancels that and reopens instead.
+        this._droppedOpen = true;
+        this._open = false;
+      }
+      queueMicrotask(() => {
+        if (this._clearTok !== tok) return;
+        this._innerFocus = null;
+        if (wasOpen && !this._open) this._render();
+      });
+    });
     this._render();
   }
 
@@ -78,6 +112,10 @@ class WorkspacePicker extends Widget {
     if (this._open) return;
     this._open = true;
     this._render();
+    // Opening from the keyboard rebuilds the trigger under the key —
+    // focus must land inside the popover or the user is stranded on
+    // BODY. The entries arrive async, so the menu container holds it.
+    this._menuEl?.focus?.();
     this._navigate((this._selection && this._selection.workspace) || '');
   }
 
@@ -89,9 +127,23 @@ class WorkspacePicker extends Widget {
   }
 
   // Header re-renders move this node (disconnect+reconnect) — the menu's
-  // shadow DOM survives, but the document listener must be reinstalled.
+  // shadow DOM survives, but the document listener must be reinstalled
+  // and the detached focus handed back.
   connectedCallback() {
-    if (this._open) this._installDismiss();
+    this._clearTok = null; // a pending detach-clear must not erase this
+    if (this._droppedOpen) {
+      this._droppedOpen = false;
+      // The leave that closed us was our own detach — reopen what the
+      // removal interrupted. A real leave clears the key first, so it
+      // stays closed.
+      if (this._innerFocus) { this._open = true; this._render(); }
+    }
+    if (this._open) {
+      this._installDismiss();
+      if (this._innerFocus) {
+        (findByFocusKey(this.root, this._innerFocus) || this._menuEl)?.focus?.();
+      }
+    }
   }
 
   disconnectedCallback() {
@@ -108,9 +160,10 @@ class WorkspacePicker extends Widget {
       .catch((err) => { if (gen === this._gen) { this._browseError = err && err.detail || 'browse failed'; this._render(); } });
   }
 
-  _item(label, meta, onclick, sel = false) {
+  _item(label, meta, onclick, sel = false, key = label) {
     return el('button', {
       class: `menu-item${sel ? ' selected' : ''}`, type: 'button', role: 'option',
+      'data-id': key,
       'aria-selected': sel ? 'true' : 'false', onclick,
     }, [
       el('span', { class: 'menu-id', text: label }),
@@ -140,17 +193,17 @@ class WorkspacePicker extends Widget {
     const roots = el('div', { class: 'ws-roots' });
     for (const r of b.roots || []) {
       roots.append(el('button', {
-        class: 'ws-root', type: 'button', text: r.name,
+        class: 'ws-root', type: 'button', text: r.name, 'data-id': `root:${r.path}`,
         onclick: () => this._navigate(r.path),
       }));
     }
     menu.append(roots);
     const entries = el('div', { class: 'ws-entries', role: 'listbox', 'aria-label': 'Directories' });
     if (b.parent) {
-      entries.append(this._item('..', 'up', () => this._navigate(b.parent)));
+      entries.append(this._item('..', 'up', () => this._navigate(b.parent), false, 'up'));
     }
     for (const entry of b.entries || []) {
-      entries.append(this._item(entry.name, '', () => this._navigate(entry.path), entry.path === current));
+      entries.append(this._item(entry.name, '', () => this._navigate(entry.path), entry.path === current, entry.path));
     }
     if (b.entries && !b.entries.length && !b.parent) {
       entries.append(el('div', { class: 'menu-empty', text: 'No subdirectories' }));
@@ -158,12 +211,12 @@ class WorkspacePicker extends Widget {
     menu.append(entries);
     menu.append(el('div', { class: 'ws-actions' }, [
       el('button', {
-        class: 'ws-choose', type: 'button',
+        class: 'ws-choose', type: 'button', 'data-id': 'choose',
         text: `Use ${b.path}`,
         onclick: () => this._choose(b.path),
       }),
       current ? el('button', {
-        class: 'ws-keep', type: 'button',
+        class: 'ws-keep', type: 'button', 'data-id': 'keep',
         text: 'Reset to default',
         title: 'Clear the workspace binding — tools run on the configured root',
         onclick: () => this._choose(''),
@@ -173,7 +226,16 @@ class WorkspacePicker extends Widget {
 
   _render() {
     this._detachDismiss(); // any pending outside-tap listener dies here
-    clear(this.root);
+    // Browse and open re-renders replace the focused node — the
+    // replacement carrying the same identity inherits focus; an item
+    // whose directory left the list hands it to the menu container.
+    const prev = deepActiveElement();
+    const focusKey = prev && this.root.contains?.(prev) ? focusKeyOf(prev) : null;
+    // Removing the focused node fires focusout before the unlink —
+    // flag the removal window so the leave-close knows this drop is a
+    // move the restore below is about to undo.
+    this._rendering = true;
+    try { clear(this.root); } finally { this._rendering = false; }
     this.root.classList.add('picker');
 
     const ws = (this._selection && this._selection.workspace) || '';
@@ -197,24 +259,45 @@ class WorkspacePicker extends Widget {
     });
     this.root.append(this.trigger);
 
-    if (!this._open) {
+    if (this._open) {
+      // Phones: dims the page and takes the tap that dismisses the sheet.
+      this.root.append(el('div', { class: 'menu-backdrop', 'aria-hidden': 'true', onclick: () => this._closeMenu() }));
+      // tabindex=-1: the container itself is the first focus target —
+      // entries stream in async and there is nothing else to hold the
+      // keyboard flow during Loading.
+      const menu = el('div', { class: 'menu', tabindex: '-1', 'aria-label': 'Workspace' });
+      this._renderMenu(menu);
+      menu.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          this._closeMenu(true);
+        } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          // The menu advertises listbox semantics — arrows must walk
+          // the options, the same contract the model picker keeps.
+          e.preventDefault();
+          const options = listOptions(menu);
+          if (!options.length) return;
+          // Focus inside the shadow resolves to the host at document
+          // level; the shadow root's own activeElement names the option.
+          const active = this.shadowRoot?.activeElement || document.activeElement;
+          const i = options.indexOf(active);
+          const dir = e.key === 'ArrowDown' ? 1 : -1;
+          const next = i < 0 ? (dir > 0 ? 0 : options.length - 1)
+            : Math.max(0, Math.min(options.length - 1, i + dir));
+          options[next].focus();
+        }
+      });
+      this.root.append(menu);
+      this._clampMenu(menu);
+      this._menuEl = menu;
+      this._installDismiss();
+    } else {
       this._menuEl = null;
-      return;
     }
-    // Phones: dims the page and takes the tap that dismisses the sheet.
-    this.root.append(el('div', { class: 'menu-backdrop', 'aria-hidden': 'true', onclick: () => this._closeMenu() }));
-    const menu = el('div', { class: 'menu', 'aria-label': 'Workspace' });
-    this._renderMenu(menu);
-    menu.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        this._closeMenu(true);
-      }
-    });
-    this.root.append(menu);
-    this._clampMenu(menu);
-    this._menuEl = menu;
-    this._installDismiss();
+    if (focusKey) {
+      const hit = findByFocusKey(this.root, focusKey);
+      (hit || this._menuEl)?.focus?.();
+    }
   }
 }
 

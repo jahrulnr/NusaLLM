@@ -236,6 +236,38 @@ function apiMock(fixture) {
       }
       return json(fixture.settings);
     }
+    const convPatch = p.match(/^\/api\/conversations\/([^/]+)$/);
+    if (convPatch && request.method() === 'PATCH') {
+      const c = fixture.convs.get(convPatch[1]);
+      if (!c) return json({ detail: 'not found' }, 404);
+      // The real PATCH applies the rename and echoes the stored record;
+      // a bare {} would render 'Untitled' and strand every follow-up.
+      const body = JSON.parse(request.postData() || '{}');
+      if (body.title !== undefined) c.title = body.title;
+      return json(c);
+    }
+    const compaction = p.match(/^\/api\/conversations\/([^/]+)\/compactions$/);
+    if (compaction && request.method() === 'POST') {
+      const c = fixture.convs.get(compaction[1]);
+      if (!c) return json({ detail: 'not found' }, 404);
+      // The real handler runs the job then answers the conversation
+      // Info with recomputed availability — a bare {} reads as an empty
+      // room and resets per-room UI state (rename, confirm, focus).
+      c.sealedSegments = (c.sealedSegments || 0) + 1;
+      return json(c);
+    }
+    if (p === '/api/gateways/gw1' && request.method() === 'PUT') {
+      // A gateway save is a full-record replacement followed by a fresh
+      // read. Hold the write so a scenario can inspect the disabled
+      // control, then fail it at release time like a real 500.
+      const held = fixture.stalls.get(`PUT ${p}`);
+      if (held && held.count < held.limit) {
+        held.count += 1;
+        await new Promise((r) => held.release.push(r));
+        if (held.fail) return json({ detail: 'injected failure' }, 500);
+      }
+      return json({ id: 'gw1', models: [{ id: 'm1', name: 'Mock' }], added: [] });
+    }
     if (request.method() !== 'GET') return json({});
     fixture.getLog.push(p);
     // Truthful failure injection: 500s the app must survive.
@@ -277,6 +309,11 @@ function apiMock(fixture) {
       return json({ data: [{ id: 'gw1', name: 'MockGW', broken: false, models: [{ id: 'm1', name: 'Mock' }] }], total: 1 });
     }
     if (p === '/api/settings') return json(fixture.settings);
+    if (p === '/api/update') return json(fixture.update || {
+      current: 'test', enabled: false, installable: false, latest: '',
+      available: false, publishedAt: null, releaseUrl: '', notes: '',
+      installCommand: '', checkedAt: null, error: '',
+    });
     if (p === '/api/context') return json({ estimate: 420, total: 8192 });
     if (p === '/api/tools') return json({ data: [] });
     if (p === '/api/health') return json({ ok: true });
@@ -2017,6 +2054,427 @@ await scenarioRun('new-thread-clears-sidebar-search', async (s) => {
   await poll(async () => (await search.inputValue()) === '', { timeout: 1500 });
   const value = await search.inputValue();
   check('new thread clears the sidebar search', value === '', `query=${JSON.stringify(value)}`);
+});
+
+// A long release note on a small phone must keep the sheet header and
+// its Close control on screen. The primary action receives focus when the
+// dialog opens; if the panel overflows its max-height without an internal
+// scroll, the browser scrolls the focused footer into view and pushes the
+// close control above the viewport.
+await scenarioRun('update-sheet-keeps-close-on-small-phone', async (s) => {
+  s.fixture.update = {
+    current: 'test', enabled: true, installable: false,
+    latest: '99.0.0', available: true,
+    publishedAt: '2026-11-01T00:00:00Z',
+    releaseUrl: 'https://example.test/release',
+    notes: '## [99.0.0]\n\n' + Array.from({ length: 40 }, (_, i) => `- fix ${i} with enough text to wrap`).join('\n'),
+    installCommand: 'curl -sSL https://example.test/install.sh | sh',
+    checkedAt: '2026-11-18T00:00:00Z', error: '',
+  };
+  await s.page.setViewportSize({ width: 320, height: 480 });
+  await open(s, '#conversation=c1');
+  const pill = s.page.getByRole('button', { name: /Update to NusaLLM 99\.0\.0/ });
+  await poll(async () => pill.isVisible().catch(() => false), { timeout: 8000 });
+  await pill.click();
+  const dlg = s.page.getByRole('dialog', { name: 'Update available' });
+  await dlg.waitFor();
+  await s.page.waitForTimeout(500);
+  const geom = await dlg.evaluate((d) => {
+    const r = d.getBoundingClientRect();
+    const close = d.querySelector('.close')?.getBoundingClientRect();
+    return { top: r.top, bottom: r.bottom, closeTop: close?.top, closeBottom: close?.bottom, vh: innerHeight };
+  });
+  check('update sheet fits the small viewport', geom.bottom <= geom.vh + 1, JSON.stringify(geom));
+  check('update sheet keeps Close inside the viewport',
+    !!geom.closeTop && geom.closeTop >= 0 && geom.closeBottom <= geom.vh + 1, JSON.stringify(geom));
+});
+
+// Opening Settings hides <main> but leaves focus on BODY: a keyboard or
+// screen-reader user gets no indication the view changed and must Tab
+// from the top to discover the Back control. Focus belongs inside the
+// newly opened page (and back on the trigger when it closes).
+await scenarioRun('settings-open-moves-focus-into-page', async (s) => {
+  await open(s, '#conversation=c1');
+  const trigger = s.page.getByRole('button', { name: 'Open settings' });
+  await trigger.focus();
+  await trigger.click();
+  await poll(async () => await s.page.evaluate(() => {
+    const app = document.querySelector('nusa-app');
+    return app.shadowRoot.querySelector('nusa-settings-page').hidden === false;
+  }));
+  const state = await s.page.evaluate(() => {
+    const app = document.querySelector('nusa-app');
+    const settings = app.shadowRoot.querySelector('nusa-settings-page');
+    let active = document.activeElement;
+    while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
+    return { tag: active?.tagName || '', inSettings: !!(settings && active && settings.shadowRoot.contains(active)) };
+  });
+  check('settings focus moves inside the opened page', state.inSettings, JSON.stringify(state));
+  await s.page.getByRole('button', { name: 'Back to conversation' }).click();
+  await poll(async () => await s.page.evaluate(
+    () => document.querySelector('nusa-app').shadowRoot.querySelector('nusa-settings-page').hidden === true));
+  const closed = await s.page.evaluate(() => {
+    const app = document.querySelector('nusa-app');
+    const header = app.shadowRoot.querySelector('nusa-conversation-header');
+    let active = document.activeElement;
+    while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
+    return {
+      tag: active?.tagName || '',
+      aria: active?.getAttribute?.('aria-label') || '',
+      inHeader: !!(header && active && header.shadowRoot.contains(active)),
+    };
+  });
+  check('settings close returns focus to its trigger',
+    closed.inHeader && /settings/i.test(closed.aria), JSON.stringify(closed));
+});
+
+// The phone drawer renders a scrim and covers the page. Tab is a real
+// path through it: once focus reaches the last rail control it must stay
+// inside the rail or dismiss the overlay — never land on the header
+// toggle hidden behind the scrim.
+await scenarioRun('phone-drawer-keeps-keyboard-focus', async (s) => {
+  await s.page.setViewportSize({ width: 390, height: 800 });
+  await open(s, '#conversation=c1');
+  await s.page.getByRole('button', { name: 'Toggle sidebar' }).click();
+  await poll(async () => await s.page.evaluate(
+    () => document.querySelector('nusa-app').sidebarOpen === true));
+  await s.page.getByRole('button', { name: 'Close sidebar' }).focus();
+  let escaped = false;
+  let state = null;
+  for (let i = 0; i < 15; i += 1) {
+    await s.page.keyboard.press('Tab');
+    state = await s.page.evaluate(() => {
+      const app = document.querySelector('nusa-app');
+      const nav = app.shadowRoot.querySelector('nusa-nav-sidebar');
+      let active = document.activeElement;
+      let inside = false;
+      while (active) {
+        if (active === nav) inside = true;
+        active = active.shadowRoot?.activeElement;
+      }
+      return { open: app.sidebarOpen, inside };
+    });
+    if (!state.open) break;
+    if (!state.inside) { escaped = true; break; }
+  }
+  check('phone drawer keeps focus or dismisses before Tab escapes',
+    !escaped && (!state?.open || state?.inside), JSON.stringify(state));
+});
+
+// Paging the rail is a keyboard action too. Loading the next page
+// replaces the button and its rows; focus must stay in the sidebar (the
+// fresh control or the first new row), not fall to BODY and force a full
+// Tab cycle back.
+await scenarioRun('sidebar-load-more-keeps-keyboard-focus', async (s) => {
+  for (let i = 0; i < 103; i += 1) {
+    const id = `page-${i}`;
+    s.fixture.convs.set(id, { id, title: `Paged ${i}`, modelId: 'm1', route: 'gw1', workspace: '' });
+    s.fixture.messages.set(id, []);
+  }
+  await open(s, '#conversation=c1');
+  const more = s.page.getByRole('button', { name: 'Load more' });
+  await poll(async () => more.isVisible().catch(() => false));
+  await more.focus();
+  await more.click();
+  await poll(async () => (await s.page.locator('nusa-nav-sidebar .item').count()) === 105);
+  const focus = await s.page.evaluate(() => {
+    const app = document.querySelector('nusa-app');
+    const nav = app.shadowRoot.querySelector('nusa-nav-sidebar');
+    let active = document.activeElement;
+    let inside = false;
+    while (active) {
+      if (active === nav) inside = true;
+      active = active.shadowRoot?.activeElement;
+    }
+    return { tag: document.activeElement?.tagName || '', inside };
+  });
+  check('Load more keeps focus inside the sidebar', focus.inside, JSON.stringify(focus));
+});
+
+// Inline rename ends by replacing the input with the title button. Focus
+// must follow the control back to that button; dropping to BODY loses the
+// keyboard user's place after every rename.
+await scenarioRun('rename-commit-returns-focus-to-title', async (s) => {
+  await open(s, '#conversation=c1');
+  await s.page.getByRole('button', { name: 'Rename Room One' }).click();
+  const input = s.page.getByRole('textbox', { name: 'Rename conversation' });
+  await input.fill('Room One Renamed');
+  await input.press('Enter');
+  await poll(async () => (await s.page.getByRole('button', { name: 'Rename Room One Renamed' }).count()) === 1);
+  const focus = await s.page.evaluate(() => {
+    let active = document.activeElement;
+    while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
+    return { tag: active?.tagName || '', aria: active?.getAttribute?.('aria-label') || '' };
+  });
+  check('rename returns focus to the title control', /^Rename /.test(focus.aria), JSON.stringify(focus));
+});
+
+// Clicking Edit replaces the button with a textarea. The user's next
+// action is typing, so the editor must own focus; leaving it on BODY
+// means a second click before a single keystroke lands.
+await scenarioRun('edit-message-focuses-editor', async (s) => {
+  s.fixture.messages.get('c1').push({
+    id: 'u-edit', role: 'user', content: 'edit me', createdAt: '2026-11-18T00:00:00Z',
+  });
+  await open(s, '#conversation=c1');
+  await s.page.getByRole('button', { name: 'Edit message' }).first().click();
+  await s.page.waitForTimeout(200);
+  const focus = await s.page.evaluate(() => {
+    let active = document.activeElement;
+    while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
+    return { tag: active?.tagName || '', aria: active?.getAttribute?.('aria-label') || '' };
+  });
+  check('edit message focuses the textarea', focus.tag === 'TEXTAREA' && focus.aria === 'Edit message content', JSON.stringify(focus));
+});
+
+// The desktop delete confirmation opens a destructive alertdialog under
+// the pointer that asked for it. Focus must land on Keep, the safe
+// choice, exactly like the phone sheet does; BODY leaves a keyboard user
+// one Tab away from an accidental permanent delete.
+await scenarioRun('delete-confirm-focuses-safe-action', async (s) => {
+  await open(s, '#conversation=c2');
+  await s.page.getByRole('button', { name: 'Delete conversation' }).click();
+  await poll(async () => (await s.page.locator('nusa-conversation-header .confirm-no').count()) === 1);
+  const focus = await s.page.evaluate(() => {
+    let active = document.activeElement;
+    while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
+    return { tag: active?.tagName || '', cls: active?.className || '' };
+  });
+  check('delete confirmation focuses Keep', focus.cls === 'confirm-no', JSON.stringify(focus));
+  // Keeping the thread resolves the confirm row; its Delete trigger is
+  // the stable successor. Focus must not be left on the detached Keep
+  // button (the browser turns that into BODY).
+  await s.page.locator('nusa-conversation-header .confirm-no').click();
+  await poll(async () => (await s.page.locator('nusa-conversation-header .confirm-no').count()) === 0);
+  const kept = await s.page.evaluate(() => {
+    let active = document.activeElement;
+    while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
+    return { tag: active?.tagName || '', aria: active?.getAttribute?.('aria-label') || '' };
+  });
+  check('Keep returns focus to the Delete trigger',
+    kept.tag === 'BUTTON' && kept.aria === 'Delete conversation', JSON.stringify(kept));
+});
+
+// Cancelling an inline edit restores the message but drops focus to
+// BODY. The next action is either another message (composer) or reading
+// the restored bubble; focus belongs back on the edit control that
+// opened the editor.
+await scenarioRun('edit-cancel-returns-focus', async (s) => {
+  s.fixture.messages.get('c1').push({
+    id: 'u-edit-cancel', role: 'user', content: 'cancel me', createdAt: '2026-11-18T00:00:00Z',
+  });
+  await open(s, '#conversation=c1');
+  await s.page.getByRole('button', { name: 'Edit message' }).first().click();
+  await s.page.getByRole('button', { name: 'Cancel' }).first().click();
+  await s.page.waitForTimeout(200);
+  const focus = await s.page.evaluate(() => {
+    let active = document.activeElement;
+    while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
+    return { tag: active?.tagName || '', aria: active?.getAttribute?.('aria-label') || '' };
+  });
+  check('edit cancel focuses the message edit control',
+    focus.aria === 'Edit message' || focus.aria === 'Message input', JSON.stringify(focus));
+});
+
+// Opening the workspace picker from the keyboard rebuilds its trigger.
+// If focus is not moved into the newly opened menu, the active element
+// falls to BODY and the keyboard user is stranded outside the popover.
+await scenarioRun('workspace-open-keeps-keyboard-focus', async (s) => {
+  await open(s, '#conversation=c1');
+  const trigger = s.page.locator('nusa-workspace-picker .trigger').first();
+  await trigger.focus();
+  await trigger.press('Enter');
+  await poll(async () => (await s.page.locator('nusa-workspace-picker .menu').count()) === 1);
+  const focus = await s.page.evaluate(() => {
+    const app = document.querySelector('nusa-app');
+    // Playwright locators pierce shadow roots; querySelector does not —
+    // the picker lives inside the conversation header's shadow.
+    const picker = app.shadowRoot
+      .querySelector('nusa-conversation-header')?.shadowRoot
+      ?.querySelector('nusa-workspace-picker');
+    let active = document.activeElement;
+    let inside = false;
+    while (active) {
+      if (active === picker) inside = true;
+      active = active.shadowRoot?.activeElement;
+    }
+    return { tag: document.activeElement?.tagName || '', inside, found: !!picker };
+  });
+  check('workspace open moves focus into the picker', focus.found && focus.inside, JSON.stringify(focus));
+});
+
+// Deleting a gateway also drops its credential, so the confirm row is
+// destructive. Like the thread delete confirm, focus must land on Keep,
+// never the Delete button or BODY.
+await scenarioRun('gateway-delete-confirm-focuses-keep', async (s) => {
+  await open(s, '#conversation=c1');
+  await s.page.getByRole('button', { name: 'Open settings' }).click();
+  const del = s.page.getByRole('button', { name: 'Delete gw1' });
+  await poll(async () => del.isVisible().catch(() => false));
+  await del.click();
+  await poll(async () => (await s.page.locator('nusa-provider-manager .row.confirm').count()) === 1);
+  const focus = await s.page.evaluate(() => {
+    let active = document.activeElement;
+    while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
+    return { tag: active?.tagName || '', cls: active?.className || '', text: active?.textContent || '' };
+  });
+  check('gateway delete confirmation focuses Keep',
+    focus.tag === 'BUTTON' && /Keep/.test(focus.text), JSON.stringify(focus));
+});
+
+// Manual compaction replaces the Compact button's label/status while
+// the request runs. If focus drops to BODY, a keyboard user loses the
+// control they just activated and must Tab from the top again.
+await scenarioRun('compact-keeps-focus', async (s) => {
+  s.fixture.convs.get('c1').canCompact = true;
+  s.fixture.messages.set('c1', [
+    { id: 'u1', role: 'user', content: 'hello', createdAt: '2026-11-18T00:00:00Z' },
+    { id: 'a1', role: 'assistant', content: 'hi', createdAt: '2026-11-18T00:00:01Z' },
+    { id: 'u2', role: 'user', content: 'more', createdAt: '2026-11-18T00:00:02Z' },
+    { id: 'a2', role: 'assistant', content: 'yes', createdAt: '2026-11-18T00:00:03Z' },
+    { id: 'u3', role: 'user', content: 'tail', createdAt: '2026-11-18T00:00:04Z' },
+    { id: 'a3', role: 'assistant', content: 'done', createdAt: '2026-11-18T00:00:05Z' },
+  ]);
+  await open(s, '#conversation=c1');
+  const compact = s.page.getByRole('button', { name: 'Compact conversation' });
+  await poll(async () => await compact.isEnabled().catch(() => false));
+  await compact.focus();
+  await compact.click();
+  // The control is disabled while the job runs; the settled render is
+  // the one that hands focus back — wait for re-enable, not existence.
+  await poll(async () => await s.page.getByRole('button', { name: 'Compact conversation' }).isEnabled().catch(() => false));
+  const focus = await s.page.evaluate(() => {
+    let active = document.activeElement;
+    while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
+    return { tag: active?.tagName || '', aria: active?.getAttribute?.('aria-label') || '' };
+  });
+  check('compact keeps focus on its control', focus.aria === 'Compact conversation', JSON.stringify(focus));
+});
+
+// Add gateway is a data-entry dialog. Native showModal focuses the first
+// focusable node in document order — here the Close X in the header —
+// stranding keyboard users one button away from the Gateway id field.
+// The first field must own initial focus.
+await scenarioRun('add-gateway-focuses-first-field', async (s) => {
+  await open(s, '#conversation=c1');
+  await s.page.getByRole('button', { name: 'Open settings' }).click();
+  await s.page.getByRole('button', { name: 'Add gateway' }).click();
+  await s.page.waitForTimeout(200);
+  const focus = await s.page.evaluate(() => {
+    let active = document.activeElement;
+    while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
+    return { tag: active?.tagName || '', aria: active?.getAttribute?.('aria-label') || '' };
+  });
+  check('add gateway focuses the Gateway id field',
+    focus.tag === 'INPUT' && focus.aria === 'Gateway id', JSON.stringify(focus));
+});
+
+// The About section rebuilds its whole action row while a manual check
+// is on the wire. The button that started the check is destroyed by
+// that rebuild; focus must move to its live successor (the disabled
+// Checking… control or the status line), not fall to BODY.
+//
+await scenarioRun('update-check-keeps-focus', async (s) => {
+  s.fixture.update = {
+    current: '1.0.0', enabled: true, installable: true, latest: '1.0.0',
+    available: false, publishedAt: null, releaseUrl: '', notes: '',
+    installCommand: 'install me', checkedAt: '2026-11-19T00:00:00Z', error: '',
+  };
+  await s.page.goto(BASE + '#settings');
+  await poll(() => s.page.locator('nusa-settings-page').isVisible().catch(() => false));
+  const checkBtn = s.page.getByRole('button', { name: 'Check for updates' });
+  await poll(async () => checkBtn.isVisible().catch(() => false));
+  await checkBtn.focus();
+  await checkBtn.click();
+  await s.page.waitForTimeout(100);
+  const focus = await s.page.evaluate(() => {
+    const settings = document.querySelector('nusa-app').shadowRoot.querySelector('nusa-settings-page');
+    let active = document.activeElement;
+    let inside = false;
+    while (active) {
+      if (active === settings) inside = true;
+      active = active.shadowRoot?.activeElement;
+    }
+    return { tag: document.activeElement?.tagName || '', inside };
+  });
+  check('update check keeps focus inside Settings', focus.inside, JSON.stringify(focus));
+});
+
+// The context popover is opened from its summary and closed by a button
+// inside the popover. Closing hides that button; focus must return to
+// the summary trigger, not remain on a hidden control or BODY.
+await scenarioRun('context-popover-close-returns-focus', async (s) => {
+  await open(s, '#conversation=c1');
+  const trigger = s.page.locator('nusa-chat-composer summary.context-trigger');
+  await poll(async () => trigger.isVisible().catch(() => false));
+  await trigger.click();
+  const close = s.page.getByRole('button', { name: 'Close context usage' });
+  await poll(async () => close.isVisible().catch(() => false));
+  await close.click();
+  await s.page.waitForTimeout(80);
+  const focus = await s.page.evaluate(() => {
+    let active = document.activeElement;
+    while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
+    return { tag: active?.tagName || '', aria: active?.getAttribute?.('aria-label') || '' };
+  });
+  check('context popover close returns focus to its trigger',
+    /Context usage/i.test(focus.aria), JSON.stringify(focus));
+});
+
+// Saving the gateway editor closes its dialog and rebuilds the gateway
+// list. The Save control dies with the dialog; focus must return to the
+// row that opened it, not BODY.
+await scenarioRun('gateway-save-returns-focus', async (s) => {
+  await open(s, '#conversation=c1');
+  await s.page.getByRole('button', { name: 'Open settings' }).click();
+  const edit = s.page.getByRole('button', { name: 'Edit gw1' });
+  await poll(async () => edit.isVisible().catch(() => false));
+  await edit.click();
+  const save = s.page.locator('nusa-provider-manager dialog.editor-dialog button.accent').first();
+  await poll(async () => save.isVisible().catch(() => false));
+  await save.click();
+  // The row is "visible" even while the modal editor covers it — wait
+  // for the save to finish (dialog gone) before reading focus, or the
+  // in-flight window with the disabled save button reads as BODY.
+  await poll(async () =>
+    !(await s.page.locator('nusa-provider-manager dialog.editor-dialog').isVisible().catch(() => false)));
+  const focus = await s.page.evaluate(() => {
+    let active = document.activeElement;
+    while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
+    return { tag: active?.tagName || '', aria: active?.getAttribute?.('aria-label') || '' };
+  });
+  check('gateway save returns focus to its row', focus.aria === 'Edit gw1', JSON.stringify(focus));
+});
+
+// A failed gateway save keeps the editor open. Save is disabled while the
+// write is on the wire; when the 500 lands and the control re-enables,
+// focus must be back on Save — not BODY — where the user can correct the
+// form and retry.
+await scenarioRun('gateway-save-error-keeps-focus', async (s) => {
+  s.allowResourceErrors = true; // the held PUT releases as a deliberate 500
+  const held = stall(s.fixture, 'PUT /api/gateways/gw1', 1);
+  await open(s, '#conversation=c1');
+  await s.page.getByRole('button', { name: 'Open settings' }).click();
+  const edit = s.page.getByRole('button', { name: 'Edit gw1' });
+  await poll(async () => edit.isVisible().catch(() => false));
+  await edit.click();
+  const save = s.page.locator('nusa-provider-manager dialog.editor-dialog button.accent').first();
+  await poll(async () => save.isVisible().catch(() => false));
+  await save.focus();
+  await save.click();
+  await poll(() => held.count === 1);
+  held.fail = true;
+  release(held);
+  await poll(async () =>
+    (await s.page.locator('nusa-provider-manager dialog.editor-dialog .form-error').textContent()
+      .catch(() => '')).includes('injected failure'));
+  const focus = await s.page.evaluate(() => {
+    let active = document.activeElement;
+    while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
+    return { tag: active?.tagName || '', text: (active?.textContent || '').trim() };
+  });
+  check('failed gateway save keeps focus on Save',
+    focus.tag === 'BUTTON' && focus.text === 'Save', JSON.stringify(focus));
 });
 
 // --- teardown --------------------------------------------------------------

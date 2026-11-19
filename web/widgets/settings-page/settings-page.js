@@ -1,4 +1,4 @@
-import { Widget, el, emit, clear } from '../../lib/dom.js';
+import { Widget, el, emit, clear, deepActiveElement, focusKeyOf, findByFocusKey } from '../../lib/dom.js';
 import { icon } from '../../lib/icons.js';
 import { ago } from '../../lib/update-state.js';
 
@@ -26,6 +26,11 @@ class SettingsPage extends Widget {
   expandProviders() {
     this.providers.closest('details').open = true;
   }
+  // Focus lands inside the newly opened page — the Back control is both
+  // the first interactive element and the way out, so a keyboard or
+  // screen-reader user starts in the view that just replaced the chat.
+  focusInitial() { this._back?.focus?.(); }
+
   // The update status (null until the first answer; `skipped` marks a version
   // the person hid), whether a manual check is on the wire, and the install in
   // progress, if any. The shell owns all three; About only shows them.
@@ -38,11 +43,13 @@ class SettingsPage extends Widget {
     this.root.classList.add('page');
     this.providers = el('nusa-provider-manager');
     this.editor = el('nusa-settings-editor');
-    this.about = el('div', { class: 'about' });
+    // tabindex=-1: the section is the parking spot while the focused
+    // action rebuilds itself disabled mid-flight (a check on the wire).
+    this.about = el('div', { class: 'about', tabindex: '-1' });
     this.root.append(
       el('header', { class: 'top' }, [
         el('div', { class: 'top-inner' }, [
-          el('button', {
+          this._back = el('button', {
             class: 'back', type: 'button', 'aria-label': 'Back to conversation',
             onclick: () => emit(this, 'settings-close'),
           }, [icon('chevron', 16)]),
@@ -72,6 +79,14 @@ class SettingsPage extends Widget {
   // check again.
   _renderAbout() {
     if (!this.about) return;
+    // Status renders rebuild the whole section — a focused action dies
+    // with it. Its live successor inherits focus by key; while that
+    // successor is disabled mid-flight the key queues and the section
+    // itself holds focus so the keyboard stays inside the page.
+    const prev = deepActiveElement();
+    let focusKey = prev && this.about.contains?.(prev) ? focusKeyOf(prev) : null;
+    if (focusKey) this._aboutFocus = null;
+    else if (this._aboutFocus) focusKey = this._aboutFocus;
     clear(this.about);
     const info = this._update;
     this.about.append(
@@ -79,6 +94,16 @@ class SettingsPage extends Widget {
       this._aboutRow('Updates', this._updatesValue(info)),
       this._aboutRow('Last checked', this._checkedValue(info)),
     );
+    if (focusKey) {
+      const hit = findByFocusKey(this.about, focusKey);
+      if (hit && !hit.disabled) {
+        hit.focus?.();
+        this._aboutFocus = null;
+      } else {
+        this._aboutFocus = hit ? focusKey : null;
+        if (hit) this.about.focus?.();
+      }
+    }
   }
 
   _aboutRow(label, value) {
@@ -97,6 +122,7 @@ class SettingsPage extends Widget {
       const busy = !!this._updateBusy;
       nodes.push(el('button', {
         class: 'about-btn', type: 'button', disabled: busy || null,
+        'data-id': 'update-check',
         onclick: () => emit(this, 'update-check'),
       }, [icon('refresh', 14), el('span', { text: busy ? 'Checking…' : 'Check for updates' })]));
     }
@@ -112,7 +138,7 @@ class SettingsPage extends Widget {
       return [
         el('span', { class: 'about-strong', text: `Updating to ${install.version}…` }),
         el('div', { class: 'about-actions' }, [
-          this._aboutButton('View progress', 'accent', () => emit(this, 'update-progress-open')),
+          this._aboutButton('View progress', 'accent', () => emit(this, 'update-progress-open'), null, 'progress'),
         ]),
       ];
     }
@@ -132,11 +158,11 @@ class SettingsPage extends Widget {
   _availableValue(info) {
     const actions = [];
     if (info.installable) {
-      actions.push(this._aboutButton('Update now', 'accent', () => emit(this, 'update-install', { version: info.latest }), 'arrow-up'));
+      actions.push(this._aboutButton('Update now', 'accent', () => emit(this, 'update-install', { version: info.latest }), 'arrow-up', 'install'));
     }
-    actions.push(this._aboutButton("What's new", '', () => emit(this, 'update-open')));
+    actions.push(this._aboutButton("What's new", '', () => emit(this, 'update-open'), null, 'notes'));
     if (info.skipped) {
-      actions.push(this._aboutButton('Show again', '', () => emit(this, 'update-unskip')));
+      actions.push(this._aboutButton('Show again', '', () => emit(this, 'update-unskip'), null, 'unskip'));
     }
     return [
       el('span', { class: 'about-strong', text: `NusaLLM ${info.latest} is available.` }),
@@ -147,9 +173,9 @@ class SettingsPage extends Widget {
     ];
   }
 
-  _aboutButton(label, tone, onclick, iconName = null) {
+  _aboutButton(label, tone, onclick, iconName = null, key = null) {
     return el('button', {
-      class: `about-btn${tone ? ` ${tone}` : ''}`, type: 'button', onclick,
+      class: `about-btn${tone ? ` ${tone}` : ''}`, type: 'button', 'data-id': key, onclick,
     }, [iconName ? icon(iconName, 14) : null, el('span', { text: label })]);
   }
 }

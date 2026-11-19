@@ -159,6 +159,56 @@ func (app *GatewayApp) buildModel(in ModelInput) (entity.Model, error) {
 				fmt.Errorf("model %q: negative value %d", in.ID, n))
 		}
 	}
+	// Generation params are provider contracts, not free-form knobs:
+	// temperature rides within [0,2], TopP is a probability, and the
+	// penalties sit in [-2,2]. A declared output limit above the context
+	// window reserves more tokens than the model holds. Storing an
+	// impossible value only defers the failure to every send.
+	if in.Temperature != nil && (*in.Temperature < 0 || *in.Temperature > 2) {
+		return entity.Model{}, apperror.New(400, "invalid model",
+			fmt.Errorf("model %q: temperature %v must be within [0,2]", in.ID, *in.Temperature))
+	}
+	if in.TopP != nil && (*in.TopP < 0 || *in.TopP > 1) {
+		return entity.Model{}, apperror.New(400, "invalid model",
+			fmt.Errorf("model %q: topP %v must be within [0,1]", in.ID, *in.TopP))
+	}
+	for _, p := range []struct {
+		name string
+		v    *float64
+	}{{"presencePenalty", in.PresencePenalty}, {"frequencyPenalty", in.FrequencyPenalty}} {
+		if p.v != nil && (*p.v < -2 || *p.v > 2) {
+			return entity.Model{}, apperror.New(400, "invalid model",
+				fmt.Errorf("model %q: %s %v must be within [-2,2]", in.ID, p.name, *p.v))
+		}
+	}
+	if in.ContextWindow > 0 && in.OutputLimit > in.ContextWindow {
+		return entity.Model{}, apperror.New(400, "invalid model",
+			fmt.Errorf("model %q: outputLimit %d exceeds contextWindow %d", in.ID, in.OutputLimit, in.ContextWindow))
+	}
+	// TopK is a positive cutoff — nil means unset, so a pointer to zero
+	// crosses the wire as top_k:0: a request to sample from zero tokens,
+	// which no provider accepts. Same treatment as maxOutputTokens below.
+	if v := in.TopK; v != nil && *v <= 0 {
+		return entity.Model{}, apperror.New(400, "invalid model",
+			fmt.Errorf("model %q: topK %d must be positive", in.ID, *v))
+	}
+	// MaxOutputTokens is the per-request ask: nil means unset, so a pointer
+	// to zero is a request to cap the reply at zero tokens — every provider
+	// rejects it. A stored zero only defers that failure to every send.
+	if v := in.MaxOutputTokens; v != nil {
+		if *v <= 0 {
+			return entity.Model{}, apperror.New(400, "invalid model",
+				fmt.Errorf("model %q: maxOutputTokens %d must be positive", in.ID, *v))
+		}
+		if in.ContextWindow > 0 && *v > in.ContextWindow {
+			return entity.Model{}, apperror.New(400, "invalid model",
+				fmt.Errorf("model %q: maxOutputTokens %d exceeds contextWindow %d", in.ID, *v, in.ContextWindow))
+		}
+		if in.OutputLimit > 0 && *v > in.OutputLimit {
+			return entity.Model{}, apperror.New(400, "invalid model",
+				fmt.Errorf("model %q: maxOutputTokens %d exceeds outputLimit %d", in.ID, *v, in.OutputLimit))
+		}
+	}
 	m.SetTemperature(in.Temperature)
 	m.SetTopP(in.TopP)
 	m.SetTopK(in.TopK)

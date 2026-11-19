@@ -52,6 +52,23 @@ func TestMessageSetToolOutputKeepsOverBudgetRawResult(t *testing.T) {
 	}
 }
 
+// The call id is the only correlation key between a call and its
+// output; two entries sharing one id make SetToolOutput ambiguous.
+func TestMessageRejectsDuplicateToolCallID(t *testing.T) {
+	m, _ := NewMessage(enum.RoleAssistant, "")
+	tc, _ := NewToolCall("call-1", "search", "{}", enum.TooltypeOrigin)
+	if err := m.AddToolCall(tc); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	dup, _ := NewToolCall("call-1", "other", "{}", enum.TooltypeOrigin)
+	if err := m.AddToolCall(dup); err == nil {
+		t.Fatal("duplicate tool call id accepted")
+	}
+	if len(m.ToolCalls()) != 1 {
+		t.Fatalf("calls = %d, want 1", len(m.ToolCalls()))
+	}
+}
+
 func TestMessageAttachments(t *testing.T) {
 	m, _ := NewMessage(enum.RoleUser, "look")
 	a, _ := valueobject.NewAttachment("https://x/i.png", "image/png")

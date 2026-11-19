@@ -2,6 +2,7 @@ package entity
 
 import (
 	"errors"
+	"fmt"
 	"maps"
 	"time"
 
@@ -148,8 +149,18 @@ func (m *Message) SetCreatedAt(t time.Time) { m.createdAt = t }
 // generated at construction, never reassigned.
 func (m *Message) SetID(id string) { m.id = id }
 
-func (m *Message) AddToolCall(t ToolCall) {
+// AddToolCall records a call on the message. The provider-issued id is
+// the only correlation key between a call and its output, so it must be
+// unique within the message: a duplicate makes SetToolOutput target the
+// first entry twice and leaves the second call permanently unresolved.
+func (m *Message) AddToolCall(t ToolCall) error {
+	for _, existing := range m.toolCalls {
+		if existing.ID() == t.ID() {
+			return fmt.Errorf("duplicate tool call id %q", t.ID())
+		}
+	}
 	m.toolCalls = append(m.toolCalls, t)
+	return nil
 }
 
 // AddAttachment attaches a non-text content reference (image, audio,

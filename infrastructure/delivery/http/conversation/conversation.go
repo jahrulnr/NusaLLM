@@ -74,9 +74,14 @@ func Register(api *gin.RouterGroup, d Deps) {
 		api.GET("/context", s.context)
 	}
 	if d.Writes != nil {
-		api.PATCH("/conversations/:id", s.rename)
 		api.DELETE("/conversations/:id", s.delete)
-		api.POST("/conversations/:id/compactions", s.compact)
+		// Rename and compact answer with a fresh projection — a writes-only
+		// composition has no read surface to build it from, so the routes
+		// stay unregistered rather than panic inside the handler.
+		if d.Reads != nil {
+			api.PATCH("/conversations/:id", s.rename)
+			api.POST("/conversations/:id/compactions", s.compact)
+		}
 	}
 }
 

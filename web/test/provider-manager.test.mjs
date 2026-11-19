@@ -18,6 +18,7 @@ class FakeEl {
   }
   append(...kids) { this.children.push(...kids); }
   addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
+  focus() { globalThis.document.activeElement = this; }
   setAttribute(k, v) {
     if (k.startsWith('data-')) {
       const camel = k.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase());
@@ -25,6 +26,14 @@ class FakeEl {
       return;
     }
     this[k] = v;
+  }
+  getAttribute(k) { return this[k]; }
+  contains(n) {
+    if (n === this) return true;
+    for (const c of this.children) {
+      if (c === n || (c.contains && c.contains(n))) return true;
+    }
+    return false;
   }
   dispatchEvent(e) { this.events.push(e); return true; }
   fire(type) { (this.listeners[type] || []).forEach((fn) => fn({ target: this })); }
@@ -320,4 +329,223 @@ test('editor save uses the live gateway doc when a refresh lands mid-edit', () =
     'no save emitted for a removed model');
   assert.ok(byText(d2, 'model is no longer in this gateway — close and reopen').length,
     'refusal message on the dialog');
+});
+
+// Refresh-models reads the record stored on the server. While a gateway
+// save is still on the wire that record is the OLD endpoint/key, and the
+// import can land after (or before) the save with a stale catalog. The
+// import control must be disabled for the save's duration.
+test('refresh models is disabled while the gateway save is in flight', () => {
+  const pm = new PM();
+  pm.gateways = [GW];
+  byAria(pm.root, 'Edit gw1').fire('click');
+  const dialog = openDialog(pm);
+  assert.ok(dialog, 'gateway editor open');
+  saveBtn(dialog).fire('click');
+  const refresh = byText(dialog, 'Refresh models from provider')[0];
+  assert.ok(refresh, 'refresh button rendered');
+  assert.equal(refresh.disabled, true);
+  refresh.fire('click');
+  assert.equal(pm.events.filter((e) => e.type === 'gateway-import').length, 0);
+});
+
+// The import and full-replace save are mutually exclusive server-side
+// operations on the same record. A save clicked while a catalog import is
+// on the wire builds its body before the merge lands, so the replacement
+// can roll the imported models back. Save must stay disabled for the
+// import's duration, mirroring the import's save guard.
+test('gateway save is disabled while a model import is in flight', () => {
+  const pm = new PM();
+  pm.gateways = [GW];
+  byAria(pm.root, 'Edit gw1').fire('click');
+  const dialog = openDialog(pm);
+  assert.ok(dialog, 'gateway editor open');
+  const refresh = byText(dialog, 'Refresh models from provider')[0];
+  assert.ok(refresh, 'refresh button rendered');
+  refresh.fire('click');
+  assert.equal(pm.events.filter((e) => e.type === 'gateway-import').length, 1);
+  const save = saveBtn(dialog);
+  assert.equal(save.disabled, true);
+  save.fire('click');
+  assert.equal(pm.events.filter((e) => e.type === 'gateway-save').length, 0);
+});
+
+
+// Saving a model closes its editor and rebuilds the models list. The
+// save control is gone with the dialog; focus must return to the model
+// row that opened the editor, not stay on a detached button or BODY.
+test('saving a model returns focus to its row', () => {
+  const pm = new PM();
+  pm.gateways = [GW];
+  pm.modelsFor = 'gw1';
+  const before = document.activeElement;
+  byAria(pm.root, 'Edit model-a').fire('click');
+  const dialog = openDialog(pm);
+  assert.ok(dialog, 'model editor open');
+  const save = saveBtn(dialog);
+  save.focus();
+  save.fire('click');
+  assert.ok(pm._pendingSaveId === 'gw1', 'save emitted');
+  pm.gatewaySaveResult = { id: 'gw1', models: GW.models };
+  const row = byAria(pm.root, 'Edit model-a');
+  assert.ok(row, 'model row remains after save');
+  assert.equal(document.activeElement, row,
+    'save must return focus to the model row that opened the editor');
+  document.activeElement = before;
+});
+
+// Leaving the models view for the gateway list replaces the Back
+// control with the list. Focus must land on the list's first action
+// (Add gateway), not stay on the detached Back button or BODY.
+test('back from the models view focuses the gateway list', () => {
+  const pm = new PM();
+  pm.gateways = [GW];
+  pm.modelsFor = 'gw1';
+  const back = byAria(pm.root, 'Back to gateways');
+  back.focus();
+  back.fire('click');
+  const add = byAria(pm.root, 'Add gateway');
+  assert.ok(add, 'gateway list rendered');
+  assert.equal(document.activeElement, add,
+    'back navigation must land focus on the gateway list action');
+});
+
+// Opening a gateway's models view replaces the row's controls with the
+// view's Back/model/refresh chrome. Focus must move into the new view
+// (Back is its first control), not stay on the destroyed row button.
+test('opening the models view focuses its Back control', () => {
+  const pm = new PM();
+  pm.gateways = [GW];
+  const models = byClass(pm.root, 'models-btn')[0];
+  models.focus();
+  models.fire('click');
+  const back = byAria(pm.root, 'Back to gateways');
+  assert.ok(back, 'models view open');
+  assert.equal(document.activeElement, back,
+    'opening the models view must move focus into it');
+});
+
+// Saving the gateway form closes the dialog and rebuilds the gateway
+// list. The Save control dies with the dialog; focus must return to the
+// row/wrapper that opened it, just as it does when the model editor or
+// the Back control closes.
+test('saving the gateway form returns focus to its row', () => {
+  const pm = new PM();
+  pm.gateways = [GW];
+  const edit = byAria(pm.root, 'Edit gw1');
+  edit.focus();
+  edit.fire('click');
+  const dialog = openDialog(pm);
+  assert.ok(dialog, 'gateway editor open');
+  const save = saveBtn(dialog);
+  save.focus();
+  save.fire('click');
+  pm.gatewaySaveResult = { id: 'gw1', models: GW.models };
+  const row = byAria(pm.root, 'Edit gw1');
+  assert.ok(row, 'gateway row remains after save');
+  assert.equal(document.activeElement, row,
+    'gateway save must return focus to the row that opened the editor');
+});
+
+// Refresh models is an in-place action: the gateway and view stay put,
+// so the import control must retain focus when its answer rebuilds the
+// models list. Losing focus to BODY strands a keyboard user after every
+// catalog refresh.
+test('refresh models keeps focus on the refresh control', () => {
+  const pm = new PM();
+  pm.gateways = [GW];
+  pm.modelsFor = 'gw1';
+  const refresh = byText(pm.root, 'Refresh models from provider')[0];
+  refresh.focus();
+  refresh.fire('click');
+  pm.gatewayImportResult = { id: 'gw1', models: GW.models, added: ['model-b'] };
+  const again = byText(pm.root, 'Refresh models from provider')[0];
+  assert.ok(again, 'refresh control remains after import');
+  assert.equal(document.activeElement, again,
+    'a completed import must hand focus back to the refresh control');
+});
+
+// Deleting the last gateway replaces the whole provider list with the
+// empty-state action. Focus cannot stay on the destroyed confirm
+// button; it must land on Add gateway so the user can repair the setup.
+test('deleting a gateway focuses the remaining list action', () => {
+  const pm = new PM();
+  pm.gateways = [GW];
+  const del = byAria(pm.root, 'Delete gw1');
+  del.focus();
+  del.fire('click');
+  const confirm = byClass(pm.root, 'danger-btn')[0];
+  assert.ok(confirm, 'delete confirmation rendered');
+  confirm.focus();
+  confirm.fire('click');
+  pm.gateways = [];
+  const add = byAria(pm.root, 'Add gateway');
+  assert.ok(add, 'empty-state Add gateway rendered');
+  assert.equal(document.activeElement, add,
+    'a deleted gateway must hand focus to the remaining list action');
+});
+
+// A failed catalog refresh re-enables the refresh control in place but
+// does not rebuild the view. The pending-focus slot must still settle
+// on the re-enabled control; otherwise the user loses keyboard focus
+// exactly when the error note appears.
+test('a failed refresh restores focus to the refresh control', () => {
+  const pm = new PM();
+  pm.gateways = [GW];
+  pm.modelsFor = 'gw1';
+  const refresh = byText(pm.root, 'Refresh models from provider')[0];
+  refresh.focus();
+  refresh.fire('click');
+  // The control disables while the import is on the wire.
+  document.activeElement = null;
+  pm.gatewayImportResult = { id: 'gw1', error: 'catalog unavailable' };
+  const again = byText(pm.root, 'Refresh models from provider')[0];
+  assert.ok(again, 'refresh control remains after failure');
+  assert.equal(document.activeElement, again,
+    'the re-enabled refresh control must recover focus after a failed import');
+});
+
+// A failed gateway save keeps the form open with its error line. Save is
+// disabled for the request and re-enabled by the answer; focus cannot
+// stay on the disabled node, so the re-enabled Save must inherit it or
+// the user is dropped on BODY exactly when they need to correct the form.
+test('a failed gateway save keeps focus on Save', () => {
+  const pm = new PM();
+  pm.gateways = [GW];
+  byAria(pm.root, 'Edit gw1').fire('click');
+  const dialog = openDialog(pm);
+  assert.ok(dialog, 'gateway editor open');
+  const save = saveBtn(dialog);
+  save.focus();
+  save.fire('click');
+  assert.equal(pm._pendingSaveId, 'gw1', 'save reached the wire');
+  document.activeElement = null; // disabling the control drops focus
+  pm.gatewaySaveResult = { id: 'gw1', error: 'save refused' };
+  const again = saveBtn(openDialog(pm));
+  assert.ok(again, 'Save remains in the open form');
+  assert.ok(byText(openDialog(pm), 'save refused').length, 'failure is rendered');
+  assert.equal(document.activeElement, again,
+    'the re-enabled Save must recover focus after a failed gateway save');
+});
+
+// Same failure path in the model editor: the dialog stays open with the
+// typed values, and its Save is the next action — focus must not fall to
+// BODY when the disabled control is re-enabled.
+test('a failed model save keeps focus on Save', () => {
+  const pm = new PM();
+  pm.gateways = [GW];
+  pm.modelsFor = 'gw1';
+  byAria(pm.root, 'Edit model-a').fire('click');
+  const dialog = openDialog(pm);
+  assert.ok(dialog, 'model editor open');
+  const save = saveBtn(dialog);
+  save.focus();
+  save.fire('click');
+  assert.equal(pm._pendingSaveId, 'gw1', 'save reached the wire');
+  document.activeElement = null;
+  pm.gatewaySaveResult = { id: 'gw1', error: 'model refused' };
+  const again = saveBtn(openDialog(pm));
+  assert.ok(again, 'Save remains in the open editor');
+  assert.equal(document.activeElement, again,
+    'the re-enabled Save must recover focus after a failed model save');
 });
