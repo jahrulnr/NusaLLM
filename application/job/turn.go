@@ -142,7 +142,7 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 			// next call rather than failing on the replayed images.
 			if (hitMediaLimit || conv.NeedCompaction(model.CompactionBudgetTokens(ccfg.CompactBudgetPct))) &&
 				conv.CanManualCompact(ccfg.CompactKeepTail) {
-				if err := d.compact(ctx, convID, conv, gw, model, svc, ccfg.CompactKeepTail); err != nil {
+				if err := d.compact(ctx, convID, conv, gw, model, svc, ccfg.CompactKeepTail, onEvent); err != nil {
 					return err
 				}
 				didCompact = true
@@ -239,6 +239,11 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 				}
 				wait = delayed.RetryAfter()
 			}
+			// The owner sees the pause for what it is — a provider asking
+			// for quiet, not a stalled stream.
+			if onEvent != nil {
+				onEvent(event.NewStatusEvent(enum.TurnStatusRetryWait, wait))
+			}
 			select {
 			case <-ctx.Done():
 				return apperror.New(408, "turn canceled", ctx.Err())
@@ -255,7 +260,7 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 			// Retrying needs a clean call: with output already emitted
 			// or appended, the error propagates instead — the in-memory
 			// entry was never persisted.
-			if err := d.compact(ctx, convID, conv, gw, wireModel, svc, ccfg.CompactKeepTail); err != nil {
+			if err := d.compact(ctx, convID, conv, gw, wireModel, svc, ccfg.CompactKeepTail, onEvent); err != nil {
 				return err
 			}
 			didCompact = true
@@ -276,6 +281,26 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 			// error from the adapter — normalize before it misroutes.
 			if ctx.Err() != nil {
 				return apperror.New(408, "turn canceled", ctx.Err())
+			}
+			// The failed call committed nothing, but the owner already
+			// watched its text stream in. Keep that output as an
+			// interrupted reply so the failure does not erase it, and so
+			// a Retry (turn.resume) continues from it instead of
+			// regenerating the answer from scratch.
+			if len(added) == 0 {
+				partial, ok, perr := interruptedReply(parts)
+				if perr != nil {
+					return perr
+				}
+				if ok {
+					conv.Append(partial)
+					if _, perr := d.Convs.AppendMessage(ctx, convID, partial); perr != nil {
+						return perr
+					}
+					if perr := d.Convs.Save(ctx, conv); perr != nil {
+						return perr
+					}
+				}
 			}
 			return err
 		}
@@ -340,7 +365,7 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 			// the limit. This only fires when the step-top fold above
 			// couldn't (the tail just grew past keepTail on this step).
 			if hitMediaLimit && !didCompact && conv.CanManualCompact(ccfg.CompactKeepTail) {
-				if err := d.compact(ctx, convID, conv, gw, model, svc, ccfg.CompactKeepTail); err != nil {
+				if err := d.compact(ctx, convID, conv, gw, model, svc, ccfg.CompactKeepTail, onEvent); err != nil {
 					return err
 				}
 			}
@@ -538,6 +563,34 @@ func stampInterrupted(msg *entity.Message) error {
 		}
 	}
 	return nil
+}
+
+// interruptedReply is the reply a failed call streamed before it broke:
+// the text and reasoning the owner already saw, in arrival order. Tool-call
+// parts are dropped — their calls never reached history. Without answer
+// text there is nothing for a Retry to replay, so no reply is kept (ok=false).
+func interruptedReply(parts []entity.MessagePart) (entity.Message, bool, error) {
+	var text strings.Builder
+	kept := make([]entity.MessagePart, 0, len(parts))
+	for _, p := range parts {
+		switch p.Kind {
+		case entity.MessagePartText:
+			text.WriteString(p.Text)
+		case entity.MessagePartToolCall:
+			continue
+		}
+		kept = append(kept, p)
+	}
+	if text.Len() == 0 {
+		return entity.Message{}, false, nil
+	}
+	msg, err := entity.NewMessage(enum.RoleAssistant, text.String())
+	if err != nil {
+		return entity.Message{}, false, err
+	}
+	msg.SetParts(kept)
+	msg.SetFinishReason(enum.FinishReasonInterrupted)
+	return msg, true, nil
 }
 
 // persistInterrupted writes the interrupted marker for calls that are

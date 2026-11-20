@@ -46,7 +46,7 @@ func Register(r *gin.Engine, assets fs.FS) {
 		r.GET(p, serve)
 		r.HEAD(p, serve)
 	}
-	for _, p := range []string{"/styles/*path", "/lib/*path", "/widgets/*path", "/vendor/*path"} {
+	for _, p := range []string{"/styles/*path", "/lib/*path", "/components/*path", "/vendor/*path"} {
 		r.GET(p, serve)
 		r.HEAD(p, serve)
 	}

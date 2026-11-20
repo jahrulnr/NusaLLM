@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -138,7 +139,7 @@ func serve(args []string, svc system.Service) (serveErr error) {
 		LiveTurns:   hub,
 		WS:          wsdelivery.NewHandler(hub, authorities).Serve,
 		Authorities: authorities,
-		WebAssets:   web.Assets,
+		WebAssets:   webAssets(),
 	})
 	// Host aliases only affect request validation. The socket stays on the
 	// IPv4 loopback interface, independent of the configured host list.
@@ -216,4 +217,13 @@ func serveHelpRequested(args []string) bool {
 		}
 	}
 	return false
+}
+
+// webAssets is the embedded WebUI, or the directory named by
+// NUSALLM_WEB_DIR so UI edits show on reload without rebuilding.
+func webAssets() fs.FS {
+	if dir := os.Getenv("NUSALLM_WEB_DIR"); dir != "" {
+		return os.DirFS(dir)
+	}
+	return web.Assets
 }

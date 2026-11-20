@@ -181,6 +181,9 @@ func activityFrame(t *turn, state string) serverFrame {
 
 type phasePayload struct {
 	Phase string `json:"phase"`
+	// RetryAfterMs is the pause length of a retry_wait phase. Phases with
+	// no pause omit it.
+	RetryAfterMs int64 `json:"retryAfterMs,omitempty"`
 }
 
 // reasoningPayload is one bounded chunk of provider reasoning text.

@@ -486,8 +486,8 @@ this module. The `Makefile` mirrors it: `make build` produces
 launches the WebUI, and `make gateway-add` is a convenience recipe for one
 provider's route. `make fmt-check` fails on unformatted files instead of
 rewriting them, `make test` builds `bin/nusallm` before vet + test, and
-`make test-web` runs the `node --test`
-suite under `web/test/`. Media fixtures for end-to-end
+`make test-web` syntax-checks the WebUI sources under `web/`
+(see `web/README.md`). Media fixtures for end-to-end
 attachment paths live in `test/media/` and are pinned by
 `TestMediaFixtures` in `infrastructure/domain/valueobject/attachment_test.go`
 — if an adapter change touches attachment serialization, that test is the

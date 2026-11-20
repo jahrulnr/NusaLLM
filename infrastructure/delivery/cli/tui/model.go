@@ -823,6 +823,14 @@ func (m *replModel) applyEvent(e event.TurnEvent) {
 		m.steerLanded(e.Delta())
 		m.sealLiveMarkdown()
 		m.appendLiveLine(term.Cyan + term.Bold + "» steer:" + term.Reset + " " + term.Sanitize(e.Delta()))
+	case enum.TurnEventStatus:
+		// A harness wait: the phase line names it, so a quiet provider
+		// reads as a pause rather than a hang.
+		if e.Status() == enum.TurnStatusCompacting {
+			m.phase = "compacting context"
+		} else {
+			m.phase = "provider busy, retrying"
+		}
 	case enum.TurnEventFinished:
 		m.sealLiveMarkdown()
 		m.appendLiveLine(term.Dim + "↳ " + formatUsage(e.Usage()) + term.Reset)

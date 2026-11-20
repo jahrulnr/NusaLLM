@@ -1,362 +1,225 @@
-// Pure Markdown → AST. No DOM access — this module is testable under
-// Node and is the only Markdown authority for the WebUI.
-//
-// Safety contract: raw HTML in the source is never interpreted — it
-// stays literal text inside paragraphs. Links pass sanitizeLink();
-// images never render (no remote fetch). Malformed input degrades to
-// literal text — the concatenated text of the AST never loses content.
+// Markdown → sanitized DOM. marked parses (GFM), DOMPurify sanitizes, and
+// highlight.js colors finished code blocks. Rendering is block-incremental:
+// the source is lexed into top-level blocks and only blocks whose raw text
+// changed are re-rendered, so streaming deltas never rebuild the whole
+// message, and finished diagrams/code keep their DOM (scroll, zoom).
+import { Marked } from '/vendor/marked/marked.esm.js';
+import DOMPurify from '/vendor/dompurify/purify.es.mjs';
+import hljs from '/vendor/highlight/highlight.min.mjs';
+import { mountDiagram, validateDiagramSource } from './diagram.js';
 
-// ---------------------------------------------------------------- links
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const DIAGRAM_LANGS = new Set(['mermaid', 'mmd']);
 
-// Only http(s)/mailto and same-origin-relative shapes are allowed.
-// Everything else — javascript:, data:, file:, blob:, protocol-relative
-// //x, or control-char obfuscation — returns null and renders as text.
-export function sanitizeLink(raw) {
-  if (typeof raw !== 'string') return null;
-  const s = raw.trim();
-  if (!s) return null;
-  // Any interior ASCII whitespace/control char (e.g. "java\tscript:")
-  // is an obfuscation attempt — reject rather than reinterpret.
-  if (/[\x00-\x20]/.test(s)) return null;
-  // Backslashes are path-separator tricks ("//evil" spelled "\evil") —
-  // never allowed in a link target.
-  if (s.includes('\\')) return null;
-  if (s.startsWith('//')) return null;
-  // Bare '#fragment' is reserved for the app's own hash router
-  // (#conversation=…) — content links never get it.
-  if (s.startsWith('#')) return null;
-  if (s.startsWith('/') || s.startsWith('./') || s.startsWith('../')) return s;
-  const m = s.match(/^([A-Za-z][A-Za-z0-9+.-]*):/);
-  if (!m) return null; // bare relative paths are not link targets
-  const scheme = m[1].toLowerCase();
-  if (scheme === 'http' || scheme === 'https' || scheme === 'mailto') return s;
-  return null;
-}
-
-// ---------------------------------------------------------------- inline
-
-const ESCAPABLE = /[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/;
-
-// matchLinklike parses `[label](url)` at src[i]==='['. Returns null on
-// no match — the caller emits the source literally.
-function matchLinklike(src, i) {
-  const close = src.indexOf(']', i + 1);
-  if (close < 0 || src[close + 1] !== '(') return null;
-  const end = src.indexOf(')', close + 2);
-  if (end < 0) return null;
-  return { label: src.slice(i + 1, close), url: src.slice(close + 2, end), end: end + 1 };
-}
-
-// matchRun finds `marker` after `from`; needs a nonempty interior so
-// `****` degrades to literal rather than an empty node.
-function matchRun(src, i, marker) {
-  const close = src.indexOf(marker, i + marker.length);
-  if (close <= i + marker.length || close < 0) return null;
-  return { inner: src.slice(i + marker.length, close), end: close + marker.length };
-}
-
-const WORDCHAR = /[\p{L}\p{N}]/u;
-
-// matchUnderscore is matchRun plus CommonMark's intraword rule: a `_` /
-// `__` delimiter cannot open inside a word (identifier names like
-// foo_bar stay literal) and cannot close when another word char follows.
-// The inner edges must not face whitespace either — `_ a_` is literal.
-function matchUnderscore(src, i, marker) {
-  if (i > 0 && WORDCHAR.test(src[i - 1])) return null;
-  const first = src[i + marker.length];
-  if (first === undefined || /\s/.test(first)) return null;
-  let close = src.indexOf(marker, i + marker.length + 1);
-  while (close >= 0) {
-    const next = src[close + marker.length];
-    if (!/\s/.test(src[close - 1]) && (next === undefined || !WORDCHAR.test(next))) {
-      return { inner: src.slice(i + marker.length, close), end: close + marker.length };
-    }
-    close = src.indexOf(marker, close + 1);
-  }
-  return null;
-}
-
-export function parseInline(source) {
-  const src = String(source ?? '');
-  const out = [];
-  let buf = '';
-  let i = 0;
-  const flush = () => { if (buf) { out.push({ type: 'text', text: buf }); buf = ''; } };
-
-  while (i < src.length) {
-    const c = src[i];
-
-    // Hard break: two+ spaces before a newline.
-    if (c === ' ') {
-      const m = src.slice(i).match(/^ {2,}\n/);
-      if (m) { flush(); out.push({ type: 'hardbreak' }); i += m[0].length; continue; }
-      buf += c; i++; continue;
-    }
-    if (c === '\n') { flush(); out.push({ type: 'softbreak' }); i++; continue; }
-
-    // Backslash escape — punctuation only, else keep the backslash.
-    if (c === '\\' && i + 1 < src.length && ESCAPABLE.test(src[i + 1])) {
-      buf += src[i + 1]; i += 2; continue;
-    }
-
-    // Code span — matching-length backtick run; unterminated is literal.
-    if (c === '`') {
-      const run = src.slice(i).match(/^`+/)[0];
-      const close = src.indexOf(run, i + run.length);
-      if (close >= 0) {
-        flush();
-        out.push({ type: 'code', text: src.slice(i + run.length, close) });
-        i = close + run.length;
-      } else {
-        buf += run; i += run.length;
+const marked = new Marked({ gfm: true, breaks: false });
+marked.use({
+  renderer: {
+    code({ text, lang, raw }) {
+      const language = (lang || '').trim().split(/\s+/)[0].toLowerCase();
+      const closed = /\n[ \t]*(`{3,}|~{3,})[ \t]*\n*$/.test(raw ?? '');
+      if (DIAGRAM_LANGS.has(language) && closed) {
+        return `<div class="diagram" data-diagram><div class="canvas"></div>`
+          + `<details><summary>Diagram source</summary><pre>${esc(text)}</pre></details></div>`;
       }
-      continue;
-    }
+      const label = DIAGRAM_LANGS.has(language) && !closed ? `${language} · streaming` : (language || 'text');
+      return `<div class="codeblock"><header><span>${esc(label)}</span>`
+        + `<button type="button" class="copybtn" data-copy>Copy</button></header>`
+        + `<pre><code data-lang="${esc(language)}">${esc(text)}</code></pre></div>`;
+    },
+    // Images are never fetched. Raw HTML passes through and is reduced to
+    // the allowlist below by DOMPurify.
+    image({ text }) { return `<span class="md-image">[image: ${esc(text)}]</span>`; },
+  },
+  extensions: [{
+    // GitHub-style footnote reference: [^id]. Definitions are lifted out of
+    // the source in renderInto; an id without a definition stays literal.
+    name: 'fnref',
+    level: 'inline',
+    start(src) { const i = src.indexOf('[^'); return i < 0 ? undefined : i; },
+    tokenizer(src) {
+      const m = /^\[\^([^\]\s]+)\]/.exec(src);
+      if (m && footnotes.has(m[1])) return { type: 'fnref', raw: m[0], id: m[1] };
+      return undefined;
+    },
+    renderer(t) {
+      const n = footnotes.get(t.id).n;
+      return `<sup class="md-fnref"><button type="button" data-fn="${esc(t.id)}" title="Footnote ${n}">${n}</button></sup>`;
+    },
+  }],
+});
 
-    // Image — never rendered as a URL; becomes a labeled placeholder.
-    if (c === '!' && src[i + 1] === '[') {
-      const r = matchLinklike(src, i + 1);
-      if (r) {
-        flush();
-        out.push({ type: 'image', alt: r.label, src: r.url });
-        i = r.end;
-      } else { buf += c; i++; }
-      continue;
-    }
+// Footnotes of the message being rendered: id -> { n, text }.
+let footnotes = new Map();
 
-    // Link — unsafe hrefs render the whole construct literally.
-    if (c === '[') {
-      const r = matchLinklike(src, i);
-      if (r) {
-        const href = sanitizeLink(r.url);
-        if (href) {
-          flush();
-          out.push({ type: 'link', href, children: parseInline(r.label) });
-        } else {
-          buf += src.slice(i, r.end);
-        }
-        i = r.end;
-      } else { buf += c; i++; }
-      continue;
-    }
-
-    // Autolink <scheme:...> — other <…> stays literal (raw HTML is text).
-    if (c === '<') {
-      const m = src.slice(i).match(/^<([A-Za-z][A-Za-z0-9+.-]*:[^<>\s]*)>/);
-      if (m) {
-        const href = sanitizeLink(m[1]);
-        if (href) {
-          flush();
-          out.push({ type: 'link', href, children: [{ type: 'text', text: m[1] }] });
-        } else {
-          buf += m[0];
-        }
-        i += m[0].length;
-      } else { buf += c; i++; }
-      continue;
-    }
-
-    // A run of exactly three * or _ is em(strong) per CommonMark
-    // (`***x***`). Matching the inner `**` first absorbs the third
-    // marker into the text and leaks the leftover closer.
-    if ((c === '*' || c === '_') && src[i + 1] === c && src[i + 2] === c && src[i + 3] !== c) {
-      const openerOK = c !== '_' || i === 0 || !WORDCHAR.test(src[i - 1]);
-      if (openerOK) {
-        let j = i + 3;
-        let matched = null;
-        while (j < src.length) {
-          if (src[j] !== c) { j++; continue; }
-          let n = 0;
-          while (src[j + n] === c) n++;
-          const next = src[j + 3];
-          const closerOK = n >= 3 && j > i + 3 && !/\s/.test(src[j - 1]) &&
-            (c !== '_' || next === undefined || !WORDCHAR.test(next));
-          if (closerOK) {
-            matched = { inner: src.slice(i + 3, j), end: j + 3 };
-            break;
-          }
-          j += n;
-        }
-        if (matched && matched.inner.length > 0) {
-          flush();
-          out.push({ type: 'em', children: [{ type: 'strong', children: parseInline(matched.inner) }] });
-          i = matched.end;
-          continue;
-        }
-      }
-    }
-
-    // Strong / strike before emphasis so `**`/`~~` aren't eaten by `*`.
-    const strongHit = src.startsWith('**', i) ? '**'
-      : src.startsWith('__', i) ? '__'
-      : src.startsWith('~~', i) ? '~~' : null;
-    if (strongHit) {
-      const r = strongHit === '__' ? matchUnderscore(src, i, '__') : matchRun(src, i, strongHit);
-      if (r) {
-        flush();
-        out.push({ type: strongHit === '~~' ? 'strike' : 'strong', children: parseInline(r.inner) });
-        i = r.end;
-      } else {
-        buf += strongHit; i += strongHit.length;
-      }
-      continue;
-    }
-
-    // Emphasis — single * or _. Intraword `*` parses (CommonMark
-    // allows it); intraword `_` stays literal so identifiers like
-    // variable_name_here are never mangled.
-    if (c === '*' || c === '_') {
-      const r = c === '_'
-        ? matchUnderscore(src, i, '_')
-        : matchRun(src, i, c);
-      if (r) {
-        flush();
-        out.push({ type: 'em', children: parseInline(r.inner) });
-        i = r.end;
-      } else {
-        buf += c; i++;
-      }
-      continue;
-    }
-
-    buf += c; i++;
-  }
-  flush();
-  return out;
-}
-
-// ---------------------------------------------------------------- blocks
-
-const FENCE = /^ {0,3}(`{3,}|~{3,})\s*([A-Za-z0-9#+._-]*)\s*$/;
-const HEADING = /^ {0,3}(#{1,6})(?:\s(.*)|\s*)$/;
-const RULE = /^ {0,3}([-*_])(\s*\1){2,}\s*$/;
-const QUOTE = /^ {0,3}> ?/;
-const LIST = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
-const TASK = /^\[([ xX])\]\s+(.*)$/;
-
-function isDelimiterRow(line) {
-  return /^\s*\|?[\s:|-]*-+[\s:|-]*\|?\s*$/.test(line) && line.includes('-');
-}
-
-function splitRow(line) {
-  let s = line.trim();
-  if (s.startsWith('|')) s = s.slice(1);
-  if (s.endsWith('|')) s = s.slice(0, -1);
-  return s.split('|').map((c) => c.trim());
-}
-
-const MAX_QUOTE_DEPTH = 32;
-
-function isBlockStart(lines, i, depth) {
-  const l = lines[i];
-  return FENCE.test(l) || HEADING.test(l) || RULE.test(l) ||
-    (depth < MAX_QUOTE_DEPTH && QUOTE.test(l)) || LIST.test(l);
-}
-
-export function parseMarkdown(source, depth = 0) {
-  const lines = String(source ?? '').split('\n');
-  const blocks = [];
-  let i = 0;
-
-  while (i < lines.length) {
+// Lifts "[^id]: text" definitions (with indented continuation lines) out of
+// the source and numbers them by first reference.
+function extractFootnotes(src) {
+  const defs = new Map();
+  const lines = src.split('\n');
+  const kept = [];
+  const prose = []; // lines outside code fences, for reference numbering
+  let fence = null;
+  for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    if (/^\s*$/.test(line)) { i++; continue; }
-
-    // Fenced code — unterminated fences close at EOF (streaming-safe).
-    let m = line.match(FENCE);
-    if (m) {
-      const fence = m[1][0];
-      const re = new RegExp(`^ {0,3}${fence === '`' ? '`' : '~'}{${m[1].length},}\\s*$`);
-      const body = [];
-      let closed = false;
-      i++;
-      while (i < lines.length) {
-        if (re.test(lines[i])) { i++; closed = true; break; }
-        body.push(lines[i]); i++;
-      }
-      // `closed` distinguishes a finished fence from a still-streaming
-      // one — renderers must not feed unterminated fences to diagram
-      // engines.
-      blocks.push({ type: 'code', lang: m[2] || '', content: body.join('\n'), closed });
+    const f = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    if (fence) {
+      if (f && f[1][0] === fence[0] && f[1].length >= fence.length && line.trim() === f[1]) fence = null;
+      kept.push(line);
       continue;
     }
-
-    // HEADING requires whitespace or end after the hashes, so `#x`
-    // fails to match and lands in a paragraph — per CommonMark.
-    m = line.match(HEADING);
-    if (m) {
-      blocks.push({ type: 'heading', level: m[1].length, inline: parseInline((m[2] || '').trim()) });
-      i++; continue;
+    if (f) { fence = f[1]; kept.push(line); continue; }
+    const m = /^ {0,3}\[\^([^\]\s]+)\]:[ \t]?(.*)$/.exec(line);
+    if (!m) { kept.push(line); prose.push(line); continue; }
+    const body = [m[2]];
+    while (i + 1 < lines.length && (/^(?: {2,}|\t)/.test(lines[i + 1]) || (lines[i + 1].trim() === '' && /^(?: {2,}|\t)/.test(lines[i + 2] ?? '')))) {
+      body.push(lines[++i].replace(/^(?: {1,4}|\t)/, ''));
     }
-
-    if (RULE.test(line)) { blocks.push({ type: 'hr' }); i++; continue; }
-
-    if (depth < MAX_QUOTE_DEPTH && QUOTE.test(line)) {
-      const q = [];
-      while (i < lines.length && QUOTE.test(lines[i])) {
-        q.push(lines[i].replace(QUOTE, '')); i++;
-      }
-      blocks.push({ type: 'blockquote', blocks: parseMarkdown(q.join('\n'), depth + 1) });
-      continue;
-    }
-
-    // Pipe table: header line + delimiter row + body rows.
-    if (i + 1 < lines.length && line.includes('|') && isDelimiterRow(lines[i + 1])) {
-      const header = splitRow(line);
-      const align = splitRow(lines[i + 1]).map((c) =>
-        c.startsWith(':') && c.endsWith(':') ? 'center'
-          : c.endsWith(':') ? 'right'
-          : c.startsWith(':') ? 'left' : '');
-      i += 2;
-      const rows = [];
-      while (i < lines.length && lines[i].includes('|') && !/^\s*$/.test(lines[i])) {
-        rows.push(splitRow(lines[i]).map((c) => parseInline(c)));
-        i++;
-      }
-      blocks.push({ type: 'table', align, header: header.map((c) => parseInline(c)), rows });
-      continue;
-    }
-
-    m = line.match(LIST);
-    if (m) {
-      const ordered = /^\d/.test(m[2]);
-      const items = [];
-      while (i < lines.length) {
-        const lm = lines[i].match(LIST);
-        if (!lm || /^\d/.test(lm[2]) !== ordered) break;
-        let content = lm[3];
-        const task = content.match(TASK);
-        const item = { task: task ? task[1] !== ' ' : null, inline: null, children: null };
-        if (task) content = task[2];
-        // Indented continuation lines join the item's paragraph.
-        const parts = [content];
-        i++;
-        while (i < lines.length && /^ {2,}\S/.test(lines[i]) && !LIST.test(lines[i])) {
-          parts.push(lines[i].trim());
-          i++;
-        }
-        item.inline = parseInline(parts.join('\n'));
-        items.push(item);
-      }
-      blocks.push({
-        type: 'list',
-        ordered,
-        start: ordered ? parseInt(m[2], 10) : null,
-        items,
-      });
-      continue;
-    }
-
-    // Paragraph — everything else until a blank line or a block start.
-    // Raw HTML lines land here and render literally.
-    const para = [];
-    while (i < lines.length && !/^\s*$/.test(lines[i]) && !isBlockStart(lines, i, depth)) {
-      // A table delimiter row after a `|`-bearing line interrupts the
-      // paragraph so the table branch can take it.
-      if (para.length && lines[i].includes('|') && i + 1 < lines.length && isDelimiterRow(lines[i + 1])) break;
-      para.push(lines[i]); i++;
-    }
-    blocks.push({ type: 'paragraph', inline: parseInline(para.join('\n')) });
+    if (!defs.has(m[1])) defs.set(m[1], body.join('\n'));
   }
-  return blocks;
+  const notes = new Map();
+  let n = 0;
+  for (const r of prose.join('\n').matchAll(/\[\^([^\]\s]+)\]/g)) {
+    if (defs.has(r[1]) && !notes.has(r[1])) notes.set(r[1], { n: ++n, text: defs.get(r[1]) });
+  }
+  return { src: kept.join('\n'), notes };
+}
+
+// Tags Markdown produces, plus the inline/structural HTML GitHub allows.
+const TAGS = [
+  'a', 'abbr', 'b', 'blockquote', 'br', 'button', 'code', 'dd', 'del', 'details', 'div', 'dl', 'dt', 'em',
+  'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'header', 'hr', 'i', 'input', 'ins', 'kbd', 'li', 'mark', 'ol', 'p',
+  'pre', 's', 'samp', 'section', 'small', 'span', 'strike', 'strong', 'sub', 'summary', 'sup', 'table',
+  'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'u', 'ul', 'var',
+];
+const ATTRS = ['href', 'title', 'type', 'checked', 'disabled', 'align', 'start', 'open', 'colspan', 'rowspan', 'target', 'rel',
+  'class', 'data-copy', 'data-lang', 'data-diagram', 'data-fn', 'data-fn-def'];
+// Only the renderer's own class names survive, so pasted HTML cannot reach
+// the app's utility classes (e.g. a fixed overlay over the UI).
+const OWN_CLASSES = new Set(['codeblock', 'copybtn', 'diagram', 'canvas', 'md-image', 'md-fnref', 'md-footnotes']);
+
+// Only http(s), mailto, and same-origin paths survive. Bare #fragments are
+// the app router's, so they are dropped too.
+const SAFE_URI = /^(?:https?:|mailto:|\/(?!\/)|\.\.?\/)/i;
+DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+  if (node.hasAttribute?.('class')) {
+    const keep = node.getAttribute('class').split(/\s+/).filter((c) => OWN_CLASSES.has(c));
+    if (keep.length) node.setAttribute('class', keep.join(' ')); else node.removeAttribute('class');
+  }
+  if (node.tagName === 'INPUT' && node.getAttribute('type') !== 'checkbox') node.remove();
+  if (node.tagName === 'A') {
+    const href = node.getAttribute('href') || '';
+    if (!SAFE_URI.test(href)) node.removeAttribute('href');
+    node.setAttribute('target', '_blank');
+    node.setAttribute('rel', 'noopener noreferrer');
+  }
+});
+const PURIFY = { ALLOWED_TAGS: TAGS, ALLOWED_ATTR: ATTRS, ALLOW_DATA_ATTR: false };
+
+function renderBlock(token, links) {
+  const list = [token];
+  list.links = links;
+  const html = marked.parser(list);
+  const wrap = document.createElement('div');
+  wrap.className = 'contents';
+  wrap.style.display = 'contents';
+  wrap.innerHTML = DOMPurify.sanitize(html, PURIFY);
+  return wrap;
+}
+
+function decorate(wrap, final) {
+  for (const code of wrap.querySelectorAll('.codeblock code')) {
+    const lang = code.dataset.lang;
+    if (lang && hljs.getLanguage(lang)) {
+      try { code.innerHTML = hljs.highlight(code.textContent, { language: lang, ignoreIllegals: true }).value; } catch { /* plain */ }
+    }
+  }
+  for (const box of wrap.querySelectorAll('[data-diagram]')) {
+    const source = box.querySelector('details pre').textContent;
+    const canvas = box.querySelector('.canvas');
+    if (!validateDiagramSource(source)) {
+      canvas.textContent = 'Diagram uses unsupported features — showing source.';
+      canvas.className = 'canvas text-xs text-muted';
+      box.querySelector('details').open = true;
+      continue;
+    }
+    try {
+      box._pele = mountDiagram(canvas, source, {
+        onError: () => { canvas.dataset.error = '1'; },
+      });
+    } catch {
+      canvas.textContent = 'Diagram could not be rendered.';
+      canvas.className = 'canvas text-xs text-muted';
+      box.querySelector('details').open = true;
+    }
+  }
+  wrap._final = final;
+}
+
+function dispose(node) {
+  for (const box of node.querySelectorAll?.('[data-diagram]') ?? []) {
+    try { box._pele?.destroy(); } catch { /* already gone */ }
+  }
+}
+
+// renderInto reconciles `root` against `source`. Blocks keep their DOM when
+// their raw text is unchanged; the trailing block re-renders while streaming.
+export function renderInto(root, source) {
+  let tokens;
+  // marked rejects a closing fence followed by a tab ("```\t"), which
+  // CommonMark allows; trim trailing blanks on bare fence lines first.
+  const fenced = String(source ?? '').replace(/^( {0,3}(?:`{3,}|~{3,}))[ \t]+$/gm, '$1');
+  const { src, notes } = extractFootnotes(fenced);
+  footnotes = notes;
+  // Blocks re-render when the footnote set changes, since references in
+  // them resolve against it.
+  const sig = [...notes].map(([id, v]) => id + '\u0001' + v.n + '\u0001' + v.text).join('\u0002');
+  try { tokens = marked.lexer(src); } catch { tokens = [{ type: 'paragraph', raw: src, text: src, tokens: [{ type: 'text', raw: src, text: src }] }]; }
+  const blocks = tokens.filter((t) => t.type !== 'space');
+  if (notes.size) blocks.push({ type: 'footnotes', raw: '\u0000footnotes' });
+  const kids = [...root.children];
+  for (let i = 0; i < blocks.length; i++) {
+    const t = blocks[i];
+    const have = kids[i];
+    if (have && have._raw === t.raw && have._sig === sig) continue;
+    const next = t.type === 'footnotes' ? renderFootnotes(notes, tokens.links) : renderBlock(t, tokens.links);
+    next._raw = t.raw;
+    next._sig = sig;
+    decorate(next);
+    if (have) { dispose(have); root.replaceChild(next, have); } else root.appendChild(next);
+  }
+  for (let i = blocks.length; i < kids.length; i++) { dispose(kids[i]); kids[i].remove(); }
+}
+
+function renderFootnotes(notes, links) {
+  let html = '<section class="md-footnotes"><hr><ol>';
+  for (const [id, v] of notes) {
+    const body = marked.lexer(v.text);
+    body.links = links;
+    html += `<li data-fn-def="${esc(id)}">${marked.parser(body)}</li>`;
+  }
+  html += '</ol></section>';
+  const wrap = document.createElement('div');
+  wrap.style.display = 'contents';
+  wrap.innerHTML = DOMPurify.sanitize(html, PURIFY);
+  return wrap;
+}
+
+export function disposeTree(root) { dispose(root); }
+
+// Copy buttons are delegated so rendered HTML carries no handlers.
+export function handleCopyClick(ev) {
+  const fn = ev.target.closest?.('[data-fn]');
+  if (fn) {
+    const def = [...(fn.closest('.md')?.querySelectorAll('[data-fn-def]') ?? [])].find((x) => x.dataset.fnDef === fn.dataset.fn);
+    def?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    return;
+  }
+  const btn = ev.target.closest?.('[data-copy]');
+  if (!btn) return;
+  const code = btn.closest('.codeblock')?.querySelector('code');
+  if (!code) return;
+  navigator.clipboard?.writeText(code.textContent).then(() => {
+    btn.textContent = 'Copied';
+    setTimeout(() => { btn.textContent = 'Copy'; }, 1200);
+  }, () => { btn.textContent = 'Copy failed'; });
 }

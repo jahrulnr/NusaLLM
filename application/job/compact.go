@@ -8,6 +8,7 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/event"
 	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
@@ -23,7 +24,13 @@ const compactAttempts = 3
 // handoff on a scratch conversation (its own transcript plus the summary
 // tool — never persisted), then the sealed prefix drops and the continue
 // template becomes the new head of the live tail.
-func (d Deps) compact(ctx context.Context, convID string, conv *aggregate.Conversation, gw *aggregate.Gateway, model entity.Model, svc dservice.TextModelService, keepTail int) error {
+// onEvent is the turn's stream when the fold runs inside a turn — the
+// fold can take a whole provider call, so the owner is told it is
+// happening. A manual compaction passes nil.
+func (d Deps) compact(ctx context.Context, convID string, conv *aggregate.Conversation, gw *aggregate.Gateway, model entity.Model, svc dservice.TextModelService, keepTail int, onEvent event.TurnEventHandler) error {
+	if onEvent != nil {
+		onEvent(event.NewStatusEvent(enum.TurnStatusCompacting, 0))
+	}
 	scratch, err := aggregate.NewConversation(convID)
 	if err != nil {
 		return err

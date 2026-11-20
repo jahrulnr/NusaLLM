@@ -1,28 +1,41 @@
-// Boot module: registering the widget definitions is the entire job —
-// app-shell owns orchestration from there.
-//
-// INVARIANT: app-shell must be imported LAST. Custom elements upgrade
-// synchronously at definition time — if app-shell loaded first,
-// <nusa-app> would upgrade and assign properties (e.g. sidebar.open)
-// onto still-unregistered leaf elements as own expandos that shadow
-// the real setters once the leaves finally define.
-import './widgets/nav-sidebar/nav-sidebar.js';
-import './widgets/conversation-header/conversation-header.js';
-// Rendering primitives — code-block and mermaid-diagram before
-// markdown-view (which instantiates both), all before message-thread.
-import './widgets/code-block/code-block.js';
-import './widgets/mermaid-diagram/mermaid-diagram.js';
-import './widgets/markdown-view/markdown-view.js';
-import './widgets/thinking-block/thinking-block.js';
-import './widgets/tool-activity/tool-activity.js';
-import './widgets/message-thread/message-thread.js';
-import './widgets/chat-composer/chat-composer.js';
-import './widgets/model-picker/model-picker.js';
-import './widgets/workspace-picker/workspace-picker.js';
-import './widgets/provider-manager/provider-manager.js';
-import './widgets/settings-editor/settings-editor.js';
-import './widgets/settings-page/settings-page.js';
-import './widgets/toast-stack/toast-stack.js';
-import './widgets/update-dialog/update-dialog.js';
-import './widgets/update-progress/update-progress.js';
-import './widgets/app-shell/app-shell.js'; // last — see invariant above
+// NusaLLM WebUI entry: theme, layout shell, and boot.
+import { html, render, useEffect } from '/vendor/preact/htm-preact.mjs';
+import { useStore, state, emit } from './lib/store.js';
+import { start } from './lib/chat.js';
+import { Sidebar } from './components/sidebar.js';
+import { ChatView, HomeView } from './components/chat.js';
+import { SettingsView } from './components/settings.js';
+import { Toasts } from './components/ui.js';
+
+const dark = window.matchMedia('(prefers-color-scheme: dark)');
+function applyTheme() {
+  const t = state.prefs.theme;
+  document.documentElement.dataset.theme = t === 'system' ? (dark.matches ? 'dark' : 'light') : t;
+}
+dark.addEventListener('change', applyTheme);
+
+function App() {
+  const s = useStore();
+  useEffect(applyTheme, [s.prefs.theme]);
+  const view = s.route.view === 'chat'
+    ? html`<${ChatView} key=${s.route.id} id=${s.route.id} />`
+    : s.route.view === 'settings' ? html`<${SettingsView} />` : html`<${HomeView} />`;
+  const close = () => { state.sidebarOpen = false; emit(); };
+  return html`<div class="flex h-full">
+    <aside class="hidden md:flex w-[264px] shrink-0 border-r border-line">
+      <${Sidebar} />
+    </aside>
+    ${s.sidebarOpen && html`<div class="md:hidden fixed inset-0 z-40 flex" onKeyDown=${(e) => e.key === 'Escape' && close()}>
+      <div class="w-[min(300px,86vw)] h-full border-r border-line shadow-pop"><${Sidebar} /></div>
+      <button class="flex-1 bg-black/50" aria-label="Close threads" onClick=${close}></button>
+    </div>`}
+    <main class="flex-1 min-w-0 h-full">${view}</main>
+    <${Toasts} />
+  </div>`;
+}
+
+applyTheme();
+start();
+const root = document.getElementById('app');
+root.textContent = '';
+render(html`<${App} />`, root);

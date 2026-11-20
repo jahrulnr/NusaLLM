@@ -23,6 +23,9 @@ const (
 	TurnEventFinished TurnEventKind = "finished"
 	// TurnEventError reports a mid-stream failure.
 	TurnEventError TurnEventKind = "error"
+	// TurnEventStatus reports a harness-side wait while no provider output
+	// moves — the TurnStatus rides in Status(), the pause in Wait().
+	TurnEventStatus TurnEventKind = "status"
 )
 
 func (k TurnEventKind) String() string {
@@ -31,7 +34,7 @@ func (k TurnEventKind) String() string {
 
 func ParseTurnEventKind(v string) (TurnEventKind, bool) {
 	switch k := TurnEventKind(v); k {
-	case TurnEventDelta, TurnEventReasoning, TurnEventReasoningSummary, TurnEventToolCall, TurnEventToolOutput, TurnEventSteer, TurnEventFinished, TurnEventError:
+	case TurnEventDelta, TurnEventReasoning, TurnEventReasoningSummary, TurnEventToolCall, TurnEventToolOutput, TurnEventSteer, TurnEventFinished, TurnEventError, TurnEventStatus:
 		return k, true
 	}
 	return "", false

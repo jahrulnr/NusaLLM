@@ -1,6 +1,8 @@
 package event
 
 import (
+	"time"
+
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
@@ -15,6 +17,14 @@ type TurnEvent struct {
 	finishReason enum.FinishReason
 	usage        valueobject.Usage
 	err          error
+	status       enum.TurnStatus
+	wait         time.Duration
+}
+
+// NewStatusEvent reports a harness-side wait while no provider output is
+// moving. wait is the pause length, zero when the status has no deadline.
+func NewStatusEvent(status enum.TurnStatus, wait time.Duration) TurnEvent {
+	return TurnEvent{kind: enum.TurnEventStatus, status: status, wait: wait}
 }
 
 func NewDeltaEvent(delta string) TurnEvent {
@@ -65,6 +75,8 @@ func (e TurnEvent) ToolCall() entity.ToolCall       { return e.toolCall }
 func (e TurnEvent) FinishReason() enum.FinishReason { return e.finishReason }
 func (e TurnEvent) Usage() valueobject.Usage        { return e.usage }
 func (e TurnEvent) Err() error                      { return e.err }
+func (e TurnEvent) Status() enum.TurnStatus         { return e.status }
+func (e TurnEvent) Wait() time.Duration             { return e.wait }
 
 // TurnEventHandler consumes the events of one turn — one Send call.
 // Slow handlers apply backpressure on the read loop; implementations

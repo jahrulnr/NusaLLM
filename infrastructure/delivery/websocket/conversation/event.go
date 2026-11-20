@@ -117,6 +117,17 @@ func (h *Hub) onEvent(t *turn, ev event.TurnEvent) {
 		}, false) {
 			h.markOverflowedLocked(t)
 		}
+	case enum.TurnEventStatus:
+		// A harness-side wait — a retry pause or a context fold. Nothing
+		// streams while it runs, so the owner is told why. The pause
+		// length is information, not a deadline the client enforces.
+		t.inReasoning = false
+		if !h.emitLocked(t, "turn.phase", phasePayload{
+			Phase:        ev.Status().String(),
+			RetryAfterMs: ev.Wait().Milliseconds(),
+		}, false) {
+			h.markOverflowedLocked(t)
+		}
 	case enum.TurnEventError:
 		// Intermediate provider errors never cross; the terminal frame
 		// is the send's single reported outcome.

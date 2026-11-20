@@ -19,8 +19,7 @@ func assets() fstest.MapFS {
 		"app.js":                     {Data: []byte("import './x.js';")},
 		"favicon.svg":                {Data: []byte("<svg/>")},
 		"styles/theme.css":           {Data: []byte("body{}")},
-		"widgets/x/x.js":             {Data: []byte("export {};")},
-		"widgets/x/x.css":            {Data: []byte(":host{}")},
+		"components/x.js":            {Data: []byte("export {};")},
 		"vendor/pele/pele.global.js": {Data: []byte("globalThis.pele={};")},
 		"vendor/pele/LICENSE":        {Data: []byte("MIT")},
 	}
@@ -65,7 +64,7 @@ func TestIndexServesWithSecurityHeaders(t *testing.T) {
 
 func TestWidgetAssetsServeAndHead(t *testing.T) {
 	r := router(t)
-	for _, p := range []string{"/app.js", "/favicon.svg", "/styles/theme.css", "/widgets/x/x.js", "/widgets/x/x.css", "/vendor/pele/pele.global.js", "/vendor/pele/LICENSE"} {
+	for _, p := range []string{"/app.js", "/favicon.svg", "/styles/theme.css", "/components/x.js", "/vendor/pele/pele.global.js", "/vendor/pele/LICENSE"} {
 		w := request(r, "GET", p, authority)
 		if w.Code != 200 {
 			t.Errorf("GET %s = %d", p, w.Code)
@@ -75,7 +74,7 @@ func TestWidgetAssetsServeAndHead(t *testing.T) {
 			t.Errorf("HEAD %s = %d len=%d", p, w.Code, w.Body.Len())
 		}
 	}
-	if ct := request(r, "GET", "/widgets/x/x.js", authority).Header().Get("Content-Type"); !strings.Contains(ct, "javascript") {
+	if ct := request(r, "GET", "/components/x.js", authority).Header().Get("Content-Type"); !strings.Contains(ct, "javascript") {
 		t.Errorf("js content-type %q", ct)
 	}
 	if ct := request(r, "GET", "/vendor/pele/pele.global.js", authority).Header().Get("Content-Type"); !strings.Contains(ct, "javascript") {
@@ -87,7 +86,7 @@ func TestWidgetAssetsServeAndHead(t *testing.T) {
 // served next to a fresh script pairs new markup with stale rules.
 func TestAssetsNeverPairFreshJSWithStaleCSS(t *testing.T) {
 	r := router(t)
-	for _, p := range []string{"/styles/theme.css", "/widgets/x/x.css", "/widgets/x/x.js"} {
+	for _, p := range []string{"/styles/theme.css", "/components/x.js"} {
 		w := request(r, "GET", p, authority)
 		if got := w.Header().Get("Cache-Control"); got != "no-cache" {
 			t.Errorf("GET %s cache-control = %q", p, got)
@@ -115,7 +114,7 @@ func TestAssetRespectsHostGuard(t *testing.T) {
 
 func TestUnknownPathsAreProblem404(t *testing.T) {
 	r := router(t)
-	for _, p := range []string{"/api/unknown", "/nope", "/widgets/missing.js"} {
+	for _, p := range []string{"/api/unknown", "/nope", "/components/missing.js"} {
 		w := request(r, "GET", p, authority)
 		if w.Code != 404 {
 			t.Errorf("GET %s = %d", p, w.Code)

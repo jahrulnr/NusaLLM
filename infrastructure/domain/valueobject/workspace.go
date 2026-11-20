@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -38,10 +39,8 @@ func NewWorkspace(p string) (Workspace, error) {
 	if p[0] == '/' || isDrive {
 		return Workspace{}, ErrPathTraversal
 	}
-	for _, seg := range strings.Split(p, "/") {
-		if seg == ".." {
-			return Workspace{}, ErrPathTraversal
-		}
+	if slices.Contains(strings.Split(p, "/"), "..") {
+		return Workspace{}, ErrPathTraversal
 	}
 	return Workspace{path: path.Clean(p)}, nil
 }

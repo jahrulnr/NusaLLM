@@ -3,6 +3,7 @@ bin/
 data/
 tasks/
 .playwright-mcp
+.claude/
 
 # Playwright run output
 web/test-results/

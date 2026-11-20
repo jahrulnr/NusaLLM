@@ -484,9 +484,24 @@ One turn's frames, in order. Every stream frame carries `conversationId`,
 }
 ```
 
-`turn.phase` — a coarse status marker. `phase` is currently only
-`"reasoning"`: the model is producing reasoning. One marker is emitted
-per reasoning stretch, no matter how many chunks the provider streams.
+`turn.phase` — a coarse status marker. `phase` is `"reasoning"` while the
+model produces reasoning: one marker per reasoning stretch, no matter how
+many chunks the provider streams. It is `"retry_wait"` while the harness
+pauses before retrying a transient provider failure (rate limit or upstream
+5xx), and `"compacting"` while the harness folds history to fit the context
+window before a model call. A `retry_wait` marker carries `retryAfterMs`,
+the pause length; the other phases carry none. Any stream frame that follows
+ends the wait.
+
+```json
+{
+  "type": "turn.phase",
+  "conversationId": "c_k4j9xm2p8q1vz7w0t6nb5r3yhd",
+  "turnId": "t_3kd9xm2p8q1vz7w0t6nb5r4yhf",
+  "seq": 4,
+  "payload": { "phase": "retry_wait", "retryAfterMs": 45000 }
+}
+```
 All provider reasoning text, including raw `reasoning_content` and
 `reasoning_text` as well as provider-supplied summaries, crosses as
 `turn.reasoning` chunks in the same order as other stream events:

@@ -61,6 +61,35 @@ func TestRunTurnRetriesTransientUpstreamFailure(t *testing.T) {
 	}
 }
 
+// Each retry pause is announced on the turn's stream before it starts — a
+// provider asking for quiet reads as a pause, not as a stalled reply.
+func TestRunTurnAnnouncesRetryWait(t *testing.T) {
+	d := Deps{
+		SummaryTool: mustSummaryTool(t),
+		Convs:       repoconversation.NewConversationRepository(t.TempDir()),
+		Config:      config.ConversationConfig{MaxTurnStep: 4},
+	}
+	conv := seedRoom(t, d.Convs, "room", "hi")
+	svc := &flakySvc{fails: 2, status: 503}
+	var waits []enum.TurnStatus
+	onEvent := func(e event.TurnEvent) {
+		if e.Kind() == enum.TurnEventStatus {
+			waits = append(waits, e.Status())
+		}
+	}
+	if err := d.runTurn(t.Context(), "room", conv, EnvironmentBundle{}, nil, entity.Model{}, svc, onEvent, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(waits) != len(sendRetryBackoff) {
+		t.Fatalf("retry_wait announcements = %d, want one per retry (%d)", len(waits), len(sendRetryBackoff))
+	}
+	for _, s := range waits {
+		if s != enum.TurnStatusRetryWait {
+			t.Fatalf("status = %q, want %q", s, enum.TurnStatusRetryWait)
+		}
+	}
+}
+
 // Client statuses never clear on their own — one call and out.
 func TestRunTurnNoRetryOnClientError(t *testing.T) {
 	d := Deps{
@@ -135,6 +164,61 @@ func TestRunTurnNoRetryAfterEmittedDelta(t *testing.T) {
 	}
 	if deltas != 1 {
 		t.Fatalf("deltas emitted = %d, want exactly 1", deltas)
+	}
+}
+
+// The text a failed stream already showed the owner survives the failure
+// as an interrupted reply, in memory and on disk. Without it a Retry
+// regenerates the answer and the partial the reader watched vanishes.
+func TestRunTurnKeepsStreamedTextOnFailure(t *testing.T) {
+	d := Deps{
+		SummaryTool: mustSummaryTool(t),
+		Convs:       repoconversation.NewConversationRepository(t.TempDir()),
+		Config:      config.ConversationConfig{MaxTurnStep: 4},
+	}
+	conv := seedRoom(t, d.Convs, "room", "hi")
+	svc := &emitThenFailSvc{status: 502}
+	if err := d.runTurn(t.Context(), "room", conv, EnvironmentBundle{}, nil, entity.Model{}, svc, nil, nil); err == nil {
+		t.Fatal("a mid-stream failure must fail the turn")
+	}
+	check := func(label string, c *aggregate.Conversation) {
+		t.Helper()
+		last := c.Last()
+		if last == nil || last.Role() != enum.RoleAssistant || last.Content() != "partial" {
+			t.Fatalf("%s: tail = %+v, want the streamed partial reply", label, last)
+		}
+		if last.FinishReason() != enum.FinishReasonInterrupted {
+			t.Fatalf("%s: finish = %q, want interrupted", label, last.FinishReason())
+		}
+	}
+	check("in memory", conv)
+	reloaded, err := d.Convs.Load(t.Context(), "room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("reloaded", reloaded)
+}
+
+// Only answer text makes a kept reply: tool-call parts point at calls that
+// never reached history, and reasoning alone has nothing a Retry can replay.
+func TestInterruptedReplyKeepsAnswerTextOnly(t *testing.T) {
+	msg, ok, err := interruptedReply([]entity.MessagePart{
+		{Kind: entity.MessagePartReasoning, Text: "considering"},
+		{Kind: entity.MessagePartText, Text: "Hel"},
+		{Kind: entity.MessagePartToolCall, ToolCallID: "call_1"},
+		{Kind: entity.MessagePartText, Text: "lo"},
+	})
+	if err != nil || !ok {
+		t.Fatalf("ok=%v err=%v, want a kept reply", ok, err)
+	}
+	if msg.Content() != "Hello" || msg.FinishReason() != enum.FinishReasonInterrupted {
+		t.Fatalf("reply = %q/%q, want Hello/interrupted", msg.Content(), msg.FinishReason())
+	}
+	if got := msg.Parts(); len(got) != 3 {
+		t.Fatalf("parts = %+v, want reasoning, text, text with the tool call dropped", got)
+	}
+	if _, ok, _ := interruptedReply([]entity.MessagePart{{Kind: entity.MessagePartReasoning, Text: "thinking"}}); ok {
+		t.Fatal("reasoning without answer text must not be kept")
 	}
 }
 

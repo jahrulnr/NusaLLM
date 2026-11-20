@@ -1,8 +1,8 @@
-// Package web embeds the production WebUI assets into the binary so the
-// built nusallm executable serves the interface without the source tree.
+// Package web embeds the WebUI assets into the binary so the built
+// nusallm executable serves the interface without the source tree.
 package web
 
 import "embed"
 
-//go:embed index.html app.js favicon.svg styles/*.css lib/*.js lib/*.css widgets/*/*.js widgets/*/*.css vendor/pele/*
+//go:embed index.html app.js favicon.svg styles lib components vendor
 var Assets embed.FS
