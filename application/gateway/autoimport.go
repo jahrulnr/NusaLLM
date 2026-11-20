@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
@@ -167,7 +168,7 @@ func (app *GatewayApp) importModels(ctx context.Context, id string) ([]string, e
 	changed := false
 	for _, cm := range catalog {
 		if i, ok := index[cm.ID]; ok {
-			if applyCatalogModel(&models[i], cm) {
+			if applyCatalogModel(&models[i], cm, snap.Gateway.Style()) {
 				changed = true
 			}
 			continue
@@ -176,7 +177,7 @@ func (app *GatewayApp) importModels(ctx context.Context, id string) ([]string, e
 		if err != nil {
 			continue // a malformed provider id is not fatal to the pass
 		}
-		applyCatalogModel(&m, cm)
+		applyCatalogModel(&m, cm, snap.Gateway.Style())
 		models = append(models, m)
 		added = append(added, cm.ID)
 		index[cm.ID] = len(models) - 1
@@ -201,9 +202,16 @@ func (app *GatewayApp) importModels(ctx context.Context, id string) ([]string, e
 // entry: a field fills only while the record leaves it unknown, so an
 // explicit value — user-set or previously declared — stays authoritative.
 // Clearing a field to zero on Upsert re-derives it at the next import.
+// The style pin follows the same rule: the catalog's recommended API fills
+// an unset pin, but only when it differs from the gateway's style — a pin
+// equal to the gateway's own style would just freeze today's default.
 // Returns whether anything changed.
-func applyCatalogModel(m *entity.Model, cm dservice.CatalogModel) bool {
+func applyCatalogModel(m *entity.Model, cm dservice.CatalogModel, gwStyle enum.Style) bool {
 	changed := false
+	if m.Style() == "" && cm.Style != "" && cm.Style != gwStyle {
+		m.SetStyle(cm.Style)
+		changed = true
+	}
 	if m.Name() == "" && cm.Name != "" {
 		m.SetName(cm.Name)
 		changed = true
@@ -240,6 +248,10 @@ func applyCatalogModel(m *entity.Model, cm dservice.CatalogModel) bool {
 			m.SetOutputLimit(cm.OutputLimit)
 			changed = true
 		}
+	}
+	if m.ModelType() == "" && cm.ModelType != "" {
+		m.SetModelType(cm.ModelType)
+		changed = true
 	}
 	if len(m.InputModalities()) == 0 && len(cm.InputModalities) > 0 {
 		m.SetInputModalities(cm.InputModalities)

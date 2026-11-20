@@ -301,6 +301,26 @@ func (m Model) OutputModalities() []enum.Modality     { return m.outputModalitie
 
 func (m *Model) SetOutputModalities(v []enum.Modality) { m.outputModalities = v }
 
+// ServesChat reports whether the model can answer a chat turn: it must take
+// text in and give text back. Each declaration the catalog makes has to
+// agree — a declared type must be text (image generators, embedding,
+// rerank, speech, transcription, video, decision, and realtime models are
+// other surfaces even when they also emit some text), and declared input
+// and output modality lists must both include text. A model the catalog
+// says nothing about stays eligible: the provider is the final validator.
+func (m Model) ServesChat() bool {
+	if m.mtype != "" && m.mtype != enum.ModelTypeText {
+		return false
+	}
+	if len(m.outputModalities) > 0 && !slices.Contains(m.outputModalities, enum.ModalityText) {
+		return false
+	}
+	if len(m.inputModalities) > 0 && !slices.Contains(m.inputModalities, enum.ModalityText) {
+		return false
+	}
+	return true
+}
+
 // AcceptsInput reports whether the model lists mod as an input modality.
 // An empty modality list means the catalog did not declare capabilities,
 // so predicates fail open — the provider remains the final validator.

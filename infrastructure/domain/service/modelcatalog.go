@@ -12,12 +12,17 @@ import (
 // the provider declares for it. Zero values mean "the provider did not
 // say" — merge logic fills unknown fields, it never clears set ones.
 type CatalogModel struct {
-	ID               string
-	Name             string // display name the provider publishes
-	Canonical        string // stable base id, e.g. a canonical slug
-	AliasOf          string // target id when the entry is a pure alias
-	ContextWindow    int    // total context window in tokens
-	OutputLimit      int    // max completion tokens
+	ID            string
+	Name          string // display name the provider publishes
+	Canonical     string // stable base id, e.g. a canonical slug
+	AliasOf       string // target id when the entry is a pure alias
+	ContextWindow int    // total context window in tokens
+	OutputLimit   int    // max completion tokens
+	ModelType     enum.ModelType
+	// Style is the wire API the provider recommends for this model when it
+	// differs per model on one endpoint (e.g. GPT on Responses, Claude on
+	// Messages). Only a style the gateway's own endpoint serves is declared.
+	Style            enum.Style
 	InputModalities  []enum.Modality
 	OutputModalities []enum.Modality
 	SupportedEfforts []enum.Effort

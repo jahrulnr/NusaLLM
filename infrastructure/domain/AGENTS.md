@@ -56,6 +56,9 @@ distinct invariant, or a meaningful interface boundary.
    `IsUnset()` — absent means "don't send", not 0.
 7. **Fail-closed vs fail-open is deliberate.** `ToolSchema.CallableBy*`
    fails closed; `Model.Accepts*` fails open (provider validates).
+   `Model.ServesChat` is strict on every declaration (type must be text,
+   declared modality lists must include text) and open only when the
+   catalog declared nothing.
 8. **Secrets are references, never plaintext.** Persisted values are
    `"env:NAME"` or `"secret:<key>"`, resolved via `SecretStore` at load.
 9. **One error contract.** Return `apperror` — public `Message`, internal

@@ -15,13 +15,12 @@ func ModelCatalogContains(models []entity.Model, id string) bool {
 	return false
 }
 
-// ModelListedInPicker applies the selection floor to a catalog entry:
-// a chat turn needs a chat-capable model type — single-purpose surfaces
-// like embedding or rerank can only produce a guaranteed provider error.
-// Undeclared types fail open, as do unknown context windows — many
-// catalogs omit both declarations.
+// ModelListedInPicker applies the selection floor to a catalog entry: the
+// model must serve a chat turn (entity.Model.ServesChat) and, when its
+// window is declared, meet MinListedContextWindow. Unknown windows stay
+// visible — many catalogs omit the declaration.
 func ModelListedInPicker(m entity.Model) bool {
-	if t := m.ModelType(); t != "" && !t.ChatCapable() {
+	if !m.ServesChat() {
 		return false
 	}
 	w := m.ContextWindow()

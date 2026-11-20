@@ -261,6 +261,19 @@ function AddModel({ models, onAdd }) {
 }
 
 const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+const MODEL_TYPES = [
+  { value: '', text: 'Not declared (shown in picker)' },
+  { value: 'text', text: 'Text / chat' },
+  { value: 'image', text: 'Image' },
+  { value: 'audio', text: 'Audio' },
+  { value: 'decision', text: 'Decision (fixed choices)' },
+  { value: 'realtime', text: 'Realtime (live session)' },
+  { value: 'embedding', text: 'Embedding' },
+  { value: 'rerank', text: 'Rerank' },
+  { value: 'speech', text: 'Speech (TTS)' },
+  { value: 'transcription', text: 'Transcription (STT)' },
+  { value: 'video', text: 'Video' },
+];
 const STYLE_SHORT = { completion: 'Chat Completions', responses: 'Responses', messages: 'Messages', generatecontent: 'generateContent' };
 
 // ModelRow: one catalog entry with an inline editor for the per-model
@@ -288,6 +301,8 @@ function ModelRow({ model: m, gatewayStyle, onChange, onRemove }) {
         <span class="truncate">${m.name || m.id}${m.name && m.name !== m.id && html`<span class="ml-2 text-faint font-mono text-xs">${m.id}</span>`}</span>
       </button>
       ${m.style && m.style !== gatewayStyle && html`<span class="text-[11px] text-accent border border-accent/40 rounded px-1.5 shrink-0" title="Uses its own API style">${STYLE_SHORT[m.style]}</span>`}
+      ${m.modelType && m.modelType !== 'text' && html`<span class="text-[11px] text-muted border border-line rounded px-1.5 shrink-0">${m.modelType}</span>`}
+      ${m.listed === false && html`<span class="text-[11px] text-faint shrink-0" title="Not offered in the chat picker">hidden</span>`}
       ${m.contextWindow > 0 && html`<span class="text-xs text-faint shrink-0">${fmtTokens(m.contextWindow)}</span>`}
       <button type="button" aria-label=${'Remove ' + m.id} title="Remove from this provider"
         onClick=${onRemove} class="size-6 inline-flex items-center justify-center rounded text-faint hover:text-fg hover:bg-hover shrink-0">
@@ -300,6 +315,11 @@ function ModelRow({ model: m, gatewayStyle, onChange, onRemove }) {
           options=${[{ value: '', text: `Same as provider (${STYLE_SHORT[gatewayStyle]})` }, ...STYLES]}
           onChange=${(v) => put('style', v)} />
         <span class="text-xs text-faint">Pin when this model only works on another protocol — e.g. GPT models on Responses, Claude on Messages.</span>
+      </label>
+      <label class="flex flex-col gap-1 sm:col-span-2">
+        <span class="text-xs text-muted">Model type</span>
+        <${Select} label="Model type" value=${m.modelType || ''} options=${MODEL_TYPES} onChange=${(v) => put('modelType', v)} />
+        <span class="text-xs text-faint">Imported from the provider's catalog when it declares one. Only text models are offered in the chat picker — every other type is hidden after you save.</span>
       </label>
       <label class="flex flex-col gap-1">
         <span class="text-xs text-muted">Display name</span>

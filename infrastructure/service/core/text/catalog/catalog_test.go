@@ -98,6 +98,67 @@ func TestListModelsCompletionMetadata(t *testing.T) {
 	}
 }
 
+// opencode's zen/go catalogs use the models.dev shape: a model kind,
+// MIME-typed modality lists, token limits, and reasoning efforts under
+// capabilities. The kind and modalities are what keep decision, image,
+// realtime, and embedding entries out of the chat picker.
+func TestListModelsModelsDevShape(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": []map[string]any{
+			{
+				"id": "deepseek-v4.1-flash", "name": "DeepSeek V4.1 Flash", "type": "chat", "recommended_api": "chat-completions",
+				"canonical_id": "deepseek/deepseek-v4.1-flash-1017",
+				"modalities":   map[string]any{"input": []string{"text", "image/jpeg", "image/png", "application/pdf"}, "output": []string{"text"}},
+				"limit":        map[string]any{"context": 1000000, "output": 384000},
+				"capabilities": map[string]any{"reasoning": map[string]any{"supported": true, "effort": []string{"low", "high", "max"}}},
+			},
+			{"id": "gemini-decision-1", "type": "decision", "modalities": map[string]any{"input": []string{"text"}, "output": []string{"decision"}}},
+			{"id": "gpt-image-2.5", "type": "image", "modalities": map[string]any{"input": []string{"text"}, "output": []string{"image/png"}}},
+			{"id": "gpt-live-1", "type": "realtime", "modalities": map[string]any{"input": []string{"text", "audio/pcm"}, "output": []string{"text", "audio/pcm"}}},
+			{"id": "embed-untyped", "modalities": map[string]any{"input": []string{"text"}, "output": []string{"embedding"}}},
+			{"id": "gpt-6-luna", "type": "chat", "recommended_api": "responses"},
+			{"id": "claude-haiku-5-5", "type": "chat", "recommended_api": "messages"},
+			{"id": "gemini-4-argon", "type": "chat", "recommended_api": "interactions"},
+		}})
+	}))
+	defer srv.Close()
+
+	models, err := New(nil).ListModels(t.Context(), newGateway(t, srv.URL, enum.StyleCompletion))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 8 {
+		t.Fatalf("models = %+v", models)
+	}
+	// recommended_api pins the wire style only for APIs the gateway's own
+	// base URL serves; Google surfaces stay unpinned.
+	for i, want := range []enum.Style{enum.StyleCompletion, enum.StyleResponses, enum.StyleMessages, ""} {
+		idx := []int{0, 5, 6, 7}[i]
+		if got := models[idx].Style; got != want {
+			t.Fatalf("%s style = %q, want %q", models[idx].ID, got, want)
+		}
+	}
+	chat := models[0]
+	if chat.ModelType != enum.ModelTypeText || chat.Canonical != "deepseek/deepseek-v4.1-flash-1017" ||
+		chat.ContextWindow != 1_000_000 || chat.OutputLimit != 384_000 {
+		t.Fatalf("chat entry mismatch: %+v", chat)
+	}
+	if got := chat.InputModalities; len(got) != 3 || got[0] != enum.ModalityText || got[1] != enum.ModalityImage || got[2] != enum.ModalityFile {
+		t.Fatalf("MIME modalities must collapse to families: %+v", got)
+	}
+	if len(chat.SupportedEfforts) != 3 || chat.SupportedEfforts[2] != enum.EffortMax {
+		t.Fatalf("efforts from capabilities.reasoning: %+v", chat.SupportedEfforts)
+	}
+	for i, want := range []enum.ModelType{enum.ModelTypeDecision, enum.ModelTypeImage, enum.ModelTypeRealtime, enum.ModelTypeEmbedding} {
+		if got := models[i+1].ModelType; got != want {
+			t.Fatalf("%s type = %q, want %q", models[i+1].ID, got, want)
+		}
+	}
+	if out := models[2].OutputModalities; len(out) != 1 || out[0] != enum.ModalityImage {
+		t.Fatalf("image output modalities: %+v", out)
+	}
+}
+
 // Anthropic's /v1/models declares only id + display_name — everything
 // else stays zero so the merge reads "the provider did not say".
 func TestListModelsMessagesThinMetadata(t *testing.T) {

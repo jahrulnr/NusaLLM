@@ -57,6 +57,74 @@ type catalogEntry struct {
 		InputCacheRead  string `json:"input_cache_read"`
 		InputCacheWrite string `json:"input_cache_write"`
 	} `json:"pricing"`
+
+	// models.dev-shaped entries (opencode zen/go): a model kind, MIME-typed
+	// modality lists, token limits, and reasoning efforts under capabilities.
+	Type           string `json:"type"`
+	CanonicalID    string `json:"canonical_id"`
+	RecommendedAPI string `json:"recommended_api"`
+	Modalities     *struct {
+		Input  []string `json:"input"`
+		Output []string `json:"output"`
+	} `json:"modalities"`
+	Limit *struct {
+		Context int `json:"context"`
+		Output  int `json:"output"`
+	} `json:"limit"`
+	Capabilities *struct {
+		Reasoning *struct {
+			Effort []string `json:"effort"`
+		} `json:"reasoning"`
+	} `json:"capabilities"`
+}
+
+// catalogModelTypes maps a catalog's model kind onto the domain type.
+// "chat" is the models.dev word for a text model.
+var catalogModelTypes = map[string]enum.ModelType{
+	"chat":          enum.ModelTypeText,
+	"text":          enum.ModelTypeText,
+	"embedding":     enum.ModelTypeEmbedding,
+	"embeddings":    enum.ModelTypeEmbedding,
+	"image":         enum.ModelTypeImage,
+	"video":         enum.ModelTypeVideo,
+	"speech":        enum.ModelTypeSpeech,
+	"tts":           enum.ModelTypeSpeech,
+	"transcription": enum.ModelTypeTranscription,
+	"stt":           enum.ModelTypeTranscription,
+	"audio":         enum.ModelTypeAudio,
+	"rerank":        enum.ModelTypeRerank,
+	"decision":      enum.ModelTypeDecision,
+	"realtime":      enum.ModelTypeRealtime,
+}
+
+// catalogStyles maps a models.dev recommended_api onto the wire style that
+// runs it. Only APIs served under the gateway's own base URL map: opencode
+// answers /chat/completions, /responses, and /messages there, while the
+// Google surfaces (generate-content, interactions) live under a separate
+// base and are left unpinned.
+var catalogStyles = map[string]enum.Style{
+	"chat-completions": enum.StyleCompletion,
+	"responses":        enum.StyleResponses,
+	"messages":         enum.StyleMessages,
+}
+
+// parseModalities normalizes a catalog modality list. MIME types collapse
+// to their family ("image/png" → image, "application/pdf" → file); kinds
+// the domain does not model ("embedding", "decision") drop. A list that
+// was declared but kept nothing reports declared=true, so the caller can
+// tell "no text here" from "the provider did not say".
+func parseModalities(raw []string) (mods []enum.Modality, declared bool) {
+	for _, v := range raw {
+		v = strings.ToLower(strings.TrimSpace(v))
+		family, _, _ := strings.Cut(v, "/")
+		if family == "application" {
+			family = string(enum.ModalityFile)
+		}
+		if mod, ok := enum.ParseModality(family); ok && !slices.Contains(mods, mod) {
+			mods = append(mods, mod)
+		}
+	}
+	return mods, len(raw) > 0
 }
 
 // toCatalogModel normalizes one wire entry. Provider vocabulary that the
@@ -78,23 +146,49 @@ func (e catalogEntry) toCatalogModel() dservice.CatalogModel {
 	if e.TopProvider != nil {
 		m.OutputLimit = e.TopProvider.MaxCompletionTokens
 	}
-	if e.Architecture != nil {
-		for _, v := range e.Architecture.InputModalities {
-			if mod, ok := enum.ParseModality(v); ok {
-				m.InputModalities = append(m.InputModalities, mod)
-			}
+	if m.Canonical == "" {
+		m.Canonical = e.CanonicalID
+	}
+	if e.Limit != nil {
+		if m.ContextWindow == 0 {
+			m.ContextWindow = e.Limit.Context
 		}
-		for _, v := range e.Architecture.OutputModalities {
-			if mod, ok := enum.ParseModality(v); ok {
-				m.OutputModalities = append(m.OutputModalities, mod)
-			}
+		if m.OutputLimit == 0 {
+			m.OutputLimit = e.Limit.Output
 		}
 	}
+	if t, ok := catalogModelTypes[strings.ToLower(e.Type)]; ok {
+		m.ModelType = t
+	}
+	if st, ok := catalogStyles[strings.ToLower(e.RecommendedAPI)]; ok {
+		m.Style = st
+	}
+	var in, out []string
+	if e.Architecture != nil {
+		in, out = e.Architecture.InputModalities, e.Architecture.OutputModalities
+	} else if e.Modalities != nil {
+		in, out = e.Modalities.Input, e.Modalities.Output
+	}
+	m.InputModalities, _ = parseModalities(in)
+	var outDeclared bool
+	m.OutputModalities, outDeclared = parseModalities(out)
+	// An output list naming only kinds the domain does not model (e.g.
+	// ["embedding"]) still says the model emits no text. Without a declared
+	// type that would read as "unknown"; record it as a non-chat kind.
+	if outDeclared && len(m.OutputModalities) == 0 && m.ModelType == "" {
+		if t, ok := catalogModelTypes[strings.ToLower(out[0])]; ok {
+			m.ModelType = t
+		}
+	}
+	var efforts []string
 	if e.Reasoning != nil {
-		for _, v := range e.Reasoning.SupportedEfforts {
-			if eff, ok := enum.ParseEffort(v); ok && !eff.IsUnset() {
-				m.SupportedEfforts = append(m.SupportedEfforts, eff)
-			}
+		efforts = e.Reasoning.SupportedEfforts
+	} else if e.Capabilities != nil && e.Capabilities.Reasoning != nil {
+		efforts = e.Capabilities.Reasoning.Effort
+	}
+	for _, v := range efforts {
+		if eff, ok := enum.ParseEffort(v); ok && !eff.IsUnset() {
+			m.SupportedEfforts = append(m.SupportedEfforts, eff)
 		}
 	}
 	if e.Pricing != nil {

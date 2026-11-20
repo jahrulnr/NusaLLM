@@ -205,6 +205,44 @@ func TestUpsertImportsCatalog(t *testing.T) {
 	}
 }
 
+// The catalog's per-model API recommendation fills an unset style pin
+// when it differs from the gateway's style; a recommendation equal to the
+// gateway style adds no pin, and an explicit pin is never overridden. The
+// declared model type backfills the same way.
+func TestUpsertImportsCatalogStyleAndType(t *testing.T) {
+	app, _, _ := newApp(t)
+	app.catalog = fakeCatalog{list: []dservice.CatalogModel{
+		{ID: "gpt", Style: enum.StyleResponses, ModelType: enum.ModelTypeText},
+		{ID: "claude", Style: enum.StyleMessages},
+		{ID: "glm", Style: enum.StyleCompletion},
+		{ID: "pinned", Style: enum.StyleResponses},
+		{ID: "decide", ModelType: enum.ModelTypeDecision},
+	}}
+	in := GatewayInput{
+		ID:       "oc",
+		Style:    enum.StyleCompletion,
+		Endpoint: "https://opencode.ai/zen/go/v1",
+		Models:   []ModelInput{{ID: "pinned", Style: enum.StyleMessages}},
+	}
+	if _, err := app.Upsert(t.Context(), in); err != nil {
+		t.Fatal(err)
+	}
+	info, err := app.Get(t.Context(), "oc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, m := range info.Models {
+		got[m.ID()] = m.Style().String() + "/" + m.ModelType().String()
+	}
+	want := map[string]string{"pinned": "messages/", "gpt": "responses/text", "claude": "messages/", "glm": "/", "decide": "/decision"}
+	for id, w := range want {
+		if got[id] != w {
+			t.Fatalf("%s = %q, want %q (all: %v)", id, got[id], w, got)
+		}
+	}
+}
+
 // A catalog failure never fails the write — the record stands with the
 // input's models and the outcome carries the fetch failure, so callers
 // don't retry a write that already succeeded.

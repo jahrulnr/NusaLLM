@@ -102,7 +102,7 @@ func TestParseRoundtripsRemaining(t *testing.T) {
 			t.Fatalf("Effort %q roundtrip failed", v)
 		}
 	}
-	for _, v := range []ModelType{ModelTypeText, ModelTypeEmbedding, ModelTypeVideo, ModelTypeImage, ModelTypeSpeech, ModelTypeTranscription, ModelTypeAudio, ModelTypeRerank, ModelTypeDecision} {
+	for _, v := range []ModelType{ModelTypeText, ModelTypeEmbedding, ModelTypeVideo, ModelTypeImage, ModelTypeSpeech, ModelTypeTranscription, ModelTypeAudio, ModelTypeRerank, ModelTypeDecision, ModelTypeRealtime} {
 		if got, f := ParseModelType(v.String()); !f || got != v {
 			t.Fatalf("ModelType %q roundtrip failed", v)
 		}

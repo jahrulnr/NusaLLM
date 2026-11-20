@@ -1268,7 +1268,7 @@ components:
           description: Reasoning effort; `default`/absent omits it from the wire.
         modelType:
           type: string
-          enum: [text, embedding, video, image, speech, transcription, audio, rerank, decision]
+          enum: [text, embedding, video, image, speech, transcription, audio, rerank, decision, realtime]
         style:
           type: string
           enum: [completion, responses, messages, generatecontent]
@@ -1337,7 +1337,7 @@ components:
           enum: [default, none, minimal, low, medium, high, xhigh, max]
         modelType:
           type: string
-          enum: [text, embedding, video, image, speech, transcription, audio, rerank, decision]
+          enum: [text, embedding, video, image, speech, transcription, audio, rerank, decision, realtime]
         style:
           type: string
           enum: [completion, responses, messages, generatecontent]
