@@ -52,7 +52,7 @@ jobs:
     needs: [verify, race]
     # An explicit `if` replaces the implicit success() check, so keep it.
     if: success() && github.event_name == 'push' && github.ref == 'refs/heads/master'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write

@@ -1,15 +1,32 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
-The current line (`0.0.x`) and `[Unreleased]` stay here; older minor lines
-live under [`docs/changelogs/`](docs/changelogs/).
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-21
+
+### Added
+
+- The WebUI is rebuilt as a small, fully vendored client in `web/`: Preact and htm components, Tailwind v4, marked, DOMPurify, highlight.js, Pele for diagrams, and slim-select. Nothing is loaded from a CDN, and there is no build step.
+- Assistant replies render as streaming GitHub-flavored Markdown with footnotes and an allowlist of inline HTML (`<kbd>`, `<del>`, `<sup>`, `<dl>`, `<details>`). Rendering is block by block, so earlier blocks keep their DOM while a reply streams. Closed `mermaid` fences render as diagrams, and images are never fetched.
+- Tool calls render as terminal-style cards. Shell commands show the command and its working directory, long input shows its head and long output its tail, both expand in place, and the trailing `(exit N)` becomes the card footer.
+- Scrolling to the top of a thread loads older messages. A skeleton fills the gap, a failed page shows an inline retry, and the line being read stays in place.
+- The provider editor sets each model's type and wire style, and the model picker groups models by gateway with a reasoning-effort choice.
+- The README has a "The lighthouse: the WebUI" section with a streaming demo and screenshots (`docs/assets/webui/`), captured from a mock provider and demo data.
+
+### Changed
+
+- The WebUI replaces the old `web/widgets/*` tree with `web/components/*`, and the serve route for it is `/components/*`.
+- `NUSALLM_WEB_DIR` serves the WebUI from a directory instead of the embedded copy, so edits show on reload. `make test-web` now syntax-checks the sources, and the `make e2e-web` target is removed.
+- The README banner moved to `docs/assets/banner.png`.
+
 ### Fixed
+
+- Code blocks no longer merge programming ligatures, so `>=` and `<=` render as typed.
 
 - Hydration dedup no longer compares tool outputs verbatim: `EnvironmentDriver.ToolContexts` renders every enabled system-callable tool per pass and `appendToolContexts` anchors each record on the newest live (name, input) injection call, so a tool whose output carries volatile fields (a rendered timestamp) no longer re-records every step. A tool implements `job.ToolDeduper` (`DedupKey`) to attach its own output normalizer; changed records still land as injection calls on one system message.
 - Duplicate tool-call ids are rejected at the entity (`Message.AddToolCall` returns an error) instead of silently making `SetToolOutput` ambiguous; all four wire decoders, hydration, and record decode propagate the failure.
