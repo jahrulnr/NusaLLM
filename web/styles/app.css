@@ -109,6 +109,7 @@
 .md strong { font-weight: 600; }
 .md blockquote { border-left: 3px solid var(--line); padding-left: .9em; color: var(--muted); }
 .md hr { border: 0; border-top: 1px solid color-mix(in srgb, var(--fg) 22%, transparent); margin: 1.4em 0; }
+.md code, .rawtext, .font-mono, pre { font-variant-ligatures: none; }
 .md code { font-family: var(--font-mono); font-size: .86em; }
 .md :not(pre) > code { background: var(--raised); border: 1px solid var(--line); padding: .08em .35em; border-radius: 5px; }
 .md table { border-collapse: collapse; display: block; overflow-x: auto; max-width: 100%; font-size: .93em; }

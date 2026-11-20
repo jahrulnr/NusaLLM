@@ -1,6 +1,6 @@
 <div align="center">
 
-![NusaLLM](./web/img/banner.png)
+![NusaLLM](./docs/assets/banner.png)
 
 Many islands, one sea.
 
@@ -19,6 +19,33 @@ picture. Each provider route is an island with its own wire style and models. Th
 conversation is the sea between them, carrying you from one island to the next without
 losing the voyage. The terminal REPL and a loopback browser UI (`nusallm serve`) are two
 ways into the same engine.
+
+## The lighthouse: the WebUI
+
+`nusallm serve` opens a loopback browser UI on the same engine — streaming answers, live
+tool output, steering and queueing while a turn runs, and provider management. It ships
+inside the binary: no Node, no build step, no CDN.
+
+![A turn streaming: thinking, tool calls, then a Markdown answer with a diagram](docs/assets/webui/streaming-turn.gif)
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/webui/tool-output.png" alt="Tool calls as terminal cards: command head, output tail, exit code"><br><sub>Tool calls as terminal cards — command head, output tail, exit code.</sub></td>
+    <td width="50%"><img src="docs/assets/webui/answer.png" alt="Markdown answer with table, highlighted code, and a Mermaid diagram"><br><sub>GitHub-flavored Markdown, highlighted code, Mermaid diagrams.</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/webui/model-picker.png" alt="Model picker grouped by provider with reasoning effort"><br><sub>Model picker across providers, with reasoning effort.</sub></td>
+    <td><img src="docs/assets/webui/providers.png" alt="Provider editor with per-model API style and model type"><br><sub>Providers: per-model API style and model type, imported from the catalog.</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/webui/answer-light.png" alt="Light theme"><br><sub>Light theme.</sub></td>
+    <td><img src="docs/assets/webui/home.png" alt="Home screen with recent threads"><br><sub>Start a thread from anywhere.</sub></td>
+  </tr>
+</table>
+
+<p align="center"><img src="docs/assets/webui/mobile.png" width="260" alt="Phone layout"><br><sub>Works on a phone too.</sub></p>
+
+<sub>Captured against a local mock provider; no real conversation data.</sub>
 
 ## Islands: your providers
 
