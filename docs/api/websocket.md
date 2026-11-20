@@ -1,7 +1,7 @@
 # WebSocket protocol — turn transport
 
 **Status: implemented.** All six commands are live: `turn.send` and
-`turn.edit` open server-scoped turns on the hub's own context;
+`turn.edit`/`turn.resume` open server-scoped turns on the hub's own context;
 `turn.steer` submits steering input into an exact send turn's mailbox
 and `turn.steer_recall` withdraws one still-pending input;
 `turn.cancel` cancels an exact live turn by `turnId` (never the
@@ -148,9 +148,8 @@ Common envelope fields:
   with the same contract as `turn.send` (`""`/absent keeps the stored
   binding; an unknown `effort` word is `invalid_argument`; a successful
   turn re-binds `route`/`modelId`/`workspace` to the room — `effort` and
-  `provider` stay per-turn). Carrying the current selection is what lets
-  a retry escape the model that just failed. `environment` is not
-  accepted — an edit never re-homes the room.
+  `provider` stay per-turn). `environment` is not accepted — an edit
+  never re-homes the room.
 - Only user messages are editable — a non-user `messageId` ends the turn
   `turn.failed` `400`; an id that exists nowhere in history is `404`.
 - **Preempts:** the edit interrupts the room's running job and cuts ahead
@@ -160,6 +159,37 @@ Common envelope fields:
   edit rewrites an existing line, it does not append one), and
   `resyncRequired` is always `true` — the rewrite drops everything
   recorded after the target.
+
+### `turn.resume` — continue from current history without rewriting
+
+```json
+{
+  "type": "turn.resume",
+  "requestId": "req-02b",
+  "conversationId": "c_k4j9xm2p8q1vz7w0t6nb5r3yhd",
+  "payload": {
+    "route": "openrouter",
+    "modelId": "anthropic/claude-sonnet-4.5",
+    "effort": "high"
+  }
+}
+```
+
+- Same lifecycle as `turn.send` (`turn.opened` → stream → terminal).
+- Continues the room's current history: unanswered origin tool calls
+  finish first, then the model is called again. Nothing is rewritten or
+  truncated — prior tool results and partial replies stay.
+- `payload.route`, `payload.modelId`, `payload.effort`,
+  `payload.provider`, `payload.workspace` — optional per-turn overrides
+  with the same contract as `turn.edit`. Carrying the current selection
+  is what lets a retry escape the model that just failed. `environment`
+  is not accepted — a resume never re-homes the room. An empty room is
+  `turn.failed` `400`; a missing room is `404`.
+- **Preempts:** like `turn.edit`, resume interrupts the room's running
+  job and cuts ahead of queued sends. The preempted turn ends
+  `turn.failed` `408`.
+- Terminal frames never claim `userMessagePersisted` (resume appends no
+  user line), and `resyncRequired` is always `true`.
 
 ### `turn.cancel` — cancel one turn
 

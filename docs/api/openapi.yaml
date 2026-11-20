@@ -848,7 +848,7 @@ paths:
       summary: Multiplexed turn WebSocket
       description: |
         Upgrades to the single WebSocket that carries all turn traffic —
-        the commands `turn.send`, `turn.edit`, `turn.cancel`, `turn.watch`
+        the commands `turn.send`, `turn.edit`, `turn.resume`, `turn.cancel`, `turn.watch`
         and the event stream `turn.opened`/`turn.delta`/`turn.phase`/
         `turn.tool_call`/`turn.tool_input`/`turn.tool_output` (ordered
         tool argument and output chunks — progress, not completion)

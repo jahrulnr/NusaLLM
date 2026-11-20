@@ -1201,14 +1201,12 @@ class AppShell extends Widget {
     this._syncQueue();
   }
 
-  // Retry re-issues turn.edit against the failed turn's own user
-  // line — the turn regenerates under it, so a retry never appends a
-  // duplicate message. The gate is strict: turn.edit drops everything
-  // after its target, so Retry exists only while no NEWER user input
-  // sits after that line — a retry must never silently rewind another
-  // turn's messages. The workspace pins and assistant/tool debris the
-  // failed turn left behind are fair game: the retried turn
-  // regenerates them.
+  // Retry re-issues turn.resume against the room's current history —
+  // unanswered tools finish and the model continues, so prior tool
+  // results and partial replies stay. The gate is strict: Resume
+  // continues from the tail, so Retry exists only while no NEWER user
+  // input sits after the failed line — a retry must never continue
+  // under a later turn's messages.
   _turnRetry() {
     const roomKey = this._viewRoomKey();
     const f = this.failedTurns.get(roomKey);
@@ -1219,7 +1217,7 @@ class AppShell extends Widget {
         'Only a failed turn still at the last input can be retried.');
       return;
     }
-    this._edit(messageId, f.text);
+    this._resume(f.text);
     this._syncQueue();
   }
 
@@ -1234,13 +1232,13 @@ class AppShell extends Widget {
     this._syncQueue();
   }
 
-  // The message id a failed turn's retry would edit — resolvable only
+  // The message id anchoring a failed turn's retry — resolvable only
   // while the failed line is the last real user input rendered. Any
-  // later origin line is a turn the retry must not rewind; system
-  // records (workspace pins, compaction checkpoints) and the failed
-  // turn's own output don't count — the retried turn replaces them.
-  // Resolution is lazy here and pinned by the post-terminal refresh
-  // where it runs.
+  // later origin line is a turn the retry must not continue under;
+  // system records (workspace pins, compaction checkpoints) and the
+  // failed turn's own output don't count — resume keeps them and the
+  // model continues from the tail. Resolution is lazy here and pinned
+  // by the post-terminal refresh where it runs.
   _failedTargetId(f) {
     const id = f.retryMessageId || this._retryMessageId(f);
     if (!id) return null;
@@ -1351,9 +1349,8 @@ class AppShell extends Widget {
       this.messages = prior.slice(0, idx).concat([{ ...prior[idx], content }]);
       this.thread.messages = this.messages;
     }
-    // The picker's current selection rides the edit — a retry can switch
-    // off the model that just failed, and a plain edit regenerates under
-    // what the next turn would use anyway.
+    // The picker's current selection rides the edit — a rewrite
+    // regenerates under what the next turn would use anyway.
     const requestId = this.socket.editTurn({
       conversationId: this.activeId, messageId, content,
       ...this._captureOpts(),
@@ -1367,6 +1364,35 @@ class AppShell extends Widget {
       priorMessages: prior,
       priorHistory,
       removedIds,
+      stream: createTurnProjection(requestId),
+    });
+    this._syncComposer();
+    this._syncStream();
+    return true;
+  }
+
+  // Resume continues the room without cutting the rendered history —
+  // unlike edit, which rewinds the thread to the target. The picker's
+  // current selection rides so a retry can switch off the model that
+  // just failed.
+  _resume(content) {
+    if (this._commandGates(this._viewRoomKey())) {
+      this._toast('warn', 'Retry', 'Finish or stop the running turn before retrying.');
+      return false;
+    }
+    if (!this._dispatchable(this._viewRoomKey())) {
+      this._toast('warn', 'Retry', 'Wait for the room to finish refreshing before retrying.');
+      return false;
+    }
+    const requestId = this.socket.resumeTurn({
+      conversationId: this.activeId,
+      ...this._captureOpts(),
+    });
+    this.commands.set(this._viewRoomKey(), {
+      kind: 'resume', requestId, turnId: null,
+      conversationId: this.activeId, queueRoom: this._viewRoomKey(),
+      content: content || '', ephemeral: false,
+      cancelRequested: false, fromFresh: false,
       stream: createTurnProjection(requestId),
     });
     this._syncComposer();
@@ -1407,7 +1433,8 @@ class AppShell extends Widget {
     if (!turnId || !conv.id) return;
     const cmd = this._commandFor(conv.id);
     if (cmd && (!cmd.watched || cmd.turnId === turnId)) return;
-    const kind = conv.activeTurnKind === 'edit' ? 'edit' : 'send';
+    const kind = conv.activeTurnKind === 'edit' || conv.activeTurnKind === 'resume'
+      ? conv.activeTurnKind : 'send';
     const requestId = this.socket.watchTurn({
       conversationId: conv.id, turnId, afterSeq: -1,
     });
@@ -1456,9 +1483,9 @@ class AppShell extends Widget {
   //     tail is legitimately open.
   //   - an existing failedTurns card: the terminal's own note wins.
   //   - a tombstoned tail: the user dismissed this exact dead tail.
-  // Retry pins the LAST real user input by id — turn.edit regenerates
-  // from it, dropping the dead turn's debris; a tail whose origin
-  // scrolled above the window yields a dismiss-only card.
+  // Retry pins the LAST real user input by id — turn.resume continues
+  // from the tail while that line is still the last real input; a tail
+  // whose origin scrolled above the window yields a dismiss-only card.
   _markInterrupted(conv) {
     if (!conv || !conv.id || conv.id !== this.activeId) return;
     if (conv.activeTurnId) return;
@@ -1828,11 +1855,11 @@ class AppShell extends Widget {
         if (!interruptedTurn(f)) {
           const msg = (f.payload && f.payload.message) || f.code || 'error';
           // A definitive failure keeps an explicit retry affordance:
-          // the card on the thread re-issues turn.edit against the
-          // failed turn's user line while no newer input follows it —
-          // regenerating, never rewinding later turns. A send that
-          // never committed its user line has nothing to retry — its
-          // text returns through the draft/queue paths instead.
+          // the card on the thread re-issues turn.resume while no
+          // newer input follows the failed line — continuing history,
+          // never rewinding later turns. A send that never committed
+          // its user line has nothing to retry — its text returns
+          // through the draft/queue paths instead.
           const card = !(cmd.kind === 'send' && f.payload?.userMessagePersisted === false);
           if (card) {
             this.failedTurns.set(roomKey, {

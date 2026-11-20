@@ -51,6 +51,11 @@ func (stubSender) Edit(context.Context, string, string, string, string, string,
 	return nil
 }
 
+func (stubSender) Resume(context.Context, string, string, string,
+	appjob.SendOptions, event.TurnEventHandler) error {
+	return nil
+}
+
 func wsURL(srv *httptest.Server) string {
 	return "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/ws"
 }

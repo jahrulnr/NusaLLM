@@ -274,21 +274,21 @@ test('a persisted failure parks a retry card, never a queue row', async () => {
   assert.equal(app.failedTurns.has('c1'), false);
 });
 
-test('retry re-issues turn.edit against the failed user line', async () => {
+test('retry re-issues turn.resume without cutting history', async () => {
   const { app, ws } = makeApp();
   app.composer.value = '';
   failTurn(app, ws, { status: 502, message: 'boom', userMessagePersisted: true });
   await flush();
-  app.messages = failedTail.slice();
+  app.messages = failedTail.concat([{ id: 'a1', role: 'assistant', content: 'partial' }]);
   assert.equal(app.failedTurns.get('c1').retryMessageId, null);
   app._turnRetry();
-  const edit = ws.sent.find((f) => f.type === 'turn.edit');
-  assert.equal(edit.conversationId, 'c1');
-  // The workspace record after the line does not block the target —
-  // the retried turn regenerates it.
-  assert.equal(edit.payload.messageId, 'm1');
-  assert.equal(edit.payload.content, 'hi');
-  assert.equal(app._viewCommand().kind, 'edit');
+  const resume = ws.sent.find((f) => f.type === 'turn.resume');
+  assert.equal(resume.conversationId, 'c1');
+  // Resume continues the tail — it never names a messageId or rewrites
+  // content, and the rendered history stays intact.
+  assert.equal(resume.payload.messageId, undefined);
+  assert.equal(app.messages.some((m) => m.id === 'a1'), true);
+  assert.equal(app._viewCommand().kind, 'resume');
   // The card releases when the retry turn opens — a rejected dispatch
   // would leave it standing.
   app._onFrame({ type: 'turn.opened', requestId: app._viewCommand().requestId, turnId: 't2', conversationId: 'c1', seq: 3 });
@@ -296,7 +296,7 @@ test('retry re-issues turn.edit against the failed user line', async () => {
 });
 
 // The bug this pins: a retry after switching models must reach the NEW
-// model — the edit payload rides the picker's current selection, never
+// model — the resume payload rides the picker's current selection, never
 // the binding that just failed.
 test('retry rides the current picker selection', async () => {
   const { app, ws } = makeApp();
@@ -306,12 +306,12 @@ test('retry rides the current picker selection', async () => {
   app.messages = failedTail.slice();
   app.selection = { route: 'gw2', modelId: 'm9', effort: 'high', provider: 'or', workspace: '/w' };
   app._turnRetry();
-  const edit = ws.sent.find((f) => f.type === 'turn.edit');
-  assert.equal(edit.payload.route, 'gw2');
-  assert.equal(edit.payload.modelId, 'm9');
-  assert.equal(edit.payload.effort, 'high');
-  assert.equal(edit.payload.provider, 'or');
-  assert.equal(edit.payload.workspace, '/w');
+  const resume = ws.sent.find((f) => f.type === 'turn.resume');
+  assert.equal(resume.payload.route, 'gw2');
+  assert.equal(resume.payload.modelId, 'm9');
+  assert.equal(resume.payload.effort, 'high');
+  assert.equal(resume.payload.provider, 'or');
+  assert.equal(resume.payload.workspace, '/w');
 });
 
 test('the failed turn\'s own output does not block its retry', async () => {
@@ -319,7 +319,7 @@ test('the failed turn\'s own output does not block its retry', async () => {
   app.composer.value = '';
   failTurn(app, null, { status: 502, message: 'boom', userMessagePersisted: true });
   await flush();
-  // Debris the dead turn persisted — the retried turn replaces it.
+  // Debris the dead turn persisted — resume keeps it and continues.
   app.messages = failedTail.concat([{ id: 'a1', role: 'assistant', content: 'partial' }]);
   assert.equal(app._failedTargetId(app.failedTurns.get('c1')), 'm1');
 });
@@ -356,8 +356,9 @@ test('retry target skips an older identical line via dispatch-time history ids',
   ];
   assert.equal(app._retryMessageId(f), 'm-new');
   app._turnRetry();
-  const edit = ws.sent.find((f) => f.type === 'turn.edit');
-  assert.equal(edit.payload.messageId, 'm-new');
+  const resume = ws.sent.find((f) => f.type === 'turn.resume');
+  assert.ok(resume);
+  assert.equal(app._viewCommand().kind, 'resume');
 });
 
 test('a failed line followed by newer input cannot retry — only dismiss', async () => {
@@ -366,12 +367,12 @@ test('a failed line followed by newer input cannot retry — only dismiss', asyn
   failTurn(app, ws, { status: 502, message: 'boom', userMessagePersisted: true });
   await flush();
   const f = app.failedTurns.get('c1');
-  // A later user line landed after the failure — editing the failed
-  // line now would silently rewind its turn.
+  // A later user line landed after the failure — resuming now would
+  // continue under that later turn's messages.
   app.messages = failedTail.concat([{ id: 'm2', role: 'user', content: 'sent after' }]);
   assert.equal(app._failedTargetId(f), null);
   app._turnRetry();
-  assert.equal(ws.sent.filter((f) => f.type === 'turn.edit').length, 0);
+  assert.equal(ws.sent.filter((f) => f.type === 'turn.resume').length, 0);
   assert.ok(app.failedTurns.has('c1')); // the card itself survives
   app._turnFailedDismiss();
   assert.equal(app.failedTurns.has('c1'), false);
@@ -399,7 +400,7 @@ test('a failure in another room stays its own card', () => {
   app.messages = [{ id: 'm1', role: 'user', content: 'hi' }];
   // The view's retry acts on its own room's card — there is none.
   app._turnRetry();
-  assert.equal(ws.sent.filter((f) => f.type === 'turn.edit').length, 0);
+  assert.equal(ws.sent.filter((f) => f.type === 'turn.resume').length, 0);
   assert.ok(app.failedTurns.has('c2'));
 });
 

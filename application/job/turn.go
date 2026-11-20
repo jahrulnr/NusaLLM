@@ -29,13 +29,15 @@ var sendRetryBackoff = []time.Duration{750 * time.Millisecond, 1500 * time.Milli
 // surfaces to the user, whose own retry or route change decides.
 const maxRateLimitWait = 60 * time.Second
 
-// runTurn is the agent loop shared by send and edit: provider call →
-// persist → execute pending tool calls → provider call — until the model
-// stops requesting tools or the step cap is hit. steers carries mid-turn
-// user input buffered by the worker's out-of-band path; the loop folds
-// it at the top of each step — after the last tool result persisted,
-// before the next provider call — so injected text never bisects a
-// tool-call/result pair or interleaves with a streaming reply.
+// runTurn is the agent loop shared by send, edit, and resume: provider
+// call → persist → execute pending tool calls → provider call — until
+// the model stops requesting tools or the step cap is hit. A resume
+// may enter already sitting on unanswered calls; those finish before
+// any new model call. steers carries mid-turn user input buffered by
+// the worker's out-of-band path; the loop folds it at the top of each
+// step — after the last tool result persisted, before the next
+// provider call — so injected text never bisects a tool-call/result
+// pair or interleaves with a streaming reply.
 func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conversation, driver EnvironmentDriver, gw *aggregate.Gateway, model entity.Model, svc dservice.TextModelService, onEvent event.TurnEventHandler, steers *SteeringInput) error {
 	// Hand-built Deps may carry a zero or invalid config — normalize
 	// clamps and tag defaults fill it.
@@ -83,6 +85,22 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 	for step := 0; step < ccfg.MaxTurnStep; step++ {
 		if err := ctx.Err(); err != nil {
 			return apperror.New(408, "turn canceled", err)
+		}
+		// A resumed turn can already be sitting on unanswered calls —
+		// the provider asked, the previous attempt died before the
+		// results were stored. Run those before any new model call or
+		// a steer fold, so the history the model sees still contains
+		// the work it already paid for.
+		if last := conv.Last(); last != nil && len(pendingCalls(*last)) > 0 {
+			if step == ccfg.MaxTurnStep-1 {
+				return apperror.New(500, "tool loop limit reached", fmt.Errorf("%d steps without a final answer", ccfg.MaxTurnStep))
+			}
+			var perr error
+			hitMediaLimit, perr = d.finishPending(ctx, convID, conv, driver, model, last, onEvent, hitMediaLimit)
+			if perr != nil {
+				return perr
+			}
+			continue
 		}
 		// Steering becomes an ordinary user message in history — the
 		// model answers it on this call. Input arriving while the turn
@@ -333,120 +351,132 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 			// replays them, which is honest: the model did ask.
 			return apperror.New(500, "tool loop limit reached", fmt.Errorf("%d steps without a final answer", ccfg.MaxTurnStep))
 		}
-		for _, call := range pending {
-			if err := ctx.Err(); err != nil {
-				if err := d.persistInterrupted(ctx, convID, last); err != nil {
-					return err
-				}
-				return apperror.New(408, "turn canceled", err)
-			}
-			// Resolve and run one call, then record the result twice: on
-			// the in-memory message (so the next provider call sees it)
-			// and as a patch record in the repository (so a reload
-			// restores it). Executor failures become tool output — the
-			// model deserves honest results — while context
-			// cancellation aborts the whole turn.
-			err := func() error {
-				out := ""
-				var outAtts []valueobject.Attachment
-				permitted := false
-				for _, s := range conv.Tools() {
-					if s.Name() == call.Name() && s.CallableByAgent() {
-						permitted = true
-						break
-					}
-				}
-				// Live chunks flow to the frontend scoped by call id —
-				// they are a preview, never history; only the Execute
-				// result lands in output.
-				emitted := false
-				emit := func(chunk string) {
-					emitted = true
-					if onEvent != nil {
-						onEvent(event.NewToolOutputEvent(call, chunk))
-					}
-				}
-				tool, registered := driver.Tool(call.Name())
-				switch {
-				case !permitted:
-					out = "error: tool not permitted"
-				case !registered:
-					out = "error: unknown tool " + call.Name()
-				default:
-					res, err := tool.Execute(ctx, call, emit)
-					switch {
-					case err == nil:
-						out, outAtts = res.Text, res.Attachments
-					case ctx.Err() != nil:
-						return apperror.New(408, "turn canceled", ctx.Err())
-					default:
-						out = "error: " + err.Error()
-					}
-				}
-				// The serving's per-request image cap counts every image
-				// in the replayed history, so a tool result that would
-				// push the live count over it is withheld — the recorded
-				// history stays intact (prompt cache survives) and the
-				// note tells the model why, while hitMediaLimit folds the
-				// history so a later step can see new images again. A 0
-				// cap means the serving declared none — fail open.
-				if limit := model.MaxImages(); limit > 0 {
-					room := limit - conv.MediaCount(enum.ModalityImage)
-					var kept []valueobject.Attachment
-					dropped := 0
-					for _, a := range outAtts {
-						if a.Modality() == enum.ModalityImage {
-							if room <= 0 {
-								dropped++
-								continue
-							}
-							room--
-						}
-						kept = append(kept, a)
-					}
-					if dropped > 0 {
-						outAtts = kept
-						hitMediaLimit = true
-						out += fmt.Sprintf(" (%d image output(s) withheld: this serving accepts at most %d images per request and that limit is now reached — new images cannot be shown until this conversation is compacted)", dropped, limit)
-					}
-				}
-				// One-shot tools never stream — without a chunk the live
-				// card settles blank, so the settled output crosses as a
-				// single late chunk carrying the same text the record
-				// persists (error results included; the owner reads what
-				// the model reads).
-				if !emitted && out != "" {
-					emit(out)
-				}
-				if err := last.SetToolOutput(call.ID(), out); err != nil {
-					return apperror.New(500, "tool output lost", err)
-				}
-				// Attachments land alongside the recorded result.
-				if err := last.SetToolOutputAttachments(call.ID(), outAtts); err != nil {
-					return apperror.New(500, "tool output lost", err)
-				}
-				for _, tc := range last.ToolCalls() {
-					if tc.ID() == call.ID() {
-						// The result is already computed. A ctx that died between
-						// the in-memory record and this patch must not drop
-						// it: persistInterrupted skips calls that HasOutput.
-						return d.Convs.UpdateToolCallOutput(context.WithoutCancel(ctx), convID, tc)
-					}
-				}
-				return apperror.New(500, "tool output lost", fmt.Errorf("call %s vanished after update", call.ID()))
-			}()
-			if err != nil {
-				if ctx.Err() != nil {
-					if stampErr := d.persistInterrupted(ctx, convID, last); stampErr != nil {
-						return stampErr
-					}
-					return apperror.New(408, "turn canceled", ctx.Err())
-				}
-				return err
-			}
+		var perr error
+		hitMediaLimit, perr = d.finishPending(ctx, convID, conv, driver, model, last, onEvent, hitMediaLimit)
+		if perr != nil {
+			return perr
 		}
 	}
 	return nil
+}
+
+// finishPending runs origin calls that still have no output and patches
+// each result onto the message. hitMediaLimit comes back set when an
+// image result was withheld for the serving's cap.
+func (d Deps) finishPending(ctx context.Context, convID string, conv *aggregate.Conversation, driver EnvironmentDriver, model entity.Model, last *entity.Message, onEvent event.TurnEventHandler, hitMediaLimit bool) (bool, error) {
+	for _, call := range pendingCalls(*last) {
+		if err := ctx.Err(); err != nil {
+			if err := d.persistInterrupted(ctx, convID, last); err != nil {
+				return hitMediaLimit, err
+			}
+			return hitMediaLimit, apperror.New(408, "turn canceled", err)
+		}
+		// Resolve and run one call, then record the result twice: on
+		// the in-memory message (so the next provider call sees it)
+		// and as a patch record in the repository (so a reload
+		// restores it). Executor failures become tool output — the
+		// model deserves honest results — while context
+		// cancellation aborts the whole turn.
+		err := func() error {
+			out := ""
+			var outAtts []valueobject.Attachment
+			permitted := false
+			for _, s := range conv.Tools() {
+				if s.Name() == call.Name() && s.CallableByAgent() {
+					permitted = true
+					break
+				}
+			}
+			// Live chunks flow to the frontend scoped by call id —
+			// they are a preview, never history; only the Execute
+			// result lands in output.
+			emitted := false
+			emit := func(chunk string) {
+				emitted = true
+				if onEvent != nil {
+					onEvent(event.NewToolOutputEvent(call, chunk))
+				}
+			}
+			tool, registered := driver.Tool(call.Name())
+			switch {
+			case !permitted:
+				out = "error: tool not permitted"
+			case !registered:
+				out = "error: unknown tool " + call.Name()
+			default:
+				res, err := tool.Execute(ctx, call, emit)
+				switch {
+				case err == nil:
+					out, outAtts = res.Text, res.Attachments
+				case ctx.Err() != nil:
+					return apperror.New(408, "turn canceled", ctx.Err())
+				default:
+					out = "error: " + err.Error()
+				}
+			}
+			// The serving's per-request image cap counts every image
+			// in the replayed history, so a tool result that would
+			// push the live count over it is withheld — the recorded
+			// history stays intact (prompt cache survives) and the
+			// note tells the model why, while hitMediaLimit folds the
+			// history so a later step can see new images again. A 0
+			// cap means the serving declared none — fail open.
+			if limit := model.MaxImages(); limit > 0 {
+				room := limit - conv.MediaCount(enum.ModalityImage)
+				var kept []valueobject.Attachment
+				dropped := 0
+				for _, a := range outAtts {
+					if a.Modality() == enum.ModalityImage {
+						if room <= 0 {
+							dropped++
+							continue
+						}
+						room--
+					}
+					kept = append(kept, a)
+				}
+				if dropped > 0 {
+					outAtts = kept
+					hitMediaLimit = true
+					out += fmt.Sprintf(" (%d image output(s) withheld: this serving accepts at most %d images per request and that limit is now reached — new images cannot be shown until this conversation is compacted)", dropped, limit)
+				}
+			}
+			// One-shot tools never stream — without a chunk the live
+			// card settles blank, so the settled output crosses as a
+			// single late chunk carrying the same text the record
+			// persists (error results included; the owner reads what
+			// the model reads).
+			if !emitted && out != "" {
+				emit(out)
+			}
+			if err := last.SetToolOutput(call.ID(), out); err != nil {
+				return apperror.New(500, "tool output lost", err)
+			}
+			// Attachments land alongside the recorded result.
+			if err := last.SetToolOutputAttachments(call.ID(), outAtts); err != nil {
+				return apperror.New(500, "tool output lost", err)
+			}
+			for _, tc := range last.ToolCalls() {
+				if tc.ID() == call.ID() {
+					// The result is already computed. A ctx that died between
+					// the in-memory record and this patch must not drop
+					// it: persistInterrupted skips calls that HasOutput.
+					return d.Convs.UpdateToolCallOutput(context.WithoutCancel(ctx), convID, tc)
+				}
+			}
+			return apperror.New(500, "tool output lost", fmt.Errorf("call %s vanished after update", call.ID()))
+		}()
+		if err != nil {
+			if ctx.Err() != nil {
+				if stampErr := d.persistInterrupted(ctx, convID, last); stampErr != nil {
+					return hitMediaLimit, stampErr
+				}
+				return hitMediaLimit, apperror.New(408, "turn canceled", ctx.Err())
+			}
+			return hitMediaLimit, err
+		}
+	}
+	return hitMediaLimit, nil
 }
 
 // resolveRoute picks the effective route/model — job overrides win, then

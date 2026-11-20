@@ -100,7 +100,7 @@ export class TurnSocket extends EventTarget {
   }
 
   // turn.edit carries the same optional per-turn selections as sendTurn —
-  // a retry re-runs under the picker's current choice, and a successful
+  // a rewrite re-runs under the picker's current choice, and a successful
   // turn re-binds them to the room. '' keeps the stored binding.
   editTurn({ conversationId, messageId, content,
     route = '', modelId = '', effort = '', provider = '', workspace = '' }) {
@@ -110,6 +110,24 @@ export class TurnSocket extends EventTarget {
     if (workspace) payload.workspace = workspace;
     return this._command({
       type: 'turn.edit',
+      requestId: requestId(),
+      conversationId,
+      payload,
+    });
+  }
+
+  // turn.resume continues the room's current history — unanswered tools
+  // finish, then the model is called again — without rewriting or
+  // truncating. A retry uses this so prior tool results stay. Same
+  // optional per-turn selections as editTurn; '' keeps the stored binding.
+  resumeTurn({ conversationId,
+    route = '', modelId = '', effort = '', provider = '', workspace = '' }) {
+    const payload = { route, modelId };
+    if (effort) payload.effort = effort;
+    if (provider) payload.provider = provider;
+    if (workspace) payload.workspace = workspace;
+    return this._command({
+      type: 'turn.resume',
       requestId: requestId(),
       conversationId,
       payload,

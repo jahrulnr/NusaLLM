@@ -69,12 +69,24 @@ type sendPayload struct {
 }
 
 // editPayload carries the same optional per-turn selections as
-// sendPayload — a retry re-runs the turn under the picker's current
-// choice, not necessarily the binding the failed turn used. "" keeps
+// sendPayload — a rewrite re-runs the turn under the picker's current
+// choice, not necessarily the binding the prior turn used. "" keeps
 // the stored binding; environment never crosses on an edit.
 type editPayload struct {
 	MessageID string `json:"messageId"`
 	Content   string `json:"content"`
+	Route     string `json:"route,omitempty"`
+	ModelID   string `json:"modelId,omitempty"`
+	Effort    string `json:"effort,omitempty"`
+	Provider  string `json:"provider,omitempty"`
+	Workspace string `json:"workspace,omitempty"`
+}
+
+// resumePayload carries the same optional per-turn selections as
+// editPayload — a retry continues under the picker's current choice
+// without rewriting history. "" keeps the stored binding; environment
+// never crosses on a resume.
+type resumePayload struct {
 	Route     string `json:"route,omitempty"`
 	ModelID   string `json:"modelId,omitempty"`
 	Effort    string `json:"effort,omitempty"`

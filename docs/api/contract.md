@@ -5,7 +5,7 @@ proposed.** The HTTP surface — all `GET` routes, the mutations
 (`PATCH`/`PUT`/`DELETE`/`POST`), the `Host`/`Origin` security envelope,
 and problem+json error mapping — is wired in
 `infrastructure/delivery/http`, and the WebSocket surface — upgrade
-validation, `turn.send`/`turn.edit` turns, `turn.cancel`/`turn.watch`
+validation, `turn.send`/`turn.edit`/`turn.resume` turns, `turn.cancel`/`turn.watch`
 turn control, bounded journals with replay, and the full stream/terminal
 lifecycle — is wired in `infrastructure/delivery/websocket`; both are
 served by `nusallm serve` (loopback `127.0.0.1` only). This document,
@@ -199,7 +199,7 @@ Full schemas, typed errors, and examples live in
 | `DELETE /api/conversations/{id}` | Delete the room and its storage; queued jobs on it die `410`. |
 | `POST /api/conversations/{id}/compactions` | Queue a manual compaction on the room's worker; `200` with the updated conversation when it finishes. |
 | `GET /api/gateways?offset&limit` · `GET /api/gateways/{id}` | Sanitized gateway projections (paged list, sorted by id), including broken records. |
-| `GET /api/gateways/{id}/providers?model={modelId}` | Upstream backends an aggregator route can serve the model through — `{ "data": [{ "name", "slug" }] }`, empty for direct providers. `model` is required (`400` without it). The picker echoes `slug` back as `payload.provider` on `turn.send`/`turn.edit`. |
+| `GET /api/gateways/{id}/providers?model={modelId}` | Upstream backends an aggregator route can serve the model through — `{ "data": [{ "name", "slug" }] }`, empty for direct providers. `model` is required (`400` without it). The picker echoes `slug` back as `payload.provider` on `turn.send`/`turn.edit`/`turn.resume`. |
 | `PUT /api/gateways/{id}` | Full-replace upsert — the path id is authoritative (a body `id` is `400`); `apiKey` is tri-state write-only. After the replace, the provider catalog merges into the record: advertised ids the document lacked are appended, and entries already present backfill catalog-declared metadata (`contextWindow`, `outputLimit`, modalities, `supportedEfforts`, `name`, `canonical`, `aliasOf`, `pricing`) only on fields still unknown — an explicit value wins over the provider's declaration; clearing a field to zero re-derives it at the next import. A model's `style` pin is server-owned — the merge never touches it. The response carries `added` (always present) plus `catalogError` when the merge failed — a catalog failure never fails the write. |
 | `POST /api/gateways/{id}/import-models` | Re-runs that same merge against the stored record — endpoint, style, and credential come from the record, not the request — and answers the same `added`/`catalogError` shape. `404` when the gateway is absent. |
 | `DELETE /api/gateways/{id}` | Remove gateway + vaulted key; `404` when absent. |
@@ -325,11 +325,12 @@ idle. They are not persisted conversation state.
 traffic. [`websocket.md`](./websocket.md) is the normative spec; the
 shape in brief:
 
-- Client commands: `turn.send`, `turn.edit`, `turn.cancel`, `turn.watch`
-  — each carrying a client-chosen `requestId` that correlates the
-  command with its replies. A malformed command (bad JSON, unknown
-  `type`, invalid fields) is rejected with an `error` frame before any
-  turn exists — it never produces `turn.opened` or `turn.failed`.
+- Client commands: `turn.send`, `turn.edit`, `turn.resume`,
+  `turn.cancel`, `turn.watch` — each carrying a client-chosen
+  `requestId` that correlates the command with its replies. A malformed
+  command (bad JSON, unknown `type`, invalid fields) is rejected with an
+  `error` frame before any turn exists — it never produces `turn.opened`
+  or `turn.failed`.
 - Server stream: `turn.opened` means the command was accepted and an
   asynchronous submission scheduled — journaled and written before any
   other turn frame; it is **not** a worker-acceptance, persistence, or
@@ -412,10 +413,12 @@ Suggested order — each phase is shippable and testable on its own:
    frame limits.
 4. **Phase 4 — Turn control. ✅ Done.** `turn.edit` (regenerate from a
    user message; terminal never claims `userMessagePersisted`),
-   `turn.cancel` (exact per-turn ctx cancel — never the room-wide
-   interrupt — with `turn.cancel_ack` before cancellation), `turn.watch`
-   journal replay under the hub lock with `turn.resync_required` on
-   gaps/unknown/expired, live attach on truncated-but-active turns.
+   `turn.resume` (continue current history without rewrite; terminal
+   never claims `userMessagePersisted`), `turn.cancel` (exact per-turn
+   ctx cancel — never the room-wide interrupt — with `turn.cancel_ack`
+   before cancellation), `turn.watch` journal replay under the hub lock
+   with `turn.resync_required` on gaps/unknown/expired, live attach on
+   truncated-but-active turns.
 5. **Phase 5 — Swagger UI + polish.**
 
 Acceptance checks (each maps to a contract clause):
@@ -437,6 +440,7 @@ Acceptance checks (each maps to a contract clause):
 | A13 | Cancel | `turn.cancel` on a running turn → `cancel_ack` then `turn.failed` `408`; on a queued turn same; on an unknown `turnId` → `error` frame `not_found`. |
 | A14 | Disconnect | Closing the socket mid-turn does not abort it; `turn.watch` after reconnect replays or `resync_required`, and persisted state via HTTP is authoritative. |
 | A15 | Edit preemption | `turn.edit` during a running turn: running turn ends `turn.failed` `408`, edit completes; both terminal frames carry `resyncRequired: true` and the client re-reads via HTTP. |
+| A15b | Resume keeps history | After a failed turn that left tool results, `turn.resume` completes without dropping those messages; a retry may carry a new `route`/`modelId`. |
 | A16 | Delete race | `DELETE` a conversation with queued turns → queued turns end `turn.failed` `410`. |
 | A17 | Failed-send receipt | Provider failure after the user append → `turn.failed` with `userMessagePersisted: true`. |
 | A18 | Projection redaction | Inject a sentinel string into each server-held field — stored `apiKey` material, a raw `env:`/`secret:` ref, an error cause, a model's `optionalContent`, and an attachment `sha256` pin — and assert it appears in no projected *metadata field* (`keyState`, `code`/`detail`, tool call refs, `parameters`, …). Provider reasoning is owner-visible content in ordered `Message.parts` and `turn.reasoning` frames; the check targets projected fields only, not all traffic. |

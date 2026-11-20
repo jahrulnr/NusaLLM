@@ -43,17 +43,19 @@ const (
 	shutdownDrainGrace       = 5 * time.Second
 )
 
-// Sender is the conversation send/edit use case — the same application
-// path the CLI drives. Send's receipt carries the only fact the
-// terminal frame reports: whether the user line actually committed.
-// Edit's bare error is enough — an edit terminal never claims
-// persistence.
+// Sender is the conversation send/edit/resume use case — the same
+// application path the CLI drives. Send's receipt carries the only fact
+// the terminal frame reports: whether the user line actually committed.
+// Edit and Resume terminals never claim persistence.
 type Sender interface {
 	Send(ctx context.Context, convID, route, modelID string,
 		message string, attachments []valueobject.Attachment,
 		opts appjob.SendOptions,
 		onEvent event.TurnEventHandler) (appconversation.SendResult, error)
 	Edit(ctx context.Context, convID, route, modelID, msgID, content string,
+		opts appjob.SendOptions,
+		onEvent event.TurnEventHandler) error
+	Resume(ctx context.Context, convID, route, modelID string,
 		opts appjob.SendOptions,
 		onEvent event.TurnEventHandler) error
 }
@@ -65,21 +67,26 @@ type journaledFrame struct {
 }
 
 // turnKind distinguishes the command that opened a turn — terminal
-// framing differs (an edit never claims userMessagePersisted).
+// framing differs (edit/resume never claim userMessagePersisted).
 type turnKind int
 
 const (
 	turnSend turnKind = iota
 	turnEdit
+	turnResume
 )
 
-// String is the wire word naming the opening command — "send" or
-// "edit" — shared by the room-activity notice and ActiveTurn.
+// String is the wire word naming the opening command — "send", "edit",
+// or "resume" — shared by the room-activity notice and ActiveTurn.
 func (k turnKind) String() string {
-	if k == turnEdit {
+	switch k {
+	case turnEdit:
 		return "edit"
+	case turnResume:
+		return "resume"
+	default:
+		return "send"
 	}
-	return "send"
 }
 
 // turn is one admitted command: its bounded frame journal, the live
@@ -221,6 +228,8 @@ func (h *Hub) handleCommand(c *conn, raw []byte) {
 		h.turnSend(c, cmd)
 	case "turn.edit":
 		h.turnEdit(c, cmd)
+	case "turn.resume":
+		h.turnResume(c, cmd)
 	case "turn.cancel":
 		h.turnCancelCommand(c, cmd)
 	case "turn.watch":
@@ -235,8 +244,8 @@ func (h *Hub) handleCommand(c *conn, raw []byte) {
 }
 
 // commandConvID validates a mandatory envelope conversationId — cancel,
-// watch, and edit all name an existing room, so absent or invalid is a
-// syntactic rejection.
+// watch, edit, and resume all name an existing room, so absent or
+// invalid is a syntactic rejection.
 func commandConvID(c *conn, cmd command) (string, bool) {
 	if cmd.ConversationID == nil {
 		c.push(errorFrame(cmd.RequestID, "invalid_argument", "conversationId is required"))
@@ -322,12 +331,39 @@ func (h *Hub) turnEdit(c *conn, cmd command) {
 	})
 }
 
-// turnSelection parses the optional per-turn overrides turn.send and
-// turn.edit share — an effort enum word, an aggregator upstream pin, and
-// a workspace path — pushing an invalid_argument reply and reporting
-// ok=false on a bad effort word. "" keeps the room's stored binding; the
-// selected environment validates the workspace in the use case, never
-// here — a host filesystem check would reject remote workspaces.
+// turnResume validates the resume body and admits a bounded turn. The
+// conversation must be named — a resume never mints a room, and it
+// never rewrites history.
+func (h *Hub) turnResume(c *conn, cmd command) {
+	if cmd.TurnID != "" || cmd.AfterSeq != nil {
+		c.push(errorFrame(cmd.RequestID, "invalid_argument", "turn.resume accepts no turnId/afterSeq"))
+		return
+	}
+	convID, ok := commandConvID(c, cmd)
+	if !ok {
+		return
+	}
+	var payload resumePayload
+	if cmd.Payload == nil || !decodeStrict(cmd.Payload, &payload) {
+		c.push(errorFrame(cmd.RequestID, "invalid_argument", "turn.resume payload is invalid"))
+		return
+	}
+	opts, ok := turnSelection(c, cmd, payload.Effort, payload.Provider, payload.Workspace)
+	if !ok {
+		return
+	}
+	h.admitAndRun(c, cmd.RequestID, convID, turn{
+		kind: turnResume, route: payload.Route, modelID: payload.ModelID, opts: opts,
+	})
+}
+
+// turnSelection parses the optional per-turn overrides turn.send,
+// turn.edit, and turn.resume share — an effort enum word, an aggregator
+// upstream pin, and a workspace path — pushing an invalid_argument reply
+// and reporting ok=false on a bad effort word. "" keeps the room's
+// stored binding; the selected environment validates the workspace in
+// the use case, never here — a host filesystem check would reject
+// remote workspaces.
 func turnSelection(c *conn, cmd command, effort, provider, workspace string) (appjob.SendOptions, bool) {
 	var opts appjob.SendOptions
 	if effort != "" {
@@ -422,6 +458,8 @@ func (h *Hub) runTurn(t *turn) {
 		persisted = receipt.UserMessagePersisted
 	case turnEdit:
 		err = h.sender.Edit(t.turnCtx, t.conversationID, t.route, t.modelID, t.msgID, t.content, t.opts, onEvent)
+	case turnResume:
+		err = h.sender.Resume(t.turnCtx, t.conversationID, t.route, t.modelID, t.opts, onEvent)
 	}
 
 	h.mu.Lock()
@@ -680,7 +718,7 @@ func (h *Hub) finishLocked(t *turn) {
 
 // ActiveTurn is the oldest non-terminal transport turn for a room, the
 // one a client that loaded the room should watch. A finished journal is
-// not a turn in progress. kind is "send" or "edit".
+// not a turn in progress. kind is "send", "edit", or "resume".
 func (h *Hub) ActiveTurn(conversationID string) (turnID, kind string, ok bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

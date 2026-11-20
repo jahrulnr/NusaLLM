@@ -4,12 +4,13 @@
 // application/job — this package only routes work to a room.
 //
 // Concurrency model: each conversation is owned by one worker.Worker — a
-// per-room serial executor. Send queues FIFO; Edit and Delete preempt —
-// they interrupt the running job and cut ahead of the wait line, so an
-// edit lands on top of the turn it just killed and queued sends still run
-// against the rewritten history. Delete retires the worker: queued jobs
-// get 410, and submits racing the teardown get ErrClosed and are reposted
-// onto the fresh worker the next post spawns — a job that arrives after
+// per-room serial executor. Send queues FIFO; Edit, Resume, and Delete
+// preempt — they interrupt the running job and cut ahead of the wait
+// line. Edit rewrites history; Resume continues it so a retry keeps the
+// work the failed turn already paid for. Delete retires the worker:
+// queued jobs get 410, and submits racing the teardown get ErrClosed and
+// are reposted onto the fresh worker the next post spawns — a job that
+// arrives after
 
 // Shutdown rejects further posts, terminates every worker, and waits for
 // their loops to exit without closing the repository.
@@ -120,6 +121,8 @@ func (app *ConversationApp) post(convID string, j queuedJob) {
 		case *appjob.Send:
 			x.Deps = deps
 		case *appjob.Edit:
+			x.Deps = deps
+		case *appjob.Resume:
 			x.Deps = deps
 		case *appjob.Delete:
 			x.Deps = deps

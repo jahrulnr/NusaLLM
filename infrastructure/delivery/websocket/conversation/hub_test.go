@@ -24,13 +24,15 @@ import (
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
 
-// stubSender scripts the application send/edit — the hub boundary is
-// tested against its contract, not the provider stack.
+// stubSender scripts the application send/edit/resume — the hub
+// boundary is tested against its contract, not the provider stack.
 type stubSender struct {
 	fn func(ctx context.Context, convID, route, modelID, message string,
 		onEvent event.TurnEventHandler) (appconversation.SendResult, error)
 	optsFn func(appjob.SendOptions)
 	efn    func(ctx context.Context, convID, route, modelID, msgID, content string,
+		opts appjob.SendOptions, onEvent event.TurnEventHandler) error
+	rfn func(ctx context.Context, convID, route, modelID string,
 		opts appjob.SendOptions, onEvent event.TurnEventHandler) error
 }
 
@@ -71,8 +73,16 @@ func (s stubSender) Edit(ctx context.Context, convID, route, modelID, msgID, con
 	return s.efn(ctx, convID, route, modelID, msgID, content, opts, onEvent)
 }
 
-// The edit path forwards the picker's per-turn selection — a retry must
-// reach the model the user switched to, not the binding that failed.
+func (s stubSender) Resume(ctx context.Context, convID, route, modelID string,
+	opts appjob.SendOptions, onEvent event.TurnEventHandler) error {
+	if s.rfn == nil {
+		return apperror.New(400, "no resume scripted", nil)
+	}
+	return s.rfn(ctx, convID, route, modelID, opts, onEvent)
+}
+
+// The edit path forwards the picker's per-turn selection — a rewrite
+// must reach the model the user switched to, not the binding that failed.
 func TestTurnEditPassesSelection(t *testing.T) {
 	var gotRoute, gotModel string
 	var gotOpts appjob.SendOptions
@@ -104,6 +114,44 @@ func TestTurnEditRejectsBadEffort(t *testing.T) {
 	h := newHub(t, stubSender{})
 	ws := dial(t, h)
 	sendCommand(t, ws, `{"type":"turn.edit","requestId":"e","conversationId":"c_1","payload":{"messageId":"m_1","content":"x","effort":"ludicrous"}}`)
+	if f := readFrame(t, ws); f.Type != "error" || f.Code != "invalid_argument" {
+		t.Fatalf("bad effort %+v", f)
+	}
+}
+
+// The resume path forwards the picker's per-turn selection — a retry
+// must reach the model the user switched to without rewriting history.
+func TestTurnResumePassesSelection(t *testing.T) {
+	var gotRoute, gotModel string
+	var gotOpts appjob.SendOptions
+	h := newHub(t, stubSender{
+		fn: func(context.Context, string, string, string, string, event.TurnEventHandler) (appconversation.SendResult, error) {
+			return appconversation.SendResult{UserMessagePersisted: true}, nil
+		},
+		rfn: func(_ context.Context, _, route, modelID string,
+			opts appjob.SendOptions, _ event.TurnEventHandler) error {
+			gotRoute, gotModel, gotOpts = route, modelID, opts
+			return nil
+		},
+	})
+	ws := dial(t, h)
+	sendCommand(t, ws, `{"type":"turn.resume","requestId":"r","conversationId":"c_1","payload":{"route":"gw2","modelId":"claude-y","effort":"high","provider":"or-fast","workspace":"/remote/project"}}`)
+	for f := readFrame(t, ws); f.Type != "turn.completed"; f = readFrame(t, ws) {
+		if f.Type == "error" || f.Type == "turn.failed" {
+			t.Fatalf("turn rejected: %+v", f)
+		}
+	}
+	if gotRoute != "gw2" || gotModel != "claude-y" ||
+		gotOpts.Effort != enum.EffortHigh || gotOpts.Upstream != "or-fast" || gotOpts.Workspace != "/remote/project" {
+		t.Fatalf("forwarded selection = %q %q %+v", gotRoute, gotModel, gotOpts)
+	}
+}
+
+// An unknown effort word is a syntactic rejection on resume, same as edit.
+func TestTurnResumeRejectsBadEffort(t *testing.T) {
+	h := newHub(t, stubSender{})
+	ws := dial(t, h)
+	sendCommand(t, ws, `{"type":"turn.resume","requestId":"r","conversationId":"c_1","payload":{"effort":"ludicrous"}}`)
 	if f := readFrame(t, ws); f.Type != "error" || f.Code != "invalid_argument" {
 		t.Fatalf("bad effort %+v", f)
 	}
@@ -332,6 +380,8 @@ func TestTurnSendValidation(t *testing.T) {
 		{"edit missing convId", `{"type":"turn.edit","requestId":"r","payload":{"messageId":"m_1","content":"x"}}`, "invalid_argument", "r"},
 		{"edit with environment", `{"type":"turn.edit","requestId":"r","conversationId":"c_1","payload":{"messageId":"m_1","content":"x","environment":"local"}}`, "invalid_argument", "r"},
 		{"edit bad msgId", `{"type":"turn.edit","requestId":"r","conversationId":"c_1","payload":{"messageId":"a/b","content":"x"}}`, "invalid_argument", "r"},
+		{"resume missing convId", `{"type":"turn.resume","requestId":"r","payload":{}}`, "invalid_argument", "r"},
+		{"resume with environment", `{"type":"turn.resume","requestId":"r","conversationId":"c_1","payload":{"environment":"local"}}`, "invalid_argument", "r"},
 		{"cancel missing convId", `{"type":"turn.cancel","requestId":"r","turnId":"t_1"}`, "invalid_argument", "r"},
 		{"cancel bad turnId", `{"type":"turn.cancel","requestId":"r","conversationId":"c_1","turnId":"a/b"}`, "invalid_argument", "r"},
 		{"watch missing afterSeq", `{"type":"turn.watch","requestId":"r","conversationId":"c_1","turnId":"t_1"}`, "invalid_argument", "r"},
