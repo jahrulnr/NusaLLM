@@ -7,9 +7,11 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
+	"github.com/jahrulnr/nusallm/infrastructure/system/patharg"
 )
 
 type Local struct{}
@@ -62,6 +64,123 @@ func (Local) OpenHost(ctx context.Context, path string) (io.ReadCloser, fs.FileI
 		return nil, nil, err
 	}
 	return f, info, nil
+}
+
+// LocateRead answers where a read of raw lands: inside dir (a confined
+// session plus the workspace-relative name) or on a regular host file by
+// absolute path. The argument is expanded first, so a file: URL, a leading ~
+// or a Windows %VAR% meets the same placement rule as any other path.
+func (Local) LocateRead(ctx context.Context, dir, raw string) (drepo.Placement, error) {
+	return locate(ctx, dir, raw, true)
+}
+
+// LocateWrite answers where a write of raw lands. A path outside dir is an
+// error naming the workspace root: a read may opt into the host bypass, a
+// write never does.
+func (Local) LocateWrite(ctx context.Context, dir, raw string) (drepo.Placement, error) {
+	return locate(ctx, dir, raw, false)
+}
+
+// locate applies the one placement rule. The expanded path is relative
+// (resolved in dir), absolute inside dir (resolved relative to it, so
+// os.Root still guards symlinks and ..), or absolute outside it — a host
+// read, or a refusal for a write.
+func locate(ctx context.Context, dir, raw string, hostReads bool) (drepo.Placement, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	path, err := patharg.Expand(raw)
+	if err != nil {
+		return nil, err
+	}
+	if path == "" {
+		return nil, fmt.Errorf("path is required")
+	}
+	if dir == "" {
+		return nil, fmt.Errorf("workspace root is required")
+	}
+	root, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, err
+	}
+	place := &localPlacement{root: root, raw: raw}
+	if !filepath.IsAbs(path) {
+		place.name = path
+	} else {
+		clean := filepath.Clean(path)
+		if rel, relErr := filepath.Rel(root, clean); relErr == nil && insideRoot(rel) {
+			place.name = rel
+		} else if hostReads {
+			place.host = true
+			place.abs = clean
+			return place, nil
+		} else {
+			return nil, fmt.Errorf("cannot write %q: it is outside the workspace root %q — bind that folder as the workspace or use exec", raw, root)
+		}
+	}
+	session, err := (Local{}).Open(ctx, root)
+	if err != nil {
+		return nil, err
+	}
+	place.session = session
+	return place, nil
+}
+
+// insideRoot reports whether rel names a location inside the root rather than
+// the root's parent (or another volume).
+func insideRoot(rel string) bool {
+	return rel != ".." && !filepath.IsAbs(rel) && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// localPlacement is a path resolved by the local driver: a workspace session
+// plus a relative name, or an absolute host file.
+type localPlacement struct {
+	session drepo.WorkspaceSession
+	name    string // workspace-relative name when session != nil
+	root    string
+	raw     string // the argument as received, for error messages
+	host    bool
+	abs     string
+}
+
+func (p *localPlacement) Open(ctx context.Context) (io.ReadCloser, fs.FileInfo, error) {
+	if p.host {
+		return (Local{}).OpenHost(ctx, p.abs)
+	}
+	return p.session.OpenRegular(p.name)
+}
+
+// Create replaces the placed file, creating parent directories (owner-only,
+// matching the repository convention for key-bearing content). A host
+// placement refuses: the placement rule never lets a write leave the
+// workspace, so this only fires if a caller mixes the two.
+func (p *localPlacement) Create(data []byte) error {
+	if p.host {
+		return fmt.Errorf("cannot write %q: it is outside the workspace root %q — bind that folder as the workspace or use exec", p.raw, p.root)
+	}
+	if info, err := p.session.Stat(p.name); err == nil && info.IsDir() {
+		return fmt.Errorf("%q is a directory", p.raw)
+	}
+	if dir := filepath.Dir(p.name); dir != "." {
+		if err := p.session.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+	}
+	return p.session.WriteFile(p.name, data, 0o600)
+}
+
+func (p *localPlacement) URI() string {
+	if p.host {
+		return (Local{}).HostURI(p.abs)
+	}
+	return p.session.AttachmentURI(p.name)
+}
+
+func (p *localPlacement) Close() error {
+	if p.session == nil {
+		return nil
+	}
+	return p.session.Close()
 }
 
 func (Local) HostURI(path string) string { return "file://" + path }

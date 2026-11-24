@@ -14,19 +14,20 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 )
 
-// FilePatchTool rewrites a text file under the turn's workspace by
-// literal search/replace — deliberately not unified diff: diff grammars
-// are fragile for models, and exact-match anchoring either matches or
-// fails, forcing a re-read instead of a fuzzy guess.
+// FilePatchTool rewrites a text file named by a path argument by literal
+// search/replace — deliberately not unified diff: diff grammars are fragile
+// for models, and exact-match anchoring either matches or fails, forcing a
+// re-read instead of a fuzzy guess. The workspace repository decides what
+// the argument means, so the tool only reads and rewrites the placement.
 type FilePatchTool struct {
 	dir    string
 	store  drepo.Workspace
 	schema valueobject.ToolSchema
 }
 
-// NewFilePatchTool binds the tool's default root: every requested path
-// resolves inside it — os.Root confines traversal and symlink escapes
-// alike. A turn-scoped workspace dir overrides it per call.
+// NewFilePatchTool binds the tool's default root: a relative path resolves
+// inside it, an absolute path inside it resolves relative to it. A
+// turn-scoped workspace dir overrides it per call.
 func NewFilePatchTool(store drepo.Workspace, root string) (service.Tool, error) {
 	abs, err := checkDir(store, root)
 	if err != nil {
@@ -34,8 +35,8 @@ func NewFilePatchTool(store drepo.Workspace, root string) (service.Tool, error) 
 	}
 	schema, err := valueobject.NewToolSchema(
 		"apply_patch",
-		"Replace an exact string in a UTF-8 text file relative to the workspace root.",
-		json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Path relative to the workspace root"},"old_string":{"type":"string","description":"Exact text to find; may span multiple lines"},"new_string":{"type":"string","description":"Replacement text; empty deletes old_string"},"replace_all":{"type":"boolean","description":"Replace every occurrence instead of requiring a unique match (default false)"}},"required":["path","old_string","new_string"]}`),
+		"Replace an exact string in a UTF-8 text file relative to the workspace root. The path is expanded like the other file tools; a path outside the workspace is refused.",
+		json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Path relative to the workspace root (or an absolute path inside it)"},"old_string":{"type":"string","description":"Exact text to find; may span multiple lines"},"new_string":{"type":"string","description":"Replacement text; empty deletes old_string"},"replace_all":{"type":"boolean","description":"Replace every occurrence instead of requiring a unique match (default false)"}},"required":["path","old_string","new_string"]}`),
 		true,
 		enum.ToolPermissionAgent,
 	)
@@ -66,12 +67,12 @@ func (tool *FilePatchTool) Execute(ctx context.Context, call entity.ToolCall, _ 
 	if input.OldString == "" {
 		return service.ToolResult{}, fmt.Errorf("old_string must not be empty")
 	}
-	root, err := callRoot(ctx, tool.store, tool.dir)
+	place, err := tool.store.LocateWrite(ctx, callDir(ctx, tool.dir), input.Path)
 	if err != nil {
 		return service.ToolResult{}, err
 	}
-	defer root.Close()
-	f, info, err := root.OpenRegular(input.Path)
+	defer place.Close()
+	f, info, err := place.Open(ctx)
 	if err != nil {
 		return service.ToolResult{}, err
 	}
@@ -106,9 +107,9 @@ func (tool *FilePatchTool) Execute(ctx context.Context, call entity.ToolCall, _ 
 	} else {
 		content = strings.Replace(content, input.OldString, input.NewString, 1)
 	}
-	// Write through the root with the recorded mode — WriteFile only
-	// applies perm on create, so an existing file keeps its bits anyway.
-	if err := root.WriteFile(input.Path, []byte(content), info.Mode().Perm()); err != nil {
+	// Write through the placement with the recorded mode — Create applies
+	// its perm only on create, so an existing file keeps its bits anyway.
+	if err := place.Create([]byte(content)); err != nil {
 		return service.ToolResult{}, err
 	}
 	occurrence := "occurrences"

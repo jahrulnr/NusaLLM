@@ -135,9 +135,38 @@ func (m *Message) SetFinishReason(r enum.FinishReason) {
 	m.finishReason = r
 }
 
-// SetParts records the ordered assistant response content.
+// SetParts records the ordered assistant response content in canonical
+// form: neighbouring parts of the same prose kind describe one stretch of
+// text, so they merge. Callers build parts by appending as chunks arrive,
+// and a caller that drops a part between two prose parts (an interrupted
+// reply drops tool calls that never reached history) would otherwise leave
+// two adjacent text parts — indistinguishable on the wire, but rendered as
+// two separate blocks downstream. Tool-call parts never merge: each names
+// a different call.
 func (m *Message) SetParts(parts []MessagePart) {
-	m.parts = parts
+	if len(parts) == 0 {
+		m.parts = nil
+		return
+	}
+	out := make([]MessagePart, 0, len(parts))
+	for _, p := range parts {
+		if n := len(out); n > 0 && mergeablePart(out[n-1].Kind, p.Kind) {
+			out[n-1].Text += p.Text
+			continue
+		}
+		out = append(out, p)
+	}
+	m.parts = out
+}
+
+// mergeablePart reports whether two neighbouring parts are one stretch of
+// the same prose. Only the kinds that carry text merge; every other kind
+// (a tool call) is a distinct event even when two sit side by side.
+func mergeablePart(prev, next string) bool {
+	if prev != next {
+		return false
+	}
+	return prev == MessagePartText || prev == MessagePartReasoning
 }
 
 func (m Message) CreatedAt() time.Time { return m.createdAt }

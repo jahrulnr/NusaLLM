@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/fs"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -21,17 +20,15 @@ import (
 )
 
 // ReadMediaTool attaches a non-text file to the call result — under the
-// turn's workspace, or an absolute host path via Workspace.OpenHost.
-// The constructor carries the schema and validates the
-// default sandbox boundary; Execute resolves relative paths against a
-// repository workspace session so `..` traversal and symlink escapes fail
-// alike. Payload bytes never enter the
-// tool: the result carries a file:// reference adapters resolve at send
-// time, so size caps are enforced here from the stat, not the read. The
-// reference outlives the check, so the content itself is pinned: the
-// sha256 recorded here is hashed through this same confined handle, and
-// send-time resolution verifies it. The completion adapter reopens files
-// under the same workspace root; swapped or escaped paths degrade to a
+// turn's workspace, or an absolute host path the repository resolves for a
+// read. The workspace repository owns what the path argument means, so this
+// adapter never expands, joins, or stats it. The constructor carries the
+// schema and validates the default sandbox boundary. Payload bytes never
+// enter the tool: the result carries a file:// reference adapters resolve at
+// send time, so size caps are enforced here from the stat, not the read. The
+// reference outlives the check, so the content itself is pinned: the sha256
+// recorded here is hashed through the same handle this tool read, and
+// send-time resolution verifies it. A swapped or escaped path degrades to a
 // placeholder instead of sending unchecked bytes.
 type ReadMediaTool struct {
 	dir    string
@@ -39,9 +36,10 @@ type ReadMediaTool struct {
 	schema valueobject.ToolSchema
 }
 
-// NewReadMediaTool binds the tool's default root: every requested path
-// resolves inside it. A turn-scoped workspace dir overrides it per call;
-// the repository creates attachment URIs for provider-time resolution.
+// NewReadMediaTool binds the tool's default root: a relative path resolves
+// inside it, an absolute path anchors where it lives. A turn-scoped
+// workspace dir overrides it per call; the repository creates attachment
+// URIs for provider-time resolution.
 func NewReadMediaTool(store drepo.Workspace, root string) (service.Tool, error) {
 	abs, err := checkDir(store, root)
 	if err != nil {
@@ -50,7 +48,7 @@ func NewReadMediaTool(store drepo.Workspace, root string) (service.Tool, error) 
 	schema, err := valueobject.NewToolSchema(
 		"read_media",
 		"Load an image, audio, video, or other non-text media file so it can be inspected directly. For text files use read_file.",
-		json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Path relative to the workspace root, or an absolute host path"}},"required":["path"]}`),
+		json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Path relative to the workspace root, or an absolute path anywhere on this machine"}},"required":["path"]}`),
 		true,
 		enum.ToolPermissionAgent,
 	)
@@ -77,38 +75,26 @@ func (tool *ReadMediaTool) Execute(ctx context.Context, call entity.ToolCall, _ 
 	if strings.TrimSpace(input.Path) == "" {
 		return service.ToolResult{}, fmt.Errorf("path is required")
 	}
-	// Absolute host paths bypass the workspace os.Root — an agent working
-	// outside its workspace (a screenshot in /tmp, an asset elsewhere on
-	// disk) names the file directly. The sha256 pin still binds what
-	// send-time serves, so the check-time file is what the model gets.
-	// Both opens produce (file, info, uri); the tail sniffs/caps/pins
-	// identically.
-	var f io.ReadCloser
-	var info fs.FileInfo
-	var uri string
-	if filepath.IsAbs(input.Path) {
-		var err error
-		f, info, err = tool.store.OpenHost(ctx, input.Path)
-		if err != nil {
-			return service.ToolResult{}, fmt.Errorf("%q is not a readable regular file: %w", input.Path, err)
-		}
-		uri = tool.store.HostURI(input.Path)
-	} else {
-		root, err := callRoot(ctx, tool.store, tool.dir)
-		if err != nil {
-			return service.ToolResult{}, err
-		}
-		defer func() {
-			if closeErr := root.Close(); retErr == nil {
-				retErr = closeErr
-			}
-		}()
-		f, info, err = root.OpenRegular(input.Path)
-		if err != nil {
-			return service.ToolResult{}, fmt.Errorf("%q is not a readable regular file: %w", input.Path, err)
-		}
-		uri = root.AttachmentURI(input.Path)
+	// The repository decides where the argument lands: inside the turn's
+	// workspace (confined) or on a host file by absolute path — an agent
+	// working outside its workspace (a screenshot in /tmp, an asset
+	// elsewhere on disk) names the file directly. The sha256 pin still
+	// binds what send-time serves, so the check-time file is what the model
+	// gets.
+	place, err := tool.store.LocateRead(ctx, callDir(ctx, tool.dir), input.Path)
+	if err != nil {
+		return service.ToolResult{}, err
 	}
+	defer func() {
+		if closeErr := place.Close(); retErr == nil {
+			retErr = closeErr
+		}
+	}()
+	f, info, err := place.Open(ctx)
+	if err != nil {
+		return service.ToolResult{}, fmt.Errorf("%q is not a readable regular file: %w", input.Path, err)
+	}
+	uri := place.URI()
 	defer func() {
 		if closeErr := f.Close(); retErr == nil {
 			retErr = closeErr

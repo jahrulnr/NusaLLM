@@ -9,7 +9,7 @@ import (
 func TestAssetsContainEverySurface(t *testing.T) {
 	for _, name := range []string{
 		"index.html", "app.js", "favicon.svg", "styles/app.css",
-		"lib/api.js", "lib/chat.js", "lib/diagram.js", "lib/markdown.js", "lib/socket.js", "lib/store.js", "lib/turn.js",
+		"lib/api.js", "lib/chat.js", "lib/diagram.js", "lib/markdown.js", "lib/mdsafe.js", "lib/socket.js", "lib/store.js", "lib/turn.js",
 		"components/chat.js", "components/composer.js", "components/icons.js", "components/pickers.js",
 		"components/settings.js", "components/sidebar.js", "components/transcript.js", "components/ui.js",
 		"vendor/preact/htm-preact.mjs", "vendor/marked/marked.esm.js", "vendor/dompurify/purify.es.mjs",

@@ -3,6 +3,7 @@ package wsconversation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"sync"
@@ -59,6 +60,15 @@ type Sender interface {
 		opts appjob.SendOptions,
 		onEvent event.TurnEventHandler) error
 }
+
+// replayHeadroom is the part of a socket's queue a journal replay must leave
+// free. The replay is not the last traffic: the turn keeps streaming into
+// the same queue, and a live burst arriving before the writer drains would
+// fill it and kill the socket — the death the bound exists to prevent.
+// Half the queue is the reserve: a replay may never leave the socket unable
+// to absorb the next deltas and a room broadcast, and a false resync costs
+// one HTTP re-read where a kill costs a reconnect that replays again.
+const replayHeadroom = outboundQueueCap / 2
 
 // journaledFrame is one sequenced frame retained for turn.watch replay.
 type journaledFrame struct {
@@ -516,6 +526,15 @@ func (h *Hub) runTurn(t *turn) {
 			Message:        clipTerminalMessage(message),
 			ResyncRequired: true,
 		}
+		// A provider-asked quiet is part of the failure the owner sees:
+		// the turn may have stopped because the wait was too long to sit
+		// out, or because the retries ran out while the provider kept
+		// asking. Either way the terminal carries the wait, so a client
+		// can hold Retry instead of retrying into the same refusal.
+		var delayed interface{ RetryAfter() time.Duration }
+		if errors.As(err, &delayed) {
+			p.RetryAfterMs = delayed.RetryAfter().Milliseconds()
+		}
 	}
 	if t.kind == turnSend {
 		p.UserMessagePersisted = &persisted
@@ -602,11 +621,15 @@ func (h *Hub) turnWatch(c *conn, cmd command) {
 		return
 	}
 	// Newer-than-latest afterSeq: nothing honest to replay, but the
-	// retained verdict and receipt snapshot still cross.
+	// retained verdict and receipt snapshot still cross. A live turn is
+	// not over: the socket joins the subscriber set after the snapshot,
+	// so the tab still sees the rest of the stream and the terminal.
 	if after > t.seq-1 {
-		p := h.resyncForLocked(t)
+		c.push(resyncFrame(cmd.RequestID, convID, cmd.TurnID, h.resyncForLocked(t)))
+		if !t.terminal {
+			t.subscribed[c] = struct{}{}
+		}
 		h.mu.Unlock()
-		c.push(resyncFrame(cmd.RequestID, convID, cmd.TurnID, p))
 		return
 	}
 	// Journal truncation check: the earliest retained seq must cover
@@ -621,6 +644,30 @@ func (h *Hub) turnWatch(c *conn, cmd command) {
 		// Active: still attach for live frames — the tab sees the
 		// terminal while re-reading history over HTTP.
 		t.subscribed[c] = struct{}{}
+		h.mu.Unlock()
+		return
+	}
+	// The replay must fit the socket's queue with headroom to spare: enqueue
+	// kills a socket whose queue fills, so a window that used the last free
+	// slots would answer, survive the replay, and die on the next live
+	// frame — a reconnect that repeats the same death. The snapshot is the
+	// honest answer then — and an active turn attaches so the client still
+	// reaches the terminal.
+	pending := 0
+	for _, jf := range t.frames {
+		if jf.seq > after {
+			pending++
+		}
+	}
+	budget := c.replayBudget() - replayHeadroom
+	if budget < 0 {
+		budget = 0
+	}
+	if pending > budget {
+		c.push(resyncFrame(cmd.RequestID, convID, t.id, h.resyncForLocked(t)))
+		if !t.terminal {
+			t.subscribed[c] = struct{}{}
+		}
 		h.mu.Unlock()
 		return
 	}

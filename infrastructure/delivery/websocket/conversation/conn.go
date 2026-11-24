@@ -59,6 +59,20 @@ func (c *conn) enqueue(raw []byte) {
 	}
 }
 
+// replayBudget is how many frames this socket can still take before its
+// queue is full — the bound a journal replay must fit in. enqueue kills a
+// socket whose queue fills, so a replay larger than this would answer the
+// watch and then disconnect the client, which reconnects into the same
+// death.
+func (c *conn) replayBudget() int {
+	select {
+	case <-c.done:
+		return 0
+	default:
+	}
+	return cap(c.out) - len(c.out)
+}
+
 // push answers a command-level reply (error frames) — same non-blocking
 // queue discipline as turn frames.
 func (c *conn) push(f serverFrame) {

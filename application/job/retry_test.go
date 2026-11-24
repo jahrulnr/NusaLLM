@@ -126,8 +126,8 @@ func TestRunTurnRetryExhaustion(t *testing.T) {
 	}
 }
 
-// emitThenFailSvc streams a delta, then fails mid-read — output already
-// reached the client, so a retry would duplicate it on the wire.
+// emitThenFailSvc streams a delta, then fails mid-read on every attempt —
+// the retry loop's exhaustion path.
 type emitThenFailSvc struct {
 	calls  int32
 	status int
@@ -139,31 +139,132 @@ func (s *emitThenFailSvc) Send(_ context.Context, _ *aggregate.Conversation, _ *
 	return apperror.New(s.status, "upstream stream broken", errors.New("mid-read failure"))
 }
 
-// Emitted-but-uncommitted output makes the failure definitive: no
-// retry, no second copy of the delta on the stream.
-func TestRunTurnNoRetryAfterEmittedDelta(t *testing.T) {
+// emittedThenAnswerSvc streams a partial answer, dies, then answers on the
+// next attempt — the mid-answer 429 the retry gate exists for.
+type emittedThenAnswerSvc struct {
+	calls int32
+	fail  int32
+}
+
+func (s *emittedThenAnswerSvc) Send(_ context.Context, conv *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, emit event.TurnEventHandler) error {
+	n := atomic.AddInt32(&s.calls, 1)
+	if n <= s.fail {
+		emit(event.NewDeltaEvent("abandoned tail"))
+		return apperror.New(429, "rate limited", errors.New("too many requests"))
+	}
+	emit(event.NewDeltaEvent("whole answer"))
+	m, _ := entity.NewMessage(enum.RoleAssistant, "whole answer")
+	m.SetFinishReason(enum.FinishReasonStop)
+	conv.Append(m)
+	return nil
+}
+
+// appendThenFailSvc appends a message and then fails — an adapter that
+// breaks the one-append-per-call contract. An appended message is the one
+// thing that makes a transient failure definitive.
+type appendThenFailSvc struct {
+	calls int32
+}
+
+func (s *appendThenFailSvc) Send(_ context.Context, conv *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, _ event.TurnEventHandler) error {
+	atomic.AddInt32(&s.calls, 1)
+	m, _ := entity.NewMessage(enum.RoleAssistant, "already appended")
+	conv.Append(m)
+	return apperror.New(502, "upstream unreachable", errors.New("dial failed"))
+}
+
+// A transient failure after streamed output retries: the attempt committed
+// nothing, and the client drops the abandoned tail on retry_wait. The
+// store ends with exactly one assistant line — the surviving attempt's.
+func TestRunTurnRetriesAfterStreamedDeltas(t *testing.T) {
 	d := Deps{
 		SummaryTool: mustSummaryTool(t),
 		Convs:       repoconversation.NewConversationRepository(t.TempDir()),
 		Config:      config.ConversationConfig{MaxTurnStep: 4},
 	}
 	conv := seedRoom(t, d.Convs, "room", "hi")
-	svc := &emitThenFailSvc{status: 502}
-	var deltas int
+	svc := &emittedThenAnswerSvc{fail: 1}
+	var waits int
 	onEvent := func(e event.TurnEvent) {
-		if e.Kind() == enum.TurnEventDelta {
-			deltas++
+		if e.Kind() == enum.TurnEventStatus && e.Status() == enum.TurnStatusRetryWait {
+			waits++
 		}
 	}
-	err := d.runTurn(t.Context(), "room", conv, EnvironmentBundle{}, nil, entity.Model{}, svc, onEvent, nil)
-	if err == nil {
-		t.Fatal("a mid-stream failure must fail the turn")
+	if err := d.runTurn(t.Context(), "room", conv, EnvironmentBundle{}, nil, entity.Model{}, svc, onEvent, nil); err != nil {
+		t.Fatalf("a transient mid-answer failure must be retried: %v", err)
+	}
+	if svc.calls != 2 {
+		t.Fatalf("calls = %d, want 2 (one retry)", svc.calls)
+	}
+	if waits != 1 {
+		t.Fatalf("retry_wait announcements = %d, want 1", waits)
+	}
+	assistants := 0
+	for _, m := range conv.Messages() {
+		if m.Role() != enum.RoleAssistant {
+			continue
+		}
+		assistants++
+		if m.Content() != "whole answer" || m.FinishReason() != enum.FinishReasonStop {
+			t.Fatalf("assistant line = %q/%q, want only the surviving attempt", m.Content(), m.FinishReason())
+		}
+	}
+	if assistants != 1 {
+		t.Fatalf("assistant lines = %d, want 1 — the abandoned attempt must not persist", assistants)
+	}
+}
+
+// An appended message — not streamed output — makes a transient failure
+// definitive: a second call would append a second line.
+func TestRunTurnNoRetryAfterAppendedMessage(t *testing.T) {
+	d := Deps{
+		SummaryTool: mustSummaryTool(t),
+		Convs:       repoconversation.NewConversationRepository(t.TempDir()),
+		Config:      config.ConversationConfig{MaxTurnStep: 4},
+	}
+	conv := seedRoom(t, d.Convs, "room", "hi")
+	svc := &appendThenFailSvc{}
+	if err := d.runTurn(t.Context(), "room", conv, EnvironmentBundle{}, nil, entity.Model{}, svc, nil, nil); err == nil {
+		t.Fatal("a failure after an appended message must fail the turn")
 	}
 	if svc.calls != 1 {
-		t.Fatalf("calls = %d, want 1 — emitted output blocks retry", svc.calls)
+		t.Fatalf("calls = %d, want 1 — an appended message blocks retry", svc.calls)
 	}
-	if deltas != 1 {
-		t.Fatalf("deltas emitted = %d, want exactly 1", deltas)
+}
+
+// When the retries run out, the last attempt's shown text is kept as
+// exactly one interrupted reply — never one line per attempt.
+func TestRunTurnExhaustedRetriesKeepOneInterruptedReply(t *testing.T) {
+	d := Deps{
+		SummaryTool: mustSummaryTool(t),
+		Convs:       repoconversation.NewConversationRepository(t.TempDir()),
+		Config:      config.ConversationConfig{MaxTurnStep: 4},
+	}
+	conv := seedRoom(t, d.Convs, "room", "hi")
+	svc := &emitThenFailSvc{status: 503}
+	if err := d.runTurn(t.Context(), "room", conv, EnvironmentBundle{}, nil, entity.Model{}, svc, nil, nil); err == nil {
+		t.Fatal("exhausted retries must fail the turn")
+	}
+	if want := int32(1 + len(sendRetryBackoff)); svc.calls != want {
+		t.Fatalf("calls = %d, want %d", svc.calls, want)
+	}
+	reloaded, err := d.Convs.Load(t.Context(), "room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for label, c := range map[string]*aggregate.Conversation{"memory": conv, "stored": reloaded} {
+		var assistants []entity.Message
+		for _, m := range c.Messages() {
+			if m.Role() == enum.RoleAssistant {
+				assistants = append(assistants, m)
+			}
+		}
+		if len(assistants) != 1 {
+			t.Fatalf("%s: assistant lines = %d, want exactly one interrupted reply", label, len(assistants))
+		}
+		if got := assistants[0]; got.FinishReason() != enum.FinishReasonInterrupted || got.Content() != "partial" {
+			t.Fatalf("%s: reply = %q/%q, want the last attempt's text as interrupted", label, got.Content(), got.FinishReason())
+		}
 	}
 }
 
@@ -201,6 +302,8 @@ func TestRunTurnKeepsStreamedTextOnFailure(t *testing.T) {
 
 // Only answer text makes a kept reply: tool-call parts point at calls that
 // never reached history, and reasoning alone has nothing a Retry can replay.
+// Dropping the call must not leave two adjacent text parts — SetParts
+// canonicalizes them into one stretch, so a renderer sees one block.
 func TestInterruptedReplyKeepsAnswerTextOnly(t *testing.T) {
 	msg, ok, err := interruptedReply([]entity.MessagePart{
 		{Kind: entity.MessagePartReasoning, Text: "considering"},
@@ -214,8 +317,12 @@ func TestInterruptedReplyKeepsAnswerTextOnly(t *testing.T) {
 	if msg.Content() != "Hello" || msg.FinishReason() != enum.FinishReasonInterrupted {
 		t.Fatalf("reply = %q/%q, want Hello/interrupted", msg.Content(), msg.FinishReason())
 	}
-	if got := msg.Parts(); len(got) != 3 {
-		t.Fatalf("parts = %+v, want reasoning, text, text with the tool call dropped", got)
+	got := msg.Parts()
+	if len(got) != 2 {
+		t.Fatalf("parts = %+v, want reasoning + one merged text part with the call dropped", got)
+	}
+	if got[0].Kind != entity.MessagePartReasoning || got[1].Kind != entity.MessagePartText || got[1].Text != "Hello" {
+		t.Fatalf("parts = %+v, want reasoning then text Hello", got)
 	}
 	if _, ok, _ := interruptedReply([]entity.MessagePart{{Kind: entity.MessagePartReasoning, Text: "thinking"}}); ok {
 		t.Fatal("reasoning without answer text must not be kept")
@@ -300,5 +407,71 @@ func TestRunTurnHonorsRetryAfter(t *testing.T) {
 	}
 	if svc.calls != 1 {
 		t.Fatalf("calls = %d, want 1 — Retry-After forbids an early retry", svc.calls)
+	}
+}
+
+// A provider asking for a wait longer than a turn may sit out is not retried:
+// the 429 surfaces immediately, still carrying the wait so the terminal can
+// tell the owner when the route is usable again.
+func TestRunTurnLongRetryAfterFailsImmediately(t *testing.T) {
+	d := Deps{
+		SummaryTool: mustSummaryTool(t),
+		Convs:       repoconversation.NewConversationRepository(t.TempDir()),
+		Config:      config.ConversationConfig{MaxTurnStep: 4},
+	}
+	conv := seedRoom(t, d.Convs, "room", "hi")
+	svc := &auditDelaySvc{status: 429, delay: maxRateLimitWait + time.Minute}
+	err := d.runTurn(t.Context(), "room", conv, EnvironmentBundle{}, nil, entity.Model{}, svc, nil, nil)
+	if err == nil {
+		t.Fatal("a wait past maxRateLimitWait must fail the turn")
+	}
+	var delayed interface{ RetryAfter() time.Duration }
+	if !errors.As(err, &delayed) {
+		t.Fatalf("error %v lost the provider wait", err)
+	}
+	if got := delayed.RetryAfter(); got != maxRateLimitWait+time.Minute {
+		t.Fatalf("retry-after = %v, want the provider's %v", got, maxRateLimitWait+time.Minute)
+	}
+	if svc.calls != 1 {
+		t.Fatalf("calls = %d, want 1 — the wait is too long to sit out", svc.calls)
+	}
+}
+
+// When every attempt is a 429 asking for the same quiet, the exhausted turn
+// still reports the last wait.
+func TestRunTurnExhaustionKeepsProviderWait(t *testing.T) {
+	d := Deps{
+		SummaryTool: mustSummaryTool(t),
+		Convs:       repoconversation.NewConversationRepository(t.TempDir()),
+		Config:      config.ConversationConfig{MaxTurnStep: 4},
+	}
+	conv := seedRoom(t, d.Convs, "room", "hi")
+	// Short enough to keep the suite fast; the value survives, not the wait.
+	svc := &auditDelaySvc{status: 429, delay: 20 * time.Millisecond}
+	err := d.runTurn(t.Context(), "room", conv, EnvironmentBundle{}, nil, entity.Model{}, svc, nil, nil)
+	if err == nil {
+		t.Fatal("exhausted retries must fail the turn")
+	}
+	var delayed interface{ RetryAfter() time.Duration }
+	if !errors.As(err, &delayed) || delayed.RetryAfter() != 20*time.Millisecond {
+		t.Fatalf("error %v lost the provider wait", err)
+	}
+	if want := int32(1 + len(sendRetryBackoff)); svc.calls != want {
+		t.Fatalf("calls = %d, want %d", svc.calls, want)
+	}
+}
+
+// auditDelaySvc fails every call with a status plus a provider-asked wait.
+type auditDelaySvc struct {
+	calls  int32
+	status int
+	delay  time.Duration
+}
+
+func (s *auditDelaySvc) Send(_ context.Context, _ *aggregate.Conversation, _ *aggregate.Gateway, _ entity.Model, _ event.TurnEventHandler) error {
+	atomic.AddInt32(&s.calls, 1)
+	return retryAfterError{
+		err:   apperror.FromStatus(s.status, "rate limited", errors.New("too many requests")),
+		delay: s.delay,
 	}
 }

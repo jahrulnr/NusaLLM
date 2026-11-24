@@ -15,18 +15,20 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 )
 
-// FileReadTool reads a text file under the turn's workspace — the
-// constructor carries the schema and validates the default sandbox
-// boundary; Execute resolves the call input through the injected workspace
-// repository, whose local implementation confines symlink traversal.
+// FileReadTool reads a text file named by a path argument — the workspace
+// repository decides what the argument means (workspace-relative, an
+// absolute path, a file: URL, ~/…), so this adapter never expands or joins
+// it. The constructor carries the schema and validates the default sandbox
+// boundary.
 type FileReadTool struct {
 	dir    string
 	store  drepo.Workspace
 	schema valueobject.ToolSchema
 }
 
-// NewFileReadTool binds the tool's default root: every requested path
-// resolves inside it. A turn-scoped workspace dir overrides it per call.
+// NewFileReadTool binds the tool's default root: a relative path resolves
+// inside it, an absolute path anchors where it lives. A turn-scoped
+// workspace dir overrides it per call.
 func NewFileReadTool(store drepo.Workspace, root string) (service.Tool, error) {
 	abs, err := checkDir(store, root)
 	if err != nil {
@@ -34,8 +36,8 @@ func NewFileReadTool(store drepo.Workspace, root string) (service.Tool, error) {
 	}
 	schema, err := valueobject.NewToolSchema(
 		"read_file",
-		"Read a UTF-8 text file relative to the workspace root.",
-		json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Path relative to the workspace root"}},"required":["path"]}`),
+		"Read a UTF-8 text file relative to the workspace root, an absolute path anywhere on this machine, or a ~/… path naming the owner's home.",
+		json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Path relative to the workspace root, an absolute path anywhere on disk, or ~/… for the owner's home"}},"required":["path"]}`),
 		true,
 		enum.ToolPermissionAgent,
 	)
@@ -61,16 +63,16 @@ func (tool *FileReadTool) Execute(ctx context.Context, call entity.ToolCall, _ s
 	}
 	// Reject oversized files before reading — the call's output budget is
 	// the honest cap, enforced again by SetToolOutput on the way out.
-	root, err := callRoot(ctx, tool.store, tool.dir)
+	place, err := tool.store.LocateRead(ctx, callDir(ctx, tool.dir), input.Path)
 	if err != nil {
 		return service.ToolResult{}, err
 	}
 	defer func() {
-		if closeErr := root.Close(); retErr == nil {
+		if closeErr := place.Close(); retErr == nil {
 			retErr = closeErr
 		}
 	}()
-	f, info, err := root.OpenRegular(input.Path)
+	f, info, err := place.Open(ctx)
 	if err != nil {
 		return service.ToolResult{}, err
 	}

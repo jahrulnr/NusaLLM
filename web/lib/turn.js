@@ -14,6 +14,7 @@ export function newTurn({ turnId, requestId, conversationId, kind }) {
     startedAt: Date.now(),
     terminal: null,       // the terminal frame once it arrives
     n: 0,
+    persistedMark: 0,     // segments the store already holds (a step or steer committed)
   };
 }
 
@@ -49,6 +50,14 @@ export function applyFrame(t, f) {
     }
     case 'turn.phase':
       t.phase = { phase: p.phase, retryAfterMs: p.retryAfterMs, at: Date.now() };
+      // A retry re-runs a call whose output the store does not hold: every
+      // segment after the last committed boundary — text, reasoning, tool rows
+      // without a result — belongs to the attempt that just failed. Drop that
+      // tail now, or the two attempts splice into one answer. The boundary is
+      // the last turn.step_finished or folded steer (docs/audit/decisions.md
+      // D-06), never a tool row's status: a row is settled when activity
+      // resumes, whether or not a result ever arrived.
+      if (p.phase === 'retry_wait') t.segments.length = Math.min(t.segments.length, t.persistedMark || 0);
       break;
     case 'turn.tool_call':
       t.segments.push({ id: `${t.turnId}:${++t.n}`, kind: 'tool', callId: p.callId, name: p.name, input: '', output: '', status: 'requested' });
@@ -69,11 +78,17 @@ export function applyFrame(t, f) {
       if (s?.kind === 'steer' && !s.final && s.inputId === p.inputId) s.text += p.text || '';
       else { settleTools(t, 'Model activity resumed'); t.segments.push({ id: `${t.turnId}:${++t.n}`, kind: 'steer', inputId: p.inputId, text: p.text || '' }); }
       if (p.final) last(t).final = true;
+      // A folded steer is committed to history before its frame is emitted, so
+      // it is a boundary a retry must not cut past.
+      t.persistedMark = t.segments.length;
       break;
     }
     case 'turn.step_finished':
       t.usage = p.usage || t.usage;
       if (p.finishReason !== 'tool_calls') settleTools(t, 'Step ended');
+      // The step's messages are appended and saved before the next provider
+      // call, so this is the last position the store is known to hold.
+      t.persistedMark = t.segments.length;
       break;
     case 'turn.completed':
     case 'turn.failed':
@@ -126,6 +141,37 @@ export function historyItems(messages, cwd = '') {
       }
     }
     if (m.finishReason === 'interrupted') out.push({ id: `${m.id}:int`, kind: 'interrupted' });
+  }
+  return out;
+}
+
+// joinText folds neighbouring text items into one block. A part is a
+// persistence boundary — the server seals a step's text, and an interrupted
+// reply drops the tool call that split it — not a presentation one: drawn as
+// separate Markdown documents, one sentence split at that boundary becomes two
+// paragraphs, a fence split there is parsed twice and comes out broken, and
+// the copy of the answer carries the seam. Joining keeps the first item's id,
+// so the DOM key stays stable while the text grows, and it runs before
+// group(), so the live and the stored path render one <Markdown> either way.
+//
+// Two texts can also be neighbours because the record between them draws no
+// row at all: the job writes a system-role tool-context record between two
+// assistant messages, and historyItems has no item for a record that is not
+// conversation. Joining those is right — the reader would otherwise see one
+// answer split by a seam only the store can see. Every boundary a reader cares
+// about is an item (a tool ran, the owner steered, a note landed, the turn was
+// interrupted), so it still stops the join. What a joined block loses is the
+// per-message id: it keeps the first item's, which is a render key and nothing
+// else — no caller reads a text item's id as a message id.
+export function joinText(items) {
+  const out = [];
+  for (const it of items || []) {
+    const prev = out[out.length - 1];
+    if (it?.kind === 'text' && prev?.kind === 'text') {
+      out[out.length - 1] = { ...prev, text: prev.text + it.text };
+      continue;
+    }
+    out.push(it);
   }
   return out;
 }

@@ -195,10 +195,11 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 		}
 		// Provider call — one attempt plus bounded retries for
 		// transient upstream failures (rate limit, 5xx, transport).
-		// A retry is only honest while nothing reached the client: a
-		// delta already emitted or a message already appended would
-		// duplicate on a second call, so those failures — like client
-		// statuses and cancels — stay definitive.
+		// A retry is honest until the attempt persists: an appended
+		// message would duplicate on a second call and stays definitive,
+		// while streamed-but-uncommitted output is the client's to drop
+		// on retry_wait (docs/api/websocket.md, ADR-0003). Client statuses
+		// and cancels stay definitive too.
 		var added []entity.Message
 		var err error
 		var canceled bool
@@ -223,8 +224,10 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 			}
 			status := apperror.As(err).StatusCode()
 			transient := status == 429 || status >= 500
-			if !transient || attempt == len(sendRetryBackoff) ||
-				len(added) > 0 || len(parts) > 0 {
+			// Streamed output never blocks the retry: the attempt
+			// committed nothing, and the client drops its abandoned tail
+			// when it sees retry_wait. An appended message does block it.
+			if !transient || attempt == len(sendRetryBackoff) || len(added) > 0 {
 				break
 			}
 			// A provider-asked wait (Retry-After) wins over our own

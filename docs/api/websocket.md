@@ -13,6 +13,12 @@ room gains or loses a live turn. The
 OpenAPI spec in [`openapi.yaml`](./openapi.yaml) covers only the HTTP
 upgrade — it does not define frames.
 
+A clause that names a ticket is **contract-first**: the sentence is what a
+client may rely on, and the ticket is the work that makes the server honour it
+(retry gate — T-02; attach on every unsatisfied live watch — T-04; the replay
+bound — T-17; the provider-5xx code rule — T-03). Everything else on this page
+describes the code as it stands.
+
 ## Connection
 
 - **Endpoint:** `GET /api/ws`, upgraded to
@@ -295,19 +301,34 @@ Common envelope fields:
 ```
 
 - Attaches this socket to the turn and replays journaled frames with
-  `seq > afterSeq` verbatim (original `requestId`s included). `afterSeq`
-  `-1` replays the whole journal from `seq` 0. Afterwards the socket
-  stays attached and receives live frames.
+  `seq > afterSeq` verbatim (original `requestId`s included), **as far as
+  the replay fits the socket's free queue space minus the headroom the
+  server keeps for live traffic** — never "the whole queue": the next live
+  frame must still fit after the replay. `afterSeq` `-1` asks for the whole
+  journal from `seq` 0. Afterwards the socket stays attached and receives
+  live frames.
+- **The replay is bounded because the queue is.** A subscriber has a bounded
+  outbound queue and a full queue kills that socket (never the turn). A
+  replay allowed to fill the queue — even to an exact fit — would die on the
+  next live delta, so the tab would cycle reconnect → replay → death. A
+  replay beyond that budget is answered like any other unsatisfiable window:
+  `turn.resync_required`, no replayed frames, then the live attach below.
 - If the turn is unknown, the journal has expired, the `turnId` belongs
-  to a different conversation, `afterSeq` exceeds the latest `seq`, or a
-  retained range has a gap at `afterSeq`, the reply is
-  `turn.resync_required` — the client must then re-read via
+  to a different conversation, `afterSeq` exceeds the latest `seq`, a
+  retained range has a gap at `afterSeq`, or the replay exceeds the budget,
+  the reply is `turn.resync_required` — the client must then re-read via
   `GET /api/conversations/{id}` and `GET .../messages` and render
   **persisted** state. Missing deltas are never fabricated.
-- On a **gap in an active turn** the socket answers
-  `resync_required` and still attaches for live frames — the tab sees
-  the terminal while it re-reads history; a finished turn with a gap
-  answers `resync_required` and attaches nothing.
+- **Any unsatisfiable watch on a live turn still attaches.** After the
+  `turn.resync_required` the socket joins the turn's live frames, so the tab
+  sees the rest of the stream and the terminal while it re-reads history. A
+  finished turn attaches nothing: the verdict and the receipt snapshot in
+  the payload are the whole answer.
+- **The attachment guarantee.** A client that received
+  `turn.resync_required` for a turn that was live at that moment also
+  receives that turn's terminal frame — unless its own socket dies or its
+  queue overflows. A `resync_required` is never the end of a turn the client
+  is watching.
 - Watching a finished turn replays whatever the journal still holds
   (possibly through its terminal frame) or answers `resync_required`.
 
@@ -502,6 +523,37 @@ ends the wait.
   "payload": { "phase": "retry_wait", "retryAfterMs": 45000 }
 }
 ```
+
+**When a provider call may be retried.** A call is retried only while its
+attempt has **persisted nothing**: a transient failure — `429`, an upstream
+`5xx`, or a transport failure — with no message appended to the conversation
+is retried after the announced pause. An attempt that appended a message is
+never replayed: that message is the turn's outcome and the failure becomes the
+terminal. Streamed deltas are **not** persistence — a retried call rebuilds
+its output from its own stream — so one `429` after the first delta does not
+end the turn. Anti-duplication therefore has two owners: the harness persists
+only the attempt that succeeds, and the client discards the abandoned
+attempt's live output when it sees `retry_wait`.
+
+**The discard boundary is the last `turn.step_finished`.** On
+`turn.phase {"phase":"retry_wait"}` the client drops everything this turn
+streamed *after* its last `turn.step_finished` — text, reasoning, and tool
+rows without a result — back to that boundary. A turn that has not finished a
+step yet drops everything it streamed: nothing of an unpersisted attempt
+survives. It never drops history rows,
+the user line, a folded steer, a finished step's usage, or the output of a
+step that already finished. The boundary is trustworthy because a finished
+step is persisted before the next provider call starts: the frame is emitted
+when the call ends and the message write follows it immediately, and a write
+that fails ends the turn instead of calling the provider again. A `settled`
+tool row is **not** a boundary on its own — a tool row is also settled when
+the turn ends.
+
+**Compaction is not a retry.** A `413`-driven fold-and-retry keeps the
+stricter gate: it runs only when the attempt streamed and persisted nothing,
+because a fold rewrites the history the client is rendering. It announces
+`compacting` instead of `retry_wait`, so no client state depends on it.
+
 All provider reasoning text, including raw `reasoning_content` and
 `reasoning_text` as well as provider-supplied summaries, crosses as
 `turn.reasoning` chunks in the same order as other stream events:
@@ -616,6 +668,15 @@ tool-using turn emits several of these. `finishReason` is one of `stop`,
 `tool_calls`, `length`, `content_filter`; `usage` is the same shape as
 the HTTP `Usage` projection:
 
+A `turn.step_finished` also marks a step the store **holds**: the message
+this call produced and, when it asked for tools, their results are persisted
+before the turn makes another provider call. The frame crosses a moment
+earlier — it is the call's end event, and the write follows it immediately —
+so the guarantee a client may build on is the ordering, not simultaneity: a
+persist that fails ends the turn (`turn.failed`) instead of calling the
+provider again, so no later frame of the turn describes a step the store
+lacks. This is the boundary the `retry_wait` discard rule refers to.
+
 ```json
 {
   "type": "turn.step_finished",
@@ -684,6 +745,8 @@ only the job's return ends the turn.
 cancellation, provider errors, engine faults — a client never waits
 indefinitely after `turn.opened`. (A command rejected before
 allocation gets `error`, not this frame — there is no turn to fail.)
+Every `turn.failed` carries `status`, `code`, and a non-empty `message`; a
+failure frame is never a bare status a client has to explain itself.
 
 ```json
 {
@@ -705,16 +768,30 @@ allocation gets `error`, not this frame — there is no turn to fail.)
 - `status` — the same HTTP-shaped status the REST surface would return
   for the failure: `400` invalid, `404` missing, `408` canceled,
   `410` deleted-underneath, `413` provider context overflow, `429` room
-  queue full (or upstream rate-limit, `code` `upstream_error`), `500`
-  internal, `502`/`504` upstream, `503` shutting down.
+  queue full, `500` internal, `502`/`504` upstream, `503` shutting down.
+  A provider status outside that list crosses as-is — a `529` overloaded
+  is sent as `529` — because the status is the fact and `code` is the
+  classification.
 - `code` — the same stable code strings as the HTTP problem catalog
   (`invalid_argument`, `not_found`, `interrupted`, `gone`,
   `input_too_large`, `queue_full`, `internal`, `upstream_error`,
-  `unavailable`, `upstream_timeout`). Command-level `error` frames may
+  `unavailable`, `upstream_timeout`). The provider/server split belongs to
+  the code: **a failure that came from the provider is an upstream code** —
+  `upstream_error` for its `5xx` (`500`, `503`, and the non-standard `529`
+  overloaded included) and for its `429`, `upstream_timeout` for its
+  deadline. `unavailable` is this server shutting down; `internal` is a
+  fault in the harness itself. A provider-originated `5xx` therefore never
+  reports `internal` or `unavailable`. Command-level `error` frames may
   additionally carry `unimplemented` for a recognized command whose
   phase has not landed yet (none today — reserved for future commands)
   and `queue_full` for turn admission, not just room mailboxes.
-- `message` — display-safe only; **internal causes are never exposed**.
+- `message` — display-safe and **never empty**: internal causes are never
+  exposed, and a failure with nothing else to say states that in a
+  sentence naming the status and code rather than sending nothing.
+- `retryAfterMs` — present only when the provider named a pause
+  (`Retry-After`) longer than the turn was willing to sit out, which is
+  why the turn failed instead of retrying: the client should not retry
+  sooner. Absent on every other failure.
 - `userMessagePersisted` — on send turns, whether the user line
   committed before the failure (`true` = it is in history even though
   the turn died — the failed-send receipt). On edit turns it is absent
@@ -780,7 +857,10 @@ outbound frames per socket, a hard 1 MiB cap on any single outbound
 frame (a frame that can't fit — e.g. oversized provider-originated
 metadata — terminates that turn with a sanitized `turn.failed` `413`),
 a journal of 512 frames / 4 MiB / 2 minutes post-terminal retention,
-pings every 25 s with a 60 s pong deadline, a 10 s write deadline,
+a `turn.watch` replay that must fit the socket's free outbound queue minus
+the server's live-traffic headroom (queued frames cap at 64; a deeper
+window answers `turn.resync_required` instead), pings every 25 s with a
+60 s pong deadline, a 10 s write deadline,
 32 steering submissions per turn lifetime, requestIds of at most 128
 bytes on `turn.steer` and `turn.steer_recall`, and
 `turn.delta`, `turn.reasoning`, `turn.tool_input`, `turn.tool_output`,

@@ -17,14 +17,15 @@ func checkDir(store drepo.Workspace, root string) (string, error) {
 	return store.CheckRoot(root)
 }
 
-// callRoot opens a repository workspace session for one call: the turn-scoped
-// workspace dir (the ctx value the application sets) wins over the
-// tool's configured directory, so a conversation can retarget its file
-// tree. The caller owns Close.
-func callRoot(ctx context.Context, store drepo.Workspace, fallback string) (drepo.WorkspaceSession, error) {
+// callDir answers the workspace directory a call resolves paths in: the
+// turn-scoped workspace dir (the ctx value the application sets) wins over
+// the tool's configured directory, so a conversation can retarget its file
+// tree. What the path argument means is the repository's decision
+// (Workspace.LocateRead/LocateWrite), not this adapter's.
+func callDir(ctx context.Context, fallback string) string {
 	dir := service.WorkspaceDir(ctx)
 	if dir == "" {
 		dir = fallback
 	}
-	return store.Open(ctx, dir)
+	return dir
 }

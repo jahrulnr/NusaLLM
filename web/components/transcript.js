@@ -2,8 +2,8 @@
 // item model (lib/turn.js). Prose renders as Markdown; reasoning and tool
 // calls fold into collapsible "work" groups between prose.
 import { html, useEffect, useLayoutEffect, useRef, useState } from '/vendor/preact/htm-preact.mjs';
-import { renderInto, disposeTree, handleCopyClick } from '../lib/markdown.js';
-import { historyItems, group, toolFailed } from '../lib/turn.js';
+import { renderInto, disposeTree, handleCopyClick, handleCopy } from '../lib/markdown.js';
+import { historyItems, joinText, group, toolFailed } from '../lib/turn.js';
 import { ToolRow } from './toolcard.js';
 import { editMessage, isBusy, retry, loadEarlier, loadHistory } from '../lib/chat.js';
 import { emit } from '../lib/store.js';
@@ -21,7 +21,7 @@ export function Markdown({ text, class: cls = '' }) {
   const ref = useRef();
   useLayoutEffect(() => { renderInto(ref.current, text); }, [text]);
   useEffect(() => () => ref.current && disposeTree(ref.current), []);
-  return html`<div ref=${ref} class=${cx('md', cls)} onClick=${handleCopyClick}></div>`;
+  return html`<div ref=${ref} class=${cx('md', cls)} onClick=${handleCopyClick} onCopy=${handleCopy}></div>`;
 }
 
 function CopyButton({ text, label = 'Copy' }) {
@@ -156,8 +156,12 @@ export function Transcript({ room, scroller }) {
     if (at >= 0) hist = hist.slice(0, at);
   }
   const liveItems = r.live ? r.live.segments : [];
-  const items = group(hist);
-  const liveGroups = group(liveItems);
+  // One answer, one Markdown document: text the store split across parts (or
+  // across the live segments a step sealed) is joined before grouping, on the
+  // stored and the live path alike. Boundaries that are real events survive as
+  // their own items, so joinText only ever folds text into text.
+  const items = group(joinText(hist));
+  const liveGroups = group(joinText(liveItems));
 
   // Older pages load as the reader nears the top. The distance from the
   // bottom is tracked on every scroll and re-applied after a prepend, so

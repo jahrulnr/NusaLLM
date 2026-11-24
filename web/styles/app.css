@@ -142,6 +142,11 @@
 }
 .copybtn:hover { background: var(--hover); color: var(--fg); }
 
+/* Renderer chrome is not part of the answer: selecting a reply copies its
+   prose, code and footnote bodies — not the language label, the Copy button,
+   the footnote digits, or the "Diagram source" toggle. */
+.md .codeblock header, .md .copybtn, .md .md-fnref, .md .diagram summary { user-select: none; -webkit-user-select: none; }
+
 .diagram { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--code-bg); }
 .diagram .canvas { min-height: 80px; overflow: auto; padding: 8px; }
 .diagram .canvas svg { max-width: 100%; height: auto; }

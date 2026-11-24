@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
@@ -14,20 +13,19 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 )
 
-// FileWriteTool creates or replaces a text file under the turn's
-// workspace — the constructor carries the schema and validates the
-// default sandbox boundary; Execute resolves the call input against an
-// os.Root opened per call so `..` traversal and symlink escapes fail
-// alike.
+// FileWriteTool creates or replaces a text file named by a path argument —
+// the workspace repository decides what the argument means and refuses a
+// write outside the workspace, so this adapter never expands, joins, or
+// stats a path.
 type FileWriteTool struct {
 	dir    string
 	store  drepo.Workspace
 	schema valueobject.ToolSchema
 }
 
-// NewFileWriteTool binds the tool's default root: every requested path
-// resolves inside it — os.Root confines traversal and symlink escapes
-// alike. A turn-scoped workspace dir overrides it per call.
+// NewFileWriteTool binds the tool's default root: a relative path resolves
+// inside it, an absolute path inside it resolves relative to it. A
+// turn-scoped workspace dir overrides it per call.
 func NewFileWriteTool(store drepo.Workspace, root string) (service.Tool, error) {
 	abs, err := checkDir(store, root)
 	if err != nil {
@@ -35,8 +33,8 @@ func NewFileWriteTool(store drepo.Workspace, root string) (service.Tool, error) 
 	}
 	schema, err := valueobject.NewToolSchema(
 		"write_file",
-		"Create or overwrite a UTF-8 text file relative to the workspace root.",
-		json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Path relative to the workspace root"},"content":{"type":"string","description":"Complete file content — an existing file is replaced"}},"required":["path","content"]}`),
+		"Create or overwrite a UTF-8 text file relative to the workspace root. A leading ~/… or a file: URL is expanded, but a path outside the workspace is refused — bind the folder or use exec.",
+		json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Path relative to the workspace root (or an absolute path inside it)"},"content":{"type":"string","description":"Complete file content — an existing file is replaced"}},"required":["path","content"]}`),
 		true,
 		enum.ToolPermissionAgent,
 	)
@@ -64,27 +62,16 @@ func (tool *FileWriteTool) Execute(ctx context.Context, call entity.ToolCall, _ 
 	if strings.TrimSpace(input.Path) == "" {
 		return service.ToolResult{}, fmt.Errorf("path is required")
 	}
-	root, err := callRoot(ctx, tool.store, tool.dir)
+	place, err := tool.store.LocateWrite(ctx, callDir(ctx, tool.dir), input.Path)
 	if err != nil {
 		return service.ToolResult{}, err
 	}
-	defer root.Close()
-	// Stat first so an existing directory is reported as such instead of
-	// surfacing an opaque open error; a missing path is the normal case.
-	if info, err := root.Stat(input.Path); err == nil && info.IsDir() {
-		return service.ToolResult{}, fmt.Errorf("%q is a directory", input.Path)
-	}
-	if dir := filepath.Dir(input.Path); dir != "." {
-		// 0o700: created dirs may hold agent-written secrets, matching the
-		// repository convention for key-bearing content.
-		if err := root.MkdirAll(dir, 0o700); err != nil {
-			return service.ToolResult{}, err
-		}
-	}
+	defer place.Close()
 	// 0o600: agent-written files may carry secrets (.env, tokens) — the
 	// same convention as repository writes that can hold key material. The
 	// perm applies only at creation; an existing file keeps its mode.
-	if err := root.WriteFile(input.Path, []byte(input.Content), 0o600); err != nil {
+	// Parent directories are created owner-only for the same reason.
+	if err := place.Create([]byte(input.Content)); err != nil {
 		return service.ToolResult{}, err
 	}
 	// Confirm, don't echo: the returned string is what the call's output

@@ -18,8 +18,11 @@ or use case, then make the mechanism obey that contract.
 - `error/` and `redact/` provide shared error and diagnostic mechanics.
 - `system/` is the host-OS integration boundary — the service-manager
   port plus per-manager implementations selected by build tag and
-  presence probing. Verbs are intent-shaped; manager vocabulary stays
-  inside the implementation.
+  presence probing, and path-syntax decoding (`patharg`, added by T-01:
+  `file:` URLs, a leading `~`, Windows `%VAR%`). Verbs are intent-shaped;
+  manager vocabulary stays inside the implementation. Path **syntax** is
+  all `system/` owns: which folder a path lands in, and whether it may be
+  opened at all, is the workspace repository's decision (ADR-0002).
 - `delivery/` is a transport boundary when implemented; parse requests,
   invoke application methods, and render responses there.
 

@@ -2,6 +2,8 @@ package toolfile
 
 import (
 	"context"
+	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -50,6 +52,8 @@ func TestFileWriteToolWrites(t *testing.T) {
 	}
 }
 
+// fakeWorkspace is a driver that keeps the path rule itself — the port's
+// LocateWrite decides placement, so the session only ever sees a name.
 type fakeWorkspace struct {
 	drepo.Workspace
 	session *fakeWorkspaceSession
@@ -59,6 +63,27 @@ func (w fakeWorkspace) CheckRoot(string) (string, error) { return "/remote/work"
 func (w fakeWorkspace) Open(context.Context, string) (drepo.WorkspaceSession, error) {
 	return w.session, nil
 }
+
+func (w fakeWorkspace) LocateWrite(_ context.Context, _, raw string) (drepo.Placement, error) {
+	return fakePlacement{session: w.session, name: raw}, nil
+}
+
+func (w fakeWorkspace) LocateRead(context.Context, string, string) (drepo.Placement, error) {
+	return nil, errors.New("read placement unused by this test")
+}
+
+type fakePlacement struct {
+	session *fakeWorkspaceSession
+	name    string
+}
+
+func (p fakePlacement) Open(context.Context) (io.ReadCloser, fs.FileInfo, error) {
+	return nil, nil, errors.New("open unused by this test")
+}
+
+func (p fakePlacement) Create(data []byte) error { return p.session.WriteFile(p.name, data, 0o600) }
+func (p fakePlacement) URI() string              { return "file:///remote/work/" + p.name }
+func (p fakePlacement) Close() error             { return nil }
 
 type fakeWorkspaceSession struct {
 	drepo.WorkspaceSession

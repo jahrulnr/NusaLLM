@@ -257,9 +257,14 @@ type stepFinishedPayload struct {
 // submitted, with its state: persisted, claimed (drained but
 // unconsumed), pending (never drained), or recalled.
 type terminalPayload struct {
-	Status               int                 `json:"status,omitempty"`
-	Code                 string              `json:"code,omitempty"`
-	Message              string              `json:"message,omitempty"`
+	Status  int    `json:"status,omitempty"`
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
+	// RetryAfterMs is the provider-asked wait (Retry-After) the failure
+	// carried, when it carried one: the client can hold Retry until then
+	// instead of retrying into the same refusal. Absent when the provider
+	// named no wait.
+	RetryAfterMs         int64               `json:"retryAfterMs,omitempty"`
 	UserMessagePersisted *bool               `json:"userMessagePersisted,omitempty"`
 	Steering             []steerStatePayload `json:"steering,omitempty"`
 	ResyncRequired       bool                `json:"resyncRequired"`

@@ -1068,6 +1068,14 @@ func (virtualWorkspace) Open(context.Context, string) (drepo.WorkspaceSession, e
 	return nil, fmt.Errorf("unused by scripted service")
 }
 
+func (virtualWorkspace) LocateRead(context.Context, string, string) (drepo.Placement, error) {
+	return nil, fmt.Errorf("unused by scripted service")
+}
+
+func (virtualWorkspace) LocateWrite(context.Context, string, string) (drepo.Placement, error) {
+	return nil, fmt.Errorf("unused by scripted service")
+}
+
 func (virtualWorkspace) OpenHost(context.Context, string) (io.ReadCloser, fs.FileInfo, error) {
 	return nil, nil, fmt.Errorf("host reads unsupported on virtual workspace")
 }

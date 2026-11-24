@@ -86,3 +86,47 @@ func TestMessageAttachments(t *testing.T) {
 		t.Fatalf("unexpected attachments: %+v", m.Attachments())
 	}
 }
+
+// Two neighbouring prose parts are one stretch of text: a caller that
+// dropped the part between them (an interrupted reply drops unrecorded
+// tool calls) must not leave them adjacent, or a renderer projects one
+// paragraph as two documents.
+func TestSetPartsCanonicalizesNeighbouringProse(t *testing.T) {
+	m, _ := NewMessage(enum.RoleAssistant, "Hello")
+	m.SetParts([]MessagePart{
+		{Kind: MessagePartReasoning, Text: "think"},
+		{Kind: MessagePartReasoning, Text: "ing"},
+		{Kind: MessagePartText, Text: "Hel"},
+		{Kind: MessagePartToolCall, ToolCallID: "call_1"},
+		{Kind: MessagePartText, Text: "lo"},
+		{Kind: MessagePartText, Text: " there"},
+	})
+	got := m.Parts()
+	if len(got) != 4 {
+		t.Fatalf("parts = %+v, want 4 (reasoning, text, call, text)", got)
+	}
+	if got[0].Kind != MessagePartReasoning || got[0].Text != "thinking" {
+		t.Fatalf("reasoning part = %+v, want the two chunks merged", got[0])
+	}
+	if got[1].Kind != MessagePartText || got[1].Text != "Hel" {
+		t.Fatalf("text before the call = %+v", got[1])
+	}
+	if got[2].Kind != MessagePartToolCall || got[2].ToolCallID != "call_1" {
+		t.Fatalf("tool part = %+v, want it kept as its own part", got[2])
+	}
+	if got[3].Kind != MessagePartText || got[3].Text != "lo there" {
+		t.Fatalf("text after the call = %+v, want the two chunks merged", got[3])
+	}
+}
+
+// Two calls side by side are two events even though the kind matches.
+func TestSetPartsKeepsNeighbouringCallsSeparate(t *testing.T) {
+	m, _ := NewMessage(enum.RoleAssistant, "")
+	m.SetParts([]MessagePart{
+		{Kind: MessagePartToolCall, ToolCallID: "call_1"},
+		{Kind: MessagePartToolCall, ToolCallID: "call_2"},
+	})
+	if got := m.Parts(); len(got) != 2 || got[0].ToolCallID != "call_1" || got[1].ToolCallID != "call_2" {
+		t.Fatalf("parts = %+v, want both calls distinct", got)
+	}
+}

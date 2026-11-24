@@ -1,0 +1,72 @@
+{
+  "t01": {
+    "owner": "BE",
+    "fix": "path policy, ADR-0002 (T-01)",
+    "status": "landed"
+  },
+  "t02": {
+    "owner": "BE",
+    "fix": "retry gate on persistence, ADR-0003 \u00a71-3 (T-02)",
+    "status": "landed"
+  },
+  "t03": {
+    "owner": "BE",
+    "fix": "wire robustness rows 1/2/3/4/10 (T-03)",
+    "status": "pending"
+  },
+  "t04": {
+    "owner": "BE",
+    "fix": "attach after any unsatisfiable live watch, ADR-0003 \u00a74 (T-04)",
+    "status": "landed"
+  },
+  "t08": {
+    "owner": "FE",
+    "fix": "joinText before group (T-08)",
+    "status": "landed"
+  },
+  "t10": {
+    "owner": "FE",
+    "fix": "liveHistory/liveSegments replace cutHistory (T-10)",
+    "status": "pending"
+  },
+  "t11": {
+    "owner": "FE",
+    "fix": "diagram box null-guard + per-block try/catch (T-11)",
+    "status": "landed"
+  },
+  "t17": {
+    "owner": "BE",
+    "fix": "replay budget bounds turn.watch (T-17)",
+    "status": "landed"
+  },
+  "t18": {
+    "owner": "BE",
+    "fix": "steer fold row carries inputId (T-18, round 2)",
+    "status": "pending"
+  },
+  "tc": {
+    "owner": "BE",
+    "fix": "turn.failed carries message + retryAfterMs, ADR-0003 \u00a75",
+    "status": "landed"
+  },
+  "tp": {
+    "owner": "BE",
+    "fix": "a failed append ends the turn (D-06 boundary)",
+    "status": "landed"
+  },
+  "tr": {
+    "owner": "BE",
+    "fix": "replay leaves headroom (replayHeadroom = cap/2) for the next live frame (T-17 exact fit)",
+    "status": "landed"
+  },
+  "t01b": {
+    "owner": "BE",
+    "fix": "T-01 path-policy regressions (media pin, CRLF patch, write refusal, exec escape, ~ binding)",
+    "status": "landed"
+  },
+  "t16": {
+    "owner": "BE",
+    "fix": "provider 5xx classified upstream_error, never internal (T-16)",
+    "status": "pending"
+  }
+}
