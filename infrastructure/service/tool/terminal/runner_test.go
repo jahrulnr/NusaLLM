@@ -24,8 +24,10 @@ func TestLocalRunnerExitSignalAndStartFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("signal death returned a Go error: %v", err)
 	}
-	if res.Code != 0 || !strings.HasPrefix(res.Signal, "signal:") {
-		t.Fatalf("signal death => %+v, want a signal description", res)
+	// The value is the signal's name; the "signal: " label belongs to the
+	// renderer, not the recorded status.
+	if res.Code != 0 || res.Signal != "killed" {
+		t.Fatalf("signal death => %+v, want signal killed", res)
 	}
 
 	if _, err := runner.Run(t.Context(), "true", "/nonexistent-workspace-for-runner-test", nil, &out); err == nil {

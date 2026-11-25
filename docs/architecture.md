@@ -355,6 +355,19 @@ is reused. Each iteration:
   `MaxTurnStep` (default 512) returns a 500 and *keeps* the unanswered
   calls in history — "the model did ask," and a retry replays them.
 
+**A path argument is the workspace's decision, not the tool's.** A tool
+executor receives the argument exactly as the model wrote it and hands it to
+the repository — `store.LocateRead(ctx, callDir(ctx, tool.dir), input.Path)`
+(`infrastructure/service/tool/file/root.go:20-31`, `read.go:66`,
+`write.go:65`, `patch.go:70`, `read_media.go:84`). The repository owns the
+whole rule: syntax (`infrastructure/system/patharg`: `file:` URL, a leading
+`~`, Windows `%VAR%`), placement (relative → the turn's workspace directory;
+absolute inside → confined by `os.Root`; absolute outside → a host read for a
+read, an error for a write), and the `Placement` the tool then opens or
+creates. No adapter expands, cleans, joins, or stats a path, and a non-local
+driver resolves the same argument against its own host (ADR-0002,
+`docs/persistence.md` § Workspace files).
+
 Back in `Send.Execute`, a successful turn re-binds the resolved
 route/model and `Save`s — an existing room adopts an override only when
 the turn under it succeeded, so a failed retry leaves the old binding

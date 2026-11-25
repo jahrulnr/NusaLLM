@@ -4,15 +4,45 @@
     "fix": "path policy, ADR-0002 (T-01)",
     "status": "landed"
   },
+  "t01b": {
+    "owner": "BE",
+    "fix": "T-01 path-policy regressions (media pin, CRLF patch, write refusal, exec escape, ~ binding)",
+    "status": "landed"
+  },
   "t02": {
     "owner": "BE",
     "fix": "retry gate on persistence, ADR-0003 \u00a71-3 (T-02)",
     "status": "landed"
   },
-  "t03": {
+  "t03a": {
     "owner": "BE",
-    "fix": "wire robustness rows 1/2/3/4/10 (T-03)",
-    "status": "pending"
+    "fix": "messages: stop_reason is terminal evidence (T-03 row 1)",
+    "status": "landed"
+  },
+  "t03b": {
+    "owner": "BE",
+    "fix": "responses: error event keeps wording + Retry-After (T-03 row 2)",
+    "status": "landed"
+  },
+  "t03c": {
+    "owner": "BE",
+    "fix": "200 JSON error envelope surfaces the provider message (T-03 row 3)",
+    "status": "landed"
+  },
+  "t03d": {
+    "owner": "BE",
+    "fix": "usage partial object merges (T-03 row 4)",
+    "status": "landed"
+  },
+  "t03e": {
+    "owner": "BE",
+    "fix": "truncated tool call fails as a retryable 502 (T-03 row 5)",
+    "status": "landed"
+  },
+  "t03f": {
+    "owner": "BE",
+    "fix": "provider 5xx classified upstream_error, never internal (T-03 row 6 / T-16)",
+    "status": "landed"
   },
   "t04": {
     "owner": "BE",
@@ -27,11 +57,31 @@
   "t10": {
     "owner": "FE",
     "fix": "liveHistory/liveSegments replace cutHistory (T-10)",
-    "status": "pending"
+    "status": "landed"
   },
   "t11": {
     "owner": "FE",
     "fix": "diagram box null-guard + per-block try/catch (T-11)",
+    "status": "landed"
+  },
+  "t15": {
+    "owner": "FE",
+    "fix": "store.applyRecord/recordKey version CAS, D-08 (T-15)",
+    "status": "landed"
+  },
+  "t16a": {
+    "owner": "BE",
+    "fix": "apply_patch matches an LF anchor in a CRLF file (T-16a)",
+    "status": "landed"
+  },
+  "t16b": {
+    "owner": "BE",
+    "fix": "read_file reports invalid UTF-8 instead of mangling it (T-16b)",
+    "status": "landed"
+  },
+  "t16c": {
+    "owner": "BE",
+    "fix": "a silent exec reports its exit status (T-16c)",
     "status": "landed"
   },
   "t17": {
@@ -41,8 +91,8 @@
   },
   "t18": {
     "owner": "BE",
-    "fix": "steer fold row carries inputId (T-18, round 2)",
-    "status": "pending"
+    "fix": "steer fold row and projection carry inputId (T-18)",
+    "status": "landed"
   },
   "tc": {
     "owner": "BE",
@@ -59,14 +109,39 @@
     "fix": "replay leaves headroom (replayHeadroom = cap/2) for the next live frame (T-17 exact fit)",
     "status": "landed"
   },
-  "t01b": {
+  "t30": {
     "owner": "BE",
-    "fix": "T-01 path-policy regressions (media pin, CRLF patch, write refusal, exec escape, ~ binding)",
+    "fix": "exec_session writes the terminal exit marker (T-30)",
     "status": "landed"
   },
-  "t16": {
+  "t31": {
     "owner": "BE",
-    "fix": "provider 5xx classified upstream_error, never internal (T-16)",
-    "status": "pending"
+    "fix": "compaction of an unfoldable room answers 400 (T-31)",
+    "status": "landed"
+  },
+  "t27": {
+    "owner": "BE",
+    "fix": "tool outcome/exit as fields + turn.tool_result, D-12 (T-27)",
+    "status": "landed"
+  },
+  "t34": {
+    "owner": "BE",
+    "fix": "a bad record degrades one call, not the history read (T-34)",
+    "status": "landed"
+  },
+  "t33": {
+    "owner": "BE",
+    "fix": "exit.signal is the bare signal name; text keeps (signal: \u2026) (T-33)",
+    "status": "landed"
+  },
+  "t34b": {
+    "owner": "BE",
+    "fix": "an unreadable message record is skipped too (T-34 extension)",
+    "status": "landed"
+  },
+  "t34c": {
+    "owner": "BE",
+    "fix": "corrupt patch line / unknown record kind: read survives with a diagnostic (T-34c)",
+    "status": "landed"
   }
 }

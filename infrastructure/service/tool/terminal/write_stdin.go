@@ -80,6 +80,7 @@ func (tool *WriteStdinTool) Execute(ctx context.Context, call entity.ToolCall, e
 	}
 
 	var text string
+	var lastPoll dservice.TerminalPoll
 	err := tool.store.Interact(ctx, convID, input.SessionID, func(sess dservice.TerminalSession) error {
 		yield := defaultWriteYield
 		if input.Chars != "" {
@@ -133,6 +134,7 @@ func (tool *WriteStdinTool) Execute(ctx context.Context, call entity.ToolCall, e
 			return err
 		}
 		text = formatPoll(sess.ID(), poll, start, call.OutputWithMiddleTruncateWindow(poll.Output, poll.Output, len(poll.Output), ""))
+		lastPoll = poll
 		return nil
 	})
 	switch {
@@ -141,5 +143,6 @@ func (tool *WriteStdinTool) Execute(ctx context.Context, call entity.ToolCall, e
 	case err != nil:
 		return dservice.ToolResult{}, err
 	}
-	return dservice.ToolResult{Text: text}, nil
+	outcome, status := pollOutcome(lastPoll)
+	return dservice.ToolResult{Text: text, Outcome: outcome, Exit: status}, nil
 }

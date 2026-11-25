@@ -7,7 +7,7 @@
 // call on top of a step the store rejected.
 import { chmodSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { finish, text, toolCall } from '../lib/stub.mjs';
+import { delay, finish, text, toolCall } from '../lib/stub.mjs';
 import { connect, messages, send, waitOpened, waitTerminal } from '../lib/turn.mjs';
 
 export default {
@@ -16,8 +16,9 @@ export default {
   async run({ startServer, startStub }) {
     const stub = await startStub(async function* (body, i) {
       if (i <= 1) {
-        // Both steps ask for a tool: a third call would only happen if the
-        // loop continued past the step whose append failed.
+        // Step 2 is held open long enough for the test to freeze the store
+        // after step 1 is committed; its append is the one that must fail.
+        if (i === 1) await delay(500);
         yield toolCall(`call_step${i + 1}`, 'read_file', { path: 'probe.txt' });
         yield finish('tool_calls');
         return;
@@ -45,12 +46,16 @@ export default {
 
       // Step 1 must be fully stored (its tool output included) before the
       // store is frozen: the failure this test wants is step 2's append, not
-      // step 1's own.
+      // step 1's own. "Stored" means the call has an output — D-12/T-27
+      // replaced the old `completed` word with ok/failed/unknown, so the wait
+      // keys on the output instead of a status string.
       const until = Date.now() + 5000;
       for (;;) {
         const seen = await messages(server, 'c_qa_tp').catch(() => []);
         const call = seen.flatMap((m) => m.toolCalls || []).find((c) => c.id === 'call_step1');
-        if (call?.status === 'completed') break;
+        // Stored means an output exists; the status vocabulary is T-27's
+        // (ok/failed/unknown), so the wait keys on the output, not a word.
+        if (call && call.output !== undefined) break;
         if (Date.now() > until) throw new Error('step 1 tool output never reached the store');
         await new Promise((r) => setTimeout(r, 25));
       }

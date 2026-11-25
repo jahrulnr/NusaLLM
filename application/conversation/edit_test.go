@@ -204,7 +204,7 @@ func TestEditPreemptsRunningTool(t *testing.T) {
 			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: svc},
 			Tools:    map[string]dservice.Tool{"blocking": tool},
 		}},
-		config.NewConfig(), nil, "", nil, nil)
+		config.NewConfig(), nil, "", nil, nil, testWorkers)
 	seed, _ := aggregate.NewConversation("room")
 	seed.SetTools([]valueobject.ToolSchema{tool.Schema()})
 	seed.SetRoute("gw1")
@@ -323,7 +323,7 @@ func TestEditSealedTargetBindsOverrideWorkspace(t *testing.T) {
 			Services:       map[enum.Style]dservice.TextModelService{enum.StyleCompletion: environmentService{label: "local"}},
 			Tools:          map[string]dservice.Tool{"echo": environmentTool{label: "local"}},
 		}},
-		config.NewConfig(), nil, "", nil, nil)
+		config.NewConfig(), nil, "", nil, nil, testWorkers)
 	t.Cleanup(func() { _ = app.Shutdown(context.Background()) })
 
 	if _, err := app.Send(t.Context(), "room", "gw1", "m1", "old question", nil, appjob.SendOptions{}, nil); err != nil {
@@ -461,7 +461,7 @@ func TestEditResolvesEnvironmentBeforeRewrite(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	app := New(convs, gateways, map[enum.Environment]appjob.EnvironmentDriver{}, config.NewConfig(), nil, "", nil, nil)
+	app := New(convs, gateways, map[enum.Environment]appjob.EnvironmentDriver{}, config.NewConfig(), nil, "", nil, nil, testWorkers)
 	t.Cleanup(func() { _ = app.Shutdown(context.Background()) })
 
 	if err := app.Edit(t.Context(), "room", "", "", user.ID(), "edited", appjob.SendOptions{}, nil); apperror.As(err).StatusCode() != 400 {

@@ -80,7 +80,7 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 			if finish == "" {
 				finish = "stop"
 			}
-			return s.commitStream(conv, onEvent, content.String(), reasoning.String(), reasoningContent.String(), details, completeToolCalls(calls, true), finish, usage, logged)
+			return s.commitStream(conv, onEvent, content.String(), reasoning.String(), reasoningContent.String(), details, calls, finish, usage, logged)
 		case err := <-errs:
 			s.logAppend(ctx, "provider.stream", logged)
 			// stream closed — only commit when a real terminal marker was
@@ -100,7 +100,7 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 				// partial (canceled) commits.
 				finish = "stop"
 			}
-			return s.commitStream(conv, onEvent, content.String(), reasoning.String(), reasoningContent.String(), details, completeToolCalls(calls, true), finish, usage, logged)
+			return s.commitStream(conv, onEvent, content.String(), reasoning.String(), reasoningContent.String(), details, calls, finish, usage, logged)
 		case ev := <-events:
 			timer.Reset(s.idle)
 			if ev.done {
@@ -121,7 +121,10 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 				return err
 			}
 			if chunk.Usage != nil {
-				usage = chunk.Usage // may ride an empty-delta choice — keep both
+				// Usage may ride an empty-delta choice, and a later chunk
+				// may repeat only part of it — merge, never replace, or the
+				// input count a final partial object omits is lost.
+				usage = mergeUsage(usage, chunk.Usage)
 			}
 			for _, ch := range chunk.Choices {
 				if ch.FinishReason != "" {
@@ -179,8 +182,14 @@ func (s *Service) commitStream(conv *aggregate.Conversation, onEvent event.TurnE
 			rawDetails = raw
 		}
 	}
+	// A settled stream whose tool call never closed cannot be committed: the
+	// call would vanish without a trace (completeToolCalls drops unparsable
+	// arguments). Fail the step instead — retryable while nothing persisted.
+	if truncatedToolCall(calls) {
+		return apperror.New(502, "upstream truncated a tool call", nil)
+	}
 	msg, err := decodeMessage(MessageBody{
-		Role: "assistant", Content: content, ToolCalls: calls,
+		Role: "assistant", Content: content, ToolCalls: completeToolCalls(calls, true),
 		Reasoning: reasoning, ReasoningContent: reasoningContent, ReasoningDetails: rawDetails,
 	}, finish)
 	if err != nil {
@@ -202,6 +211,22 @@ func (s *Service) commitStream(conv *aggregate.Conversation, onEvent event.TurnE
 	}
 	emit(onEvent, event.NewFinishedEvent(msg.FinishReason(), u))
 	return nil
+}
+
+// truncatedToolCall reports an assembled call whose argument JSON never
+// closed while the call itself was named — the terminal arrived, so the
+// provider settled, but this call cannot be replayed. A call without id or
+// name is a fragment the model never completed, not a truncation of one.
+func truncatedToolCall(calls []ToolCallBody) bool {
+	for _, c := range calls {
+		if c.ID == "" || c.Function.Name == "" {
+			continue
+		}
+		if args := c.Function.Arguments; args != "" && !json.Valid([]byte(args)) {
+			return true
+		}
+	}
+	return false
 }
 
 // completeToolCalls keeps calls whose id and name arrived and whose
@@ -263,6 +288,39 @@ func mergeCallDelta(calls []ToolCallBody, d ToolCallBody) []ToolCallBody {
 	}
 	calls[i].Function.Arguments += d.Function.Arguments
 	return calls
+}
+
+// mergeUsage folds a later usage chunk over what arrived earlier. Providers
+// send usage cumulatively and some proxies repeat only the counters that
+// changed, so a field's presence decides whether it overwrites — including a
+// legitimate zero (a cache count that dropped), which a zero value could not
+// express.
+func mergeUsage(prev, next *UsageBody) *UsageBody {
+	if next == nil {
+		return prev
+	}
+	if prev == nil {
+		return next
+	}
+	if next.PromptTokens != nil {
+		prev.PromptTokens = next.PromptTokens
+	}
+	if next.CompletionTokens != nil {
+		prev.CompletionTokens = next.CompletionTokens
+	}
+	if next.TotalTokens != nil {
+		prev.TotalTokens = next.TotalTokens
+	}
+	if next.PromptDetails.CachedTokens != nil {
+		prev.PromptDetails.CachedTokens = next.PromptDetails.CachedTokens
+	}
+	if next.CacheWrite != nil {
+		prev.CacheWrite = next.CacheWrite
+	}
+	if next.CacheCreationInput != nil {
+		prev.CacheCreationInput = next.CacheCreationInput
+	}
+	return prev
 }
 
 // statusHint maps a mid-stream error envelope to a status — providers send

@@ -63,8 +63,22 @@ export const responses = {
 // value is written as one `data:` line, then the [DONE] marker. Requests are
 // recorded so a scenario can assert what a retry sent. `headers(body, index,
 // url)` may return extra response headers (Retry-After, Content-Type).
+const openStubs = new Set();
+
+// closeAllStubs closes every stub still listening — the runner calls it after
+// the last scenario, so a scenario that forgot its own close cannot hold the
+// process open.
+export async function closeAllStubs() {
+  await Promise.all([...openStubs].map((s) => s.close().catch(() => {})));
+}
+
 export async function startStub(handler, { headers } = {}) {
   const requests = [];
+  // A stub left open keeps Node's event loop alive and the runner hangs after
+  // the report. Track every server so a scenario that forgets its close still
+  // lets the process exit.
+  const live = new Set();
+  process.once('exit', () => { for (const srv of live) { try { srv.close(); } catch { /* gone */ } } });
   const server = http.createServer(async (req, res) => {
     const chunks = [];
     for await (const c of req) chunks.push(c);
@@ -100,12 +114,20 @@ export async function startStub(handler, { headers } = {}) {
     res.end();
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  live.add(server);
   const port = server.address().port;
-  return {
+  const handle = {
     port,
     origin: `http://127.0.0.1:${port}`,
     endpoint: `http://127.0.0.1:${port}/v1`,
     requests,
-    close: () => new Promise((resolve) => server.close(resolve)),
+    close: () => new Promise((resolve) => {
+      live.delete(server);
+      openStubs.delete(handle);
+      server.closeAllConnections?.();
+      server.close(resolve);
+    }),
   };
+  openStubs.add(handle);
+  return handle;
 }

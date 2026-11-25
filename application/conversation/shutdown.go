@@ -4,7 +4,6 @@ import (
 	"context"
 
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
-	"github.com/jahrulnr/nusallm/infrastructure/worker"
 )
 
 // Shutdown rejects future posts, terminates every current room worker, and
@@ -16,11 +15,11 @@ func (app *ConversationApp) Shutdown(ctx context.Context) error {
 		app.shuttingDown = true
 		done := make(chan struct{})
 		app.shutdownDone = done
-		workers := make([]*worker.Worker, 0, len(app.workers))
+		workers := make([]Worker, 0, len(app.workers))
 		for _, w := range app.workers {
 			workers = append(workers, w)
 		}
-		app.workers = make(map[string]*worker.Worker)
+		app.workers = make(map[string]Worker)
 		go func() {
 			stopped := apperror.New(503, "conversation application is shutting down", nil)
 			for _, w := range workers {

@@ -3,6 +3,7 @@ package toolexec
 import (
 	"context"
 	"errors"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -464,6 +465,66 @@ func TestExecSessionReportsOriginalBytes(t *testing.T) {
 	}
 }
 
+// A poll of a process that failed must end with the same marker exec
+// writes — readers recognize a failed tool by the trailing "(exit N)", so a
+// nonzero status that lives only in the header reads as success.
+func TestPollEndsWithTheExitMarker(t *testing.T) {
+	store := NewSessionStore(nil)
+	defer store.TerminateAll()
+	tool, err := NewExecSessionTool(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := dservice.WithConversationID(context.Background(), testConv)
+	// sh exits 3 after printing: the poll needs the final status, not a
+	// live session id.
+	call := mustCall(t, "c1", `{"command":"sh -c 'echo boom; exit 3'","yield_time_ms":5000}`, 1<<20)
+	var res dservice.ToolResult
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		res, err = tool.Execute(ctx, call, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(res.Text, "Process running with session ID") || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !strings.Contains(res.Text, "Process exited with code 3") {
+		t.Fatalf("header lost the exit status: %q", res.Text)
+	}
+	if !strings.HasSuffix(strings.TrimRight(res.Text, "\n"), "(exit 3)") {
+		t.Fatalf("poll does not end with the exit marker: %q", res.Text)
+	}
+	if !strings.Contains(res.Text, "boom") {
+		t.Fatalf("drained output missing: %q", res.Text)
+	}
+}
+
+// A clean exit keeps the header only — there is no failure to report, and
+// a trailing marker would make an ordinary poll look like a failed one.
+func TestPollCleanExitHasNoMarker(t *testing.T) {
+	store := NewSessionStore(nil)
+	defer store.TerminateAll()
+	tool, err := NewExecSessionTool(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := dservice.WithConversationID(context.Background(), testConv)
+	call := mustCall(t, "c1", `{"command":"echo done","yield_time_ms":5000}`, 1<<20)
+	res, err := tool.Execute(ctx, call, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Text, "Process exited with code 0") {
+		t.Fatalf("output = %q", res.Text)
+	}
+	if m := regexp.MustCompile(`\(exit \d+\)\s*$`).FindString(res.Text); m != "" {
+		t.Fatalf("clean exit rendered a failure marker: %q", res.Text)
+	}
+}
+
 // TestExecSessionUndeliveredIDKills covers the orphan guard: a canceled
 // ctx before the response lands must not leave a live session behind —
 // the id never reached the model, so nothing could reap it later.
@@ -594,6 +655,9 @@ func TestSignalDeathNeverRendersNegativeExitCode(t *testing.T) {
 	}
 	if strings.Contains(res.Text, "code -1") {
 		t.Fatalf("signal death rendered as a bogus exit code: %q", res.Text)
+	}
+	if !strings.HasSuffix(strings.TrimRight(res.Text, "\n"), "(signal: killed)") {
+		t.Fatalf("signal death must end with the signal marker: %q", res.Text)
 	}
 }
 

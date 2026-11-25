@@ -1,7 +1,10 @@
 // Chat controller: owns the socket, the per-room state, and every command.
 // Components read `state` and call these functions; nothing else talks to
 // the socket.
-import { state, emit, toast } from './store.js';
+import {
+  state, emit, toast,
+  applyRecord, newestRecord, noteRecordWrite, recordWriteSerial, forgetRecord,
+} from './store.js';
 import { api, errorText } from './api.js';
 import { TurnSocket, newRequestId } from './socket.js';
 import { newTurn, applyFrame } from './turn.js';
@@ -22,7 +25,7 @@ function blankRoom(key, id) {
     messages: [], hist: { status: id ? 'loading' : 'ready', error: null, start: 0, total: 0, more: false },
     live: null, pendingOpen: null, settling: false,
     failed: null, queue: [], steers: [],
-    draft: '', sel: {}, ctx: null, cutHistory: false,
+    draft: '', sel: {}, ctx: null,
   };
 }
 
@@ -69,26 +72,73 @@ export function start() {
   applyRoute();
 }
 
+// One list read at a time (D-08 rule 4). Triggers overlap — a turn opens, an
+// activity notice, a terminal, a rename — and a second fetch would only race
+// the first. A need that arrives during the flight rides it and asks once more
+// afterwards; nothing else is fetched twice.
+let listFlight = null;
+let listAgain = false;
+
 export async function loadConversations(more = false) {
   const c = state.convs;
-  if (more) c.more = true; else if (!c.items.length) c.status = 'loading';
-  emit();
-  try {
-    const page = await api.conversations(more ? c.items.length : 0, 30);
-    const items = more ? [...c.items, ...page.data.filter((x) => !c.items.some((y) => y.id === x.id))] : page.data;
-    // A non-"more" refresh keeps already-paged tail entries so the list
-    // never shrinks under the reader.
-    if (!more && c.items.length > items.length) {
-      for (const it of c.items) if (!items.some((x) => x.id === it.id)) items.push(it);
-    }
-    Object.assign(c, { items, total: page.page.total, hasMore: items.length < page.page.total, status: 'ready', error: null });
-  } catch (err) {
-    if (more) toast(errorText(err), 'error');
-    else if (!c.items.length) Object.assign(c, { status: 'error', error: errorText(err) });
-    else toast('Could not refresh threads: ' + errorText(err), 'error');
-  } finally {
-    c.more = false;
+  if (more) {
+    c.more = true;
     emit();
+    try {
+      const page = await api.conversations(c.items.length, 30);
+      const known = new Set(c.items.map((x) => x.id));
+      for (const rec of page.data) applyRecord(rec.id, rec);
+      c.items = [...c.items, ...page.data.filter((x) => !known.has(x.id))];
+      c.total = page.page.total;
+      c.hasMore = c.items.length < page.page.total;
+    } catch (err) {
+      toast(errorText(err), 'error');
+    } finally {
+      c.more = false;
+      emit();
+    }
+    return;
+  }
+  if (listFlight) { listAgain = true; return listFlight; }
+  let moved = false;
+  if (!c.items.length && c.status !== 'loading') { c.status = 'loading'; moved = true; }
+  if (moved) emit();
+  listFlight = (async () => {
+    const before = c.error;
+    try {
+      const page = await api.conversations(0, 30);
+      // Every row is a record: one funnel decides whether it replaces what the
+      // list holds, so an out-of-order answer cannot undo a rename — and a row
+      // the funnel rejected as stale is never inserted back.
+      const accepted = new Set();
+      for (const rec of page.data) if (applyRecord(rec.id, rec)) accepted.add(rec.id);
+      const known = new Map(c.items.map((x) => [x.id, x]));
+      const seen = new Set();
+      const next = [];
+      for (const rec of page.data) {
+        if (seen.has(rec.id)) continue;
+        seen.add(rec.id);
+        const row = known.get(rec.id) || newestRecord(rec.id) || (accepted.has(rec.id) ? rec : null);
+        if (row) next.push(row);
+      }
+      // A row the page no longer returns stays: the list never shrinks under
+      // the reader.
+      for (const [id, row] of known) if (!seen.has(id)) next.push(row);
+      const changed = next.length !== c.items.length || next.some((row, i) => row !== c.items[i]);
+      c.items = next;
+      c.total = page.page.total;
+      c.hasMore = c.items.length < page.page.total;
+      c.status = 'ready';
+      c.error = null;
+      if (changed || before) emit();
+    } catch (err) {
+      if (!c.items.length) { c.status = 'error'; c.error = errorText(err); emit(); }
+      else toast('Could not refresh threads: ' + errorText(err), 'error');
+    }
+  })();
+  try { await listFlight; } finally {
+    listFlight = null;
+    if (listAgain) { listAgain = false; return loadConversations(); }
   }
 }
 
@@ -105,14 +155,141 @@ export async function loadGateways() {
   try {
     const page = await api.gateways();
     Object.assign(g, { items: page.data, status: 'ready', error: null });
+    // Every path that changes a gateway (save, import, delete) re-reads this
+    // list, so this is where a cached discovery answer goes stale: drop it, and
+    // the picker's next open asks again instead of showing what the old
+    // document offered.
+    forgetProviders();
   } catch (err) {
     Object.assign(g, { status: 'error', error: errorText(err) });
   }
   emit();
 }
 
+// The upstream routes a gateway offers for a model, as the server discovers
+// them. The picker opens repeatedly for the same model, so one answer is kept
+// per gateway+model — and `loadGateways` drops the whole cache, because a saved
+// provider is exactly what it was computed from. A failure is never cached: the
+// picker shows its error and the next open asks again.
+const providersCache = new Map();
+
+export async function providersFor(route, modelId) {
+  const key = route + '|' + modelId;
+  if (providersCache.has(key)) return providersCache.get(key);
+  const page = await api.providers(route, modelId);
+  const list = page.data || [];
+  providersCache.set(key, list);
+  return list;
+}
+
+export function forgetProviders() { providersCache.clear(); }
+
+// ---------- application status (the sidebar badge, the About page) ----------
+//
+// `state.update` is shared — the sidebar draws its badge from it and the About
+// page renders the details — so the controller is its only writer and both
+// surfaces read it or call this action. Nothing here depends on a component
+// being mounted: the hourly read in start() keeps the badge alive on its own.
+
+export function setUpdate(info) {
+  state.update = info;
+  emit();
+  return info;
+}
+
+// refreshUpdate reads the application status; `force` asks the server to check
+// upstream instead of answering from its last lookup. It throws, so the surface
+// that asked can say why (the hourly read swallows it: a failed background
+// check must not toast).
+export async function refreshUpdate(force = false) {
+  return setUpdate(force ? await api.checkUpdate() : await api.update());
+}
+
 async function checkUpdate() {
-  try { state.update = await api.update(); emit(); } catch { /* the About page surfaces errors */ }
+  try { await refreshUpdate(); } catch { /* the About page surfaces errors */ }
+}
+
+// The install flow: start it, follow the progress the server keeps, then wait
+// for the restarted server to report a different version and reload once.
+//
+// It lives here, not in the About page, because it outlives a render: the page
+// can unmount mid-install and the flow still has to stop cleanly, one loop at a
+// time. `reload`, `wait` and `onProgress` are injected so the whole flow runs
+// against the mock API in a test without a browser.
+const TERMINAL_PROGRESS = new Set(['succeeded', 'failed']);
+const install = { active: false, run: null, promise: null };
+
+// The page's own pause, cancellable so unmounting leaves no timer behind.
+let pendingPause = null;
+function pauseFor(ms) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => { pendingPause = null; resolve(); }, ms);
+    pendingPause = () => { clearTimeout(timer); pendingPause = null; resolve(); };
+  });
+}
+
+export function installUpdate({ onProgress, reload, wait, pollMs = 1000, graceMs = 120_000 } = {}) {
+  if (install.active) return install.promise;
+  const report = onProgress || (() => {});
+  const pause = wait || pauseFor;
+  const go = reload || (() => location.reload());
+  const run = { cancelled: false };
+  let last = null;
+
+  // A progress answer that arrives after the server reached a terminal state
+  // cannot undo it: the flow stops on the first terminal answer, and the last
+  // state it reported is the one the page shows.
+  const apply = (p) => {
+    if (!p) return last;
+    if (last && TERMINAL_PROGRESS.has(last.state) && p.state === 'running') return last;
+    last = p;
+    if (!run.cancelled) report(p);
+    return last;
+  };
+
+  install.active = true;
+  install.run = run;
+  install.promise = (async () => {
+    const before = state.update?.current || '';
+    try {
+      apply(await api.installUpdate());
+      while (!run.cancelled && !(last && TERMINAL_PROGRESS.has(last.state))) {
+        await pause(pollMs);
+        if (run.cancelled) break;
+        apply(await api.installProgress().catch(() => null));
+      }
+      if (run.cancelled || last?.state !== 'succeeded') return last;
+      // The server replaces itself and restarts; wait for it to answer with a
+      // different version, then reload exactly once.
+      for (let waited = 0; waited < graceMs && !run.cancelled; waited += pollMs) {
+        await pause(pollMs);
+        if (run.cancelled) break;
+        try {
+          const now = await api.update();
+          if (now?.current && now.current !== before) { go(); return last; }
+        } catch { /* the server is restarting */ }
+      }
+      if (!run.cancelled) toast('Update installed. Reload the page once the server is back.');
+      return last;
+    } catch (err) {
+      if (!run.cancelled) toast(errorText(err), 'error');
+      return null;
+    } finally {
+      if (install.run === run) { install.active = false; install.run = null; }
+    }
+  })();
+  return install.promise;
+}
+
+// cancelInstall stops the one running flow — the About page calls it when it
+// unmounts. The pending pause is resolved so no timer outlives the caller.
+export function cancelInstall() {
+  if (!install.active) return false;
+  install.run.cancelled = true;
+  install.active = false;
+  install.run = null;
+  pendingPause?.();
+  return true;
 }
 
 // ---------- room loading ----------
@@ -121,35 +298,103 @@ export async function openRoom(id) {
   const r = room(id);
   if (r.live) { loadInfo(r); return; }
   await Promise.all([loadInfo(r), loadHistory(r)]);
-  if (r.info?.activeTurnId && !r.live) watch(r, r.info.activeTurnId, r.info.activeTurnKind, -1);
+  // The page was just read for this room, so an adopted turn's prompt is in it;
+  // watch() is told not to read the newest page a second time.
+  if (r.info?.activeTurnId && !r.live) watch(r, r.info.activeTurnId, r.info.activeTurnKind, -1, { fresh: true });
   fetchContext(r);
 }
 
-async function loadInfo(r) {
-  try {
-    r.info = await api.conversation(r.id);
+// One info read per conversation in flight (D-08). A need that arrives during
+// it rides it. A local write that lands during the flight makes the answer
+// untrustworthy — it predates the write — so the record is read exactly once
+// more, never merged field by field (T-19 gives the write response the read's
+// projection).
+const infoFlights = new Map();
+
+export async function loadInfo(r, retried = false) {
+  if (!r.id) {
     r.infoStatus = 'ready';
     r.infoError = null;
-  } catch (err) {
-    r.infoStatus = err.status === 404 ? 'notfound' : 'error';
-    r.infoError = errorText(err);
+    emit();
+    return;
   }
-  emit();
+  const id = r.id;
+  const flight = infoFlights.get(id);
+  if (flight) return flight;
+  let reread = false;
+  const run = (async () => {
+    const serial = recordWriteSerial(id);
+    try {
+      const info = await api.conversation(id);
+      r.infoStatus = 'ready';
+      r.infoError = null;
+      applyRecord(id, info);
+      if (recordWriteSerial(id) !== serial && !retried) reread = true;
+    } catch (err) {
+      r.infoStatus = err.status === 404 ? 'notfound' : 'error';
+      r.infoError = errorText(err);
+      emit();
+    }
+  })();
+  infoFlights.set(id, run);
+  try { await run; } finally {
+    if (infoFlights.get(id) === run) infoFlights.delete(id);
+    if (reread) return loadInfo(r, true);
+  }
+}
+
+// One history read per room in flight: a terminal, a fold and an adopted turn
+// can all ask at once.
+const historyFlights = new Map();
+
+function historyFlight(r, run) {
+  historyFlights.set(r.key, run);
+  return run.finally(() => { if (historyFlights.get(r.key) === run) historyFlights.delete(r.key); });
 }
 
 export async function loadHistory(r) {
-  r.hist.status = r.messages.length ? 'refreshing' : 'loading';
-  emit();
-  try {
-    const page = await api.messages(r.id, -HISTORY_PAGE, HISTORY_PAGE);
-    r.messages = page.messages;
-    Object.assign(r.hist, { status: 'ready', error: null, start: page.effectiveStart, total: page.total, more: page.effectiveStart > 0 });
-  } catch (err) {
-    if (err.status === 404) { r.infoStatus = 'notfound'; r.hist.status = 'ready'; }
-    else Object.assign(r.hist, { status: r.messages.length ? 'ready' : 'error', error: errorText(err) });
-    if (r.messages.length) toast('Could not refresh history: ' + errorText(err), 'error');
-  }
-  emit();
+  if (!r.id) return;
+  const flight = historyFlights.get(r.key);
+  if (flight) return flight;
+  const run = (async () => {
+    r.hist.status = r.messages.length ? 'refreshing' : 'loading';
+    emit();
+    try {
+      const page = await api.messages(r.id, -HISTORY_PAGE, HISTORY_PAGE);
+      r.messages = page.messages;
+      Object.assign(r.hist, { status: 'ready', error: null, start: page.effectiveStart, total: page.total, more: page.effectiveStart > 0 });
+    } catch (err) {
+      if (err.status === 404) { r.infoStatus = 'notfound'; r.hist.status = 'ready'; }
+      else Object.assign(r.hist, { status: r.messages.length ? 'ready' : 'error', error: errorText(err) });
+      if (r.messages.length) toast('Could not refresh history: ' + errorText(err), 'error');
+    }
+    emit();
+  })();
+  return historyFlight(r, run);
+}
+
+// requestHistory brings the newest page into a room this tab already drew: a
+// turn adopted from another tab or a channel starts after the page was read,
+// so its prompt is only in the store. It merges by message id — earlier pages
+// the reader scrolled to stay, and nothing outside `messages` moves. A read
+// already in flight is ridden, not doubled.
+export async function requestHistory(r) {
+  if (!r.id) return;
+  const flight = historyFlights.get(r.key);
+  if (flight) return flight;
+  const run = (async () => {
+    try {
+      const page = await api.messages(r.id, -HISTORY_PAGE, HISTORY_PAGE);
+      const fresh = new Map(page.messages.map((m) => [m.id, m]));
+      const known = new Set(r.messages.map((m) => m.id));
+      const merged = r.messages.map((m) => fresh.get(m.id) || m);
+      for (const m of page.messages) if (!known.has(m.id)) merged.push(m);
+      r.messages = merged;
+      r.hist.total = page.total;
+      emit();
+    } catch { /* the next read shows what this one missed */ }
+  })();
+  return historyFlight(r, run);
 }
 
 export async function loadEarlier(r) {
@@ -316,10 +561,18 @@ export function restoreQueued(r, id) {
   removeQueued(r, id);
 }
 
-function watch(r, turnId, kind, afterSeq) {
+function watch(r, turnId, kind, afterSeq, { fresh = false } = {}) {
   if (!r.live || r.live.turnId !== turnId) {
     r.live = newTurn({ turnId, conversationId: r.id, kind: kind || 'send' });
-    r.cutHistory = afterSeq < 0;
+    // adopted marks a turn this tab never opened — another tab, a reload, a
+    // chat channel. Its prompt is only in the room's history, and a stale page
+    // cannot tell that prompt from an older message, so the merge trims
+    // nothing for it (turn.js liveHistory).
+    r.live.adopted = true;
+    // The journal never carries the user line, so an adopted turn's prompt has
+    // to come from the record: read the newest page once, unless the caller
+    // just read it (openRoom).
+    if (!fresh) requestHistory(r);
   }
   command(r, 'watch', { type: 'turn.watch', conversationId: r.id, turnId, afterSeq });
   emit();
@@ -400,11 +653,10 @@ function onOpened(f) {
     if (state.route.view === 'home') navigate('#/c/' + encodeURIComponent(f.conversationId));
     loadInfo(r);
   }
-  r.live = newTurn({ turnId: f.turnId, requestId: f.requestId, conversationId: f.conversationId, kind: req.kind === 'send' ? 'send' : 'edit' });
+  r.live = newTurn({ turnId: f.turnId, requestId: f.requestId, conversationId: f.conversationId, kind: req.kind });
   r.live.lastSeq = 0;
   r.live.userText = req.kind === 'send' || req.kind === 'edit' ? req.text : null;
   r.live.editOf = req.kind === 'edit' ? r.pendingOpen?.messageId : null;
-  r.cutHistory = false;
   r.pendingOpen = null;
   refreshConversationsSoon();
   emit();
@@ -434,13 +686,12 @@ function onResync(f) {
   const r = req ? room(req.key) : state.rooms[f.conversationId];
   if (!r) return;
   const p = f.payload || {};
-  if (p.turn === 'active') { if (r.live) r.cutHistory = false; emit(); return; }
+  if (p.turn === 'active') { emit(); return; }
   if (p.terminal && r.live?.turnId === f.turnId) {
     applyFrame(r.live, { ...p.terminal, seq: undefined });
     onTerminal(r, p.terminal);
   } else {
     r.live = null;
-    r.cutHistory = false;
     for (const s of r.steers) s.state = 'unknown';
     loadInfo(r);
     loadHistory(r);
@@ -486,7 +737,6 @@ async function onTerminal(r, f) {
   emit();
   await Promise.all([loadInfo(r), loadHistory(r)]);
   r.live = null;
-  r.cutHistory = false;
   r.settling = false;
   fetchContext(r);
   refreshConversationsSoon();
@@ -511,7 +761,12 @@ export function resumeQueue(r) {
 
 export async function rename(r, title) {
   try {
-    r.info = await api.rename(r.id, title);
+    const info = await api.rename(r.id, title);
+    // The write's own answer is the newest record this tab knows: mark the
+    // write (so a read in flight re-reads) and apply it through the funnel, so
+    // the header and the row move together.
+    noteRecordWrite(r.id);
+    applyRecord(r.id, info);
     refreshConversationsSoon();
   } catch (err) { toast('Rename failed: ' + errorText(err), 'error'); }
   emit();
@@ -520,6 +775,7 @@ export async function rename(r, title) {
 export async function removeRoom(r) {
   try {
     await api.remove(r.id);
+    forgetRecord(r.id);
     delete state.rooms[r.id];
     state.convs.items = state.convs.items.filter((c) => c.id !== r.id);
     state.convs.total = Math.max(0, state.convs.total - 1);
@@ -533,7 +789,9 @@ export async function compact(r) {
   r.compacting = true;
   emit();
   try {
-    r.info = await api.compact(r.id);
+    const info = await api.compact(r.id);
+    noteRecordWrite(r.id);
+    applyRecord(r.id, info);
     await loadHistory(r);
     fetchContext(r);
     toast('History compacted.');

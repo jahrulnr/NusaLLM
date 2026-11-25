@@ -1,4 +1,4 @@
-.PHONY: build cli serve install test check fmt-check test-web gateway-add
+.PHONY: build cli serve install test check check-race fmt-check test-web gateway-add
 
 # The build version comes from the VERSION file. A checkout without one builds
 # as "dev", and "dev" turns the update check off.
@@ -35,6 +35,15 @@ check: fmt-check test-web
 	go test ./...
 	GOOS=windows go build ./...
 	GOOS=darwin go build ./...
+
+# The concurrency gate: the race detector over the packages whose state is
+# shared across goroutines — the socket hub (bounded queues, subscriber sets),
+# the turn loop (retry, persistence ordering), and the workspace repository
+# (per-call os.Root sessions). Deliberately NOT part of `check`: `check` stays
+# fast and read-only, while -race rebuilds these packages with instrumentation.
+# A reviewer closing a concurrency change runs both.
+check-race:
+	go test -count=1 -race ./infrastructure/delivery/websocket/... ./application/job/... ./infrastructure/repository/workspace/...
 
 fmt-check:
 	@files=$$(gofmt -l $$(go list -f '{{.Dir}}' ./... | grep -v /vendor/)); \

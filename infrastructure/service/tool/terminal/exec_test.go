@@ -574,3 +574,32 @@ func TestSpillSinkCountsOnlyAcceptedBytes(t *testing.T) {
 		t.Fatalf("written=%d err=%v, want 10/nil", ok.spillWritten, ok.spillErr)
 	}
 }
+
+type silentRunner struct{}
+
+func (silentRunner) Run(context.Context, string, string, io.Reader, io.Writer) (service.ProcessExit, error) {
+	return service.ProcessExit{Code: 0}, nil
+}
+
+// A command that prints nothing and exits 0 is a result, not an empty
+// string: the model must see that it ran and succeeded.
+func TestExecSilentCleanExitReportsIt(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "c1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tool, err := NewExecTool(mustOutputRepo(t, root), silentRunner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := tool.Execute(testContext(), mustCall(t, "silent-1", `{"command":"true"}`, 0), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(res.Text) == "" {
+		t.Fatal("a silent clean exit returned an empty result")
+	}
+	if !strings.Contains(res.Text, "exit 0") {
+		t.Fatalf("result = %q, want it to state the clean exit", res.Text)
+	}
+}

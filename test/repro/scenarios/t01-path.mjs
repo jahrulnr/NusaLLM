@@ -96,10 +96,14 @@ export default {
         observed: [`output head: ${JSON.stringify(output('call_rel').slice(0, 200))}`],
       });
 
+      // D-12/T-27 replaced the old status vocabulary: a refused write is
+      // `failed`, a successful read is `ok` (the old word was `completed`).
+      // This is the contract, not a relaxed assertion.
       checks.push({
-        label: 'the turn completes and persists the four probe rows',
+        label: 'the turn completes and persists the four probe rows (status per D-12: refused write=failed, reads=ok)',
         ok: terminal.type === 'turn.completed'
-          && ['call_tilde', 'call_fileurl', 'call_abs', 'call_rel'].every((id) => row(id)?.status === 'completed'),
+          && row('call_tilde')?.status === 'failed'
+          && ['call_fileurl', 'call_abs', 'call_rel'].every((id) => row(id)?.status === 'ok'),
         observed: [
           `terminal: ${terminal.type} status=${terminal.payload?.status ?? '-'}`,
           `probe rows: ${['call_tilde', 'call_fileurl', 'call_abs', 'call_rel'].map((id) => `${id}:${row(id)?.name}:${row(id)?.status}`).join(', ')}`,

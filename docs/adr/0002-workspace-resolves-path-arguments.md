@@ -20,7 +20,7 @@ three layers each decide a different part of what it means:
 - `read_media` decides for itself that an absolute path is a normal call and
   opens it through the port's `OpenHost` (`read_media.go:89-95`);
 - `write_file` uses the string as given for `Stat`, `MkdirAll` and `WriteFile`
-  (`write.go:169-183`);
+  (`write.go:74,80,87` — corrected in round 1);
 - the port already documents the asymmetry this produces — "read tools opt in
   when a call names an absolute path; writes never ride it"
   (`infrastructure/domain/repository/workspace.go:15-22`).
@@ -71,7 +71,7 @@ the driver is asked is wrong for any non-local driver.
 4. **The asymmetry is the contract.** Reads may leave the workspace; writes may
    not. A room that must write elsewhere binds that directory as its workspace,
    or uses `exec`, which is deliberately unsandboxed and gated by permission
-   (`docs/architecture.md:541`).
+   (`docs/architecture.md:554`).
 
 5. **Delivery resolves through the same capability.** A preview/download route
    takes the raw path, asks the workspace capability for a reader (plus size and

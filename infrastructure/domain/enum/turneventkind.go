@@ -16,6 +16,10 @@ const (
 	// TurnEventToolOutput carries a live output chunk from a running tool
 	// call — the call id rides in ToolCall(), the chunk in Delta().
 	TurnEventToolOutput TurnEventKind = "tool_output"
+	// TurnEventToolResult carries a call's terminal verdict once its result
+	// is recorded — the call id, outcome and exit status ride in
+	// ToolCall(). It is emitted once per call, after persistence.
+	TurnEventToolResult TurnEventKind = "tool_result"
 	// TurnEventSteer carries a user steering message folded into the
 	// running turn — the text rides in Delta().
 	TurnEventSteer TurnEventKind = "steer"
@@ -34,7 +38,7 @@ func (k TurnEventKind) String() string {
 
 func ParseTurnEventKind(v string) (TurnEventKind, bool) {
 	switch k := TurnEventKind(v); k {
-	case TurnEventDelta, TurnEventReasoning, TurnEventReasoningSummary, TurnEventToolCall, TurnEventToolOutput, TurnEventSteer, TurnEventFinished, TurnEventError, TurnEventStatus:
+	case TurnEventDelta, TurnEventReasoning, TurnEventReasoningSummary, TurnEventToolCall, TurnEventToolOutput, TurnEventToolResult, TurnEventSteer, TurnEventFinished, TurnEventError, TurnEventStatus:
 		return k, true
 	}
 	return "", false

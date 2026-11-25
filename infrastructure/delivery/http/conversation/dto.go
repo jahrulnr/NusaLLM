@@ -1,6 +1,7 @@
 package conversation
 
 import (
+	"context"
 	"time"
 
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/http/internal/transport"
@@ -64,31 +65,48 @@ func toConversation(i drepo.ConversationInfo) conversationDTO {
 // calledAt are pointers so absent facts omit the key rather than
 // inventing a result or the zero time.
 type toolCallDTO struct {
-	ID          string          `json:"id"`
-	Name        string          `json:"name"`
-	Type        string          `json:"type"`   // "origin" | "injection"
-	Status      string          `json:"status"` // "pending" | "completed"
-	Input       string          `json:"input"`
-	CalledAt    *time.Time      `json:"calledAt,omitempty"`
-	Output      *string         `json:"output,omitempty"`
-	Attachments []attachmentDTO `json:"attachments,omitempty"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"` // "origin" | "injection"
+	// Status is the call's verdict plus the one state that is not a
+	// verdict: "pending" (no output yet), "ok" | "failed" | "canceled"
+	// (recorded), or "unknown" (a record from before the verdict existed).
+	// It never comes from reading Output.
+	Status      string                  `json:"status"`
+	Input       string                  `json:"input"`
+	CalledAt    *time.Time              `json:"calledAt,omitempty"`
+	Output      *string                 `json:"output,omitempty"`
+	Exit        *valueobject.ExitStatus `json:"exit,omitempty"`
+	Attachments []attachmentDTO         `json:"attachments,omitempty"`
 }
 
 func toToolCall(t entity.ToolCall) toolCallDTO {
+	kind := t.Type().String()
+	if kind == "" {
+		// An unreadable record has no provenance; saying "unknown" is
+		// honest, and it also keeps the call out of the pending bucket.
+		kind = "unknown"
+	}
 	d := toolCallDTO{
 		ID:     t.ID(),
 		Name:   t.Name(),
-		Type:   t.Type().String(),
-		Status: "completed",
+		Type:   kind,
+		Status: "unknown",
 		Input:  t.Input(),
 	}
+	if outcome := t.Outcome(); outcome != "" {
+		d.Status = outcome.String()
+	}
+	d.Exit = t.Exit()
 	if at := t.CallAt(); !at.IsZero() {
 		d.CalledAt = &at
 	}
 	if t.HasOutput() {
 		plain := t.Output()
 		d.Output = &plain
-	} else {
+	} else if t.Type() != enum.TooltypeInjection && t.Type().String() != "" {
+		// Only a real execution can be pending; an injection is never run,
+		// so it has no verdict to wait for.
 		d.Status = "pending"
 	}
 	for _, a := range t.OutputAttachments() {
@@ -122,6 +140,7 @@ type messageDTO struct {
 	ID          string           `json:"id"`
 	Role        string           `json:"role"`
 	Content     string           `json:"content"`
+	InputID     string           `json:"inputId,omitempty"`
 	Parts       []messagePartDTO `json:"parts,omitempty"`
 	UserType    string           `json:"userType,omitempty"`
 	Finish      string           `json:"finishReason,omitempty"`
@@ -141,6 +160,7 @@ func toMessage(m entity.Message) messageDTO {
 		ID:        m.ID(),
 		Role:      m.Role().String(),
 		Content:   m.Content(),
+		InputID:   m.InputID(),
 		Finish:    m.FinishReason().String(),
 		CreatedAt: m.CreatedAt(),
 	}
@@ -163,4 +183,25 @@ func toMessage(m entity.Message) messageDTO {
 		out.Attachments = append(out.Attachments, toAttachment(a))
 	}
 	return out
+}
+
+// project answers the room's accepted projection: the stored info, the
+// compaction verdict, and the hub's live turn. Every response that returns a
+// room — detail, list item, and each write's reply — uses it, so a client can
+// treat a write response as the room's new state instead of merging a partial
+// one into what it had.
+func (s *server) project(ctx context.Context, info drepo.ConversationInfo) (conversationDTO, error) {
+	available, err := s.reads.CanCompact(ctx, info.ID)
+	if err != nil {
+		return conversationDTO{}, err
+	}
+	out := toConversation(info)
+	out.CanCompact = &available
+	if s.live != nil {
+		if turnID, kind, ok := s.live.ActiveTurn(info.ID); ok {
+			out.ActiveTurnID = turnID
+			out.ActiveTurnKind = kind
+		}
+	}
+	return out, nil
 }

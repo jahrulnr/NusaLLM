@@ -21,7 +21,7 @@ func (app *ConversationApp) Delete(ctx context.Context, convID string) error {
 	res := make(chan error, 1)
 	j := &appjob.Delete{}
 	j.Result = res
-	app.post(convID, j)
+	w := app.post(convID, j)
 	select {
 	case err := <-res:
 		if err != nil {
@@ -32,7 +32,7 @@ func (app *ConversationApp) Delete(ctx context.Context, convID string) error {
 		// that window could still Submit to the corpse and be drained
 		// to a 410. Done closes only after OnTerminate dropped the map
 		// entry — wait for it and the next post mints a fresh worker.
-		if w := j.Worker(); w != nil {
+		if w != nil {
 			select {
 			case <-w.Done():
 			case <-ctx.Done():

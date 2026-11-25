@@ -58,6 +58,16 @@ export default {
       const markA = a.frames.length;
       send(a, { type: 'turn.send', conversationId: cid, payload: { content: 'second ask' } });
       const opened = await waitOpened(a, { from: markA });
+      // The steer is sent while step 1 still streams, so it is waiting when
+      // step 2 folds its mailbox — a steer sent after the step starts is only
+      // acknowledged, never folded.
+      await a.next((f) => f.type === 'turn.delta' && f.turnId === opened.turnId,
+        { label: 'first delta', from: markA });
+      const steerId = send(a, {
+        type: 'turn.steer', conversationId: cid, turnId: opened.turnId, payload: { content: 'steered note' },
+      });
+      await a.next((f) => f.type === 'turn.steer_ack' && f.payload?.inputId === steerId,
+        { label: 'steer ack', from: markA });
       await a.next((f) => f.type === 'turn.step_finished' && f.turnId === opened.turnId,
         { label: 'first step finished', from: markA });
 
@@ -65,10 +75,13 @@ export default {
       const midHistory = await transcriptItems(server, cid);
       const markB = b.frames.length;
       send(b, { type: 'turn.watch', conversationId: cid, turnId: opened.turnId, afterSeq: -1 });
+      await b.next((f) => f.type === 'turn.steer' && f.payload?.inputId === steerId,
+        { label: 'steer frame on the late watcher', timeoutMs: 10_000, from: markB });
       await b.next((f) => f.type === 'turn.completed' && f.turnId === opened.turnId,
         { label: 'terminal on the late watcher', timeoutMs: 30_000, from: markB });
       const replay = b.frames.slice(markB).filter((f) => f.turnId === opened.turnId && typeof f.seq === 'number');
       await waitTerminal(a, { from: markA });
+      const finalHistory = await transcriptItems(server, cid);
 
       const live = turn.newTurn({ turnId: opened.turnId, conversationId: cid, kind: 'send' });
       for (const f of replay) turn.applyFrame(live, f);
@@ -83,6 +96,12 @@ export default {
       const keptB = hasMerge ? turn.liveHistory(stale, lateLive) : stale;
       const screenText = [...keptA.filter((i) => i.kind === 'text').map((i) => i.text),
         ...tailA.filter((s) => s.kind === 'text').map((s) => s.text)].join('|');
+
+      // The steer row T-18 stores, and the live bubble the journal replays.
+      const steerRow = finalHistory.find((i) => i.msg?.content === 'steered note');
+      const liveSteer = live.segments.find((s) => s.kind === 'steer' && s.inputId === steerId);
+      const tailFinal = hasMerge ? turn.liveSegments(live, finalHistory) : live.segments;
+      const tailSteer = tailFinal.filter((s) => s.kind === 'steer' && s.inputId === steerId);
 
       const occurrences = (haystack, needle) => haystack.split(needle).length - 1;
 
@@ -130,6 +149,23 @@ export default {
             `stale page ids: ${stale.map((i) => i.id).join(', ')}`,
             `after liveHistory: ${keptB.map((i) => i.id).join(', ')}`,
             `previous answer still drawn: ${keptB.some((i) => i.text === PREV_ANSWER)}`,
+          ],
+        },
+        {
+          label: 'a folded steer carries its inputId into history (T-18)',
+          ok: steerRow?.msg?.inputId === steerId || steerRow?.steerInput === steerId,
+          observed: [
+            `steer id: ${steerId}`,
+            `history row: ${JSON.stringify(steerRow ? { content: steerRow.msg?.content, inputId: steerRow.msg?.inputId ?? null, steerInput: steerRow.steerInput ?? null } : null)}`,
+            `journal steer segment: ${JSON.stringify(liveSteer ? { inputId: liveSteer.inputId, text: liveSteer.text } : null)}`,
+          ],
+        },
+        {
+          label: 'the replayed steer bubble is not drawn beside the row that holds it',
+          ok: hasMerge && liveSteer !== undefined && tailSteer.length === 0,
+          observed: [
+            `steer segments in the journal: ${live.segments.filter((s) => s.kind === 'steer').map((s) => s.inputId).join(', ') || 'none'}`,
+            `steer segments left after the merge: ${tailSteer.map((s) => s.kind + ':' + s.inputId).join(', ') || 'none'}`,
           ],
         },
       ];

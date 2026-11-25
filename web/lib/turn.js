@@ -73,6 +73,14 @@ export function applyFrame(t, f) {
       if (s) { s.output += p.text || ''; s.status = 'streaming'; }
       break;
     }
+    // A call's verdict, recorded once after its result (D-12). It is a fact
+    // about the call, not about the row's life: the row stays streaming until
+    // activity resumes or the turn ends, and a row can be settled and failed.
+    case 'turn.tool_result': {
+      const s = t.segments.findLast((x) => x.kind === 'tool' && x.callId === p.callId);
+      if (s) { s.outcome = p.status; s.exit = p.exit; }
+      break;
+    }
     case 'turn.steer': {
       const s = last(t);
       if (s?.kind === 'steer' && !s.final && s.inputId === p.inputId) s.text += p.text || '';
@@ -100,10 +108,15 @@ export function applyFrame(t, f) {
   return true;
 }
 
-// A tool's stored output signals failure by convention.
-export function toolFailed(output) {
-  const o = String(output || '');
-  return /^error:/i.test(o) || /interrupted by user/i.test(o) || /\(exit [1-9]\d*\)\s*$/.test(o) || /\(signal: [^)]+\)\s*$/.test(o);
+// exitText is the reader's label for a call's recorded exit status — the fact
+// the server stored, never one read out of the output. A process exit is a
+// number; a signal is shown exactly as the server names it, with no prefix
+// added here (the wire value is the name: T-33 changes it from
+// "signal: killed" to "killed", and this formatter renders either as-is).
+export function exitText(exit) {
+  if (!exit) return '';
+  if (exit.signal) return exit.signal;
+  return `Exit code ${exit.code ?? 0}`;
 }
 
 // historyItems flattens persisted messages into transcript items:
@@ -112,7 +125,9 @@ export function historyItems(messages, cwd = '') {
   const out = [];
   for (const m of messages) {
     if (m.role === 'user') {
-      out.push({ id: m.id, kind: m.userType === 'system' ? 'note' : 'user', msg: m });
+      // inputId is the steer command a line was folded from (D-06.1/T-18): the
+      // only identity a steered row has, and never matched by its text.
+      out.push({ id: m.id, kind: m.userType === 'system' ? 'note' : 'user', msg: m, inputId: m.inputId || '' });
       continue;
     }
     if (m.role !== 'assistant') continue;
@@ -124,8 +139,8 @@ export function historyItems(messages, cwd = '') {
     let i = 0;
     for (const part of parts) {
       const id = `${m.id}:${i++}`;
-      if (part.kind === 'text' && part.text) out.push({ id, kind: 'text', text: part.text });
-      else if (part.kind === 'reasoning' && part.text) out.push({ id, kind: 'reasoning', text: part.text, done: true });
+      if (part.kind === 'text' && part.text) out.push({ id, kind: 'text', text: part.text, messageId: m.id });
+      else if (part.kind === 'reasoning' && part.text) out.push({ id, kind: 'reasoning', text: part.text, done: true, messageId: m.id });
       else if (part.kind === 'tool_call') {
         const c = calls.get(part.toolCallId);
         if (!c) continue;
@@ -136,13 +151,124 @@ export function historyItems(messages, cwd = '') {
         }
         out.push({
           id: `${m.id}:${c.id}`, kind: 'tool', callId: c.id, name: c.name, input: c.input || '', output: c.output || '',
-          status: c.status === 'completed' ? 'settled' : 'pending', calledAt: c.calledAt, stored: true, cwd,
+          // Two facts, kept apart (D-12): `status` is the row's life in the
+          // transcript (pending until it has a result, settled after), and
+          // `outcome` is the call's verdict, straight from the record —
+          // dto.status → item.outcome, never derived from the text. A record
+          // written before the verdict existed carries no status and reads as
+          // `unknown`: neutral, no badge, its text left alone.
+          status: c.status ? (c.status === 'pending' ? 'pending' : 'settled') : (c.output === undefined || c.output === null ? 'pending' : 'settled'),
+          outcome: c.status || 'unknown',
+          exit: c.exit,
+          calledAt: c.calledAt, stored: true, cwd, messageId: m.id,
         });
       }
     }
     if (m.finishReason === 'interrupted') out.push({ id: `${m.id}:int`, kind: 'interrupted' });
   }
   return out;
+}
+
+// liveHistory trims the transcript list to what the live turn replaces in the
+// record (decisions.md D-06.1). The record is authoritative: a running turn's
+// finished steps are drawn from history, never from the journal, so nothing is
+// trimmed for a plain send. An edit replaces the message it names, so history
+// stops ahead of it; a resume this tab sent re-answers the newest prompt, so
+// history stops after it. A turn adopted from another tab or a chat channel
+// cannot tell the turn's prompt from an older message a stale page still ends
+// on, so it trims nothing.
+export function liveHistory(items, live) {
+  const list = items || [];
+  if (!live) return list;
+  if (live.editOf) {
+    const at = list.findIndex((x) => x.id === live.editOf);
+    return at < 0 ? list : list.slice(0, at);
+  }
+  if (live.kind === 'resume' && !live.adopted) {
+    const at = list.findLastIndex((x) => x.kind === 'user');
+    return at < 0 ? list : list.slice(0, at + 1);
+  }
+  return list;
+}
+
+// stepKinds answers which prose the record holds for the step that owns `row`:
+// the kinds of text and reasoning items in the same message. Without a message
+// id (fixtures, or a record shape that predates it) the run immediately before
+// the row is the same step — walking over its tool rows and reasoning back to
+// the prose that precedes them, and stopping at the first item that belongs to
+// the owner.
+function stepKinds(items, row) {
+  const kinds = new Set();
+  if (!row) return kinds;
+  if (row.messageId) {
+    for (const it of items) {
+      if (it.messageId === row.messageId && (it.kind === 'text' || it.kind === 'reasoning')) kinds.add(it.kind);
+    }
+    return kinds;
+  }
+  for (let i = items.indexOf(row) - 1; i >= 0; i--) {
+    const kind = items[i]?.kind;
+    if (kind === 'tool') continue;
+    if (kind === 'text' || kind === 'reasoning') { kinds.add(kind); continue; }
+    break;
+  }
+  return kinds;
+}
+
+// liveSegments answers the live turn's segments as the transcript should draw
+// them, given what the record already holds (D-06.1).
+//
+// A tab that attaches mid-turn replays the journal from seq 0, and everything
+// the store committed is already in history — a step's text, reasoning and its
+// tool rows sealed into one message. Drawing the replay whole would draw those
+// steps twice, so the cut is found by identity, never by position: the last
+// live tool row whose callId the record carries ends the persisted prefix.
+// Tool rows in it are dropped by that identity alone; the text and reasoning
+// before them are dropped only when the record's own message holds that kind
+// of content — a step whose record has no text keeps its replayed text, because
+// dropping what the store does not have would erase the answer. A resync marker
+// inside the dropped range is kept: it is the only evidence that output is
+// missing.
+//
+// A folded steer is matched the same way, by the inputId its row carries
+// (T-18); a record without one leaves the replayed bubble alone — it is never
+// matched by text.
+//
+// With no record, or no identity match, nothing is dropped: the merge never
+// invents a cut.
+export function liveSegments(live, items) {
+  const segments = live?.segments || [];
+  const list = items || [];
+  if (!segments.length) return segments;
+  const calls = new Set();
+  for (const it of list) if (it.kind === 'tool' && it.callId) calls.add(it.callId);
+  const steers = new Set();
+  for (const it of list) if (it.kind === 'user' && it.inputId) steers.add(it.inputId);
+  // Nothing in the record carries an identity, so there is nothing to prove a
+  // replayed segment is already stored: draw the journal whole.
+  if (!calls.size && !steers.size) return segments;
+  // A steer row is committed before its frame is emitted (turn.go fold), so a
+  // replayed bubble whose inputId the record holds is the same input — the
+  // record draws it, and the journal copy goes wherever it sits.
+  const dropSteer = (s) => s?.kind === 'steer' && !!s.inputId && steers.has(s.inputId);
+  let cut = -1;
+  for (let i = 0; i < segments.length; i++) {
+    const s = segments[i];
+    if (s?.kind === 'tool' && s.callId && calls.has(s.callId)) cut = i;
+  }
+  // No replayed row the record identifies as a step boundary: only the steers
+  // it holds are dropped, and no prose is cut.
+  if (cut < 0) return segments.filter((s) => !dropSteer(s));
+  const recorded = stepKinds(list, list.findLast((x) => x.kind === 'tool' && x.callId === segments[cut].callId));
+  const kept = [];
+  for (let i = 0; i < cut; i++) {
+    const s = segments[i];
+    if (s?.kind === 'resync') kept.push(s);
+    else if (s?.kind === 'steer') { if (!dropSteer(s)) kept.push(s); }
+    else if (s?.kind === 'tool') { if (!(s.callId && calls.has(s.callId))) kept.push(s); }
+    else if ((s?.kind === 'text' || s?.kind === 'reasoning') && !recorded.has(s.kind)) kept.push(s);
+  }
+  return [...kept, ...segments.slice(cut + 1).filter((s) => !dropSteer(s))];
 }
 
 // joinText folds neighbouring text items into one block. A part is a

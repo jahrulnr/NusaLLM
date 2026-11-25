@@ -45,15 +45,12 @@ func (s *server) list(c *gin.Context) {
 			HasMore: offset+len(page) < len(infos)},
 	}
 	for _, i := range page {
-		dto := toConversation(i)
-		// The live transport turn rides list items too — a freshly
-		// loaded sidebar marks active rooms without per-room detail
-		// reads. Nil hub leaves the fields off the wire.
-		if s.live != nil {
-			if turnID, kind, ok := s.live.ActiveTurn(i.ID); ok {
-				dto.ActiveTurnID = turnID
-				dto.ActiveTurnKind = kind
-			}
+		// The same projection as the detail read: a sidebar can mark an
+		// active room and offer compaction without per-room detail reads.
+		dto, err := s.project(c.Request.Context(), i)
+		if err != nil {
+			transport.RespondError(c, err)
+			return
 		}
 		out.Data = append(out.Data, dto)
 	}

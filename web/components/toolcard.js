@@ -3,7 +3,7 @@
 // output (tail first), each clipped with a fade and expandable in place.
 import { html, useLayoutEffect, useRef, useState } from '/vendor/preact/htm-preact.mjs';
 import hljs from '/vendor/highlight/highlight.min.mjs';
-import { toolSummary, toolFailed } from '../lib/turn.js';
+import { toolSummary, exitText } from '../lib/turn.js';
 import { Icon } from './icons.js';
 import { cx, Spinner } from './ui.js';
 
@@ -20,8 +20,11 @@ function parseArgs(input) {
   try { return JSON.parse(input || '{}'); } catch { return null; }
 }
 
-// splitExit peels the runner's trailing "(exit N)" / "(signal: X)" marker
-// off the stored output so it can render as a footer instead of text.
+// splitExit peels the runner's trailing "(exit N)" / "(signal: X)" marker off
+// the stored output so it can render as a footer instead of text. It is
+// formatting only and is applied only when the record carries an `exit` field:
+// the text never decides anything (D-12), and a record without the field keeps
+// its output exactly as stored.
 function splitExit(output) {
   const m = /\n?\((exit (\d+)|signal: ([^)]+))\)\s*$/.exec(output || '');
   if (!m) return { body: output || '', exit: null };
@@ -80,8 +83,11 @@ export function ToolRow({ item, cwd }) {
   const running = item.status === 'requested' || item.status === 'streaming';
   const shell = SHELL_TOOLS.has(item.name);
   const args = parseArgs(item.input);
-  const { body, exit } = splitExit(item.output);
-  const failed = item.status === 'settled' && (exit ? exit.code !== 0 : toolFailed(item.output));
+  // The verdict is the record's own fact (D-12); the marker in the text is
+  // only moved into the footer, and only when the record carries `exit`.
+  const exit = item.exit || null;
+  const failed = item.outcome === 'failed';
+  const body = exit ? splitExit(item.output).body : item.output || '';
 
   let inputText = item.input || '';
   let inputLang = 'json';
@@ -94,7 +100,7 @@ export function ToolRow({ item, cwd }) {
     inputText = JSON.stringify(args, null, 2);
   }
 
-  return html`<div>
+  return html`<div data-tool-call=${item.callId || item.id}>
     <button type="button" onClick=${() => setOpen(!open)} aria-expanded=${open}
       class="group w-full flex items-center gap-2 py-1 text-left text-[13px] text-muted hover:text-fg min-w-0">
       ${running && html`<span class="orb live" title="Running"></span>`}
@@ -116,9 +122,8 @@ export function ToolRow({ item, cwd }) {
       </section>
       ${(running || exit || failed) && html`<footer class="flex items-center gap-2 px-3 py-2 border-t border-line text-xs">
         ${running && html`<${Spinner} size=${12} class="text-muted" /><span class="text-muted">Running</span>`}
-        ${!running && exit?.code != null && html`<${Icon} name=${exit.code === 0 ? 'check' : 'xCircle'} size=${14} class=${exit.code === 0 ? 'text-ok' : 'text-bad'} />
-          <span class=${exit.code === 0 ? 'text-muted' : 'text-bad'}>Exit code ${exit.code}</span>`}
-        ${!running && exit?.signal && html`<${Icon} name="xCircle" size=${14} class="text-bad" /><span class="text-bad">Stopped (signal: ${exit.signal})</span>`}
+        ${!running && exit && html`<${Icon} name=${!exit.signal && exit.code === 0 ? 'check' : 'xCircle'} size=${14} class=${!exit.signal && exit.code === 0 ? 'text-ok' : 'text-bad'} />
+          <span class=${!exit.signal && exit.code === 0 ? 'text-muted' : 'text-bad'}>${exitText(exit)}</span>`}
         ${!running && !exit && failed && html`<${Icon} name="xCircle" size=${14} class="text-bad" /><span class="text-bad">Failed</span>`}
       </footer>`}
     </div>`}

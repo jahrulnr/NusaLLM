@@ -94,8 +94,8 @@ func (f *Facade) RequestClearScreen()                       { f.bindings.Request
 
 func (f *Facade) Path() string { return f.workspace.Path() }
 func (f *Facade) FS() fs.FS    { return f.workspace.FS() }
-func (f *Facade) ResolveAttachment(path string) (valueobject.Attachment, error) {
-	return f.workspace.ResolveAttachment(path)
+func (f *Facade) ResolveAttachment(ctx context.Context, path string) (valueobject.Attachment, error) {
+	return f.workspace.ResolveAttachment(ctx, path)
 }
 func (f *Facade) CreateFile(name string) (io.WriteCloser, error) { return f.workspace.CreateFile(name) }
 

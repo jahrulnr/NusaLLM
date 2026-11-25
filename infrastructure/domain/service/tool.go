@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
+	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 )
 
@@ -23,6 +24,21 @@ type ToolEmitter func(chunk string)
 type ToolResult struct {
 	Text        string
 	Attachments []valueobject.Attachment
+
+	// Outcome is the verdict on the side effect: did this call do what
+	// the model asked? The zero value reads as ok — a tool that returns
+	// normally succeeded — and an adapter reports failed here when it
+	// failed inside a successful return (a nonzero process exit, a
+	// rejected patch). It is data the caller records; the text stays
+	// evidence for the model, never the verdict a UI reads.
+	//
+	// canceled is not an adapter value: no tool knows the harness stopped
+	// the turn, so the application writes that one.
+	Outcome enum.ToolOutcome
+	// Exit is how the process behind the call ended, nil when none ran.
+	// Present for a clean exit too (code 0): "a process ran" and "it
+	// succeeded" are different facts.
+	Exit *valueobject.ExitStatus
 }
 
 // Tool is one callable capability: its constructor builds and validates

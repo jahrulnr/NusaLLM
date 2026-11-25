@@ -31,7 +31,20 @@ func (r *ConversationRepository) UpdateToolCallOutput(ctx context.Context, convI
 	}
 	// Append-only patch — no read-modify-write, so parallel tool results
 	// racing to persist stay safe.
-	line := lineRecord{Type: lineToolOutput, CallID: call.ID(), Output: call.Output(), OutputLatency: call.OutputLatency()}
+	return appendLine(filepath.Join(r.convDir(convID), activeFile), toolOutputLine(call))
+}
+
+// toolOutputLine is the patch record for one finished call: the result, its
+// media references, and the verdict that came with them.
+func toolOutputLine(call entity.ToolCall) lineRecord {
+	line := lineRecord{
+		Type:          lineToolOutput,
+		CallID:        call.ID(),
+		Output:        call.Output(),
+		OutputLatency: call.OutputLatency(),
+		Outcome:       call.Outcome().String(),
+		Exit:          call.Exit(),
+	}
 	for _, a := range call.OutputAttachments() {
 		line.Attachments = append(line.Attachments, attachmentRecord{
 			URI:       a.URI(),
@@ -40,5 +53,5 @@ func (r *ConversationRepository) UpdateToolCallOutput(ctx context.Context, convI
 			SHA256:    a.SHA256(),
 		})
 	}
-	return appendLine(filepath.Join(r.convDir(convID), activeFile), line)
+	return line
 }

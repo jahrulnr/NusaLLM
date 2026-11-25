@@ -7,7 +7,7 @@
 // the contract stays greppable.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { newTurn, applyFrame, historyItems, joinText, group, toolFailed, toolSummary } from '../lib/turn.js';
+import { newTurn, applyFrame, historyItems, joinText, group, toolSummary } from '../lib/turn.js';
 
 const turn = () => newTurn({ turnId: 't1', requestId: 'r1', conversationId: 'c1', kind: 'send' });
 const frame = (type, payload, seq) => ({ type, payload, seq });
@@ -248,7 +248,7 @@ test('history flattens messages into the segment shapes the live path uses', () 
         { kind: 'tool_call', toolCallId: 'c1' },
         { kind: 'text', text: 'answer' },
       ],
-      toolCalls: [{ id: 'c1', name: 'exec', input: '{}', output: 'ok', status: 'completed' }],
+      toolCalls: [{ id: 'c1', name: 'exec', input: '{}', output: 'ok', status: 'ok' }],
     },
   ]);
   assert.deepEqual(kinds(items), ['user', 'note', 'reasoning', 'tool', 'text', 'interrupted']);
@@ -263,7 +263,7 @@ test('history orders text and tool rows by the parts, not by the tool list', () 
   const items = historyItems([{
     id: 'm', role: 'assistant', content: 'fallback content',
     parts: [{ kind: 'text', text: 'A' }, { kind: 'tool_call', toolCallId: 'x' }, { kind: 'text', text: 'B' }],
-    toolCalls: [{ id: 'x', name: 'exec', input: '{}', output: 'ok', status: 'completed' }],
+    toolCalls: [{ id: 'x', name: 'exec', input: '{}', output: 'ok', status: 'ok' }],
   }]);
   assert.deepEqual(items.map((i) => i.text ?? i.name), ['A', 'exec', 'B']);
 });
@@ -271,10 +271,12 @@ test('history orders text and tool rows by the parts, not by the tool list', () 
 test('a message without parts falls back to content followed by its calls', () => {
   const items = historyItems([{
     id: 'm', role: 'assistant', content: 'text',
-    toolCalls: [{ id: 'c', name: 'ls', input: '{}', output: '' }],
+    // The DTO omits `output` (a pointer) when the call recorded none.
+    toolCalls: [{ id: 'c', name: 'ls', input: '{}' }],
   }]);
   assert.deepEqual(kinds(items), ['text', 'tool']);
-  assert.equal(items[1].status, 'pending', 'a call without a completed status is not settled');
+  assert.equal(items[1].status, 'pending', 'a call with no result is not settled');
+  assert.equal(items[1].outcome, 'unknown', 'and it carries no verdict');
 });
 
 test('the workspace injection is a cwd, never a row', () => {
@@ -309,7 +311,7 @@ test('a part naming a missing tool call is skipped, and empty text is no row', (
       { kind: 'tool_call', toolCallId: 'missing' },
       { kind: 'tool_call', toolCallId: 'c' },
     ],
-    toolCalls: [{ id: 'c', name: 'exec', input: '{}', output: '', status: 'completed' }],
+    toolCalls: [{ id: 'c', name: 'exec', input: '{}', status: 'pending' }],
   }]);
   assert.deepEqual(kinds(items), ['tool']);
 });
@@ -435,20 +437,20 @@ test('group of an empty list is empty, and a lone activity closes at the end', (
 
 // ---------- the two small readers ----------
 
-test('toolFailed reads the base\'s failure conventions out of stored output', () => {
-  assert.equal(toolFailed('error: nope'), true);
-  assert.equal(toolFailed('interrupted by user'), true);
-  assert.equal(toolFailed('ran\n(exit 2)'), true);
-  assert.equal(toolFailed('ran\n(signal: killed)'), true);
-  assert.equal(toolFailed('ok\n(exit 0)'), false);
-  assert.equal(toolFailed(''), false);
-  assert.equal(toolFailed(undefined), false);
-});
-
 test('toolSummary names the action and its subject, and survives partial JSON', () => {
   assert.deepEqual(toolSummary('exec', '{"command":"ls -la\\nmore"}'), { verb: 'Ran', detail: 'ls -la' });
   assert.deepEqual(toolSummary('read_file', '{"path":"a.go"}'), { verb: 'Read', detail: 'a.go' });
   assert.deepEqual(toolSummary('web_search', '{"query":"x"}'), { verb: 'Searched web', detail: 'x' });
   assert.deepEqual(toolSummary('exec', '{"comm'), { verb: 'Ran', detail: '' });
   assert.deepEqual(toolSummary('custom_tool', '{"thing":"v"}'), { verb: 'custom_tool', detail: 'v' });
+});
+
+test('a stored steer row carries its inputId, a plain row does not', () => {
+  // D-06.1/T-18: the fold's identity is the only thing the merge may match a
+  // live steer bubble against — never its text.
+  const items = historyItems([
+    { id: 'u1', role: 'user', content: 'plain', createdAt: '' },
+    { id: 'u2', role: 'user', content: 'steered', inputId: 'req-7', createdAt: '' },
+  ]);
+  assert.deepEqual(items.map((i) => [i.kind, i.inputId]), [['user', ''], ['user', 'req-7']]);
 });

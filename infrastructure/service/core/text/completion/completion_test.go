@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -762,7 +763,12 @@ func TestStreamCancelIsNotUpstreamError(t *testing.T) {
 	}
 }
 
-func TestStreamSuccessDropsPartialTool(t *testing.T) {
+// A settled stream with one complete call and one whose arguments never
+// closed cannot commit silently: dropping the truncated call would hide an
+// action the model asked for. The step fails 502 — retryable while nothing
+// was persisted, and the job keeps the streamed text as an interrupted reply
+// when some was.
+func TestStreamTruncatedToolCallFailsTheStep(t *testing.T) {
 	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"}}]}\n\n"))
@@ -772,14 +778,15 @@ func TestStreamSuccessDropsPartialTool(t *testing.T) {
 		w.Write([]byte("data: [DONE]\n\n"))
 	})
 	conv := newConv(t)
+	user, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(user)
 	model, _ := entity.NewModel("m", "test")
-	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
-		t.Fatalf("Send: %v", err)
+	err := svc.Send(t.Context(), conv, gw, model, nil)
+	if got := apperror.As(err).StatusCode(); got != 502 {
+		t.Fatalf("truncated call → %d (%v), want 502", got, err)
 	}
-	last := conv.Last()
-	calls := last.ToolCalls()
-	if len(calls) != 1 || calls[0].ID() != "c1" {
-		t.Fatalf("partial tool call must be dropped: %+v", calls)
+	if last := conv.Last(); last.Role() != enum.RoleUser {
+		t.Fatalf("a truncated call must not commit: %+v", last)
 	}
 }
 
@@ -1431,5 +1438,80 @@ func TestUnaryBodyChunksResetTheIdleDeadline(t *testing.T) {
 	}
 	if last := conv.Last(); last == nil || last.Content() != "slow but alive" {
 		t.Fatalf("answer lost: %+v", conv.Last())
+	}
+}
+
+// A 200 whose body is a JSON error envelope (a gateway refusing the stream)
+// keeps the provider's status, message and wait instead of surfacing as a
+// truncated stream.
+func TestStreamJSONErrorEnvelopeKeepsProviderError(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "120")
+		w.Write([]byte(`{"error":{"message":"slow down","type":"rate_limit_error","code":"rate_limit_exceeded"}}`))
+	})
+	conv := newConv(t)
+	user, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(user)
+	model, _ := entity.NewModel("m", "test")
+	err := svc.Send(t.Context(), conv, gw, model, nil)
+	if got := apperror.As(err).StatusCode(); got != 429 {
+		t.Fatalf("status = %d (%v), want 429", got, err)
+	}
+	if got := apperror.As(err).Error(); got != "slow down" {
+		t.Fatalf("message = %q, want the provider's", got)
+	}
+	var delayed interface{ RetryAfter() time.Duration }
+	if !errors.As(err, &delayed) || delayed.RetryAfter() != 120*time.Second {
+		t.Fatalf("error lost the provider wait: %v", err)
+	}
+}
+
+// A later usage chunk may repeat only the counters that changed; the input
+// count a final partial object omits must not become zero.
+func TestStreamUsageMergesPartialChunks(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":5}}\n\n"))
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"completion_tokens\":7}}\n\n"))
+		w.Write([]byte("data: [DONE]\n\n"))
+	})
+	conv := newConv(t)
+	user, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(user)
+	model, _ := entity.NewModel("m", "test")
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := conv.Usage().InputTokens(); got != 100 {
+		t.Fatalf("input tokens = %d, want the earlier chunk's 100", got)
+	}
+	if got := conv.Usage().OutputTokens(); got != 7 {
+		t.Fatalf("output tokens = %d, want the later chunk's 7", got)
+	}
+}
+
+// Presence, not magnitude: a later chunk may report a legitimate zero — the
+// cache count dropped — and it must land. Gating the merge on non-zero would
+// keep the stale cache count and under-report the input.
+func TestStreamUsageZeroIsAValue(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":5,\"prompt_tokens_details\":{\"cached_tokens\":40}}}\n\n"))
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":100,\"prompt_tokens_details\":{\"cached_tokens\":0}}}\n\n"))
+		w.Write([]byte("data: [DONE]\n\n"))
+	})
+	conv := newConv(t)
+	user, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(user)
+	model, _ := entity.NewModel("m", "test")
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := conv.Usage().CacheReadTokens(); got != 0 {
+		t.Fatalf("cache read tokens = %d, want the later chunk's legitimate 0", got)
+	}
+	if got := conv.Usage().InputTokens(); got != 100 {
+		t.Fatalf("input tokens = %d, want 100 (none cached)", got)
 	}
 }

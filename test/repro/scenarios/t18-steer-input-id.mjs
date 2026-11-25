@@ -81,10 +81,11 @@ export default {
           ],
         },
         {
-          label: 'the projection exposes it (`steerInput`) so the merge can match the journal',
-          ok: steerItem !== undefined && steerItem.steerInput === steerId,
+          label: 'the projection exposes the DTO key (`inputId`) so the merge can match the journal',
+          ok: steerItem !== undefined && steerItem.inputId === steerId,
           observed: [
-            `projected item: ${JSON.stringify(steerItem ? { kind: steerItem.kind, steerInput: steerItem.steerInput ?? null } : null)}`,
+            `projected item: ${JSON.stringify(steerItem ? { kind: steerItem.kind, inputId: steerItem.inputId ?? null } : null)}`,
+            `stored row inputId: ${JSON.stringify(steerRow?.inputId ?? null)}`,
           ],
         },
       ];

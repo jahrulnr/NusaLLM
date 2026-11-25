@@ -2,7 +2,6 @@ package job
 
 import (
 	"context"
-	"fmt"
 
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
@@ -33,8 +32,7 @@ func (j *Compact) Execute(execCtx context.Context) (err error) {
 		}
 		keepTail := d.Config.CompactKeepTail
 		if !conv.CanManualCompact(keepTail) {
-			return apperror.New(400, "nothing to compact",
-				fmt.Errorf("conversation %s has no new foldable history (messages %d, keep-tail %d)", convID, len(conv.Messages()), keepTail))
+			return errNothingToCompact(convID, len(conv.Messages()), keepTail)
 		}
 		driver, err := d.environment(conv)
 		if err != nil {

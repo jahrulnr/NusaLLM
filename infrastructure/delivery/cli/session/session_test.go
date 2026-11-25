@@ -13,6 +13,7 @@ import (
 	repoconversation "github.com/jahrulnr/nusallm/infrastructure/repository/conversation"
 	repogateway "github.com/jahrulnr/nusallm/infrastructure/repository/gateway"
 	reposecret "github.com/jahrulnr/nusallm/infrastructure/repository/secret"
+	"github.com/jahrulnr/nusallm/infrastructure/worker"
 )
 
 func TestEffectiveRouteModelUsesConversationBinding(t *testing.T) {
@@ -44,7 +45,7 @@ func TestEffectiveRouteModelUsesConversationBinding(t *testing.T) {
 	}
 
 	s := &Session{
-		Conversations:  appconversation.New(convs, gateways, nil, config.NewConfig(), nil, "", nil, nil),
+		Conversations:  appconversation.New(convs, gateways, nil, config.NewConfig(), nil, "", nil, nil, appconversation.Workers(worker.New)),
 		ConversationID: "room",
 	}
 
@@ -75,7 +76,7 @@ func TestResolveRouteAutoSelectsAndNotifies(t *testing.T) {
 
 	var notes []string
 	s := &Session{
-		Conversations: appconversation.New(convs, gateways, nil, config.NewConfig(), nil, "", nil, nil),
+		Conversations: appconversation.New(convs, gateways, nil, config.NewConfig(), nil, "", nil, nil, appconversation.Workers(worker.New)),
 		Gateways:      gwApp,
 		Notify:        func(text string) { notes = append(notes, text) },
 	}
@@ -103,7 +104,7 @@ func TestResolveRouteUnboundErrors(t *testing.T) {
 	gateways := repogateway.NewGatewayRepository(t.TempDir(), secrets)
 	convs := repoconversation.NewConversationRepository(t.TempDir())
 	s := &Session{
-		Conversations: appconversation.New(convs, gateways, nil, config.NewConfig(), nil, "", nil, nil),
+		Conversations: appconversation.New(convs, gateways, nil, config.NewConfig(), nil, "", nil, nil, appconversation.Workers(worker.New)),
 		Gateways:      appgateway.New(gateways, secrets, nil),
 		Notify:        func(string) {},
 	}

@@ -134,7 +134,7 @@ func (r *ConversationRepository) RepairOrphan(ctx context.Context, convID string
 		if err := json.Unmarshal(line, &record); err != nil {
 			return fmt.Errorf("repair %s: decode orphan message: %w", convID, err)
 		}
-		message, err := decodeMessage(record.Data)
+		message, err := decodeMessage(record.Data, strictDecode)
 		if err != nil {
 			return fmt.Errorf("repair %s: decode orphan message: %w", convID, err)
 		}
@@ -239,7 +239,7 @@ func (r *ConversationRepository) RepairRewrite(ctx context.Context, convID strin
 		}
 		lines = append(lines, line)
 	}
-	if _, err := messagesFromLines(lines); err != nil {
+	if _, err := messagesFromLines(lines, strictDecode); err != nil {
 		return fmt.Errorf("repair %s: rewrite payload does not decode: %w", convID, err)
 	}
 	if err := writeFileAtomic(filepath.Join(dir, activeFile), payload, 0o600); err != nil {

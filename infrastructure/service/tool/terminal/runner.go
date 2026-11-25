@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os/exec"
+	"strings"
 
 	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 )
@@ -13,6 +14,13 @@ type LocalRunner struct{ environment dservice.CommandEnvironment }
 
 func NewLocalRunner(environment dservice.CommandEnvironment) dservice.CommandRunner {
 	return LocalRunner{environment: environment}
+}
+
+// signalName strips the "signal: " prefix Go puts on an ExitError's message:
+// the value is the signal's name, and every renderer adds its own label. A
+// message without the prefix is a name already.
+func signalName(msg string) string {
+	return strings.TrimPrefix(msg, "signal: ")
 }
 
 func (r LocalRunner) Run(ctx context.Context, command, workspace string, stdin io.Reader, output io.Writer) (dservice.ProcessExit, error) {
@@ -42,7 +50,7 @@ func (r LocalRunner) Run(ctx context.Context, command, workspace string, stdin i
 		if code := exitErr.ExitCode(); code > 0 {
 			return dservice.ProcessExit{Code: code}, nil
 		}
-		return dservice.ProcessExit{Signal: exitErr.Error()}, nil
+		return dservice.ProcessExit{Signal: signalName(exitErr.Error())}, nil
 	}
 	return dservice.ProcessExit{Err: err}, nil
 }

@@ -114,16 +114,20 @@ type ResponseBody struct {
 // UsageBody maps OpenAI/OpenRouter usage — prompt_tokens is the INCLUSIVE
 // total (cached tokens are a subset), so decode goes through
 // NewUsageFromTotal.
+// UsageBody keeps every counter as a pointer: presence is the wire's own
+// information. A provider reporting cached_tokens 0 on a later chunk means
+// the cache count dropped, which a zero value cannot express once an earlier
+// chunk carried a non-zero one.
 type UsageBody struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens     *int `json:"prompt_tokens"`
+	CompletionTokens *int `json:"completion_tokens"`
+	TotalTokens      *int `json:"total_tokens"`
 	PromptDetails    struct {
-		CachedTokens int `json:"cached_tokens"`
+		CachedTokens *int `json:"cached_tokens"`
 	} `json:"prompt_tokens_details"`
-	CacheWrite int `json:"cache_write_tokens"`
+	CacheWrite *int `json:"cache_write_tokens"`
 	// Anthropic-via-OpenRouter spells cache write differently.
-	CacheCreationInput int `json:"cache_creation_input_tokens"`
+	CacheCreationInput *int `json:"cache_creation_input_tokens"`
 }
 
 // ErrorBody is the error envelope shared by both providers.

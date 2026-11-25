@@ -248,8 +248,8 @@ func TestSteerInboxFIFOAndRecall(t *testing.T) {
 // persisted input answer false, and a recalled receipt stays terminal.
 func TestSteeringInputRecallExactPendingOnly(t *testing.T) {
 	in := NewSteeringInput()
-	a := in.Submit("first")
-	b := in.Submit("second")
+	a := in.Submit("", "first")
+	b := in.Submit("", "second")
 	if !in.Recall(b) {
 		t.Fatal("recall of a pending receipt must succeed")
 	}
@@ -277,7 +277,7 @@ func TestSteeringInputRecallExactPendingOnly(t *testing.T) {
 func TestSteeringInputCLIRecallMarksWebReceipt(t *testing.T) {
 	in := NewSteeringInput()
 	in.push("cli line")
-	web := in.Submit("web line")
+	web := in.Submit("", "web line")
 	if got, ok := in.popLast(); !ok || got != "web line" {
 		t.Fatalf("recall = %q,%v", got, ok)
 	}
@@ -345,7 +345,7 @@ func TestRunTurnSteerAppendCommittedDespiteError(t *testing.T) {
 	d := Deps{
 		SummaryTool: mustSummaryTool(t), Convs: convs, Config: config.ConversationConfig{MaxTurnStep: 4}}
 	steers := NewSteeringInput()
-	receipt := steers.Submit("steer me")
+	receipt := steers.Submit("", "steer me")
 	err := d.runTurn(t.Context(), "room", conv, EnvironmentBundle{}, nil, entity.Model{}, doneSvc{}, nil, steers)
 	if err == nil {
 		t.Fatal("the post-commit error must still fail the turn")
@@ -369,8 +369,8 @@ func TestRunTurnSteerAppendFailureLeavesUnconsumed(t *testing.T) {
 	d := Deps{
 		SummaryTool: mustSummaryTool(t), Convs: convs, Config: config.ConversationConfig{MaxTurnStep: 4}}
 	steers := NewSteeringInput()
-	failed := steers.Submit("first line")
-	drained := steers.Submit("second line")
+	failed := steers.Submit("", "first line")
+	drained := steers.Submit("", "second line")
 	err := d.runTurn(t.Context(), "room", conv, EnvironmentBundle{}, nil, entity.Model{}, doneSvc{}, nil, steers)
 	if err == nil {
 		t.Fatal("the failed append must fail the turn")
@@ -387,7 +387,7 @@ func TestRunTurnSteerIdenticalTextBothPaths(t *testing.T) {
 	conv, d := seedSteerRoom(t, repoconversation.NewConversationRepository(t.TempDir()))
 	steers := NewSteeringInput()
 	steers.push("same text")
-	receipt := steers.Submit("same text")
+	receipt := steers.Submit("", "same text")
 	if err := d.runTurn(t.Context(), "room", conv, EnvironmentBundle{}, nil, entity.Model{}, doneSvc{}, nil, steers); err != nil {
 		t.Fatal(err)
 	}
@@ -408,7 +408,7 @@ func TestRunTurnConsumesOnlyItsOwnMailbox(t *testing.T) {
 	running := NewSteeringInput()
 	queued := NewSteeringInput()
 	running.push("for the running turn")
-	queuedReceipt := queued.Submit("for the queued job")
+	queuedReceipt := queued.Submit("", "for the queued job")
 	if err := d.runTurn(t.Context(), "room", conv, EnvironmentBundle{}, nil, entity.Model{}, doneSvc{}, nil, running); err != nil {
 		t.Fatal(err)
 	}
@@ -428,7 +428,7 @@ func TestRunTurnConsumesOnlyItsOwnMailbox(t *testing.T) {
 func TestSteeringInputRecallVsClaimRace(t *testing.T) {
 	for i := range 200 {
 		in := NewSteeringInput()
-		r := in.Submit("raced input")
+		r := in.Submit("", "raced input")
 		start := make(chan struct{})
 		var wg sync.WaitGroup
 		var recalled bool
@@ -473,7 +473,7 @@ func TestSendSteerUsesSuppliedMailbox(t *testing.T) {
 	box := NewSteeringInput()
 	j := &Send{Opts: SendOptions{Steering: box}}
 	j.Steer("cli input")
-	web := box.Submit("web input")
+	web := box.Submit("", "web input")
 	if j.mailbox() != box {
 		t.Fatal("a bound send must fold the supplied mailbox")
 	}
@@ -488,5 +488,44 @@ func TestSendSteerUsesSuppliedMailbox(t *testing.T) {
 	plain.Steer("internal")
 	if got, ok := plain.steers.popLast(); !ok || got != "internal" {
 		t.Fatalf("unbound send keeps its internal mailbox: %q,%v", got, ok)
+	}
+}
+
+// The folded user line carries the submitting transport's input id, so a
+// client matches its own steer bubble to history by identity — never by
+// text. An ordinary line (and a receipt-free CLI push) carries none.
+func TestRunTurnSteerFoldRecordsInputID(t *testing.T) {
+	convs := repoconversation.NewConversationRepository(t.TempDir())
+	conv, d := seedSteerRoom(t, convs)
+	steers := NewSteeringInput()
+	steers.push("cli line")
+	steers.Submit("req-42", "web line")
+	if err := d.runTurn(t.Context(), "room", conv, EnvironmentBundle{}, nil, entity.Model{}, doneSvc{}, nil, steers); err != nil {
+		t.Fatal(err)
+	}
+	var web, cli entity.Message
+	for _, m := range conv.Messages() {
+		switch m.Content() {
+		case "web line":
+			web = m
+		case "cli line":
+			cli = m
+		}
+	}
+	if web.InputID() != "req-42" {
+		t.Fatalf("web steer inputId = %q, want req-42", web.InputID())
+	}
+	if cli.InputID() != "" {
+		t.Fatalf("CLI steer inputId = %q, want none", cli.InputID())
+	}
+	// Persisted, not only in memory.
+	reloaded, err := convs.Load(t.Context(), "room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range reloaded.Messages() {
+		if m.Content() == "web line" && m.InputID() != "req-42" {
+			t.Fatalf("stored inputId = %q, want req-42", m.InputID())
+		}
 	}
 }

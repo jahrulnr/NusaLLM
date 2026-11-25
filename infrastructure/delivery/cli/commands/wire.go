@@ -1,33 +1,32 @@
 package commands
 
 import (
+	cmdattach "github.com/jahrulnr/nusallm/infrastructure/delivery/cli/commands/attach"
+	cmdcancel "github.com/jahrulnr/nusallm/infrastructure/delivery/cli/commands/cancel"
+	cmdclear "github.com/jahrulnr/nusallm/infrastructure/delivery/cli/commands/clear"
+	cmdcompact "github.com/jahrulnr/nusallm/infrastructure/delivery/cli/commands/compact"
+	cmdcopy "github.com/jahrulnr/nusallm/infrastructure/delivery/cli/commands/copy"
+	cmddelete "github.com/jahrulnr/nusallm/infrastructure/delivery/cli/commands/delete"
+	cmddetach "github.com/jahrulnr/nusallm/infrastructure/delivery/cli/commands/detach"
+	cmddiff "github.com/jahrulnr/nusallm/infrastructure/delivery/cli/commands/diff"
+	cmdedit "github.com/jahrulnr/nusallm/infrastructure/delivery/cli/commands/edit"
+	cmdexit "github.com/jahrulnr/nusallm/infrastructure/delivery/cli/commands/exit"
+	cmdexport "github.com/jahrulnr/nusallm/infrastructure/delivery/cli/commands/export"
+	cmdhelp "github.com/jahrulnr/nusallm/infrastructure/delivery/cli/commands/help"
+	cmdhistory "github.com/jahrulnr/nusallm/infrastructure/delivery/cli/commands/history"
+	cmdlist "github.com/jahrulnr/nusallm/infrastructure/delivery/cli/commands/list"
+	cmdmodel "github.com/jahrulnr/nusallm/infrastructure/delivery/cli/commands/model"
+	cmdnew "github.com/jahrulnr/nusallm/infrastructure/delivery/cli/commands/new"
+	cmdpwd "github.com/jahrulnr/nusallm/infrastructure/delivery/cli/commands/pwd"
+	cmdquit "github.com/jahrulnr/nusallm/infrastructure/delivery/cli/commands/quit"
+	cmdresume "github.com/jahrulnr/nusallm/infrastructure/delivery/cli/commands/resume"
+	cmdroute "github.com/jahrulnr/nusallm/infrastructure/delivery/cli/commands/route"
+	cmdstatus "github.com/jahrulnr/nusallm/infrastructure/delivery/cli/commands/status"
+	cmdtitle "github.com/jahrulnr/nusallm/infrastructure/delivery/cli/commands/title"
+	cmdtools "github.com/jahrulnr/nusallm/infrastructure/delivery/cli/commands/tools"
+	cmdusage "github.com/jahrulnr/nusallm/infrastructure/delivery/cli/commands/usage"
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/session"
 	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
-	svccommand "github.com/jahrulnr/nusallm/infrastructure/service/command"
-	cmdattach "github.com/jahrulnr/nusallm/infrastructure/service/command/attach"
-	cmdcancel "github.com/jahrulnr/nusallm/infrastructure/service/command/cancel"
-	cmdclear "github.com/jahrulnr/nusallm/infrastructure/service/command/clear"
-	cmdcompact "github.com/jahrulnr/nusallm/infrastructure/service/command/compact"
-	cmdcopy "github.com/jahrulnr/nusallm/infrastructure/service/command/copy"
-	cmddelete "github.com/jahrulnr/nusallm/infrastructure/service/command/delete"
-	cmddetach "github.com/jahrulnr/nusallm/infrastructure/service/command/detach"
-	cmddiff "github.com/jahrulnr/nusallm/infrastructure/service/command/diff"
-	cmdedit "github.com/jahrulnr/nusallm/infrastructure/service/command/edit"
-	cmdexit "github.com/jahrulnr/nusallm/infrastructure/service/command/exit"
-	cmdexport "github.com/jahrulnr/nusallm/infrastructure/service/command/export"
-	cmdhelp "github.com/jahrulnr/nusallm/infrastructure/service/command/help"
-	cmdhistory "github.com/jahrulnr/nusallm/infrastructure/service/command/history"
-	cmdlist "github.com/jahrulnr/nusallm/infrastructure/service/command/list"
-	cmdmodel "github.com/jahrulnr/nusallm/infrastructure/service/command/model"
-	cmdnew "github.com/jahrulnr/nusallm/infrastructure/service/command/new"
-	cmdpwd "github.com/jahrulnr/nusallm/infrastructure/service/command/pwd"
-	cmdquit "github.com/jahrulnr/nusallm/infrastructure/service/command/quit"
-	cmdresume "github.com/jahrulnr/nusallm/infrastructure/service/command/resume"
-	cmdroute "github.com/jahrulnr/nusallm/infrastructure/service/command/route"
-	cmdstatus "github.com/jahrulnr/nusallm/infrastructure/service/command/status"
-	cmdtitle "github.com/jahrulnr/nusallm/infrastructure/service/command/title"
-	cmdtools "github.com/jahrulnr/nusallm/infrastructure/service/command/tools"
-	cmdusage "github.com/jahrulnr/nusallm/infrastructure/service/command/usage"
 )
 
 // New wires slash commands for one terminal session — each command is
@@ -61,7 +60,7 @@ func New(s *session.Session) *Registry {
 	quit := cmdquit.New(h)
 	help := cmdhelp.New(h, func() []dservice.CommandCompletion {
 		withHelp := append(append([]dservice.SlashCommand{}, base...), quit)
-		return append(svccommand.Describe(withHelp), SteerInfo)
+		return append(Describe(withHelp), SteerInfo)
 	})
-	return svccommand.NewRegistry(append(base, help, quit)...)
+	return NewRegistry(append(base, help, quit)...)
 }

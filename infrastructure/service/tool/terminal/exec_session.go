@@ -100,7 +100,12 @@ func (tool *ExecSessionTool) Execute(ctx context.Context, call entity.ToolCall, 
 		return dservice.ToolResult{}, err
 	}
 	delivered = true
-	return dservice.ToolResult{Text: formatPoll(sess.ID(), poll, start, call.OutputWithMiddleTruncateWindow(poll.Output, poll.Output, len(poll.Output), ""))}, nil
+	outcome, status := pollOutcome(poll)
+	return dservice.ToolResult{
+		Text:    formatPoll(sess.ID(), poll, start, call.OutputWithMiddleTruncateWindow(poll.Output, poll.Output, len(poll.Output), "")),
+		Outcome: outcome,
+		Exit:    status,
+	}, nil
 }
 
 // clampYield applies a default when unset and bounds the wait — codex's
@@ -125,15 +130,25 @@ func clampYield(ms int, fallback, floor, cap time.Duration) time.Duration {
 // dropped. The drained output itself is windowed to the call budget —
 // head+tail with an omission marker, same rule the entity applies to
 // oversized tool output.
+//
+// The exit marker also ends the text, exactly as exec writes it: the markers
+// are the model's contract — they are how a reader of the text learns how the
+// process ended. A UI and any other programmatic consumer reads the call's
+// verdict and exit status from turn.tool_result / toolCallDTO, never from
+// this text. The header stays for readability.
 func formatPoll(id int, poll dservice.TerminalPoll, start time.Time, body string) string {
-	var header string
+	var header, suffix string
 	switch {
 	case poll.Running:
 		header = fmt.Sprintf("Process running with session ID %d", id)
 	case poll.Signal != "":
-		header = fmt.Sprintf("Process exited (%s)", poll.Signal)
+		header = fmt.Sprintf("Process exited (signal: %s)", poll.Signal)
+		suffix = fmt.Sprintf("\n(signal: %s)", poll.Signal)
 	default:
 		header = fmt.Sprintf("Process exited with code %d", poll.ExitCode)
+		if poll.ExitCode > 0 {
+			suffix = fmt.Sprintf("\n(exit %d)", poll.ExitCode)
+		}
 	}
-	return fmt.Sprintf("%s\nWall time: %.3f seconds\nOriginal output: %d bytes\nOutput:\n%s", header, time.Since(start).Seconds(), poll.TotalBytes, body)
+	return fmt.Sprintf("%s\nWall time: %.3f seconds\nOriginal output: %d bytes\nOutput:\n%s%s", header, time.Since(start).Seconds(), poll.TotalBytes, body, suffix)
 }

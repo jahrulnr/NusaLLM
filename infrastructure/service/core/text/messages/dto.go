@@ -141,11 +141,15 @@ type ResponseBody struct {
 // UsageBody maps Anthropic usage — input_tokens is ALREADY the uncached
 // count (cache read/write are disjoint fields), so decode goes through
 // NewUsage, not NewUsageFromTotal.
+// UsageBody keeps every counter as a pointer: presence is the wire's own
+// information. A later cumulative object may report a legitimate zero (the
+// cache count dropped), which a zero value cannot express once an earlier
+// object carried a non-zero one.
 type UsageBody struct {
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	InputTokens              *int `json:"input_tokens"`
+	OutputTokens             *int `json:"output_tokens"`
+	CacheCreationInputTokens *int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     *int `json:"cache_read_input_tokens"`
 }
 
 // ErrorBody is the error envelope shared by HTTP errors and error events.

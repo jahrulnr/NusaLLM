@@ -93,7 +93,17 @@ func (tool *FilePatchTool) Execute(ctx context.Context, call entity.ToolCall, _ 
 		return service.ToolResult{}, err
 	}
 	content := string(data)
-	count := strings.Count(content, input.OldString)
+	// A model writes LF; a file written on Windows carries CRLF. The anchor
+	// is the same text either way, so a miss retries with the file's own
+	// line ending before giving up — the replacement keeps it too, so the
+	// patch never rewrites a whole file's endings.
+	anchor, replacement := input.OldString, input.NewString
+	count := strings.Count(content, anchor)
+	if count == 0 && strings.Contains(content, "\r\n") && !strings.Contains(anchor, "\r\n") {
+		anchor = strings.ReplaceAll(input.OldString, "\n", "\r\n")
+		replacement = strings.ReplaceAll(input.NewString, "\n", "\r\n")
+		count = strings.Count(content, anchor)
+	}
 	if count == 0 {
 		// No fuzzy matching — the model must re-read and anchor on
 		// text that is actually there.
@@ -103,9 +113,9 @@ func (tool *FilePatchTool) Execute(ctx context.Context, call entity.ToolCall, _ 
 		return service.ToolResult{}, fmt.Errorf("old_string matches %d places in %q; add surrounding context or set replace_all", count, input.Path)
 	}
 	if input.ReplaceAll {
-		content = strings.ReplaceAll(content, input.OldString, input.NewString)
+		content = strings.ReplaceAll(content, anchor, replacement)
 	} else {
-		content = strings.Replace(content, input.OldString, input.NewString, 1)
+		content = strings.Replace(content, anchor, replacement, 1)
 	}
 	// Write through the placement with the recorded mode — Create applies
 	// its perm only on create, so an existing file keeps its bits anyway.

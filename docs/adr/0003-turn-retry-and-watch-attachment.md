@@ -11,6 +11,11 @@ Citation errata (round 1): the retry gate is `application/job/turn.go:225-227`
 (`transient` plus the condition on `226-227`); `interruptedReply` starts at
 `turn.go:572`, not `611` — `611` is its body's middle.
 
+Errata (round 3, T-22/D-12): the function named `interruptedReply` below now
+lives in the domain as `entity.NewInterruptedReply` (`entity/message.go:190`),
+and the call-site line numbers in this record describe the tree at
+ratification. The decision is unchanged; only the owner moved.
+
 ## Context
 
 Two turn-transport behaviours are decided today by accident rather than by a

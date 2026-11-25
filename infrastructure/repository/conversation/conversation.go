@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -384,19 +385,33 @@ func tornLine(line []byte) bool {
 // derive internal ids per message (every no-id exec call becomes exec#0),
 // and a global first-match would paste a later turn's output onto an
 // earlier turn's still-pending call.
-func messagesFromLines(lines [][]byte) ([]entity.Message, error) {
+func messagesFromLines(lines [][]byte, opts decodeOptions) ([]entity.Message, error) {
 	var msgs []entity.Message
 	callMessage := make(map[string]int)
 	for _, l := range lines {
 		var lr lineRecord
 		if err := json.Unmarshal(l, &lr); err != nil {
-			return nil, fmt.Errorf("corrupt line: %w", err)
+			if !opts.tolerate {
+				return nil, fmt.Errorf("corrupt line: %w", err)
+			}
+			// Not even a line record: skip it and keep the rest readable.
+			if opts.report != nil {
+				opts.report("", fmt.Sprintf("line skipped: %v", err))
+			}
+			continue
 		}
 		switch lr.Type {
 		case lineMessage:
-			m, err := decodeMessage(lr.Data)
+			m, err := decodeMessage(lr.Data, opts)
 			if err != nil {
-				return nil, err
+				if !opts.tolerate {
+					return nil, err
+				}
+				// A message that cannot be built at all (unknown role, no
+				// id) is skipped: inventing one would put words in the
+				// conversation that were never there.
+				opts.note(lr.Data.ID, "message skipped: "+err.Error())
+				continue
 			}
 			for _, call := range m.ToolCalls() {
 				callMessage[call.ID()] = len(msgs)
@@ -408,13 +423,39 @@ func messagesFromLines(lines [][]byte) ([]entity.Message, error) {
 				continue
 			}
 			if err := msgs[i].SetStoredToolOutput(lr.CallID, lr.Output, lr.OutputLatency); err != nil {
-				return nil, err // index was built from these messages
+				if !opts.tolerate {
+					return nil, err // index was built from these messages
+				}
+				// The call keeps whatever output it already carried: a
+				// broken patch lowers one result, not the conversation.
+				opts.note(lr.CallID, "tool_output patch skipped: "+err.Error())
+				continue
+			}
+			// The verdict travels on the patch line too, so a result that
+			// arrived after the message was written still projects one.
+			outcome, ok := enum.ParseToolOutcome(lr.Outcome)
+			if !ok {
+				if !opts.tolerate {
+					return nil, fmt.Errorf("tool_output %q: unknown outcome %q", lr.CallID, lr.Outcome)
+				}
+				// The text of this patch is readable; only the verdict is
+				// not, so the call keeps its output and projects unknown.
+				opts.note(lr.CallID, fmt.Sprintf("tool_output verdict dropped: unknown outcome %q", lr.Outcome))
+			} else if err := msgs[i].SetToolOutcome(lr.CallID, outcome, lr.Exit); err != nil {
+				if !opts.tolerate {
+					return nil, err
+				}
+				opts.note(lr.CallID, "tool_output verdict dropped: "+err.Error())
 			}
 			var atts []valueobject.Attachment
 			for _, a := range lr.Attachments {
 				att, err := valueobject.NewAttachment(a.URI, a.MediaType)
 				if err != nil {
-					return nil, fmt.Errorf("tool_output attachment: %w", err)
+					if !opts.tolerate {
+						return nil, fmt.Errorf("tool_output attachment: %w", err)
+					}
+					opts.note(lr.CallID, fmt.Sprintf("tool_output attachment %q dropped: %v", a.URI, err))
+					continue
 				}
 				att.SetName(a.Name)
 				att.SetSHA256(a.SHA256)
@@ -422,9 +463,19 @@ func messagesFromLines(lines [][]byte) ([]entity.Message, error) {
 			}
 			if atts != nil {
 				if err := msgs[i].SetToolOutputAttachments(lr.CallID, atts); err != nil {
-					return nil, err
+					if !opts.tolerate {
+						return nil, err
+					}
+					opts.note(lr.CallID, "tool_output attachments dropped: "+err.Error())
 				}
 			}
+		default:
+			// A type this version does not know is data it would silently
+			// lose on the next rewrite — say so on read.
+			if !opts.tolerate {
+				return nil, fmt.Errorf("unknown line type %q", lr.Type)
+			}
+			opts.note("", fmt.Sprintf("line type %q ignored", lr.Type))
 		}
 	}
 	return msgs, nil
@@ -607,5 +658,10 @@ func (r *ConversationRepository) loadMessages(convID string, sealedCount int) ([
 		}
 		lines = append(lines, l...)
 	}
-	return messagesFromLines(lines)
+	// Reading tolerates a corrupt record: one hand-edited call degrades to an
+	// unreadable placeholder (reported below) instead of failing the whole
+	// conversation. Writes and repair stay strict.
+	return messagesFromLines(lines, tolerantRead(func(id, reason string) {
+		log.Printf("conversation %s: record %q: %s", convID, id, reason)
+	}))
 }

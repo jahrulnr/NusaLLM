@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 )
 
 // seqJob appends its id to order — FIFO verification.
@@ -156,7 +158,7 @@ func TestTerminateDrains(t *testing.T) {
 // the OnTerminate hook.
 func TestJobSelfTerminate(t *testing.T) {
 	drainedC := make(chan []Job, 1)
-	w := New(Options{OnTerminate: func(_ *Worker, drained []Job) { drainedC <- drained }})
+	w := New(Options{OnTerminate: func(_ dservice.Retirable, drained []Job) { drainedC <- drained }})
 	if err := w.Submit(&terminateJob{}); err != nil {
 		t.Fatal(err)
 	}
@@ -181,8 +183,8 @@ func (terminateJob) Interrupt()                    {}
 
 // OnIdle fires when the queue drains — the reaping hook.
 func TestOnIdleFires(t *testing.T) {
-	idle := make(chan *Worker, 4)
-	w := New(Options{OnIdle: func(w *Worker) { idle <- w }})
+	idle := make(chan dservice.Retirable, 4)
+	w := New(Options{OnIdle: func(w dservice.Retirable) { idle <- w }})
 	defer w.Terminate()
 	done := make(chan struct{})
 	w.Submit(&seqJob{id: 1, done: done})

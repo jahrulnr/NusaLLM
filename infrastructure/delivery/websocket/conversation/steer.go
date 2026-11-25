@@ -149,7 +149,7 @@ func (h *Hub) turnSteer(c *conn, cmd command) {
 		c.push(errorFrame(cmd.RequestID, "queue_full", "turn steering submission bound reached"))
 		return
 	}
-	receipt := t.steering.Submit(payload.Content)
+	receipt := t.steering.Submit(cmd.RequestID, payload.Content)
 	rec := &steerRecord{inputID: cmd.RequestID, content: payload.Content, receipt: receipt}
 	t.steerRecords = append(t.steerRecords, rec)
 	t.steerByInput[cmd.RequestID] = rec

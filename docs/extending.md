@@ -390,9 +390,12 @@ never on concrete application structs. The session facade exposes
 conversation/gateway use cases, workspace file access, output, and session
 bindings (`Bindings`, `WorkspacePort`, `OutputPort` in
 `application/command/ports.go`). Each command is a package under
-`infrastructure/service/command/<name>/`; the registry in
-`infrastructure/service/command/registry.go` only dispatches wired
-instances.
+`infrastructure/delivery/cli/commands/<name>/`; the registry in
+`infrastructure/delivery/cli/commands/registry.go` only dispatches wired
+instances. A command package never imports the registry package — the registry
+wires its children, so the reverse edge would close a cycle; anything both
+sides name (`JobFunc`, `JobCommand`, `AttachmentPath`, completion helpers)
+comes from `infrastructure/delivery/cli/commands/internal/`.
 
 1. **Check the port first.** Does `SlashSession` already expose what the
    command needs? If not, extend the port and its `Facade` in
@@ -403,8 +406,9 @@ instances.
    the rule; the session port is where commands gain access to it, not where
    it's built.
 
-2. **Write the command.** Minimal shape is `command/pwd/pwd.go`; a command
-   with reads and a completer is `command/route/route.go`. Implement
+2. **Write the command.** Minimal shape is
+   `infrastructure/delivery/cli/commands/pwd/pwd.go`; a command with reads and
+   a completer is `infrastructure/delivery/cli/commands/route/route.go`. Implement
    `dservice.SlashCommand` (`infrastructure/domain/service/command.go`):
    `Name()`, `Usage()`, `Description()`, and
    `Execute(ctx, command, emitter, args...)`. The REPL passes the whole
@@ -413,9 +417,9 @@ instances.
    for `id + tail` shapes. Emit output through `h.Write(emitter, format, args...)`
    so the transport can sanitize; read session state through the bindings
    (`h.ConversationID()`, `h.Route()`, `h.SetModelID`, …). Reuse domain
-   decisions — `commandinternal.DisplayTitles` applies the command service's
+   decisions — `commandinternal.DisplayTitles` applies the terminal command view's
    list-title rule; shared helpers used by several
-   commands live in `infrastructure/service/command/internal/`.
+   commands live in `infrastructure/delivery/cli/commands/internal/`.
 
 3. **Optionally complete arguments.** Implement
    `dservice.SlashCommandCompleter` — `Complete(ctx, arg) []CommandCompletion`
@@ -427,14 +431,14 @@ instances.
    session facade via `appcommand.NewFacade` and constructs every command
    explicitly, the same spirit as tool wiring in `cmd/nusallm/wire.go`. Add yours to the
    `base` slice; `NewRegistry` indexes by `Name()` (lowercased) and `/help`
-   enumerates the wired set through `svccommand.Describe`, so help text is
-   free once you're registered.
+   enumerates the wired set through `commands.Describe`, so help text is free
+   once you're registered.
 
 5. **Mind the delivery special paths.** Input UX — parsing `/name args`,
    the palette, rendering — lives in `infrastructure/delivery/cli/tui`
    (`input.go` parses, `model.go` dispatches through `m.commands.Execute`).
    Commands whose work belongs on the conversation worker — `/edit`,
-   `/compact` — implement `command.JobCommand`: `Job(args)` validates the
+   `/compact` — implement `commandinternal.JobCommand`: `Job(args)` validates the
    line and returns a `JobFunc` closure the TUI runs as a turn
    (`beginJob`, with turn-event streaming and ctrl+c), while `Execute`
    runs the same closure inline. Validation, usage text, and the work

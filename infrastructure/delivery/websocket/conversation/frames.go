@@ -13,6 +13,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+
+	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 )
 
 // command is the client→server envelope. Every field is declared so the
@@ -204,6 +206,16 @@ type toolInputPayload struct {
 type toolOutputPayload struct {
 	CallID string `json:"callId"`
 	Text   string `json:"text"`
+}
+
+// toolResultPayload is one call's terminal verdict, sent once after the
+// result is recorded. status is ok, failed, or canceled — pending and
+// unknown are history-only projections, so a frame never carries them. exit
+// is present only when a process ran: {"code":N} or {"signal":"X"}.
+type toolResultPayload struct {
+	CallID string                  `json:"callId"`
+	Status string                  `json:"status"`
+	Exit   *valueobject.ExitStatus `json:"exit,omitempty"`
 }
 
 // steerPayload is one bounded chunk of a user steering line folded into

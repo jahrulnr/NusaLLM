@@ -35,7 +35,7 @@ func TestDeleteKeepsTerminalsWhenRepositoryDeleteFails(t *testing.T) {
 		Terminals: terms,
 	}}
 	j.Result = make(chan error, 1)
-	j.Bind("room", nil)
+	j.Bind("room")
 	if err := j.Execute(context.Background()); err == nil {
 		t.Fatal("repository delete failure was swallowed")
 	}

@@ -1,9 +1,10 @@
 // Package job holds the conversation use-cases as executable commands —
 // each job is self-contained: Execute carries the whole flow (load state,
 // orchestrate domain ports, persist, emit events) and replies on its own
-// result channel. The application layer submits them to a worker.Worker;
-// the worker.Job contract (Execute, Interrupt, ErrTerminate) is the only
-// mailbox knowledge — queue topology stays invisible.
+// result channel. The broker submits them to a room executor; the
+// service.Job contract (Execute, Interrupt, ErrTerminate) is the only
+// mailbox knowledge — queue topology, and which executor runs a job, stay
+// outside this package.
 package job
 
 import (
@@ -17,7 +18,6 @@ import (
 	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
-	"github.com/jahrulnr/nusallm/infrastructure/worker"
 )
 
 // Deps is everything a job may reach — the domain ports plus the
@@ -40,33 +40,24 @@ type Deps struct {
 
 // Base is the shared machinery for room jobs: the bound conversation id,
 // the caller's result channel, and interruption as ctx cancellation.
-// Embedding it satisfies the worker.Job Interrupt contract plus the
+// Embedding it satisfies the service.Job Interrupt contract plus the
 // Reply/Bind plumbing the application consumes.
 type Base struct {
 	Result chan error // buffered 1 — Reply never blocks
 
 	convID      string
 	interrupted atomic.Bool
-	cancel      atomic.Value                  // context.CancelFunc of the live Execute
-	bound       atomic.Pointer[worker.Worker] // executor the broker last bound
+	cancel      atomic.Value // context.CancelFunc of the live Execute
 }
 
-// Bind pins the job to a room and the worker serving it — idempotent;
-// the broker calls it at post time and again on every repost across
-// workers, so Worker() names the executor the job was last handed to.
-func (j *Base) Bind(convID string, w *worker.Worker) {
+// Bind pins the job to a room — idempotent; the broker calls it at post
+// time and again on every repost onto a successor executor.
+func (j *Base) Bind(convID string) {
 	j.convID = convID
-	j.bound.Store(w)
 }
 
 // ConvID is the room this job runs against.
 func (j *Base) ConvID() string { return j.convID }
-
-// Worker is the executor the job was last bound to — the worker that
-// runs it — or nil until the first Bind. Its Done channel closes only
-// after the loop's OnTerminate hook ran, so waiting on it observes a
-// fully retired worker.
-func (j *Base) Worker() *worker.Worker { return j.bound.Load() }
 
 // Reply delivers the terminal error to whoever submitted the job. A nil
 // Result — a hand-built job — is a no-op rather than a blocking send
@@ -86,13 +77,13 @@ func (j *Base) IsPreempt() bool { return false }
 // finish is the deferred tail of every Execute: a job panic becomes a
 // 500 instead of propagating through the worker, and the caller's result
 // channel is always served — a wedged waiter is worse than an error.
-// worker.ErrTerminate is a control signal, not an op result — the caller
+// service.ErrTerminate is a control signal, not an op result — the caller
 // gets the success it earned, not the sentinel.
 func (j *Base) finish(err *error) {
 	if r := recover(); r != nil {
 		*err = apperror.New(500, "job failed", fmt.Errorf("panic: %v", r))
 	}
-	if errors.Is(*err, worker.ErrTerminate) {
+	if errors.Is(*err, dservice.ErrTerminate) {
 		j.Reply(nil)
 		return
 	}

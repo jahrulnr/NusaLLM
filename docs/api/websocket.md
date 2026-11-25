@@ -14,9 +14,11 @@ OpenAPI spec in [`openapi.yaml`](./openapi.yaml) covers only the HTTP
 upgrade — it does not define frames.
 
 A clause that names a ticket is **contract-first**: the sentence is what a
-client may rely on, and the ticket is the work that makes the server honour it
-(retry gate — T-02; attach on every unsatisfied live watch — T-04; the replay
-bound — T-17; the provider-5xx code rule — T-03). Everything else on this page
+client may rely on, and the ticket is the work that makes the server honour it.
+The clauses below name their tickets as the record of what made them true;
+the retry gate (T-02), attach on every unsatisfied live watch (T-04), the
+replay bound (T-17), the provider-5xx code rule (T-03) and the tool-result
+frame (T-27) are all implemented in this binary. Everything on this page
 describes the code as it stands.
 
 ## Connection
@@ -618,8 +620,8 @@ nonempty provider chunk is delivered **in order**; chunks larger than
 the 32 KiB outbound bound are split UTF-8-safely into multiple frames,
 so a burst or a large output produces one frame per bounded chunk —
 reassemble by concatenating `text` fields in `seq` order. This is
-progress content, **not** proof the call finished: settlement is only
-ever implied by later model activity or the terminal.
+progress content, **not** the call's verdict: settlement and outcome are
+announced by `turn.tool_result` below.
 
 Tool input and output are arbitrary data — they can legitimately
 contain credentials, local paths, or commands. They cross because this
@@ -639,13 +641,52 @@ is normalized by JSON encoding and is not promised byte-exact.
 }
 ```
 
+`turn.tool_result` — one call's recorded verdict, emitted once. This is
+the frame that ends a call: `turn.tool_output` chunks for the same call
+precede it, and a call whose tool emitted no chunks may produce only
+this frame. It is emitted **after** the result is persisted and **before**
+the next provider call for that step, so a client that re-reads history
+at `turn.step_finished` sees the same call already recorded.
+
+```json
+{
+  "type": "turn.tool_result",
+  "conversationId": "c_k4j9xm2p8q1vz7w0t6nb5r3yhd",
+  "turnId": "t_3kd9xm2p8q1vz7w0t6nb5r4yhf",
+  "seq": 7,
+  "payload": { "callId": "call_9f2a", "status": "failed", "exit": { "code": 2 } }
+}
+```
+
+`status` is `ok` or `failed` today — a frame exists only for a call whose
+result handler ran, so `pending` and `unknown` never appear here (`unknown`
+is a history projection: a record written without a verdict). A call the
+harness stopped mid-run is **not** framed: the cancel path records
+`canceled` (`Message.MarkInterrupted`) and returns before the result handler
+emits, so the client learns it from the history re-read after the terminal.
+`canceled` is therefore a record/DTO value, not a promise that a frame
+exists. `exit` is present only when a process ran, and carries exactly one
+shape: `{ "code": n }` for an exit status, or `{ "signal": "<name>" }` for a
+signal that reaped it. The signal is the **name only** — `killed`,
+`terminated` — not Go's `signal: killed` error string; the model's output text
+keeps the parenthesized `(signal: killed)` form for readability.
+
+The verdict is the field, never the text. `(exit N)`, `(signal: X)`, and
+`interrupted by user` remain in `output` as the model's evidence (and
+`docs/persistence.md` records them), and a client may peel a trailing
+marker for display, but deriving `status` from `output` is not a
+supported reading: a row rendered from text alone will disagree with
+`turn.tool_result` the first time a producer changes its wording.
+
 `turn.steer` — a user steering line folded into the running turn at an
 inference safe point (after a tool result persisted, before the next
 provider call). The text lands in history as an ordinary user message
 **before** this frame emits — the fold persists first — so the frame
 deliberately carries no message id: a `resyncRequired` history re-read
 supplies persisted ids, and correlating by `inputId` is enough to tell
-the client's own inputs apart. Reassemble
+the client's own inputs apart. The stored row carries that same `inputId`
+(`docs/persistence.md` § the JSONL line stream), so the re-read can be
+correlated by identity — never by matching text. Reassemble
 by concatenating `text` fields in `seq` order like any chunked
 content. `inputId` correlates the fold to the `turn.steer` command
 that submitted it — absent for receipt-free input (the CLI's
@@ -768,7 +809,8 @@ failure frame is never a bare status a client has to explain itself.
 - `status` — the same HTTP-shaped status the REST surface would return
   for the failure: `400` invalid, `404` missing, `408` canceled,
   `410` deleted-underneath, `413` provider context overflow, `429` room
-  queue full, `500` internal, `502`/`504` upstream, `503` shutting down.
+  queue full, `500` internal, `502`/`504` upstream, `503` shutting down — or
+  a provider's own `503`, which crosses as `503` with an upstream code.
   A provider status outside that list crosses as-is — a `529` overloaded
   is sent as `529` — because the status is the fact and `code` is the
   classification.
@@ -864,7 +906,8 @@ window answers `turn.resync_required` instead), pings every 25 s with a
 32 steering submissions per turn lifetime, requestIds of at most 128
 bytes on `turn.steer` and `turn.steer_recall`, and
 `turn.delta`, `turn.reasoning`, `turn.tool_input`, `turn.tool_output`,
-and `turn.steer` text chunks of at most 32 KiB.
+and `turn.steer` text chunks of at most 32 KiB, and one `turn.tool_result`
+per call (a call-level frame, not a chunk).
 
 ## Lifecycle races, catalogued
 

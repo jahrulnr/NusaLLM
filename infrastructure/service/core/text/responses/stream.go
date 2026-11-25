@@ -142,9 +142,15 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 				emit(onEvent, event.NewErrorEvent(err))
 				return err
 			case "error":
-				err := statusError(streamStatusHint(&ErrorBody{
-					Message: se.Message, Code: se.Code, Param: se.Param,
-				}), ev.data)
+				// A top-level error event carries its own message/code — it is
+				// not the nested {error:{…}} envelope statusError parses — and
+				// the provider's Retry-After header still applies to it.
+				body := ErrorBody{Message: se.Message, Code: se.Code, Param: se.Param, Type: se.Type}
+				status := streamStatusHint(&body)
+				err := wire.WithRetryAfter(
+					apperror.FromStatus(status, wire.FailureMessage(status, se.Message, errorCode(body)), wire.UpstreamError(ev.data)),
+					wire.RetryAfter(resp.Header.Get("Retry-After")),
+				)
 				s.logAppend(ctx, "provider.stream", logged)
 				emit(onEvent, event.NewErrorEvent(err))
 				return err
@@ -270,6 +276,14 @@ func (s *Service) commitStream(conv *aggregate.Conversation, onEvent event.TurnE
 	if err != nil {
 		return err
 	}
+	// The terminal output can carry a function call whose argument JSON never
+	// closed. decodeResponse normalizes that to {} (upstreams emit empty
+	// arguments legitimately), which would silently drop the action the model
+	// asked for — inspect the raw items and fail the step instead, retryable
+	// while nothing was persisted.
+	if terminalTruncatedCall(rb.Output) {
+		return apperror.New(502, "upstream truncated a tool call", nil)
+	}
 	// A partial proxy may repeat only item shells in the terminal
 	// payload — present but carrying nothing deliverable — while the
 	// real parts streamed in output_item.done. An output that decodes
@@ -298,6 +312,22 @@ func (s *Service) commitStream(conv *aggregate.Conversation, onEvent event.TurnE
 	}
 	emit(onEvent, event.NewFinishedEvent(msg.FinishReason(), u))
 	return nil
+}
+
+// terminalTruncatedCall reports a function_call item whose arguments are
+// neither empty nor valid JSON — a call the provider was still assembling
+// when it settled the turn.
+func terminalTruncatedCall(output []json.RawMessage) bool {
+	for _, raw := range output {
+		var it ItemShape
+		if json.Unmarshal(raw, &it) != nil || it.Type != "function_call" {
+			continue
+		}
+		if it.Arguments != "" && !json.Valid([]byte(it.Arguments)) {
+			return true
+		}
+	}
+	return false
 }
 
 // streamFailure builds the error for a response.failed terminal event —

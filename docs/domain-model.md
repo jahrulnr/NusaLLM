@@ -141,8 +141,8 @@ the persisted form is a reference (`"env:NAME"` or `"secret:<key>"`), which
 the repository resolves via `SecretStore` when `Load` hydrates the
 aggregate — the gateway file itself stays credential-free.
 
-Conversation list labels and prefix filtering belong to
-`infrastructure/service/command/internal/list_title.go`. That command view
+Conversation list labels and prefix filtering belong to the terminal command
+view, `infrastructure/delivery/cli/commands/internal/list_title.go`. That view
 uses `Message.Editable()` to avoid deriving a title from a synthetic user
 message.
 
@@ -189,6 +189,16 @@ prevent.
 by history: exact text and reasoning parts plus references to tool calls.
 Provider replay continues to use `optionalContent`; the history timeline
 does not replace or rewrite those adapter-owned values.
+
+An interrupted reply has one shape and one owner in the domain.
+`NewInterruptedReply(parts)` builds the reply a broken call had already
+streamed — text and reasoning in arrival order, tool-call parts dropped (their
+calls never reached history), no reply at all when there is no answer text —
+and marks it `interrupted`. `Message.MarkInterrupted()` is the other half: it
+sets that finish reason when the provider never closed the step and records
+`interrupted by user` on origin calls that have no result, with the call's
+outcome set to `canceled`. The application decides *when* to keep or persist
+one; it does not decide *what* one contains.
 
 Tool results attach to the calls on the message: `AddToolCall` records an
 invocation, and `SetToolOutput(id, output)`,
@@ -332,7 +342,7 @@ adapter.
 | `Tooltype` | `injection`, `origin` | App-injected hydration call vs model-originated call |
 | `LLMUserType` | `origin`, `system` | Real user input vs system payload (compaction checkpoints are `system`) |
 | `ToolPermission` | `system`, `agent`, `general` | Who may invoke a `ToolSchema` |
-| `FinishReason` | `stop`, `tool_calls`, `length`, `content_filter`, `interrupted` | Normalized turn end; `length` means tool arguments may be truncated and must not be executed; `interrupted` is a caller cancel, never a provider verdict |
+| `FinishReason` | `stop`, `tool_calls`, `length`, `content_filter`, `interrupted` | Normalized turn end; `length` means tool arguments may be truncated and must not be executed; `interrupted` means the step ended before the provider finished it — a caller cancel, a dead process, or a failed call that had already streamed text — never a provider verdict |
 | `Effort` | `default`, `none`, `low`, `medium`, `high`, `xhigh`, `max` | `IsUnset()` = `""` or `default` → omit from the wire; `max` requires validating model support first |
 | `Modality` | `text`, `image`, `audio`, `video`, `file` | Content kinds for `AcceptsInput`/`AcceptsOutput` and `Attachment.Modality()` |
 | `ModelType` | `text`, `embedding`, `video`, `image`, `speech`, `transcription`, `audio`, `rerank`, `decision` | Catalog categorization matching OpenRouter's model categories |

@@ -54,6 +54,14 @@ func NewToolOutputEvent(call entity.ToolCall, chunk string) TurnEvent {
 	return TurnEvent{kind: enum.TurnEventToolOutput, toolCall: call, delta: chunk}
 }
 
+// NewToolResultEvent carries one call's terminal verdict: ok, failed, or
+// canceled, with the process exit status when one ran. It is emitted once,
+// after the result is persisted, so a consumer never has to infer the verdict
+// from the output text.
+func NewToolResultEvent(call entity.ToolCall) TurnEvent {
+	return TurnEvent{kind: enum.TurnEventToolResult, toolCall: call}
+}
+
 // NewSteerEvent reports a user steering message folded into the turn —
 // emitted at the point it lands in history, so a frontend renders it in
 // position rather than at submit time. The text rides in Delta().

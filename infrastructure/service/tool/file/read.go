@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
@@ -92,6 +93,13 @@ func (tool *FileReadTool) Execute(ctx context.Context, call entity.ToolCall, _ s
 	// uses and send non-text payloads there — a PNG is not a document.
 	if top, _, _ := strings.Cut(http.DetectContentType(data), "/"); top != "text" {
 		return service.ToolResult{}, fmt.Errorf("%q is not text — use read_media", input.Path)
+	}
+	// Text-sniffed but invalid UTF-8 (Latin-1, UTF-16 without BOM, …) would
+	// reach the model as replacement characters — the provider JSON encoder
+	// swaps bad bytes for U+FFFD without saying so, and an edit anchored on
+	// the original bytes then fails. Refuse it and say how to convert.
+	if !utf8.Valid(data) {
+		return service.ToolResult{}, fmt.Errorf("%q is not valid UTF-8 — convert it first (e.g. iconv via exec)", input.Path)
 	}
 	return service.ToolResult{Text: string(data)}, nil
 }

@@ -300,35 +300,6 @@ func TestRunTurnKeepsStreamedTextOnFailure(t *testing.T) {
 	check("reloaded", reloaded)
 }
 
-// Only answer text makes a kept reply: tool-call parts point at calls that
-// never reached history, and reasoning alone has nothing a Retry can replay.
-// Dropping the call must not leave two adjacent text parts — SetParts
-// canonicalizes them into one stretch, so a renderer sees one block.
-func TestInterruptedReplyKeepsAnswerTextOnly(t *testing.T) {
-	msg, ok, err := interruptedReply([]entity.MessagePart{
-		{Kind: entity.MessagePartReasoning, Text: "considering"},
-		{Kind: entity.MessagePartText, Text: "Hel"},
-		{Kind: entity.MessagePartToolCall, ToolCallID: "call_1"},
-		{Kind: entity.MessagePartText, Text: "lo"},
-	})
-	if err != nil || !ok {
-		t.Fatalf("ok=%v err=%v, want a kept reply", ok, err)
-	}
-	if msg.Content() != "Hello" || msg.FinishReason() != enum.FinishReasonInterrupted {
-		t.Fatalf("reply = %q/%q, want Hello/interrupted", msg.Content(), msg.FinishReason())
-	}
-	got := msg.Parts()
-	if len(got) != 2 {
-		t.Fatalf("parts = %+v, want reasoning + one merged text part with the call dropped", got)
-	}
-	if got[0].Kind != entity.MessagePartReasoning || got[1].Kind != entity.MessagePartText || got[1].Text != "Hello" {
-		t.Fatalf("parts = %+v, want reasoning then text Hello", got)
-	}
-	if _, ok, _ := interruptedReply([]entity.MessagePart{{Kind: entity.MessagePartReasoning, Text: "thinking"}}); ok {
-		t.Fatal("reasoning without answer text must not be kept")
-	}
-}
-
 // A 413 after emitted output can't compact-and-retry either — the
 // delta already crossed the wire, so the overflow error propagates.
 func TestRunTurn413AfterEmittedDeltaPropagates(t *testing.T) {

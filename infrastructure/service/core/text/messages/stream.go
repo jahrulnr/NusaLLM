@@ -77,22 +77,29 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 			return apperror.New(408, "request canceled or timed out", ctx.Err())
 		case <-timer.C:
 			s.logAppend(ctx, "provider.stream", logged)
-			// message_stop already proved the turn ended — a stalled
-			// tail after it commits like stream EOF, not a 502.
-			if !stopSeen {
+			// message_stop — or the stop_reason that precedes it — already
+			// proved the turn ended; a stalled tail after a verdict commits
+			// like stream EOF, not a 502. The verdict is the semantic
+			// terminal, the same rule the completion wire applies to
+			// finish_reason.
+			if !stopSeen && finish == "" {
 				return apperror.New(502, "upstream stream idle", nil)
 			}
 			if finish == "" {
 				finish = "end_turn"
 			}
+			if truncatedToolUse(blocks) {
+				return apperror.New(502, "upstream truncated a tool call", nil)
+			}
 			return s.commitStream(conv, onEvent, replayableBlocks(blocks), finish, usage, logged)
 		case err := <-errs:
 			s.logAppend(ctx, "provider.stream", logged)
-			// stream closed — only commit when the terminal marker was
-			// seen; EOF or a transport error without one means a
-			// truncated upstream stream. A reset in the tail gap after
-			// message_stop must not discard a complete turn.
-			if !stopSeen {
+			// stream closed — commit when the terminal marker or the
+			// stop_reason was seen; EOF or a transport error with neither
+			// means a truncated upstream stream. A reset in the tail gap
+			// after message_stop (or after the verdict) must not discard a
+			// complete turn.
+			if !stopSeen && finish == "" {
 				if err == nil {
 					err = apperror.New(502, "upstream stream truncated", nil)
 				}
@@ -105,6 +112,9 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 				// partial (canceled) commits.
 				finish = "end_turn"
 			}
+			if truncatedToolUse(blocks) {
+				return apperror.New(502, "upstream truncated a tool call", nil)
+			}
 			return s.commitStream(conv, onEvent, replayableBlocks(blocks), finish, usage, logged)
 		case ev := <-events:
 			timer.Reset(s.idle)
@@ -113,13 +123,23 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 			}
 			var se StreamEvent
 			if err := json.Unmarshal(ev.data, &se); err != nil {
+				// A named error event whose payload does not fit the nested
+				// envelope is still the provider saying why it stopped — a
+				// proxy that flattens it must not be read as a truncated
+				// stream.
+				if ev.event == "error" {
+					err := wire.WithRetryAfter(streamErrorEvent(ev.data), wire.RetryAfter(resp.Header.Get("Retry-After")))
+					s.logAppend(ctx, "provider.stream", logged)
+					emit(onEvent, event.NewErrorEvent(err))
+					return err
+				}
 				continue // partial/garbage lines are dropped, not fatal
 			}
 			logged = append(logged, ev.data)
 			switch se.Type {
 			case "message_start":
 				if se.Message != nil {
-					usage = se.Message.Usage
+					usage = mergeUsage(usage, se.Message.Usage)
 				}
 			case "content_block_start":
 				if se.ContentBlock != nil {
@@ -134,7 +154,10 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 					finish = se.Delta.StopReason
 				}
 				if se.Usage != nil {
-					usage = se.Usage // cumulative — the last one wins
+					// Cumulative, but a proxy may repeat only the counters
+					// that changed — merge so the input count message_start
+					// carried is not zeroed by a partial message_delta.
+					usage = mergeUsage(usage, se.Usage)
 				}
 			case "content_block_stop":
 				if se.Index >= 0 && se.Index < len(blocks) {
@@ -143,6 +166,14 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 			case "message_stop":
 				stopSeen = true
 			case "error":
+				if se.Error == nil {
+					// The event name says error but the payload carries no
+					// envelope — still a terminal failure, never silence.
+					err := wire.WithRetryAfter(streamErrorEvent(ev.data), wire.RetryAfter(resp.Header.Get("Retry-After")))
+					s.logAppend(ctx, "provider.stream", logged)
+					emit(onEvent, event.NewErrorEvent(err))
+					return err
+				}
 				if se.Error != nil {
 					raw, _ := json.Marshal(map[string]any{"error": se.Error})
 					err := wire.WithRetryAfter(statusError(streamStatusHint(se.Error), raw), wire.RetryAfter(resp.Header.Get("Retry-After")))
@@ -154,6 +185,33 @@ func (s *Service) streamResponse(ctx context.Context, resp *http.Response, conv 
 			// ping, content_block_stop, unknown types — nothing to fold in.
 		}
 	}
+}
+
+// mergeUsage folds a later cumulative usage object over what arrived
+// earlier. Presence decides whether a field overwrites — a later object that
+// repeats only the counters that changed leaves the rest intact, and a
+// legitimate zero (the cache count dropped) still lands. Gating on non-zero
+// would silently keep a stale count.
+func mergeUsage(prev, next *UsageBody) *UsageBody {
+	if next == nil {
+		return prev
+	}
+	if prev == nil {
+		return next
+	}
+	if next.InputTokens != nil {
+		prev.InputTokens = next.InputTokens
+	}
+	if next.OutputTokens != nil {
+		prev.OutputTokens = next.OutputTokens
+	}
+	if next.CacheCreationInputTokens != nil {
+		prev.CacheCreationInputTokens = next.CacheCreationInputTokens
+	}
+	if next.CacheReadInputTokens != nil {
+		prev.CacheReadInputTokens = next.CacheReadInputTokens
+	}
+	return prev
 }
 
 // startBlock opens the accumulator at index — bounded, sparse-tolerant.
@@ -194,6 +252,40 @@ func replayableBlocks(blocks []blockAcc) []blockAcc {
 		kept = append(kept, b)
 	}
 	return kept
+}
+
+// truncatedToolUse reports a settled stream whose assembled tool call never
+// closed: the terminal arrived, so the provider finished, but the call it was
+// building cannot replay. Committing without it would silently drop an action
+// the model asked for — the step fails instead, and the turn may retry while
+// nothing was persisted.
+func truncatedToolUse(blocks []blockAcc) bool {
+	for _, b := range blocks {
+		if b.kind != "tool_use" || b.id == "" || b.name == "" {
+			continue
+		}
+		if args := b.args.String(); args != "" && !json.Valid([]byte(args)) {
+			return true
+		}
+	}
+	return false
+}
+
+// streamErrorEvent builds the failure for a named error event that does not
+// carry the nested {error:{…}} envelope. The provider's own message is used
+// when the payload names one; the raw payload stays in the cause.
+func streamErrorEvent(payload []byte) error {
+	msg := ""
+	var flat struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(payload, &flat) == nil {
+		msg = strings.TrimSpace(flat.Message)
+	}
+	if msg == "" {
+		msg = "upstream stream error"
+	}
+	return apperror.FromStatus(502, msg, wire.UpstreamError(payload))
 }
 
 func toolUseComplete(b blockAcc) bool {

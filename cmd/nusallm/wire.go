@@ -34,6 +34,7 @@ import (
 	toolexec "github.com/jahrulnr/nusallm/infrastructure/service/tool/terminal"
 	toolweb "github.com/jahrulnr/nusallm/infrastructure/service/tool/web"
 	toolworkspace "github.com/jahrulnr/nusallm/infrastructure/service/tool/workspace"
+	"github.com/jahrulnr/nusallm/infrastructure/worker"
 	"github.com/jahrulnr/searchwire"
 )
 
@@ -190,7 +191,9 @@ func compose(cfg config.Config, secrets *reposecret.Store, configPath, workspace
 	}
 
 	return &engine{
-		conversations: appconversation.New(convs, gateways, environments, cfg, repoconfig.NewLocal(), configPath, terminals, summaryTool),
+		// appconversation.Workers is the one place the room-executor port
+		// meets its implementation.
+		conversations: appconversation.New(convs, gateways, environments, cfg, repoconfig.NewLocal(), configPath, terminals, summaryTool, appconversation.Workers(worker.New)),
 		logger:        logger,
 	}, nil
 }

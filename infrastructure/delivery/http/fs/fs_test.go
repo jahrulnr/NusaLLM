@@ -105,3 +105,52 @@ type permTree struct{}
 func (permTree) Stat(string) (fs.FileInfo, error)      { return nil, fs.ErrPermission }
 func (permTree) ReadDir(string) ([]fs.DirEntry, error) { return nil, fs.ErrPermission }
 func (permTree) HomeDir() (string, error)              { return "/home/x", nil }
+
+// T-29 — the picker takes the same path syntax as every other path argument:
+// a leading ~ is the owner's home, not a request to list a folder named "~".
+func TestBrowseExpandsHome(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.Mkdir(filepath.Join(home, "pictures"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := gin.New()
+	Register(r.Group("/api"), repofiletree.NewLocal())
+
+	req := httptest.NewRequest("GET", "/api/fs/browse?path=~", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var out browseDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Clean(out.Path) != filepath.Clean(home) {
+		t.Fatalf("path = %q, want the home dir %q", out.Path, home)
+	}
+	var names []string
+	for _, e := range out.Entries {
+		names = append(names, e.Name)
+	}
+	if len(names) != 1 || names[0] != "pictures" {
+		t.Fatalf("entries = %v, want the home listing", names)
+	}
+}
+
+// A file: URL names a directory the same way.
+func TestBrowseAcceptsFileURL(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	root := t.TempDir()
+	r := gin.New()
+	Register(r.Group("/api"), repofiletree.NewLocal())
+
+	req := httptest.NewRequest("GET", "/api/fs/browse?path=file://"+root, nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}

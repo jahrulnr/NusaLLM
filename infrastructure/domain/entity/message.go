@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"strings"
 	"time"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
@@ -24,6 +25,7 @@ type Message struct {
 	toolCalls       []ToolCall
 	attachments     []valueobject.Attachment
 	optionalContent map[string]string
+	inputID         string
 	createdAt       time.Time
 }
 
@@ -130,6 +132,19 @@ func (m *Message) SetUserType(t enum.LLMUserType) {
 	m.userType = t
 }
 
+// SetInputID records the transport input a user line was folded from — the
+// turn.steer requestId that submitted it. Only mid-turn steering carries
+// one: ordinary input has no transport identity, and a line without an id
+// is never matched by its text.
+func (m *Message) SetInputID(id string) {
+	m.inputID = id
+}
+
+// InputID is the submitting input's identity, "" when the line arrived
+// without one (ordinary input, CLI steer, records written before the
+// field existed).
+func (m Message) InputID() string { return m.inputID }
+
 // SetFinishReason records the normalized reason the model ended this turn.
 func (m *Message) SetFinishReason(r enum.FinishReason) {
 	m.finishReason = r
@@ -157,6 +172,85 @@ func (m *Message) SetParts(parts []MessagePart) {
 		out = append(out, p)
 	}
 	m.parts = out
+}
+
+// NewInterruptedReply builds the assistant reply a call streamed before it
+// broke: the prose the owner already saw, in arrival order, marked
+// interrupted. It is the definition of "the answer we kept from a failed
+// turn", so every caller records the same shape.
+//
+// Two rules make it a reply rather than a replay of the stream. Tool-call
+// parts are dropped — their calls never reached history, and a part naming
+// a call the message does not carry would dangle. Answer text is required:
+// reasoning alone has nothing a retry can continue from, so ok=false means
+// keep nothing (no message, no finish marker).
+//
+// Parts go through SetParts, so dropping a call between two text chunks
+// merges them into the one stretch they always were.
+func NewInterruptedReply(parts []MessagePart) (Message, bool, error) {
+	var text strings.Builder
+	kept := make([]MessagePart, 0, len(parts))
+	for _, p := range parts {
+		switch p.Kind {
+		case MessagePartText:
+			text.WriteString(p.Text)
+		case MessagePartToolCall:
+			continue
+		}
+		kept = append(kept, p)
+	}
+	if text.Len() == 0 {
+		return Message{}, false, nil
+	}
+	msg, err := NewMessage(enum.RoleAssistant, text.String())
+	if err != nil {
+		return Message{}, false, err
+	}
+	msg.SetParts(kept)
+	msg.SetFinishReason(enum.FinishReasonInterrupted)
+	return msg, true, nil
+}
+
+// MarkInterrupted records that this reply was cut off before the provider
+// finished the step: the finish reason becomes interrupted when the provider
+// gave none, and every origin call still awaiting a result gets the terminal
+// "interrupted by user" output plus the canceled verdict. An empty finish
+// would read as a complete answer to a later reload, and a call without a
+// result would stay pending forever; both are settled here.
+//
+// canceled is this path's alone: no tool can know the harness stopped the
+// turn, so the one writer of that verdict is the code that cancelled it.
+//
+// Incomplete argument streams are not on the message — adapters omit them
+// before appending, so a call that never reached history is not marked.
+func (m *Message) MarkInterrupted() error {
+	if m.finishReason == "" {
+		m.finishReason = enum.FinishReasonInterrupted
+	}
+	for i := range m.toolCalls {
+		tc := &m.toolCalls[i]
+		if tc.Type() != enum.TooltypeOrigin || tc.HasOutput() {
+			continue
+		}
+		if err := m.SetToolOutput(tc.ID(), "interrupted by user"); err != nil {
+			return err
+		}
+		tc.SetOutcome(enum.ToolOutcomeCanceled, nil)
+	}
+	return nil
+}
+
+// SetToolOutcome records the verdict for one call, matching it by the
+// provider-issued call id. A call that already carries an output keeps it —
+// the verdict and the text arrive together.
+func (m *Message) SetToolOutcome(id string, outcome enum.ToolOutcome, exit *valueobject.ExitStatus) error {
+	for i := range m.toolCalls {
+		if m.toolCalls[i].ID() == id {
+			m.toolCalls[i].SetOutcome(outcome, exit)
+			return nil
+		}
+	}
+	return errors.New("tool call not found: " + id)
 }
 
 // mergeablePart reports whether two neighbouring parts are one stretch of

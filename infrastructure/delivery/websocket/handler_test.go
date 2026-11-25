@@ -31,6 +31,7 @@ import (
 	reposecret "github.com/jahrulnr/nusallm/infrastructure/repository/secret"
 	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
 	textcompletion "github.com/jahrulnr/nusallm/infrastructure/service/core/text/completion"
+	"github.com/jahrulnr/nusallm/infrastructure/worker"
 )
 
 func TestMain(m *testing.M) {
@@ -211,7 +212,7 @@ func TestTurnSendEndToEnd(t *testing.T) {
 		nil,
 		"",
 		nil,
-		nil,
+		nil, appconversation.Workers(worker.New),
 	)
 	defer func() { _ = app.Shutdown(context.Background()) }()
 

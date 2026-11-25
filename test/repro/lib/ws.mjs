@@ -11,6 +11,18 @@ import { EventEmitter } from 'node:events';
 
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
+// Every connection the tests opened. The runner closes them all before it
+// exits: a socket left in CLOSE_WAIT keeps the event loop alive.
+const openSockets = new Set();
+
+export function closeAllSockets() {
+  for (const sock of [...openSockets]) {
+    try { sock.close(); } catch { /* already gone */ }
+    try { sock.net?.destroy(); } catch { /* already gone */ }
+  }
+  openSockets.clear();
+}
+
 export class RawSocket extends EventEmitter {
   constructor() {
     super();
@@ -33,7 +45,7 @@ export class RawSocket extends EventEmitter {
       const fail = (err) => { net_.destroy(); reject(err); };
       const timer = setTimeout(() => fail(new Error('websocket handshake timed out')), 5000);
       net_.on('error', (err) => { clearTimeout(timer); if (!upgraded) reject(err); else sock.emit('error', err); });
-      net_.on('close', () => { clearTimeout(timer); sock.closed = true; sock.emit('close'); });
+      net_.on('close', () => { clearTimeout(timer); sock.closed = true; openSockets.delete(sock); sock.emit('close'); });
       net_.on('connect', () => {
         const lines = [
           `GET ${path} HTTP/1.1`,
@@ -73,6 +85,7 @@ export class RawSocket extends EventEmitter {
           upgraded = true;
           clearTimeout(timer);
           sock.net = net_;
+          openSockets.add(sock);
           resolve(sock);
         }
         sock.#drain();
@@ -193,7 +206,11 @@ export class RawSocket extends EventEmitter {
   close() {
     if (this.closed) return;
     try { this.#sendFrame(0x8, Buffer.alloc(0)); } catch { /* already gone */ }
-    this.net?.end();
     this.closed = true;
+    openSockets.delete(this);
+    // end() flushes the close frame; destroy() guarantees the descriptor and
+    // its libuv handle are gone even when the peer never answers.
+    this.net?.end();
+    this.net?.destroy();
   }
 }

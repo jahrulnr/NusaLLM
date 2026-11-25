@@ -46,12 +46,14 @@ type toolSchemaRecord struct {
 // jsonl line envelope: messages and tool-output patches share one stream
 // per file so appends stay O(1) and ordering is literal.
 type lineRecord struct {
-	Type          string             `json:"type"` // "message" | "tool_output"
-	Data          messageRecord      `json:"data"`
-	CallID        string             `json:"callId,omitempty"`
-	Output        string             `json:"output,omitempty"`
-	OutputLatency string             `json:"outputLatency,omitempty"`
-	Attachments   []attachmentRecord `json:"attachments,omitempty"`
+	Type          string                  `json:"type"` // "message" | "tool_output"
+	Data          messageRecord           `json:"data"`
+	CallID        string                  `json:"callId,omitempty"`
+	Output        string                  `json:"output,omitempty"`
+	OutputLatency string                  `json:"outputLatency,omitempty"`
+	Outcome       string                  `json:"outcome,omitempty"`
+	Exit          *valueobject.ExitStatus `json:"exit,omitempty"`
+	Attachments   []attachmentRecord      `json:"attachments,omitempty"`
 }
 
 type messageRecord struct {
@@ -59,13 +61,36 @@ type messageRecord struct {
 	Role            string              `json:"role"`
 	Content         string              `json:"content"`
 	UserType        string              `json:"userType,omitempty"`
+	InputID         string              `json:"inputId,omitempty"`
 	FinishReason    string              `json:"finishReason,omitempty"`
 	Parts           []messagePartRecord `json:"parts,omitempty"`
-	CreatedAt       time.Time           `json:"createdAt"`
+	CreatedAt       recordTime          `json:"createdAt"`
 	ToolCalls       []toolCallRecord    `json:"toolCalls,omitempty"`
 	Attachments     []attachmentRecord  `json:"attachments,omitempty"`
 	OptionalContent map[string]string   `json:"optionalContent,omitempty"`
 }
+
+// recordTime decodes a timestamp leniently: a hand-edited or future record
+// with a bad date keeps its message. The date is metadata, not identity, so
+// dropping the whole line over it would lose readable dialogue.
+type recordTime struct{ time.Time }
+
+func (t *recordTime) UnmarshalJSON(b []byte) error {
+	var raw string
+	if err := json.Unmarshal(b, &raw); err != nil {
+		t.Time = time.Time{}
+		return nil
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		t.Time = time.Time{}
+		return nil
+	}
+	t.Time = parsed
+	return nil
+}
+
+func (t recordTime) MarshalJSON() ([]byte, error) { return json.Marshal(t.Time) }
 
 type messagePartRecord struct {
 	Kind       string `json:"kind"`
@@ -74,17 +99,19 @@ type messagePartRecord struct {
 }
 
 type toolCallRecord struct {
-	ID                string             `json:"id"`
-	Name              string             `json:"name"`
-	Input             string             `json:"input"`
-	Output            string             `json:"output,omitempty"`
-	OutputSet         bool               `json:"outputSet,omitempty"`
-	OutputLatency     string             `json:"outputLatency,omitempty"`
-	OutputBudget      int                `json:"outputBudget,omitempty"`
-	OutputAttachments []attachmentRecord `json:"outputAttachments,omitempty"`
-	Type              string             `json:"type,omitempty"`
-	CallAt            time.Time          `json:"callAt"`
-	OptionalContent   map[string]string  `json:"optionalContent,omitempty"`
+	ID                string                  `json:"id"`
+	Name              string                  `json:"name"`
+	Input             string                  `json:"input"`
+	Output            string                  `json:"output,omitempty"`
+	OutputSet         bool                    `json:"outputSet,omitempty"`
+	OutputLatency     string                  `json:"outputLatency,omitempty"`
+	Outcome           string                  `json:"outcome,omitempty"`
+	Exit              *valueobject.ExitStatus `json:"exit,omitempty"`
+	OutputBudget      int                     `json:"outputBudget,omitempty"`
+	OutputAttachments []attachmentRecord      `json:"outputAttachments,omitempty"`
+	Type              string                  `json:"type,omitempty"`
+	CallAt            time.Time               `json:"callAt"`
+	OptionalContent   map[string]string       `json:"optionalContent,omitempty"`
 }
 
 type attachmentRecord struct {
@@ -100,8 +127,9 @@ func encodeMessage(m entity.Message) messageRecord {
 		Role:            m.Role().String(),
 		Content:         m.Content(),
 		UserType:        m.UserType().String(),
+		InputID:         m.InputID(),
 		FinishReason:    m.FinishReason().String(),
-		CreatedAt:       m.CreatedAt(),
+		CreatedAt:       recordTime{m.CreatedAt()},
 		OptionalContent: m.OptionalContent(),
 	}
 	for _, part := range m.Parts() {
@@ -119,6 +147,8 @@ func encodeMessage(m entity.Message) messageRecord {
 			Output:          tc.Output(),
 			OutputSet:       tc.HasOutput(),
 			OutputLatency:   tc.OutputLatency(),
+			Outcome:         tc.Outcome().String(),
+			Exit:            tc.Exit(),
 			OutputBudget:    tc.OutputBudget(),
 			Type:            tc.Type().String(),
 			CallAt:          tc.CallAt(),
@@ -148,7 +178,31 @@ func encodeMessage(m entity.Message) messageRecord {
 // decodeMessage hydrates an entity.Message via the public constructor +
 // setters — no reconstitute seam. Stored enum strings are validated strictly:
 // unknown values mean corrupt or forward-incompatible data.
-func decodeMessage(r messageRecord) (entity.Message, error) {
+// decodeOptions decides how a corrupt tool call is treated on the way in.
+// A read tolerates one bad call — a hand-edited record must not make a whole
+// conversation unreadable — while a repair stays strict, because it rewrites
+// the file and must not launder a bad record into a placeholder.
+type decodeOptions struct {
+	tolerate bool
+	report   func(id, reason string)
+}
+
+// strictDecode is the write-side and repair default.
+var strictDecode = decodeOptions{}
+
+// tolerantRead degrades unreadable records and reports each one.
+func tolerantRead(report func(id, reason string)) decodeOptions {
+	return decodeOptions{tolerate: true, report: report}
+}
+
+// note reports one dropped field; a read without a sink stays silent.
+func (o decodeOptions) note(id, reason string) {
+	if o.report != nil {
+		o.report(id, reason)
+	}
+}
+
+func decodeMessage(r messageRecord, opts decodeOptions) (entity.Message, error) {
 	role, ok := enum.ParseRole(r.Role)
 	if !ok {
 		return entity.Message{}, fmt.Errorf("unknown role %q", r.Role)
@@ -164,22 +218,39 @@ func decodeMessage(r messageRecord) (entity.Message, error) {
 	if r.UserType != "" {
 		ut, ok := enum.ParseLLMUserType(r.UserType)
 		if !ok {
-			return entity.Message{}, fmt.Errorf("unknown userType %q", r.UserType)
+			if !opts.tolerate {
+				return entity.Message{}, fmt.Errorf("unknown userType %q", r.UserType)
+			}
+			// The line still says something a reader can use: keep the
+			// message, drop the field we cannot name.
+			opts.note(r.ID, fmt.Sprintf("field dropped: userType %q", r.UserType))
+		} else {
+			m.SetUserType(ut)
 		}
-		m.SetUserType(ut)
+	}
+	if r.InputID != "" {
+		m.SetInputID(r.InputID)
 	}
 	if r.FinishReason != "" {
 		fr, ok := enum.ParseFinishReason(r.FinishReason)
 		if !ok {
-			return entity.Message{}, fmt.Errorf("unknown finishReason %q", r.FinishReason)
+			if !opts.tolerate {
+				return entity.Message{}, fmt.Errorf("unknown finishReason %q", r.FinishReason)
+			}
+			opts.note(r.ID, fmt.Sprintf("field dropped: finishReason %q", r.FinishReason))
+		} else {
+			m.SetFinishReason(fr)
 		}
-		m.SetFinishReason(fr)
 	}
-	m.SetCreatedAt(r.CreatedAt)
+	m.SetCreatedAt(r.CreatedAt.Time)
 	for _, a := range r.Attachments {
 		att, err := valueobject.NewAttachment(a.URI, a.MediaType)
 		if err != nil {
-			return entity.Message{}, fmt.Errorf("attachment: %w", err)
+			if !opts.tolerate {
+				return entity.Message{}, fmt.Errorf("attachment: %w", err)
+			}
+			opts.note(r.ID, fmt.Sprintf("field dropped: attachment %q: %v", a.URI, err))
+			continue
 		}
 		att.SetName(a.Name)
 		att.SetSHA256(a.SHA256)
@@ -197,7 +268,24 @@ func decodeMessage(r messageRecord) (entity.Message, error) {
 	for _, t := range r.ToolCalls {
 		tc, err := decodeToolCall(t)
 		if err != nil {
-			return entity.Message{}, err
+			if !opts.tolerate {
+				return entity.Message{}, err
+			}
+			opts.note(t.ID, "tool call unreadable: "+err.Error())
+			// Keep what the record still says (id, name, input, output) and
+			// drop the verdict: it is unknown, so it projects as unknown.
+			tc = entity.NewUnreadableToolCall(t.ID, t.Name, t.Input)
+			if t.OutputSet {
+				tc.SetStoredOutput(t.Output, t.OutputLatency)
+			}
+			tc.SetCallAt(t.CallAt)
+			if err := m.AddToolCall(tc); err != nil {
+				// A duplicate id in a corrupt record is still a readable
+				// message; keep the first call.
+				opts.note(t.ID, "tool call dropped: "+err.Error())
+				continue
+			}
+			continue
 		}
 		if err := m.AddToolCall(tc); err != nil {
 			return entity.Message{}, err
@@ -229,6 +317,13 @@ func decodeToolCall(r toolCallRecord) (entity.ToolCall, error) {
 	if r.OutputSet {
 		tc.SetStoredOutput(r.Output, r.OutputLatency)
 	}
+	// A record written before the field existed decodes to the zero
+	// outcome — "no verdict recorded" — and keeps it: no heuristic here.
+	outcome, ok := enum.ParseToolOutcome(r.Outcome)
+	if !ok {
+		return entity.ToolCall{}, fmt.Errorf("toolCall %q: unknown outcome %q", r.ID, r.Outcome)
+	}
+	tc.SetOutcome(outcome, r.Exit)
 	var atts []valueobject.Attachment
 	for _, a := range r.OutputAttachments {
 		att, err := valueobject.NewAttachment(a.URI, a.MediaType)

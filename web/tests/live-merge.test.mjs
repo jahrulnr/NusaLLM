@@ -71,3 +71,106 @@ test('a live tail that history does not fully hold keeps its own opening text', 
 test('an empty live turn draws nothing', pending, () => {
   assert.deepEqual(turn.liveSegments(null, history), []);
 });
+
+// ---------- edges the stage above does not name ----------
+
+test('a resync marker inside the dropped range is kept', () => {
+  const marked = {
+    segments: [
+      item('t:0', 'resync', { text: 'earlier output was trimmed' }),
+      item('t:1', 'text', { text: 'Step one.' }),
+      item('t:2', 'tool', { callId: 'c1', name: 'read_file' }),
+      item('t:3', 'text', { text: 'Step two streams here.' }),
+    ],
+  };
+  const tail = turn.liveSegments(marked, history);
+  assert.deepEqual(tail.map((i) => i.id), ['t:0', 't:3'],
+    'the marker is the only evidence output is missing, so the cut keeps it');
+});
+
+test('every replayed row the record identifies is dropped, not just the last', () => {
+  const twoSteps = [
+    item('m1', 'user'),
+    item('m2', 'text', { text: 'One.' }),
+    item('m3', 'tool', { callId: 'c1' }),
+    item('m4', 'text', { text: 'Two.' }),
+    item('m5', 'tool', { callId: 'c2' }),
+  ];
+  const replay = {
+    segments: [
+      item('t:1', 'text', { text: 'One.' }),
+      item('t:2', 'tool', { callId: 'c1' }),
+      item('t:3', 'text', { text: 'Two.' }),
+      item('t:4', 'tool', { callId: 'c2' }),
+      item('t:5', 'text', { text: 'Three streams.' }),
+    ],
+  };
+  assert.deepEqual(turn.liveSegments(replay, twoSteps).map((i) => i.id), ['t:5'],
+    'both committed steps come from the record; only the running one is live');
+});
+
+test('a record with no tool row at all cuts nothing', () => {
+  const tail = turn.liveSegments(live, [item('m1', 'user'), item('m2', 'text', { text: 'First answer.' })]);
+  assert.deepEqual(tail.map((i) => i.id), ['t:1', 't:2', 't:3'], 'no identity, no cut');
+});
+
+// ---------- the steer path (T-18: the row carries its inputId) ----------
+
+const steered = [
+  item('m1', 'user', { msg: { content: 'first ask' } }),
+  item('m2', 'text', { text: 'Step one.' }),
+  item('m3', 'tool', { callId: 'c1' }),
+  item('m4', 'user', { msg: { content: 'also check X' }, inputId: 'i1' }),
+];
+const withSteer = (suffix) => ({
+  segments: [
+    item('t:1', 'text', { text: 'Step one.' }),
+    item('t:2', 'tool', { callId: 'c1' }),
+    item('t:3', 'steer', { inputId: 'i1', text: 'also check X' }),
+    item('t:4', 'text', { text: 'Step two streams.' + suffix }),
+  ],
+});
+
+test('a replayed steer the record holds is drawn once, from history', () => {
+  const tail = turn.liveSegments(withSteer(''), steered);
+  assert.deepEqual(tail.map((i) => i.id), ['t:4'], 'the record row is the copy the reader sees');
+});
+
+test('a steer the record does not hold stays in the live tail', () => {
+  const notStored = [item('m1', 'user', { msg: { content: 'first ask' } })];
+  const tail = turn.liveSegments(withSteer(''), notStored);
+  assert.deepEqual(tail.map((i) => i.id), ['t:1', 't:2', 't:3', 't:4'], 'no record, no cut — and no identity, no drop');
+});
+
+test('a row without inputId never matches a steer, even with the same text', () => {
+  const byText = [
+    item('m1', 'user', { msg: { content: 'first ask' } }),
+    item('m2', 'tool', { callId: 'c1' }),
+    item('m3', 'user', { msg: { content: 'also check X' } }),
+  ];
+  const tail = turn.liveSegments(withSteer(''), byText);
+  assert.deepEqual(tail.map((i) => i.id), ['t:1', 't:3', 't:4'],
+    'the text is identical and it is still not identity: only the tool row is cut');
+});
+
+test('a mismatched inputId keeps the bubble', () => {
+  const other = [
+    item('m1', 'user', { msg: { content: 'first ask' } }),
+    item('m2', 'tool', { callId: 'c1' }),
+    item('m3', 'user', { msg: { content: 'other input' }, inputId: 'i2' }),
+  ];
+  assert.deepEqual(turn.liveSegments(withSteer(''), other).map((i) => i.id), ['t:1', 't:3', 't:4']);
+});
+
+test('a steer row is matched even when the record holds no tool row yet', () => {
+  // A fold commits the row before the next provider call, so a turn can hold a
+  // steer and no finished step. The steer is still drawn once.
+  const onlySteer = [item('m1', 'user', { msg: { content: 'first ask' } }), item('m2', 'user', { msg: { content: 'also check X' }, inputId: 'i1' })];
+  const replay = {
+    segments: [
+      item('t:1', 'steer', { inputId: 'i1', text: 'also check X' }),
+      item('t:2', 'text', { text: 'the answer so far' }),
+    ],
+  };
+  assert.deepEqual(turn.liveSegments(replay, onlySteer).map((i) => i.id), ['t:2']);
+});

@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
+	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
-	"github.com/jahrulnr/nusallm/infrastructure/worker"
 )
 
 // Cancel aborts the job currently running on the conversation's worker —
@@ -24,7 +24,7 @@ func (app *ConversationApp) Cancel(ctx context.Context, convID string) error {
 		return apperror.NewNotFoundError("in-flight send "+convID, fmt.Errorf("nothing running"))
 	}
 	if err := w.Interrupt(); err != nil {
-		if errors.Is(err, worker.ErrNotRunning) {
+		if errors.Is(err, dservice.ErrNotRunning) {
 			app.evict(convID, w) // reap the idle worker while we're here
 		}
 		return apperror.NewNotFoundError("in-flight send "+convID, err)

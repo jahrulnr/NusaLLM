@@ -15,26 +15,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/jahrulnr/nusallm/infrastructure/domain/enum"
 	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 	apperror "github.com/jahrulnr/nusallm/infrastructure/error"
 )
-
-// MaxAttachmentBytes returns the largest local media payload materialized by
-// a tool or provider adapter for the given modality.
-func MaxAttachmentBytes(modality enum.Modality) int64 {
-	switch modality {
-	case enum.ModalityImage:
-		return 10 << 20
-	case enum.ModalityAudio:
-		return 50 << 20
-	case enum.ModalityVideo:
-		return 100 << 20
-	default:
-		return 20 << 20
-	}
-}
 
 // MediaRoot binds a provider send to the workspace repository chosen at
 // composition time. Empty Dir disables local file references.
@@ -57,7 +41,7 @@ func ResolveURI(a valueobject.Attachment, fileRoot MediaRoot) (string, error) {
 	}
 	if strings.HasPrefix(uri, "data:") {
 		marker := strings.Index(uri, ";base64,")
-		if marker >= 0 && len(uri)-marker-len(";base64,") > base64.StdEncoding.EncodedLen(int(MaxAttachmentBytes(a.Modality()))) {
+		if marker >= 0 && len(uri)-marker-len(";base64,") > base64.StdEncoding.EncodedLen(int(valueobject.MaxAttachmentBytes(a.Modality()))) {
 			return "", apperror.New(400, "attachment exceeds media limit", nil)
 		}
 		if a.SHA256() != "" {
@@ -65,7 +49,7 @@ func ResolveURI(a valueobject.Attachment, fileRoot MediaRoot) (string, error) {
 			if err != nil {
 				return "", err
 			}
-			if int64(len(raw)) > MaxAttachmentBytes(a.Modality()) {
+			if int64(len(raw)) > valueobject.MaxAttachmentBytes(a.Modality()) {
 				return "", apperror.New(400, "attachment exceeds media limit", nil)
 			}
 			if err := verifyPin(a, raw); err != nil {
@@ -136,7 +120,7 @@ func readLocal(a valueobject.Attachment, fileRoot MediaRoot) (raw []byte, err er
 			err = closeErr
 		}
 	}()
-	limit := MaxAttachmentBytes(a.Modality())
+	limit := valueobject.MaxAttachmentBytes(a.Modality())
 	if info.Size() > limit {
 		return nil, apperror.New(400, "attachment exceeds media limit", nil)
 	}

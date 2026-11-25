@@ -115,6 +115,13 @@ func (s *Service) Send(ctx context.Context, conv *aggregate.Conversation, gw *ag
 		return statusError(resp.StatusCode, wire.RetryAfter(resp.Header.Get("Retry-After")), raw)
 	}
 
+	if stream && !isEventStream(resp) {
+		// A gateway may answer 200 with a JSON envelope instead of a stream —
+		// usually its own error shape. Read it as the unary body so the
+		// provider's error keeps its status, message and Retry-After instead
+		// of surfacing as a truncated stream.
+		return s.unaryResponse(ctx, resp, conv, onEvent)
+	}
 	if stream {
 		return s.streamResponse(ctx, resp, conv, onEvent)
 	}
@@ -200,4 +207,12 @@ func (s *Service) logAppend(ctx context.Context, kind string, v any) {
 	if s.log != nil {
 		_ = s.log.Append(ctx, kind, v) // diagnostics must never break a send
 	}
+}
+
+// isEventStream reports whether the response actually carries SSE. A 200
+// without the event-stream type is a complete JSON answer or an error
+// envelope; the stream decoder would read it as zero events and call it
+// truncated.
+func isEventStream(resp *http.Response) bool {
+	return strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream")
 }

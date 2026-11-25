@@ -3,6 +3,7 @@ package textmessages
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1162,5 +1163,170 @@ func TestExplicitMaxTokensLeavesRoomForPrompt(t *testing.T) {
 	if body.MaxTokens+input > 4096 {
 		t.Fatalf("max_tokens=%d plus estimated input=%d exceeds contextWindow=4096",
 			body.MaxTokens, input)
+	}
+}
+
+// The stop_reason is the wire's verdict. A stream cut between message_delta
+// and the message_stop that confirms it still carries a complete answer —
+// discarding it would lose a turn the provider finished, while the
+// completion wire already treats its own verdict the same way.
+func TestStreamStopReasonWithoutMessageStopCommits(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"content\":[],\"usage\":{\"input_tokens\":25,\"output_tokens\":1}}}\n\n" +
+			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"done\"}}\n\n" +
+			"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":25,\"output_tokens\":15}}\n\n"))
+	})
+	conv := newConv(t)
+	user, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(user)
+	model, _ := entity.NewModel("claude-x", "test")
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
+		t.Fatalf("a verdict without message_stop must commit: %v", err)
+	}
+	last := conv.Last()
+	if last.Role() != enum.RoleAssistant || last.Content() != "done" || last.FinishReason() != enum.FinishReasonStop {
+		t.Fatalf("committed reply = %+v", last)
+	}
+	if conv.Usage().InputTokens() != 25 || conv.Usage().OutputTokens() != 15 {
+		t.Fatalf("usage = %+v", conv.Usage())
+	}
+}
+
+// A named error event is the provider saying why it stopped, even when the
+// payload is not the nested envelope — it must fail the step with the
+// provider's own message and wait, not read as a truncated stream.
+func TestStreamFlatErrorEventFails(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Retry-After", "120")
+		w.Write([]byte("event: error\ndata: {\"message\":\"slow down\"}\n\n"))
+	})
+	conv := newConv(t)
+	user, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(user)
+	model, _ := entity.NewModel("claude-x", "test")
+	err := svc.Send(t.Context(), conv, gw, model, nil)
+	if err == nil {
+		t.Fatal("a flat error event must fail the step")
+	}
+	if got := apperror.As(err).Error(); got != "slow down" {
+		t.Fatalf("message = %q, want the provider's", got)
+	}
+	var delayed interface{ RetryAfter() time.Duration }
+	if !errors.As(err, &delayed) || delayed.RetryAfter() != 120*time.Second {
+		t.Fatalf("error lost the provider wait: %v", err)
+	}
+	if conv.Last().Role() != enum.RoleUser {
+		t.Fatalf("an error must not commit: %+v", conv.Last())
+	}
+}
+
+// A tool_use whose arguments never closed while the terminal marker arrived
+// cannot replay; failing keeps the model's intended action visible instead of
+// silently dropping it.
+func TestStreamTruncatedToolUseFails(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"content\":[],\"usage\":{\"input_tokens\":25,\"output_tokens\":1}}}\n\n" +
+			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"exec\"}}\n\n" +
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"command\\\":\"}}\n\n" +
+			"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"input_tokens\":25,\"output_tokens\":15}}\n\n" +
+			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
+	})
+	conv := newConv(t)
+	user, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(user)
+	model, _ := entity.NewModel("claude-x", "test")
+	err := svc.Send(t.Context(), conv, gw, model, nil)
+	if got := apperror.As(err).StatusCode(); got != 502 {
+		t.Fatalf("truncated tool_use → %d (%v), want 502", got, err)
+	}
+	if !strings.Contains(err.Error(), "truncated") {
+		t.Fatalf("error = %q, want it to name the truncation", err)
+	}
+	if conv.Last().Role() != enum.RoleUser {
+		t.Fatalf("a truncated call must not commit: %+v", conv.Last())
+	}
+}
+
+// A gateway can answer 200 with a JSON error envelope instead of a stream;
+// the provider's overloaded status and message must survive, not read as a
+// truncated stream.
+func TestStreamJSONErrorEnvelopeKeepsProviderError(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`))
+	})
+	conv := newConv(t)
+	user, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(user)
+	model, _ := entity.NewModel("claude-x", "test")
+	err := svc.Send(t.Context(), conv, gw, model, nil)
+	if got := apperror.As(err).StatusCode(); got != 529 {
+		t.Fatalf("status = %d (%v), want 529", got, err)
+	}
+	if got := apperror.As(err).Error(); got != "Overloaded" {
+		t.Fatalf("message = %q, want the provider's", got)
+	}
+}
+
+// message_delta may repeat only output_tokens; the input/cache counts
+// message_start carried must survive the merge.
+func TestStreamUsageMergesPartialMessageDelta(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"content\":[],\"usage\":{\"input_tokens\":25,\"output_tokens\":1,\"cache_read_input_tokens\":7}}}\n\n" +
+			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n" +
+			"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":15}}\n\n" +
+			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
+	})
+	conv := newConv(t)
+	user, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(user)
+	model, _ := entity.NewModel("claude-x", "test")
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := conv.Usage().InputTokens(); got != 25 {
+		t.Fatalf("input tokens = %d, want the message_start 25", got)
+	}
+	if got := conv.Usage().CacheReadTokens(); got != 7 {
+		t.Fatalf("cache read tokens = %d, want 7", got)
+	}
+	if got := conv.Usage().OutputTokens(); got != 15 {
+		t.Fatalf("output tokens = %d, want the message_delta 15", got)
+	}
+}
+
+// Presence, not magnitude: message_delta may report cache_read_input_tokens 0
+// because the cache count dropped. It must overwrite message_start's value,
+// and the input count message_start carried must survive.
+func TestStreamUsageZeroIsAValue(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"content\":[],\"usage\":{\"input_tokens\":25,\"output_tokens\":1,\"cache_read_input_tokens\":7}}}\n\n" +
+			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n" +
+			"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":15,\"cache_read_input_tokens\":0}}\n\n" +
+			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
+	})
+	conv := newConv(t)
+	user, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(user)
+	model, _ := entity.NewModel("claude-x", "test")
+	if err := svc.Send(t.Context(), conv, gw, model, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := conv.Usage().CacheReadTokens(); got != 0 {
+		t.Fatalf("cache read tokens = %d, want the later object's legitimate 0", got)
+	}
+	if got := conv.Usage().InputTokens(); got != 25 {
+		t.Fatalf("input tokens = %d, want the message_start 25", got)
+	}
+	if got := conv.Usage().OutputTokens(); got != 15 {
+		t.Fatalf("output tokens = %d, want 15", got)
 	}
 }

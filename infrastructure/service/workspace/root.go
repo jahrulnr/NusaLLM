@@ -12,8 +12,12 @@ import (
 	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 )
 
-// Root is an opened workspace directory through an injected store.
+// Root is an opened workspace directory through an injected store. It keeps
+// both the port and the directory it opened: path arguments resolve through
+// the port (ADR-0002), so syntax and placement have one owner.
 type Root struct {
+	store   drepo.Workspace
+	dir     string
 	root    drepo.WorkspaceSession
 	absPath string
 }
@@ -34,7 +38,7 @@ func Open(store drepo.Workspace, dir string) (*Root, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Root{root: root, absPath: absPath}, nil
+	return &Root{store: store, dir: dir, root: root, absPath: absPath}, nil
 }
 
 // Path returns the absolute workspace path.

@@ -47,6 +47,24 @@ func (a *Attachment) SetSHA256(v string) { a.sha256 = v }
 
 // Modality derives the coarse modality from the media type's top-level
 // type; anything unrecognized maps to ModalityFile.
+// MaxAttachmentBytes is the largest payload this server will materialize for
+// a modality. It is a domain rule, not a wire rule: the same cap binds the
+// tool that hands out a reference, the attachment command, and every provider
+// adapter that resolves one, so no layer can quietly disagree about how big
+// an image may be.
+func MaxAttachmentBytes(modality enum.Modality) int64 {
+	switch modality {
+	case enum.ModalityImage:
+		return 10 << 20
+	case enum.ModalityAudio:
+		return 50 << 20
+	case enum.ModalityVideo:
+		return 100 << 20
+	default:
+		return 20 << 20
+	}
+}
+
 func (a Attachment) Modality() enum.Modality {
 	switch top, _, _ := strings.Cut(a.mediaType, "/"); top {
 	case "image":

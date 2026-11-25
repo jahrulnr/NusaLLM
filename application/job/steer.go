@@ -61,10 +61,12 @@ func (r *SteeringReceipt) markClaimed() {
 	r.state.Store(SteeringClaimed)
 }
 
-// steeringEntry is one buffered input: text plus the optional receipt
-// tracking its outcome (receipt-free on the CLI's push path).
+// steeringEntry is one buffered input: text, the transport input id it was
+// submitted under ("" on the CLI's push path), and the optional receipt
+// tracking its outcome.
 type steeringEntry struct {
 	text    string
+	inputID string
 	receipt *SteeringReceipt
 }
 
@@ -85,11 +87,15 @@ type SteeringInput struct {
 // NewSteeringInput creates an empty mailbox.
 func NewSteeringInput() *SteeringInput { return &SteeringInput{} }
 
-// Submit buffers text and returns the receipt that tracks its outcome.
-func (s *SteeringInput) Submit(text string) *SteeringReceipt {
+// Submit buffers text submitted under a transport input id and returns the
+// receipt that tracks its outcome. The id is the submitting command's
+// requestId — it becomes the folded user line's identity, so a transport can
+// match its own bubble to history without matching text. "" means the input
+// carries no identity the store can record.
+func (s *SteeringInput) Submit(inputID, text string) *SteeringReceipt {
 	r := newSteeringReceipt()
 	s.mu.Lock()
-	s.pending = append(s.pending, steeringEntry{text: text, receipt: r})
+	s.pending = append(s.pending, steeringEntry{text: text, inputID: inputID, receipt: r})
 	s.mu.Unlock()
 	return r
 }

@@ -3,7 +3,7 @@
 // calls fold into collapsible "work" groups between prose.
 import { html, useEffect, useLayoutEffect, useRef, useState } from '/vendor/preact/htm-preact.mjs';
 import { renderInto, disposeTree, handleCopyClick, handleCopy } from '../lib/markdown.js';
-import { historyItems, joinText, group, toolFailed } from '../lib/turn.js';
+import { historyItems, liveHistory, liveSegments, joinText, group } from '../lib/turn.js';
 import { ToolRow } from './toolcard.js';
 import { editMessage, isBusy, retry, loadEarlier, loadHistory } from '../lib/chat.js';
 import { emit } from '../lib/store.js';
@@ -82,7 +82,7 @@ function Activity({ item, live, cwd }) {
   const [open, setOpen] = useOpen(item.id);
   const tools = item.items.filter((x) => x.kind === 'tool');
   if (!tools.length) return item.items.map((x) => html`<${Thoughts} key=${x.id} item=${x} live=${live} />`);
-  const failed = tools.filter((t) => t.status === 'settled' && toolFailed(t.output)).length;
+  const failed = tools.filter((t) => t.outcome === 'failed').length;
   const label = live ? `Working · ${tools.length} ${tools.length === 1 ? 'step' : 'steps'}` : `Used ${tools.length} ${tools.length === 1 ? 'tool' : 'tools'}`;
   const tail = !open && live ? item.items.slice(-1) : [];
   return html`<div>
@@ -147,21 +147,18 @@ export function Transcript({ room, scroller }) {
   let hist = historyItems(r.messages);
   const lastTool = hist.findLast((x) => x.kind === 'tool');
   const cwd = r.sel.workspace || r.info?.workspace || lastTool?.cwd || '';
-  if (r.cutHistory && r.live) {
-    const at = hist.findLastIndex((x) => x.kind === 'user');
-    hist = hist.slice(0, at + 1);
-  }
-  if (r.live?.editOf) {
-    const at = hist.findIndex((x) => x.id === r.live.editOf);
-    if (at >= 0) hist = hist.slice(0, at);
-  }
-  const liveItems = r.live ? r.live.segments : [];
+  // The record is authoritative (decisions.md D-06.1): a running turn's
+  // finished steps are drawn from history and liveHistory only trims what the
+  // live turn replaces there. The journal then supplies the attempt that is
+  // running now — liveSegments drops the replayed prefix the record already
+  // holds, by tool-call identity, so no step is drawn twice.
+  hist = liveHistory(hist, r.live);
   // One answer, one Markdown document: text the store split across parts (or
   // across the live segments a step sealed) is joined before grouping, on the
   // stored and the live path alike. Boundaries that are real events survive as
   // their own items, so joinText only ever folds text into text.
   const items = group(joinText(hist));
-  const liveGroups = group(joinText(liveItems));
+  const liveGroups = group(joinText(liveSegments(r.live, hist)));
 
   // Older pages load as the reader nears the top. The distance from the
   // bottom is tracked on every scroll and re-applied after a prepend, so

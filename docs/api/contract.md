@@ -166,7 +166,13 @@ following never leave the server on any endpoint or frame:
   `output` (live chunks over WS; plain result text over HTTP) are part of
   the contract. Each `toolCalls[]` entry carries `type`: `origin` for a
   model-issued call, `injection` for an application-inserted context
-  record (e.g. the workspace line). The provider still receives the
+  record (e.g. the workspace line), a `status` (`pending` while no result
+  exists, then `ok`/`failed`/`canceled` from the recorded verdict, or
+  `unknown` for a record that carries none), and a `type` that may also be
+  `unknown`: a tool call whose stored record could not be decoded, not an
+  application-inserted record (D-13). An unreadable call is always
+  `unknown` in `status` — it is not pending, and nothing about it is
+  guessed. The provider still receives the
   stored untrusted-evidence envelope; its delimiter and latency tag are
   not sent to the UI.
   They are untrusted data — can contain paths, commands, secrets — and
@@ -192,8 +198,8 @@ Full schemas, typed errors, and examples live in
 | Method & path | Purpose |
 |---|---|
 | `GET /api/health` | Liveness — `200 {"status":"ok"}`. |
-| `GET /api/conversations?offset&limit` | List projections, `updatedAt` desc (best-effort). Items include `activeTurnId` / `activeTurnKind` while a transport turn is in progress. `limit` default 30, max 100. |
-| `GET /api/conversations/{id}` | One projection. Detail adds `canCompact`, and `activeTurnId` / `activeTurnKind` while a transport turn is in progress. |
+| `GET /api/conversations?offset&limit` | List projections, `updatedAt` desc (best-effort). Each item is the same projection as the detail read (`canCompact`, plus `activeTurnId` / `activeTurnKind` while a transport turn is in progress), so a sidebar needs no per-room reads. `limit` default 30, max 100. |
+| `GET /api/conversations/{id}` | One projection: the stored record, `canCompact`, and `activeTurnId` / `activeTurnKind` while a transport turn is in progress. |
 | `GET /api/conversations/{id}/messages?start&limit` | Ranged history; `start >= 0` absolute, negative counts back from the end. `limit` max 100. |
 | `PATCH /api/conversations/{id}` | Rename — body `{title}`. |
 | `DELETE /api/conversations/{id}` | Delete the room and its storage; queued jobs on it die `410`. |
@@ -297,7 +303,7 @@ successful non-2xx and has no body.)
 | 500 | `internal` | Engine or deployment fault (adapter missing, tool loop limit, persistence failure). |
 | 500 | `update_failed` | An update install could not start for an unexpected reason. |
 | 502 | `upstream_error` | The provider call failed at the wire. |
-| 503 | `unavailable` | The application is shutting down. |
+| 503 | `unavailable` | The application is shutting down (a provider's own `503` crosses as `503` with code `upstream_error`). |
 | 504 | `upstream_timeout` | The provider did not answer inside its deadline. |
 
 Upstream provider statuses pass through `apperror` and surface mapped to
@@ -318,6 +324,22 @@ The same response — and each item of the list projection — includes
 process's turn hub has a non-terminal turn for the room, so a client
 can attach with `turn.watch`. Both fields are omitted when the room is
 idle. They are not persisted conversation state.
+
+**Every conversation response is the same projection.** One builder
+(`project()` in `infrastructure/delivery/http/conversation/dto.go`) serves
+the detail read, each list item, and every write that returns a room
+(`PATCH` rename, `POST` compactions), so all of them carry the same fields:
+the stored record **plus** `canCompact` and the hub-owned
+`activeTurnId`/`activeTurnKind` pair. A write response is therefore the room's
+current state, not a reduced acknowledgement — the shape does not depend on
+which route produced it. The reason is the client's: a UI keeps one room
+object and applies whatever a route returns, so a per-route shape forces it to
+merge, and a merge is how a rename of a running thread loses the "working"
+marker or a compact reply loses `canCompact`. Different projections of one
+resource are not a simplification; they are a second definition of it.
+`projection_test.go` pins the equality — `PATCH`, compaction, and a list item
+are compared field-for-field against the detail read of the same live room
+(`TestWriteResponseMatchesDetailProjection`, `TestListItemsMatchDetailProjection`).
 
 ## WebSocket surface
 

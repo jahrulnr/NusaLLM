@@ -122,11 +122,19 @@ func decodeUsage(u *UsageBody) (valueobject.Usage, error) {
 	if u == nil {
 		return valueobject.Usage{}, nil
 	}
-	cacheWrite := u.CacheWrite
+	cacheWrite := intOr(u.CacheWrite)
 	if cacheWrite == 0 {
-		cacheWrite = u.CacheCreationInput
+		cacheWrite = intOr(u.CacheCreationInput)
 	}
-	return valueobject.NewUsageFromTotal(u.PromptTokens, u.PromptDetails.CachedTokens, cacheWrite, u.CompletionTokens)
+	return valueobject.NewUsageFromTotal(intOr(u.PromptTokens), intOr(u.PromptDetails.CachedTokens), cacheWrite, intOr(u.CompletionTokens))
+}
+
+// intOr dereferences an optional counter — a missing field is zero.
+func intOr(v *int) int {
+	if v == nil {
+		return 0
+	}
+	return *v
 }
 
 // statusError builds the routing-facing error for a non-200 response via

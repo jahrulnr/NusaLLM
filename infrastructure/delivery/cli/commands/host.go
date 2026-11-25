@@ -6,18 +6,10 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/cli/term"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
-	svccommand "github.com/jahrulnr/nusallm/infrastructure/service/command"
 )
-
-// Registry is the terminal-bound slash-command registry.
-type Registry = svccommand.Registry
 
 // Info is one palette or /help row.
 type Info = service.CommandCompletion
-
-// JobFunc is a worker-bound command body the registry resolved — the
-// update loop runs it as a turn with live event streaming.
-type JobFunc = svccommand.JobFunc
 
 // SteerInfo advertises the terminal-local /steer command — the REPL
 // input path handles it, not the service registry, so palette and /help

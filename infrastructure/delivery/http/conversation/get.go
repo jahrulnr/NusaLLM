@@ -16,18 +16,10 @@ func (s *server) get(c *gin.Context) {
 		transport.RespondError(c, err)
 		return
 	}
-	available, err := s.reads.CanCompact(c.Request.Context(), id)
+	out, err := s.project(c.Request.Context(), info)
 	if err != nil {
 		transport.RespondError(c, err)
 		return
-	}
-	out := toConversation(info)
-	out.CanCompact = &available
-	if s.live != nil {
-		if turnID, kind, ok := s.live.ActiveTurn(info.ID); ok {
-			out.ActiveTurnID = turnID
-			out.ActiveTurnKind = kind
-		}
 	}
 	c.JSON(200, out)
 }

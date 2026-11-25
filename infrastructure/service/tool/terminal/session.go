@@ -244,10 +244,10 @@ func (s *terminalSession) wait() {
 			if code := exitErr.ExitCode(); code > 0 {
 				s.exitCode = code
 			} else {
-				s.signal = exitErr.Error()
+				s.signal = signalName(exitErr.Error())
 			}
 		} else {
-			s.signal = err.Error()
+			s.signal = signalName(err.Error())
 		}
 	}
 	s.exited.Store(true)

@@ -27,6 +27,7 @@ import (
 	coretext "github.com/jahrulnr/nusallm/infrastructure/service/core/text"
 	textcompletion "github.com/jahrulnr/nusallm/infrastructure/service/core/text/completion"
 	toolsummary "github.com/jahrulnr/nusallm/infrastructure/service/tool/summary"
+	"github.com/jahrulnr/nusallm/infrastructure/worker"
 )
 
 // commandFixture wires a session+registry against a stub provider the way
@@ -91,7 +92,7 @@ func newCommandFixture(t *testing.T) *commandFixture {
 		nil,
 		"",
 		nil,
-		mustSummaryTool(t),
+		mustSummaryTool(t), appconversation.Workers(worker.New),
 	)
 	t.Cleanup(func() { _ = conversationApplication.Shutdown(context.Background()) })
 	sess, err := session.New(session.Options{

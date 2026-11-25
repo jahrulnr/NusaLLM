@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
@@ -100,22 +99,6 @@ func TestReadMediaToolRejects(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeFixture(t, root, "note.txt", []byte("plain text, not media\n"))
-	// Sparse 11 MiB with a PNG signature exercises the sniffed image cap.
-	f, err := os.Create(filepath.Join(root, "big.png"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.Write(pngFixture); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Truncate(11 << 20); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
-
 	for name, input := range map[string]string{
 		"escape":   `{"path":"../evil.png"}`,
 		"dir path": `{"path":"sub"}`,
@@ -129,12 +112,9 @@ func TestReadMediaToolRejects(t *testing.T) {
 		}
 	}
 
-	if _, err := runReadMedia(t, tool, `{"path":"note.txt"}`); err == nil || !strings.Contains(err.Error(), "read_file") {
-		t.Fatalf("text file: want redirect to read_file, got %v", err)
-	}
-	if _, err := runReadMedia(t, tool, `{"path":"big.png"}`); err == nil || !strings.Contains(err.Error(), "10 MiB") {
-		t.Fatalf("oversize: want 10 MiB cap error, got %v", err)
-	}
+	// The pin rule itself — sniffed text, the modality cap, the hash — has
+	// one suite of its own in service/workspace; this tool only has to hand
+	// it a resolved placement.
 }
 
 func mustMediaTool(t *testing.T, root string) service.Tool {

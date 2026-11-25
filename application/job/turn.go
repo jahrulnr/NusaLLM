@@ -116,6 +116,10 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 				if err != nil {
 					return err
 				}
+				// The submitting transport's input id rides the line: it is
+				// how a client matches its own steer bubble to history
+				// without matching text.
+				user.SetInputID(input.inputID)
 				conv.Append(user)
 				committed, err := d.Convs.AppendMessage(ctx, convID, user)
 				if input.receipt != nil && committed {
@@ -291,7 +295,7 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 			// a Retry (turn.resume) continues from it instead of
 			// regenerating the answer from scratch.
 			if len(added) == 0 {
-				partial, ok, perr := interruptedReply(parts)
+				partial, ok, perr := entity.NewInterruptedReply(parts)
 				if perr != nil {
 					return perr
 				}
@@ -324,8 +328,10 @@ func (d Deps) runTurn(ctx context.Context, convID string, conv *aggregate.Conver
 		}
 		persistCtx := ctx
 		if canceled || ctx.Err() != nil {
-			if err := stampInterrupted(conv.Last()); err != nil {
-				return err
+			if last := conv.Last(); last != nil {
+				if err := last.MarkInterrupted(); err != nil {
+					return err
+				}
 			}
 			// The partial reply and interrupted markers are history, not
 			// speculative work — they must commit even though the turn
@@ -408,6 +414,12 @@ func (d Deps) finishPending(ctx context.Context, convID string, conv *aggregate.
 		err := func() error {
 			out := ""
 			var outAtts []valueobject.Attachment
+			// The verdict the adapter reported, normalized: a tool that
+			// returned normally succeeded unless it said otherwise, and a
+			// Go error or a refused call is a failure. The harness's own
+			// canceled verdict is written by MarkInterrupted, never here.
+			outcome := enum.ToolOutcomeOK
+			var exit *valueobject.ExitStatus
 			permitted := false
 			for _, s := range conv.Tools() {
 				if s.Name() == call.Name() && s.CallableByAgent() {
@@ -429,17 +441,24 @@ func (d Deps) finishPending(ctx context.Context, convID string, conv *aggregate.
 			switch {
 			case !permitted:
 				out = "error: tool not permitted"
+				outcome = enum.ToolOutcomeFailed
 			case !registered:
 				out = "error: unknown tool " + call.Name()
+				outcome = enum.ToolOutcomeFailed
 			default:
 				res, err := tool.Execute(ctx, call, emit)
 				switch {
 				case err == nil:
 					out, outAtts = res.Text, res.Attachments
+					outcome, exit = res.Outcome, res.Exit
+					if outcome == "" {
+						outcome = enum.ToolOutcomeOK
+					}
 				case ctx.Err() != nil:
 					return apperror.New(408, "turn canceled", ctx.Err())
 				default:
 					out = "error: " + err.Error()
+					outcome = enum.ToolOutcomeFailed
 				}
 			}
 			// The serving's per-request image cap counts every image
@@ -480,6 +499,11 @@ func (d Deps) finishPending(ctx context.Context, convID string, conv *aggregate.
 			if err := last.SetToolOutput(call.ID(), out); err != nil {
 				return apperror.New(500, "tool output lost", err)
 			}
+			// The verdict rides with the text into the record: the text is
+			// evidence for the model, this is what a UI reads.
+			if err := last.SetToolOutcome(call.ID(), outcome, exit); err != nil {
+				return apperror.New(500, "tool outcome lost", err)
+			}
 			// Attachments land alongside the recorded result.
 			if err := last.SetToolOutputAttachments(call.ID(), outAtts); err != nil {
 				return apperror.New(500, "tool output lost", err)
@@ -489,7 +513,16 @@ func (d Deps) finishPending(ctx context.Context, convID string, conv *aggregate.
 					// The result is already computed. A ctx that died between
 					// the in-memory record and this patch must not drop
 					// it: persistInterrupted skips calls that HasOutput.
-					return d.Convs.UpdateToolCallOutput(context.WithoutCancel(ctx), convID, tc)
+					if err := d.Convs.UpdateToolCallOutput(context.WithoutCancel(ctx), convID, tc); err != nil {
+						return err
+					}
+					// One frame per call, after the record exists: the
+					// verdict is data a consumer reads, never text it
+					// parses.
+					if onEvent != nil {
+						onEvent(event.NewToolResultEvent(tc))
+					}
+					return nil
 				}
 			}
 			return apperror.New(500, "tool output lost", fmt.Errorf("call %s vanished after update", call.ID()))
@@ -545,57 +578,6 @@ func (d Deps) resolveRoute(ctx context.Context, convID string, conv *aggregate.C
 	return gw, m, svc, nil
 }
 
-// stampInterrupted records "interrupted by user" on origin calls that
-// never received a result, and marks a reply the provider never closed
-// with the interrupted finish — an empty finish would read as a
-// complete answer to a later reload. Incomplete argument streams are
-// not on the message — adapters omit them before appending.
-func stampInterrupted(msg *entity.Message) error {
-	if msg == nil {
-		return nil
-	}
-	if msg.FinishReason() == "" {
-		msg.SetFinishReason(enum.FinishReasonInterrupted)
-	}
-	for _, tc := range msg.ToolCalls() {
-		if tc.Type() != enum.TooltypeOrigin || tc.HasOutput() {
-			continue
-		}
-		if err := msg.SetToolOutput(tc.ID(), "interrupted by user"); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// interruptedReply is the reply a failed call streamed before it broke:
-// the text and reasoning the owner already saw, in arrival order. Tool-call
-// parts are dropped — their calls never reached history. Without answer
-// text there is nothing for a Retry to replay, so no reply is kept (ok=false).
-func interruptedReply(parts []entity.MessagePart) (entity.Message, bool, error) {
-	var text strings.Builder
-	kept := make([]entity.MessagePart, 0, len(parts))
-	for _, p := range parts {
-		switch p.Kind {
-		case entity.MessagePartText:
-			text.WriteString(p.Text)
-		case entity.MessagePartToolCall:
-			continue
-		}
-		kept = append(kept, p)
-	}
-	if text.Len() == 0 {
-		return entity.Message{}, false, nil
-	}
-	msg, err := entity.NewMessage(enum.RoleAssistant, text.String())
-	if err != nil {
-		return entity.Message{}, false, err
-	}
-	msg.SetParts(kept)
-	msg.SetFinishReason(enum.FinishReasonInterrupted)
-	return msg, true, nil
-}
-
 // persistInterrupted writes the interrupted marker for calls that are
 // already in history with an empty output — a stop during execution.
 // The turn ctx is dead by definition here (its cancel is the stop), so
@@ -607,7 +589,7 @@ func (d Deps) persistInterrupted(ctx context.Context, convID string, msg *entity
 		return nil
 	}
 	pending := pendingCalls(*msg)
-	if err := stampInterrupted(msg); err != nil {
+	if err := msg.MarkInterrupted(); err != nil {
 		return err
 	}
 	for _, pc := range pending {

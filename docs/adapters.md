@@ -740,42 +740,46 @@ Delivery consumes it through `application/command.WorkspacePort` (`application/c
 option — which is what lets `/attach`, `/export`, and completion helpers share
 one confinement boundary with the file tools.
 
-## Slash commands — `service/command/`
+## Slash commands — `delivery/cli/commands/`
 
-`domain/service/command.go` defines the port: a `SlashCommand` is a
-`CommandService` (`Execute(ctx, command, emitter, args...)`) plus
-`Name`/`Usage`/`Description`, and may optionally implement
-`SlashCommandCompleter` for argument completion. The args convention: the
-caller passes the remainder of the input line as `args[0]` and the handler
-parses it.
+A slash command parses REPL input and calls the session use case: that is a
+delivery boundary, not an outbound adapter, and the tree moved there in T-23
+(D-10). The port it implements stays in domain — `domain/service/command.go`
+defines `SlashCommand` (a `CommandService`:
+`Execute(ctx, command, emitter, args...)`, plus `Name`/`Usage`/`Description`)
+and the optional `SlashCommandCompleter` for argument completion. The args
+convention: the caller passes the remainder of the input line as `args[0]` and
+the handler parses it.
 
-`command.Registry` (`registry.go`) dispatches wired instances by lowercased
-name — it owns no separate catalog, just like tool wiring. It also derives the
+`commands.Registry` (`registry.go`) dispatches wired instances by lowercased
+name — it owns no separate catalog, just like tool wiring — and derives the
 surfaces delivery needs: `Describe` for `/help` and the palette, `Completable`,
 and `Complete`, which only engages on a single-line `/cmd <arg>` buffer and
-caps rows at `internal.MaxRows` (50). `command.AttachmentPath` (`export.go`)
-is the shared `/attach` argument validator. `command/internal/` holds helpers
-commands share — conversation-id completion (`Conversations`), display-title
-resolution for list labels (`DisplayTitles`/`Resolve`, which load only a
-bounded history prefix via `TitleHistoryEnd`), and the size constants.
+caps rows at `commandinternal.MaxRows` (50). `commandinternal.AttachmentPath`
+(`internal/job.go`) is the shared `/attach` argument validator.
+`commands/internal/` holds what the commands share — conversation-id
+completion (`Conversations`), display-title resolution for list labels
+(`DisplayTitles`/`Resolve`, which load only a bounded history prefix via
+`TitleHistoryEnd`), the worker-bound command contract
+(`JobFunc`/`JobCommand`), and the size constants. A command package imports
+that leaf and the application port, never the registry package: the registry
+wires its children, so a child importing it would close a cycle.
 
-Each command lives in `service/command/<name>` with its own constructor and
-depends on `application/command.SlashSession` — the facade over conversation
-and gateway use cases, workspace port, sanitized output, and session bindings
-— never on concrete application structs. The CLI wires 24 commands in
-`delivery/cli/commands/wire.go` (`attach`, `cancel`, `clear`, `compact`,
-`copy`, `delete`, `detach`, `diff`, `edit`, `exit`, `export`, `help`,
-`history`, `list`, `model`, `new`, `pwd`, `quit`, `resume`, `route`,
-`status`, `title`, `tools`, `usage`), and the TUI drives the registry's
-`Execute`/`Complete` from `delivery/cli/tui/model.go`. Two representative
-shapes: `/attach` resolves a workspace path through the session's
-`ResolveAttachment` and appends to pending bindings; `/diff` shells out to
-`git -C <workspace> diff` and caps output at 64 KiB.
+Each command lives in `delivery/cli/commands/<name>` with its own constructor
+and depends on `application/command.SlashSession` — the facade over
+conversation and gateway use cases, workspace port, sanitized output, and
+session bindings — never on concrete application structs. `commands.New`
+(`wire.go`) wires 24 commands for one terminal session (`attach`, `cancel`,
+`clear`, `compact`, `copy`, `delete`, `detach`, `diff`, `edit`, `exit`,
+`export`, `help`, `history`, `list`, `model`, `new`, `pwd`, `quit`, `resume`,
+`route`, `status`, `title`, `tools`, `usage`), and the TUI drives the
+registry's `Execute`/`Complete` from `delivery/cli/tui/model.go`. Two
+representative shapes: `/attach` resolves a workspace path through the
+session's `ResolveAttachment` and appends to pending bindings; `/diff` shells
+out to `git -C <workspace> diff` and caps output at 64 KiB.
 
-`service/autocomplete/` exists on disk as an empty directory — untracked, with
-not even a `.gitkeep` — and contains no code. Argument completion today is
-entirely the per-command `Complete` methods above plus the palette plumbing in
-delivery; treat the directory as an unused placeholder rather than a component.
+Argument completion is the per-command `Complete` methods above plus the
+palette plumbing in delivery; there is no separate autocomplete package.
 
 ## Extending the layer
 

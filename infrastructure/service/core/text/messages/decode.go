@@ -114,7 +114,15 @@ func decodeUsage(u *UsageBody) (valueobject.Usage, error) {
 	if u == nil {
 		return valueobject.Usage{}, nil
 	}
-	return valueobject.NewUsage(u.InputTokens, u.CacheReadInputTokens, u.CacheCreationInputTokens, u.OutputTokens)
+	return valueobject.NewUsage(intOr(u.InputTokens), intOr(u.CacheReadInputTokens), intOr(u.CacheCreationInputTokens), intOr(u.OutputTokens))
+}
+
+// intOr dereferences an optional counter — a missing field is zero.
+func intOr(v *int) int {
+	if v == nil {
+		return 0
+	}
+	return *v
 }
 
 // statusError builds the routing-facing error for a non-200 response.

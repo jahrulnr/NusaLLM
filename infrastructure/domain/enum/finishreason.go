@@ -16,10 +16,13 @@ const (
 	FinishReasonLength FinishReason = "length"
 	// FinishReasonContentFilter marks a safety/filter block.
 	FinishReasonContentFilter FinishReason = "content_filter"
-	// FinishReasonInterrupted marks a reply cut short by the harness —
-	// a caller cancel or a dead process — never a provider verdict. A
-	// settled assistant tail must carry one of the reasons above; this
-	// marker exists so a partial reply cannot pass for a finished one.
+	// FinishReasonInterrupted marks an answer cut short before the
+	// provider finished the step — a caller cancel, a dead process, or a
+	// failed call that had already streamed text — never a provider
+	// verdict. A settled assistant tail must carry one of the reasons
+	// above; this marker exists so a partial reply cannot pass for a
+	// finished one. Its one meaning is "incomplete step", regardless of
+	// who ended it.
 	FinishReasonInterrupted FinishReason = "interrupted"
 )
 

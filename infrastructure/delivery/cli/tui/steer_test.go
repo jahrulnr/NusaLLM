@@ -29,6 +29,7 @@ import (
 	repohistory "github.com/jahrulnr/nusallm/infrastructure/repository/history"
 	reposecret "github.com/jahrulnr/nusallm/infrastructure/repository/secret"
 	repoworkspace "github.com/jahrulnr/nusallm/infrastructure/repository/workspace"
+	"github.com/jahrulnr/nusallm/infrastructure/worker"
 )
 
 // gatedToolSvc parks inside the first provider call until released,
@@ -142,7 +143,7 @@ func steerModel(t *testing.T, svc dservice.TextModelService, tools map[string]ds
 			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: svc},
 			Tools:    tools,
 		}},
-		config.NewConfig(), nil, "", nil, nil)
+		config.NewConfig(), nil, "", nil, nil, appconversation.Workers(worker.New))
 	t.Cleanup(func() { _ = conversationApplication.Shutdown(context.Background()) })
 
 	var schemas []valueobject.ToolSchema

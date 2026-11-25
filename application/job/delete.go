@@ -3,11 +3,11 @@ package job
 import (
 	"context"
 
-	"github.com/jahrulnr/nusallm/infrastructure/worker"
+	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 )
 
 // Delete removes the room — meta, live tail, sealed segments, tool output — and
-// retires the worker: returning worker.ErrTerminate after a successful
+// retires the executor: returning service.ErrTerminate after a successful
 // delete makes the worker drain its queue (410 for everything queued)
 // and exit. It preempts: a running job is interrupted first.
 type Delete struct {
@@ -36,5 +36,5 @@ func (j *Delete) Execute(context.Context) (err error) {
 	if j.Deps.Terminals != nil {
 		j.Deps.Terminals.TerminateConversation(j.ConvID())
 	}
-	return worker.ErrTerminate
+	return dservice.ErrTerminate
 }

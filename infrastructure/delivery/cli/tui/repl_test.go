@@ -35,6 +35,7 @@ import (
 	textcompletion "github.com/jahrulnr/nusallm/infrastructure/service/core/text/completion"
 	toolsummary "github.com/jahrulnr/nusallm/infrastructure/service/tool/summary"
 	toolexec "github.com/jahrulnr/nusallm/infrastructure/service/tool/terminal"
+	"github.com/jahrulnr/nusallm/infrastructure/worker"
 )
 
 func TestREPLSendsListsAndResumesConversation(t *testing.T) {
@@ -93,7 +94,7 @@ func TestREPLSendsListsAndResumesConversation(t *testing.T) {
 		nil,
 		"",
 		nil,
-		nil,
+		nil, appconversation.Workers(worker.New),
 	)
 	var output, stderr bytes.Buffer
 	input := pipeInput(t, "/route gw1\n/model m1\n/attach shot.png\nhello\n/list\n/history 10\n/exit\n")
@@ -269,7 +270,7 @@ func TestAutoSelectNotifyDoesNotDeadlock(t *testing.T) {
 		nil,
 		"",
 		nil,
-		nil,
+		nil, appconversation.Workers(worker.New),
 	)
 
 	sess, err := session.New(session.Options{
@@ -423,7 +424,7 @@ func TestCompactJobRunsAsTurnAndConfirms(t *testing.T) {
 		nil,
 		"",
 		nil,
-		summaryTool,
+		summaryTool, appconversation.Workers(worker.New),
 	)
 	t.Cleanup(func() { _ = conversationApplication.Shutdown(context.Background()) })
 
@@ -510,7 +511,7 @@ func TestPipedCRNeverTriggersPicker(t *testing.T) {
 		nil,
 		"",
 		nil,
-		nil,
+		nil, appconversation.Workers(worker.New),
 	)
 	t.Cleanup(func() { _ = conversationApplication.Shutdown(context.Background()) })
 
@@ -646,7 +647,7 @@ func TestConversationArgPicker(t *testing.T) {
 		nil,
 		"",
 		nil,
-		nil,
+		nil, appconversation.Workers(worker.New),
 	)
 	t.Cleanup(func() { _ = conversationApplication.Shutdown(context.Background()) })
 
@@ -832,7 +833,7 @@ func TestToolCallLoopRunsEndToEnd(t *testing.T) {
 		nil,
 		"",
 		nil,
-		nil,
+		nil, appconversation.Workers(worker.New),
 	)
 
 	var output, stderr bytes.Buffer

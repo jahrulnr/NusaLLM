@@ -31,7 +31,12 @@ func (s *server) rename(c *gin.Context) {
 		transport.RespondError(c, err)
 		return
 	}
-	c.JSON(200, toConversation(info))
+	out, err := s.project(ctx, info)
+	if err != nil {
+		transport.RespondError(c, err)
+		return
+	}
+	c.JSON(200, out)
 }
 
 func (s *server) delete(c *gin.Context) {
@@ -62,12 +67,10 @@ func (s *server) compact(c *gin.Context) {
 		transport.RespondError(c, err)
 		return
 	}
-	available, err := s.reads.CanCompact(s.jobs, id)
+	out, err := s.project(s.jobs, info)
 	if err != nil {
 		transport.RespondError(c, err)
 		return
 	}
-	out := toConversation(info)
-	out.CanCompact = &available
 	c.JSON(200, out)
 }

@@ -24,6 +24,8 @@ type ToolCall struct {
 	outputLatency     string
 	outputBudget      int // Maximum output bytes sent to provider context
 	outputAttachments []valueobject.Attachment
+	outcome           enum.ToolOutcome
+	exit              *valueobject.ExitStatus
 	ttype             enum.Tooltype
 	callAt            time.Time
 	optionalContent   map[string]string
@@ -58,6 +60,17 @@ func NewToolCall(id, name, input string, ttype enum.Tooltype) (ToolCall, error) 
 	return tc, tc.validateInput()
 }
 
+// NewUnreadableToolCall is the placeholder for a stored call whose record
+// could not be decoded. It keeps whatever fields survived and carries no
+// provenance (Type() is empty) and no verdict, so a reader can tell it apart
+// from a real origin or injection call instead of guessing what it was.
+//
+// It is a read-side shape only: nothing constructs one for a live call, and
+// the write path keeps validating records.
+func NewUnreadableToolCall(id, name, input string) ToolCall {
+	return ToolCall{id: id, name: name, input: input, outputBudget: 32000}
+}
+
 func (t ToolCall) ID() string    { return t.id }
 func (t ToolCall) Name() string  { return t.name }
 func (t ToolCall) Input() string { return t.input }
@@ -67,6 +80,15 @@ func (t ToolCall) Output() string { return t.output }
 
 // HasOutput distinguishes a completed empty result from a pending call.
 func (t ToolCall) HasOutput() bool { return t.outputSet }
+
+// Outcome is the recorded verdict on the side effect: ok, failed, canceled.
+// The zero value means no verdict was recorded — a call still pending, or a
+// record written before the field existed. It is never inferred from Output.
+func (t ToolCall) Outcome() enum.ToolOutcome { return t.outcome }
+
+// Exit is how the process behind the call ended, nil when none ran or the
+// record carries none.
+func (t ToolCall) Exit() *valueobject.ExitStatus { return t.exit }
 
 // OutputLatency is fixed when the result arrives; replay must not recompute it.
 func (t ToolCall) OutputLatency() string { return t.outputLatency }
@@ -215,6 +237,15 @@ func (t ToolCall) OptionalContent() map[string]string { return t.optionalContent
 // its text output — e.g. a read_media call's image. References only
 // (file://, https://, data:); adapters resolve them at send time.
 func (t ToolCall) OutputAttachments() []valueobject.Attachment { return t.outputAttachments }
+
+// SetOutcome records the verdict that arrived with the result, together with
+// the process status when one ran. The application's result path and
+// hydration are the only writers: an adapter's ToolResult.Outcome lands here
+// through the application, and canceled is written by the harness alone.
+func (t *ToolCall) SetOutcome(outcome enum.ToolOutcome, exit *valueobject.ExitStatus) {
+	t.outcome = outcome
+	t.exit = exit
+}
 
 // SetOutputAttachments records media references produced by the call.
 // Like raw text output, references are stored verbatim at runtime and on

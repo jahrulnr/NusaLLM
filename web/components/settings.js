@@ -2,9 +2,9 @@
 // catalog, and about/update. Global scope only — per-thread choices live in
 // the composer.
 import { html, useEffect, useState } from '/vendor/preact/htm-preact.mjs';
-import { useStore, setPref, toast, emit, state } from '../lib/store.js';
+import { useStore, setPref, toast } from '../lib/store.js';
 import { api, errorText } from '../lib/api.js';
-import { loadGateways, navigate } from '../lib/chat.js';
+import { loadGateways, navigate, refreshUpdate, installUpdate, cancelInstall } from '../lib/chat.js';
 import { Icon } from './icons.js';
 import { cx, Button, Dialog, Select, Toggle, ErrorBlock, Spinner, fmtTokens } from './ui.js';
 import { MenuButton } from './chat.js';
@@ -469,35 +469,18 @@ function About() {
   const [busy, setBusy] = useState('');
   const [prog, setProg] = useState(null);
 
+  // The flow belongs to the controller; leaving the page stops it so no timer
+  // outlives the surface that started it.
+  useEffect(() => () => cancelInstall(), []);
+
   const check = async () => {
     setBusy('check');
-    try { state.update = await api.checkUpdate(); emit(); } catch (e) { toast(errorText(e), 'error'); }
+    try { await refreshUpdate(true); } catch (e) { toast(errorText(e), 'error'); }
     setBusy('');
-  };
-  const poll = async () => {
-    for (;;) {
-      let p;
-      try { p = await api.installProgress(); } catch { p = null; }
-      if (p) setProg(p);
-      if (p && p.state !== 'running') return p;
-      await new Promise((r) => setTimeout(r, 1000));
-    }
   };
   const install = async () => {
     setBusy('install');
-    try {
-      setProg(await api.installUpdate());
-      const p = await poll();
-      if (p.state === 'succeeded') {
-        // The server restarts; wait for it to answer again, then reload.
-        for (let i = 0; i < 120; i++) {
-          await new Promise((r) => setTimeout(r, 1000));
-          try { const v = await api.update(); if (v.current !== u.current) { location.reload(); return; } } catch { /* restarting */ }
-        }
-        toast('Update installed. Reload the page once the server is back.');
-      }
-    } catch (e) { toast(errorText(e), 'error'); }
-    setBusy('');
+    try { await installUpdate({ onProgress: setProg }); } finally { setBusy(''); }
   };
 
   const pct = prog?.bytesTotal ? Math.round((prog.bytesDone / prog.bytesTotal) * 100) : null;

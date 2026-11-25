@@ -1,6 +1,7 @@
 package appcommand
 
 import (
+	"context"
 	"io"
 	"io/fs"
 
@@ -34,7 +35,7 @@ type Bindings interface {
 type WorkspacePort interface {
 	Path() string
 	FS() fs.FS
-	ResolveAttachment(path string) (valueobject.Attachment, error)
+	ResolveAttachment(ctx context.Context, path string) (valueobject.Attachment, error)
 	CreateFile(name string) (io.WriteCloser, error)
 }
 

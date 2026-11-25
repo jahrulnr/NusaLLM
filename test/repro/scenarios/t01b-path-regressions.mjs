@@ -107,7 +107,8 @@ export default {
         },
         {
           label: 'exec still writes outside the workspace (the escape hatch stays open)',
-          ok: output('call_exec').trim() === '' && existsSync(path.join(escape, 'written.txt'))
+          // A silent command may report "" (old) or "no output\n(exit 0)" (T-16c).
+          ok: existsSync(path.join(escape, 'written.txt'))
             && readFileSync(path.join(escape, 'written.txt'), 'utf8') === 'escaped',
           observed: [
             `output: ${JSON.stringify(output('call_exec').slice(0, 200))}`,
@@ -121,6 +122,24 @@ export default {
           observed: [`terminal: ${terminal.type} ${JSON.stringify(terminal.payload || {})}`, `provider calls: ${stub.requests.length}`],
         },
       ];
+
+      // T-29: the browse route resolves through the same path rule as the
+      // tools — `~` is the owner's home, and an absolute path is itself.
+      const browseTilde = await server.request('GET', `/api/fs/browse?path=${encodeURIComponent('~')}`);
+      const browseAbs = await server.request('GET', `/api/fs/browse?path=${encodeURIComponent('/tmp')}`);
+      checks.push({
+        label: 'fs/browse resolves `~` through the workspace path rule (T-29)',
+        ok: browseTilde.status === 200 && browseTilde.json?.path === server.home,
+        observed: [
+          `GET ?path=~: status=${browseTilde.status} path=${JSON.stringify(browseTilde.json?.path)}`,
+          `scratch home: ${server.home}`,
+        ],
+      });
+      checks.push({
+        label: 'fs/browse keeps an absolute path as itself (T-29)',
+        ok: browseAbs.status === 200 && browseAbs.json?.path === '/tmp',
+        observed: [`GET ?path=/tmp: status=${browseAbs.status} path=${JSON.stringify(browseAbs.json?.path)}`],
+      });
 
       // A `~` workspace binding is a directory binding, not a tool argument:
       // it must be refused, never turned into a literal `~` folder.

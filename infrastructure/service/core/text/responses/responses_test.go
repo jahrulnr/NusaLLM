@@ -3,6 +3,7 @@ package textresponses
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/aggregate"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
@@ -970,5 +972,82 @@ func TestStreamEmptyTerminalMessageUsesFallbackContent(t *testing.T) {
 	}
 	if got := conv.Last().Content(); got != "hello" {
 		t.Fatalf("content = %q, want fallback text hello", got)
+	}
+}
+
+// An in-stream error event carries the provider's own message and the
+// Retry-After the response named — the same failure surface the other two
+// wires present, instead of a generic "rejected" with no wait.
+func TestStreamErrorEventCarriesMessageAndWait(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Retry-After", "120")
+		w.Write([]byte("event: error\ndata: {\"type\":\"error\",\"code\":\"rate_limit_exceeded\",\"message\":\"slow down\"}\n\n"))
+	})
+	conv := newConv(t)
+	user, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(user)
+	model, _ := entity.NewModel("m", "test")
+	err := svc.Send(t.Context(), conv, gw, model, nil)
+	if err == nil {
+		t.Fatal("an error event must fail the step")
+	}
+	if got := apperror.As(err).StatusCode(); got != 429 {
+		t.Fatalf("status = %d, want 429", got)
+	}
+	if got := apperror.As(err).Error(); got != "slow down" {
+		t.Fatalf("message = %q, want the provider's", got)
+	}
+	var delayed interface{ RetryAfter() time.Duration }
+	if !errors.As(err, &delayed) || delayed.RetryAfter() != 120*time.Second {
+		t.Fatalf("error lost the provider wait: %v", err)
+	}
+}
+
+// The terminal output can carry a function call whose arguments never closed.
+// Committing it would hand the tool layer unparsable input; the step fails
+// instead, retryable while nothing was persisted.
+func TestStreamTruncatedFunctionCallFails(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"exec\",\"arguments\":\"\"}}\n\n" +
+			"event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"delta\":\"{\\\"command\\\":\"}\n\n" +
+			"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"exec\",\"arguments\":\"{\\\"command\\\":\"}]}}\n\n"))
+	})
+	conv := newConv(t)
+	user, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(user)
+	model, _ := entity.NewModel("m", "test")
+	err := svc.Send(t.Context(), conv, gw, model, nil)
+	if got := apperror.As(err).StatusCode(); got != 502 {
+		t.Fatalf("truncated call → %d (%v), want 502", got, err)
+	}
+	if conv.Last().Role() != enum.RoleUser {
+		t.Fatalf("a truncated call must not commit: %+v", conv.Last())
+	}
+}
+
+// A 200 whose body is a failed response object (a gateway refusing the
+// stream) keeps the provider's error instead of "truncated".
+func TestStreamJSONErrorEnvelopeKeepsProviderError(t *testing.T) {
+	svc, gw, _ := newService(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "120")
+		w.Write([]byte(`{"status":"failed","error":{"code":"rate_limit_exceeded","message":"slow down"}}`))
+	})
+	conv := newConv(t)
+	user, _ := entity.NewMessage(enum.RoleUser, "hi")
+	conv.Append(user)
+	model, _ := entity.NewModel("m", "test")
+	err := svc.Send(t.Context(), conv, gw, model, nil)
+	if got := apperror.As(err).StatusCode(); got != 429 {
+		t.Fatalf("status = %d (%v), want 429", got, err)
+	}
+	if got := apperror.As(err).Error(); got != "slow down" {
+		t.Fatalf("message = %q, want the provider's", got)
+	}
+	var delayed interface{ RetryAfter() time.Duration }
+	if !errors.As(err, &delayed) || delayed.RetryAfter() != 120*time.Second {
+		t.Fatalf("error lost the provider wait: %v", err)
 	}
 }

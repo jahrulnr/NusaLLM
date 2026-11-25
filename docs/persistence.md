@@ -145,11 +145,40 @@ A `message` line's `data` is a `messageRecord`:
 |---|---|
 | `id`, `role`, `content`, `createdAt` | `role` is `system`/`user`/`developer`/`assistant` |
 | `userType` | `origin` (real user input) or `system` (harness-injected) |
+| `inputId` | Optional, user lines only: the transport input this line was folded from — see below |
 | `finishReason` | `stop`/`tool_calls`/`length`/`content_filter` |
 | `parts` | Ordered assistant text, reasoning, and tool-call positions |
-| `toolCalls` | each with `id`, `name`, `input`, raw `output`, `outputSet`, `outputLatency`, `outputBudget`, `outputAttachments`, `type` (`origin`/`injection`), `callAt`, `optionalContent` |
+| `toolCalls` | each with `id`, `name`, `input`, raw `output`, `outputSet`, `outputLatency`, `outputBudget`, `outputAttachments`, `type` (`origin`/`injection`; empty reads as `unknown`, see below), `callAt`, `optionalContent`, `outcome` (`ok`/`failed`/`canceled`), and `exit` (`{code}` or `{signal: "<name>"}`) |
 | `attachments` | `uri` + `mediaType`, optional `name` and `sha256` pin — stored references (`file://`, `https://`), materialized by adapters at send time |
 | `optionalContent` | adapter-namespaced extras like `completion.reasoning_content`; domain never interprets values |
+
+**`inputId` — the identity of a folded steer.** A steer submitted over the
+transport (`turn.steer`) lands in history only when the running turn folds it
+at an inference safe point, and the line that fold appends carries the input's
+identity: the `turn.steer` command's `requestId`
+(`application/job/turn.go:120-128`; domain field and accessors at
+`infrastructure/domain/entity/message.go:134-145`). It is stored on the record
+(`infrastructure/repository/conversation/record.go:62,104,173-174`) and
+projected to clients (`dto.go:126`).
+
+Three rules, and they matter more than the field:
+
+- **Only a folded steer has one.** An ordinary send, a CLI line, or a fold
+  without a receipt stores `""`. That is valid, not a defect — there is no
+  transport identity to record.
+- **An absent id is read as "no input id".** A record written before the field
+  existed reads the same way. Neither case is ever resolved by matching the
+  line's text, by position, or by guessing.
+- **The id exists so a client can dedupe without comparing words.** A steer is
+  drawn twice by construction — its live bubble comes from the journal frame,
+  its row from history — and text matching would fail exactly where it matters
+  (two identical steers in a row are two rows with two ids, and the words alone
+  cannot say which bubble a row replaces). The stored `inputId` is the identity
+  `D-06.1`/T-10 uses to retire the live bubble once the row is in the record.
+
+Round-trip proof lives in
+`infrastructure/repository/conversation/record_input_test.go` and
+`infrastructure/delivery/http/conversation/dto_input_test.go`.
 
 Hydration (`decodeMessage`) goes through the public entity constructors
 and setters — there is no reconstitute seam — and stored enum strings are
@@ -198,10 +227,48 @@ rewrite afterwards fails — the message is already in history; the counter
 is only a projection.
 
 `UpdateToolCallOutput` (`updatetool.go`) appends a `tool_output` patch
-line carrying raw output, fixed latency, and any media references. Because it is
-a pure append with no read-modify-write, parallel tool calls completing
-out of order are safe by construction, and a crash mid-batch leaves the
-remaining calls honestly pending instead of losing every result.
+line carrying raw output, fixed latency, any media references, and the same
+`outcome`/`exit` fields as the message line, so a call whose result arrives
+after a compact still keeps its verdict. Because it is a pure append with no
+read-modify-write, parallel tool calls completing out of order are safe by
+construction, and a crash mid-batch leaves the remaining calls honestly
+pending instead of losing every result.
+
+### Reading: tolerant per call, strict on write
+
+A read degrades the smallest unit it can, and reports it (D-13):
+
+- **One tool call** whose record cannot be decoded — missing `type`, an
+  unknown outcome, a malformed field — becomes
+  `entity.NewUnreadableToolCall` (`entity/toolcall.go:63-72`). It keeps the
+  fields that still make sense (id, name, input; output/latency/`callAt` when
+  present), carries no provenance (`Type()` empty → projected `type:
+  "unknown"`) and no verdict (`status: "unknown"`), and the other calls on the
+  message, plus the message itself, stay readable. It never projects as
+  `pending`: nothing is waiting for it.
+- **One line** that is not a line record is skipped and reported
+  (`line skipped: <reason>`); the rest of the stream decodes
+  (`conversation.go:388-404`).
+- **One message** that cannot be built at all — unknown role, missing id — is
+  skipped and reported (`message skipped: <reason>`); it is not invented. A
+  single field that will not decode (unknown `userType`/`finishReason`, a bad
+  attachment reference) is dropped and reported, and the message is kept
+  (`conversation.go:405-417`, `record.go:217-256`).
+- **Still fatal:** a `tool_output` patch whose outcome or attachment does not
+  decode (`conversation.go:430-449`). A patch carries the verdict; degrading
+  it would leave the outcome wrong instead of unknown.
+- **Diagnostics** go to the server log through one `(id, reason)` sink
+  (`conversation %s: tool call %q unreadable: %s`, `conversation.go:635-641`)
+  — the template is generic even when what degraded was a message field. The
+  room still opens; the transcript shows a neutral row.
+
+Writes and repair stay **strict** (`strictDecode`, `record.go:168-169`;
+`repair.go:137,242`): a repair rewrites history to recover it, so it must never
+launder a corrupt record into a placeholder. The placeholder is read-side only —
+`Save` writes metadata, `AppendMessage` adds lines, `Compact` passes retained
+lines through unchanged (rewriting only a message-level `optionalContent` map
+when the caller's sanitizer changed it, never the call records), and
+`RewriteFrom` joins raw lines — so no path re-serializes it into the store. There is no migration and no rewrite-on-read.
 
 ### `Compact` — sealing history
 
@@ -371,6 +438,50 @@ long decodable line is exactly the tail the reader keeps, so the probe reads
 it whole. A damaged tail left in place becomes interior corruption on the
 next append, after which every read of the room fails; corruption earlier in
 the file is reported, not swallowed.
+
+## Workspace files
+
+Tools and attachments reach files through `repository.Workspace`
+(`infrastructure/domain/repository/workspace.go`), implemented by the
+conversation's execution driver (ADR-0001) — `infrastructure/repository/workspace/`
+for the local driver. It is the single owner of what a path argument means
+(ADR-0002); a tool adapter passes the argument exactly as the model wrote it.
+
+**Three steps, one owner.**
+
+1. **Syntax** — `infrastructure/system/patharg` decodes the three shapes that
+   are not literal: a `file:` URL (local host only), a leading `~` for the
+   owner's home, and, on Windows, `%VAR%`. `$HOME`, `${HOME}`, `~user`, a `~`
+   inside a path and `%VAR%` off Windows stay literal. It is a pure function of
+   `(goos, home, env)` — no workspace, no stat.
+2. **Placement** — `Workspace.LocateRead` / `LocateWrite` decide where the
+   expanded path lands: a relative path resolves in the turn's workspace
+   directory; an absolute path inside it resolves relative to it, so `os.Root`
+   still refuses `..` and symlink escapes; an absolute path outside it is a
+   **host read** (`OpenHost`) or, for a write, an error naming the workspace
+   root.
+3. **Opening** — the returned `Placement` is single-use: `Open` for a read,
+   `Create` for a write (parent directories `0o700`, file `0o600`), `URI` for
+   the reference it travels as, `Close` for the session handle. A caller that
+   forgets `Close` leaks an `os.Root`.
+
+**Writes never leave the workspace.** `LocateWrite` answers outside the root
+with `cannot write "…": it is outside the workspace root "…" — bind that folder
+as the workspace or use exec`; `Placement.Create` refuses a host placement for
+the same reason. `exec` is the deliberate escape hatch: unsandboxed, gated only
+by its tool permission (`docs/architecture.md:554`). A room that must write
+elsewhere binds that directory as its workspace.
+
+**Reads may leave, pinned.** An absolute read outside the workspace goes
+through `OpenHost` (regular file, must exist). When a tool turns the file into
+an attachment it records a `sha256` pin hashed through the same handle
+(`read_media`), and send-time resolution re-opens the path and verifies the
+pin: an unpinned `file://` reference outside the root is rejected, so what the
+provider receives is what the read saw (`infrastructure/service/wire/media.go:122-165`).
+
+**What is not this rule.** `GET /api/fs/browse` is the directory picker: it
+requires an absolute path and reads through the `FileTree` port, not the
+placement rule (`infrastructure/delivery/http/fs/fs.go`).
 
 ## Gateways
 

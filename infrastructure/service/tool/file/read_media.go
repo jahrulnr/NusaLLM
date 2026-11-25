@@ -2,13 +2,8 @@ package toolfile
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"path/filepath"
 	"strings"
 
 	"github.com/jahrulnr/nusallm/infrastructure/domain/entity"
@@ -16,7 +11,7 @@ import (
 	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/service"
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
-	"github.com/jahrulnr/nusallm/infrastructure/service/wire"
+	"github.com/jahrulnr/nusallm/infrastructure/service/workspace"
 )
 
 // ReadMediaTool attaches a non-text file to the call result — under the
@@ -76,11 +71,9 @@ func (tool *ReadMediaTool) Execute(ctx context.Context, call entity.ToolCall, _ 
 		return service.ToolResult{}, fmt.Errorf("path is required")
 	}
 	// The repository decides where the argument lands: inside the turn's
-	// workspace (confined) or on a host file by absolute path — an agent
-	// working outside its workspace (a screenshot in /tmp, an asset
-	// elsewhere on disk) names the file directly. The sha256 pin still
-	// binds what send-time serves, so the check-time file is what the model
-	// gets.
+	// workspace (confined) or on a host file by absolute path. The pin rule
+	// itself — sniff, refuse text, size cap, hash — belongs to the workspace
+	// adapter, so the tool and /attach cannot drift apart.
 	place, err := tool.store.LocateRead(ctx, callDir(ctx, tool.dir), input.Path)
 	if err != nil {
 		return service.ToolResult{}, err
@@ -90,59 +83,12 @@ func (tool *ReadMediaTool) Execute(ctx context.Context, call entity.ToolCall, _ 
 			retErr = closeErr
 		}
 	}()
-	f, info, err := place.Open(ctx)
-	if err != nil {
-		return service.ToolResult{}, fmt.Errorf("%q is not a readable regular file: %w", input.Path, err)
-	}
-	uri := place.URI()
-	defer func() {
-		if closeErr := f.Close(); retErr == nil {
-			retErr = closeErr
-		}
-	}()
-	// Sniff the first 512 bytes — DetectContentType's window. The extension
-	// is caller-supplied and says nothing about the actual payload.
-	prefix := make([]byte, 512)
-	n, err := io.ReadFull(f, prefix)
-	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-		return service.ToolResult{}, err
-	}
-	prefix = prefix[:n]
-	mediaType := http.DetectContentType(prefix)
-	att, err := valueobject.NewAttachment(uri, mediaType)
+	att, size, err := workspace.PinAttachment(ctx, place, input.Path)
 	if err != nil {
 		return service.ToolResult{}, err
 	}
-	modality := att.Modality()
-	if modality == enum.ModalityText {
-		// Sniffed text (a .csv IS text) belongs to read_file — this tool is
-		// for payloads that cannot flow back as plain output.
-		return service.ToolResult{}, fmt.Errorf("%q is text (%s) — use read_file instead", input.Path, mediaType)
-	}
-	// Cap by modality from the stat, before the reference is handed out —
-	// adapters resolve file:// by reading the file at send time, so an
-	// oversized payload would otherwise fail late and less legibly.
-	limit := wire.MaxAttachmentBytes(modality)
-	if info.Size() > limit {
-		return service.ToolResult{}, fmt.Errorf("%q exceeds the %d MiB limit for %s media", input.Path, limit>>20, modality)
-	}
-	// Pin the content the reference will resolve to: hash through this
-	// confined handle — never the raw path — so what send-time verifies is
-	// provably the file os.Root allowed us to see. The read continues from
-	// the sniff offset, keeping this to a single pass.
-	h := sha256.New()
-	_, _ = h.Write(prefix)
-	rest, err := io.Copy(h, io.LimitReader(f, limit+1-int64(n)))
-	if err != nil {
-		return service.ToolResult{}, err
-	}
-	if int64(n)+rest > limit {
-		return service.ToolResult{}, fmt.Errorf("%q exceeds the %d MiB limit for %s media", input.Path, limit>>20, modality)
-	}
-	att.SetSHA256(hex.EncodeToString(h.Sum(nil)))
-	att.SetName(filepath.Base(input.Path))
 	return service.ToolResult{
-		Text:        fmt.Sprintf("loaded %s %s (%s, %d bytes) — it is now attached for the model", modality, att.Name(), mediaType, info.Size()),
+		Text:        fmt.Sprintf("loaded %s %s (%s, %d bytes) — it is now attached for the model", att.Modality(), att.Name(), att.MediaType(), size),
 		Attachments: []valueobject.Attachment{att},
 	}, nil
 }

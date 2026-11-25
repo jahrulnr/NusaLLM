@@ -125,10 +125,16 @@ func (tool *ExecTool) Execute(ctx context.Context, call entity.ToolCall, emit se
 	case exit.Code > 0:
 		suffix = fmt.Sprintf("\n(exit %d)", exit.Code)
 	case exit.Signal != "":
-		suffix = fmt.Sprintf("\n(%s)", exit.Signal)
+		suffix = fmt.Sprintf("\n(signal: %s)", exit.Signal)
 	case exit.Err != nil:
 		suffix = fmt.Sprintf("\n(%v)", exit.Err)
 	}
+
+	// The verdict is the process's, not a reading of the text: a nonzero
+	// exit or a signal is a failed call even though the tool returned
+	// normally. A runner failure (the process never started) has no exit
+	// status to report.
+	outcome, status := runOutcome(exit)
 
 	sink.mu.Lock()
 	head := sink.buf.String()
@@ -145,8 +151,13 @@ func (tool *ExecTool) Execute(ctx context.Context, call entity.ToolCall, emit se
 
 	if !spilled {
 		full := head + suffix
+		if full == "" {
+			// A command that printed nothing and exited 0 is a result, not
+			// an empty string: the model must see that it ran and succeeded.
+			full = "no output\n(exit 0)"
+		}
 		if len(full) <= budget {
-			return service.ToolResult{Text: full}, nil
+			return service.ToolResult{Text: full, Outcome: outcome, Exit: status}, nil
 		}
 		// Never crossed the budget mid-run but overshot after the exit
 		// suffix (or on a final chunk boundary) — spill the whole string
@@ -171,7 +182,7 @@ func (tool *ExecTool) Execute(ctx context.Context, call entity.ToolCall, emit se
 		if err != nil {
 			ref = fmt.Sprintf("spill to %s failed: %v", spillPath, err)
 		}
-		return service.ToolResult{Text: call.OutputWithMiddleTruncateWindow(full, full, len(full), ref)}, nil
+		return service.ToolResult{Text: call.OutputWithMiddleTruncateWindow(full, full, len(full), ref), Outcome: outcome, Exit: status}, nil
 	}
 
 	// Spilled mid-run: the file holds the stream up to the spill cap, and
@@ -185,7 +196,35 @@ func (tool *ExecTool) Execute(ctx context.Context, call entity.ToolCall, emit se
 		// The cap dropped stream bytes — "full" would be a lie.
 		ref = fmt.Sprintf("spilled output (truncated at %d MiB): %s", maxExecSpillBytes>>20, spillPath)
 	}
-	return service.ToolResult{Text: call.OutputWithMiddleTruncateWindow(head, tail, total+len(suffix), ref)}, nil
+	return service.ToolResult{Text: call.OutputWithMiddleTruncateWindow(head, tail, total+len(suffix), ref), Outcome: outcome, Exit: status}, nil
+}
+
+// runOutcome turns a finished process into the call's verdict: a clean exit
+// is ok with {"code":0}, a nonzero exit or a signal is failed with its
+// status, and a runner failure is failed with no status — no process ran, so
+// there is no exit to show.
+func runOutcome(exit service.ProcessExit) (enum.ToolOutcome, *valueobject.ExitStatus) {
+	if exit.Err != nil {
+		return enum.ToolOutcomeFailed, nil
+	}
+	status := valueobject.NewExitStatus(exit.Code, exit.Signal)
+	if status.Failed() {
+		return enum.ToolOutcomeFailed, &status
+	}
+	return enum.ToolOutcomeOK, &status
+}
+
+// pollOutcome is the same verdict for a session poll: a process still running
+// has none yet, and a reaped one reports how it ended.
+func pollOutcome(poll service.TerminalPoll) (enum.ToolOutcome, *valueobject.ExitStatus) {
+	if poll.Running {
+		return enum.ToolOutcomeOK, nil
+	}
+	status := valueobject.NewExitStatus(poll.ExitCode, poll.Signal)
+	if status.Failed() {
+		return enum.ToolOutcomeFailed, &status
+	}
+	return enum.ToolOutcomeOK, &status
 }
 
 // outputSink is the single writer behind cmd.Stdout+Stderr: one pipe

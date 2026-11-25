@@ -92,7 +92,7 @@ func TestParseProviderRejectsUnknown(t *testing.T) {
 }
 
 func TestParseRoundtripsRemaining(t *testing.T) {
-	for _, v := range []TurnEventKind{TurnEventDelta, TurnEventReasoning, TurnEventReasoningSummary, TurnEventToolCall, TurnEventToolOutput, TurnEventFinished, TurnEventError} {
+	for _, v := range []TurnEventKind{TurnEventDelta, TurnEventReasoning, TurnEventReasoningSummary, TurnEventToolCall, TurnEventToolOutput, TurnEventToolResult, TurnEventFinished, TurnEventError} {
 		if got, f := ParseTurnEventKind(v.String()); !f || got != v {
 			t.Fatalf("TurnEventKind %q roundtrip failed", v)
 		}

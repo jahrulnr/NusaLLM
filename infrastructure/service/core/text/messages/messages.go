@@ -121,6 +121,12 @@ func (s *Service) Send(ctx context.Context, conv *aggregate.Conversation, gw *ag
 		return wire.WithRetryAfter(statusError(resp.StatusCode, raw), wire.RetryAfter(resp.Header.Get("Retry-After")))
 	}
 
+	if stream && !strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
+		// A gateway may answer 200 with a JSON envelope instead of a stream.
+		// Reading it as the unary body keeps the provider's error (message,
+		// type, Retry-After) instead of reporting a truncated stream.
+		return s.unaryResponse(ctx, resp, conv, onEvent)
+	}
 	if stream {
 		return s.streamResponse(ctx, resp, conv, onEvent)
 	}

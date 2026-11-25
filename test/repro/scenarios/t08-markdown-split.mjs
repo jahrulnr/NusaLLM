@@ -52,9 +52,22 @@ export default {
         { id: 'c', kind: 'text', text: 'after' },
       ]) : [];
 
-      // The renderer must call it on both lists, not only on history.
-      const transcriptSrc = (await import('node:fs')).readFileSync(new URL('../../../web/components/transcript.js', import.meta.url), 'utf8');
-      const wired = /group\(\s*joinText\(hist\)/.test(transcriptSrc) && /group\(\s*joinText\(liveItems\)/.test(transcriptSrc);
+      // The same composition the transcript performs, through the public
+      // projection API: a late-watch tail whose replayed step history already
+      // holds is dropped, and the two texts around a real event stay apart.
+      const replayTurn = turn.newTurn({ turnId: 't_live', conversationId: 'c_live', kind: 'send' });
+      const liveHistoryItems = [
+        { id: 'u1', kind: 'user', msg: { content: 'go' } },
+        { id: 'h1', kind: 'text', text: 'one' },
+        { id: 'h2', kind: 'tool', callId: 'call_step1', name: 'exec' },
+      ];
+      turn.applyFrame(replayTurn, { type: 'turn.delta', payload: { text: 'one' }, seq: 1 });
+      turn.applyFrame(replayTurn, { type: 'turn.tool_call', payload: { callId: 'call_step1', name: 'exec' }, seq: 2 });
+      turn.applyFrame(replayTurn, { type: 'turn.delta', payload: { text: 'two' }, seq: 3 });
+      turn.applyFrame(replayTurn, { type: 'turn.delta', payload: { text: 'three' }, seq: 4 });
+      const composed = typeof turn.liveSegments === 'function'
+        ? turn.joinText(turn.liveSegments(replayTurn, liveHistoryItems))
+        : null;
 
       const checks = [
         {
@@ -93,11 +106,14 @@ export default {
           observed: [`joinText([text, tool, text]): ${around.map((i) => i.kind).join(' → ')}`],
         },
         {
-          label: 'the transcript calls joinText on history and on the live segments',
-          ok: wired,
+          label: 'the live path folds the same way: replayed step dropped, its tail one block',
+          ok: composed !== null
+            && composed.map((i) => i.kind).join(',') === 'text'
+            && composed[0].text === 'twothree'
+            && !composed.some((i) => i.callId === 'call_step1'),
           observed: [
-            `group(joinText(hist)): ${/group\(\s*joinText\(hist\)/.test(transcriptSrc)}`,
-            `group(joinText(liveItems)): ${/group\(\s*joinText\(liveItems\)/.test(transcriptSrc)}`,
+            `joinText(liveSegments(live, history)): ${composed === null ? 'liveSegments missing' : composed.map((i) => i.kind + (i.text ? ':' + JSON.stringify(i.text) : '')).join(' | ')}`,
+            `history tool call present: ${liveHistoryItems.some((i) => i.callId === 'call_step1')}`,
           ],
         },
       ];

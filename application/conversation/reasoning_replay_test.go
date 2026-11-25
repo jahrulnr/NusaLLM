@@ -78,7 +78,7 @@ func styleFixture(t *testing.T, style enum.Style, svc dservice.TextModelService,
 		nil,
 		"",
 		nil,
-		mustSummaryTool(t),
+		mustSummaryTool(t), testWorkers,
 	)
 	return app, &gw
 }

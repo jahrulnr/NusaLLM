@@ -2,12 +2,12 @@
 // goroutine drains a bounded queue and runs a single Job at a time, so
 // shared state behind the worker stays single-writer by construction.
 //
-// The split between interruption and termination is deliberate. Interrupt
-// is a soft request — the running Job's own Interrupt hook decides how to
-// stop early (cancel a context, signal a subprocess, close a transport) —
-// while Terminate is the hard stop: it kills the job's execution context,
-// drains the queue, and hands unstarted jobs back to the caller. Both a
-// multi-step turn loop and a background tool fit the same Job contract.
+// It is the only implementation of the job-executor port declared in
+// infrastructure/domain/service; the application takes that port and the
+// composition root (cmd) hands this constructor to it. The contract types
+// (Job, Steerable, WorkerOptions, the sentinels) are aliases of the port —
+// one declaration, one ErrTerminate value, so errors.Is holds on both sides
+// of the seam.
 package worker
 
 import (
@@ -18,66 +18,34 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	dservice "github.com/jahrulnr/nusallm/infrastructure/domain/service"
 )
 
-// Job is a unit of scheduled work. Execute runs on the worker's own
-// goroutine and must converge — promptly after Interrupt, and always
-// after its ctx dies (Terminate cancels it). Results travel on channels
-// the job owns; Execute's return is a control signal — returning
-// ErrTerminate retires the worker after the job completes.
-//
-// Interrupt may be called from any goroutine, possibly more than once,
-// and must not block. A Job that runs longer than a moment should give
-// its ctx a cancel path inside Interrupt.
-type Job interface {
-	Execute(ctx context.Context) error
-	Interrupt()
-}
+// Job is the port's unit of scheduled work.
+type Job = dservice.Job
 
-// Steerable is the optional mid-run input contract a Job may implement.
-// The worker delivers input out of band — it never interrupts Execute to
-// deliver, so the job folds input at its own safe point. RecallSteer
-// withdraws the newest un-fired input so the caller can take it back
-// before it lands; ok=false means nothing was pending.
-//
-// Steer runs while the worker holds its state lock so the
-// refuse-or-buffer decision is atomic against Interrupt: it must be a
-// leaf-lock, non-blocking buffer append — never I/O, never a call back
-// into the worker, the application, or the job's own execution state.
-type Steerable interface {
-	Steer(text string)
-	RecallSteer() (text string, ok bool)
-}
+// Steerable is the port's optional mid-run input contract.
+type Steerable = dservice.Steerable
+
+// Options tunes a Worker; the port owns the fields and their meaning.
+type Options = dservice.WorkerOptions
 
 var (
 	// ErrClosed rejects Submit/Preempt on a terminated worker — the
 	// caller respawns or re-routes.
-	ErrClosed = errors.New("worker closed")
+	ErrClosed = dservice.ErrClosed
 	// ErrFull rejects Submit when the queue is at capacity.
-	ErrFull = errors.New("worker queue full")
+	ErrFull = dservice.ErrFull
 	// ErrNotRunning answers Interrupt when nothing is running.
-	ErrNotRunning = errors.New("no job running")
+	ErrNotRunning = dservice.ErrNotRunning
 	// ErrTerminate is the Execute return that retires the worker — the
 	// job finishes, the queue drains to the OnTerminate hook, and the
 	// loop exits.
-	ErrTerminate = errors.New("terminate worker")
+	ErrTerminate = dservice.ErrTerminate
 )
 
 const defaultQueueCap = 128
-
-// Options tunes a Worker.
-type Options struct {
-	// QueueCap bounds queued jobs; Submit beyond it returns ErrFull.
-	// Preempt bypasses the cap — control jobs are few by design.
-	QueueCap int
-	// OnIdle runs (off-lock) whenever the queue drains with nothing
-	// running — the hook for idle reaping. The caller re-checks Idle()
-	// before retiring the worker.
-	OnIdle func(w *Worker)
-	// OnTerminate runs after the loop exits via a job's ErrTerminate,
-	// receiving the drained queue — the caller decides their fate.
-	OnTerminate func(w *Worker, drained []Job)
-}
 
 // Worker is a serial job executor. Constructed workers start consuming
 // immediately; Terminate or a job returning ErrTerminate stops the loop.

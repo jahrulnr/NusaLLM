@@ -3,12 +3,11 @@
 import { html, useEffect, useRef, useState } from '/vendor/preact/htm-preact.mjs';
 import { useStore } from '../lib/store.js';
 import { api, errorText } from '../lib/api.js';
-import { selection, setSelection, loadGateways } from '../lib/chat.js';
+import { selection, setSelection, loadGateways, providersFor } from '../lib/chat.js';
 import { Icon } from './icons.js';
 import { cx, Popover, Spinner, ErrorBlock, Select, fmtTokens } from './ui.js';
 
 const ALL_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
-const providerCache = new Map();
 
 export function modelLabel(gateways, route, modelId) {
   const g = gateways.find((x) => x.id === route);
@@ -28,13 +27,13 @@ export function ModelPicker({ room }) {
 
   useEffect(() => {
     if (!open || !sel.route || !sel.modelId) return;
-    const key = sel.route + '|' + sel.modelId;
-    if (providerCache.has(key)) { setProviders({ status: 'ready', list: providerCache.get(key) }); return; }
     setProviders({ status: 'loading', list: [] });
     let live = true;
-    api.providers(sel.route, sel.modelId).then((r) => {
-      providerCache.set(key, r.data || []);
-      if (live) setProviders({ status: 'ready', list: r.data || [] });
+    // The controller keeps the answer and drops it whenever the gateway list is
+    // re-read, so a provider saved on the settings page is visible here on the
+    // next open without a page reload.
+    providersFor(sel.route, sel.modelId).then((list) => {
+      if (live) setProviders({ status: 'ready', list });
     }, () => live && setProviders({ status: 'error', list: [] }));
     return () => { live = false; };
   }, [open, sel.route, sel.modelId]);

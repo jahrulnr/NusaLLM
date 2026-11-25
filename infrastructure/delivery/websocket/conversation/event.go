@@ -80,6 +80,19 @@ func (h *Hub) onEvent(t *turn, ev event.TurnEvent) {
 				break
 			}
 		}
+	case enum.TurnEventToolResult:
+		// The call-level terminal: one frame per call, carrying the
+		// verdict the adapter recorded. The output text keeps flowing as
+		// progress above; this is what a UI counts.
+		t.inReasoning = false
+		tc := ev.ToolCall()
+		if !h.emitLocked(t, "turn.tool_result", toolResultPayload{
+			CallID: tc.ID(),
+			Status: tc.Outcome().String(),
+			Exit:   tc.Exit(),
+		}, false) {
+			h.markOverflowedLocked(t)
+		}
 	case enum.TurnEventSteer:
 		// A folded steering line is user input landing mid-turn —
 		// subscribers see it in position rather than on a history

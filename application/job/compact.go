@@ -20,6 +20,21 @@ import (
 // forever.
 const compactAttempts = 3
 
+// errNothingToCompact is the one answer to "this room has nothing to fold":
+// a state the user can act on, so it maps to 400 invalid_argument at every
+// transport — never a 500, which would report a perfectly valid request as a
+// server fault. Both entry points into a fold (the manual job's pre-check and
+// the fold itself) return it, so the two paths cannot disagree on status or
+// on what the message says.
+func errNothingToCompact(convID string, messages, keepTail int) error {
+	// The numbers ride in the message, not only the cause: the transport
+	// shows the message to the user, and the reason is what makes a
+	// refusal actionable.
+	return apperror.New(400,
+		fmt.Sprintf("nothing to compact: %d message(s) with keep-tail %d", messages, keepTail),
+		fmt.Errorf("conversation %s has no new foldable history", convID))
+}
+
 // compact folds the live history into a checkpoint: the model writes the
 // handoff on a scratch conversation (its own transcript plus the summary
 // tool — never persisted), then the sealed prefix drops and the continue
@@ -28,6 +43,12 @@ const compactAttempts = 3
 // fold can take a whole provider call, so the owner is told it is
 // happening. A manual compaction passes nil.
 func (d Deps) compact(ctx context.Context, convID string, conv *aggregate.Conversation, gw *aggregate.Gateway, model entity.Model, svc dservice.TextModelService, keepTail int, onEvent event.TurnEventHandler) error {
+	// The fold decision is the aggregate's, taken before the checkpoint
+	// dialogue spends a provider call: a request that would seal nothing
+	// is refused with the caller's own status.
+	if !conv.CanManualCompact(keepTail) {
+		return errNothingToCompact(convID, len(conv.Messages()), keepTail)
+	}
 	if onEvent != nil {
 		onEvent(event.NewStatusEvent(enum.TurnStatusCompacting, 0))
 	}
@@ -116,12 +137,9 @@ func (d Deps) compact(ctx context.Context, convID string, conv *aggregate.Conver
 	// exactly this tail plus it. Tool outputs ride inside their call's
 	// message in this domain, so a message boundary cannot split a
 	// call/result pair.
+	// Foldability was decided before the checkpoint dialogue, so the
+	// sealed prefix is non-empty by construction.
 	dropBefore := len(conv.Messages()) - keepTail
-	if dropBefore <= 0 {
-		// Callers guard foldability, but a checkpoint that seals nothing
-		// is noise — refuse rather than write an empty segment.
-		return apperror.New(500, "nothing to compact", fmt.Errorf("dropBefore %d over %d messages", dropBefore, len(conv.Messages())))
-	}
 	tail := conv.Messages()[dropBefore:]
 	if sanitizer, ok := svc.(dservice.CompactionSanitizer); ok {
 		tail = sanitizer.SanitizeCompactedTail(tail)

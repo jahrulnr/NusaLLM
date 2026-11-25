@@ -416,11 +416,13 @@ func TestMessagesWindowAndSanitization(t *testing.T) {
 	done := calls[1].(map[string]any)
 	if done["id"] != "call_2" || done["name"] != "run_shell" ||
 		done["type"] != "origin" ||
-		done["status"] != "completed" ||
+		// A record written before the verdict field existed projects as
+		// unknown — the projection never infers a verdict from text.
+		done["status"] != "unknown" ||
 		done["input"] != `{"cmd":"ls -la"}` ||
 		done["output"] != "total 0" ||
 		done["calledAt"] != "2026-09-28T01:02:03Z" {
-		t.Fatalf("completed tool call projection wrong: %v", done)
+		t.Fatalf("recorded tool call projection wrong: %v", done)
 	}
 	outAtts := done["attachments"].([]any)
 	if len(outAtts) != 1 {
@@ -492,7 +494,9 @@ func TestMessagesCompletedEmptyToolOutput(t *testing.T) {
 	}
 	msgs := decodeBody(t, rec)["messages"].([]any)
 	result := msgs[0].(map[string]any)["toolCalls"].([]any)[0].(map[string]any)
-	if result["status"] != "completed" || result["output"] != "" {
+	// An empty output is still an output: the call ran, but no verdict was
+	// recorded, so it reads unknown rather than pending.
+	if result["status"] != "unknown" || result["output"] != "" {
 		t.Fatalf("empty completed tool output misclassified: %v", result)
 	}
 }

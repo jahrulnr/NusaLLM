@@ -21,6 +21,7 @@ import (
 	"github.com/jahrulnr/nusallm/infrastructure/domain/valueobject"
 	repoconversation "github.com/jahrulnr/nusallm/infrastructure/repository/conversation"
 	repogateway "github.com/jahrulnr/nusallm/infrastructure/repository/gateway"
+	"github.com/jahrulnr/nusallm/infrastructure/worker"
 )
 
 // readUntil reads frames until want arrives — an error or failed
@@ -149,7 +150,7 @@ func gatedApp(t *testing.T, svc *scriptSvc, tools map[string]*gatedTool) *appcon
 			Services: map[enum.Style]dservice.TextModelService{enum.StyleCompletion: svc},
 			Tools:    envTools,
 		}},
-		config.NewConfig(), nil, "", nil, nil)
+		config.NewConfig(), nil, "", nil, nil, appconversation.Workers(worker.New))
 	seed, _ := aggregate.NewConversation("room")
 	seed.SetTools(schemas)
 	seed.SetRoute("gw1")

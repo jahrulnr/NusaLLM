@@ -328,7 +328,7 @@ func TestMessagePatchesBindToOwningMessageInOrder(t *testing.T) {
 		}
 		lines = append(lines, line)
 	}
-	msgs, err := messagesFromLines(lines)
+	msgs, err := messagesFromLines(lines, strictDecode)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1050,11 +1050,17 @@ func TestAppendKeepsInteriorCorruption(t *testing.T) {
 	if !bytes.Contains(after, []byte(corrupt)) {
 		t.Fatalf("interior corruption was silently dropped:\n%s", after)
 	}
-	if _, err := repo.Load(t.Context(), "c1"); err == nil || !strings.Contains(err.Error(), "corrupt line") {
-		t.Fatalf("Load past interior corruption → %v, want a corrupt-line error", err)
+	// T-34: reading survives interior corruption — the bad line is skipped
+	// (and reported) while the records around it load.
+	loaded, err := repo.Load(t.Context(), "c1")
+	if err != nil {
+		t.Fatalf("Load past interior corruption: %v", err)
 	}
-	if _, err := repo.LoadAt(t.Context(), "c1", 0, 0); err == nil || !strings.Contains(err.Error(), "corrupt line") {
-		t.Fatalf("LoadAt past interior corruption → %v, want a corrupt-line error", err)
+	if got := messageContents(loaded.Messages()); !slices.Equal(got, []string{"u1", "u2"}) {
+		t.Fatalf("Load records = %q, want the readable ones", got)
+	}
+	if _, err := repo.LoadAt(t.Context(), "c1", 0, 0); err != nil {
+		t.Fatalf("LoadAt past interior corruption: %v", err)
 	}
 }
 
@@ -1262,9 +1268,11 @@ func TestAppendMirrorsReaderFinalLineTolerance(t *testing.T) {
 			want: []string{"u1", strings.Repeat("L", oldTornProbeCap+(1<<10)), "new"},
 		},
 		{
-			name:    "interior corruption stays reported",
-			seed:    line(u1, []byte("not-a-record"), u2),
-			wantErr: true,
+			// T-34: a corrupt interior line is skipped, not fatal — the
+			// readable records around it still load.
+			name: "interior corruption is skipped",
+			seed: line(u1, []byte("not-a-record"), u2),
+			want: []string{"u1", "u2", "new"},
 		},
 	}
 

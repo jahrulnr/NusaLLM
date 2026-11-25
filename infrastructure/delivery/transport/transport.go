@@ -74,11 +74,20 @@ func codeFor(status int, upstream bool) string {
 	case http.StatusBadGateway:
 		return "upstream_error"
 	case http.StatusServiceUnavailable:
+		if upstream {
+			return "upstream_error"
+		}
 		return "unavailable"
 	case http.StatusGatewayTimeout:
 		return "upstream_timeout"
 	}
 	if status >= 500 {
+		// A provider 5xx outside the catalog (500, 529 overloaded, …) is a
+		// provider failure, not an engine fault — the distinction decides
+		// whether the UI offers a retry on the same route.
+		if upstream {
+			return "upstream_error"
+		}
 		return "internal"
 	}
 	return "invalid_argument"

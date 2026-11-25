@@ -20,6 +20,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	drepo "github.com/jahrulnr/nusallm/infrastructure/domain/repository"
+	"github.com/jahrulnr/nusallm/infrastructure/system/patharg"
 
 	"github.com/jahrulnr/nusallm/infrastructure/delivery/http/internal/transport"
 )
@@ -61,6 +62,15 @@ func browse(c *gin.Context, tree drepo.FileTree) {
 		}
 		dir = home
 	}
+	// Path syntax has one owner (ADR-0002): a leading ~ is the owner's home
+	// and a file: URL names the file it says — the picker must not keep a
+	// second, weaker rule that turns ~ into a literal folder.
+	expanded, err := patharg.Expand(dir)
+	if err != nil {
+		transport.WriteProblem(c, 400, "invalid_argument", err.Error())
+		return
+	}
+	dir = expanded
 	if !filepath.IsAbs(dir) {
 		transport.WriteProblem(c, 400, "invalid_argument", "path must be absolute")
 		return
